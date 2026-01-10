@@ -127,8 +127,11 @@ $McpBin = Join-Path $PWD "transform-rules-mcp.exe"
 ```
 
 Tool: `transform`
-- Required: `rules_path`, `input_path`
-- Optional: `context_path`, `format` (`csv` or `json`), `ndjson`, `validate`, `output_path`
+- Required (one of): `rules_path` or `rules_text`
+- Required (one of): `input_path`, `input_text`, or `input_json`
+- Optional (one of): `context_path` or `context_json`
+- Optional: `format` (`csv` or `json`), `ndjson`, `validate`, `output_path`, `max_output_bytes`, `preview_rows`, `return_output_json`
+- Output: text in `content`; `meta` may include `warnings`, `output`, `output_path`, `output_bytes`, `truncated`
 
 ## Quick start (CLI)
 
