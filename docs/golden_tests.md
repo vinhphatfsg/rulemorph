@@ -38,6 +38,10 @@ crates/transform_rules/tests/fixtures/
     input.json
     context.json
     expected.json
+  t08_escaped_keys/
+    rules.yaml
+    input.json
+    expected.json
 
   r01_float_non_finite/
     rules.yaml
@@ -63,6 +67,9 @@ crates/transform_rules/tests/fixtures/
     rules.yaml
     expected_errors.json
   v07_invalid_lookup_args/
+    rules.yaml
+    expected_errors.json
+  v08_invalid_path/
     rules.yaml
     expected_errors.json
 ```
@@ -435,6 +442,41 @@ mappings:
 ]
 ```
 
+### t08_escaped_keys
+
+`rules.yaml`
+```yaml
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "profile_name"
+    source: 'input.user["profile.name"]'
+  - target: "root_id"
+    source: 'input.["a.b"].id'
+  - target: "item_key"
+    source: 'input.items[0]["key.name"]'
+```
+
+`input.json`
+```json
+[
+  {
+    "user": { "profile.name": "Alice" },
+    "a.b": { "id": 7 },
+    "items": [ { "key.name": "v1" } ]
+  }
+]
+```
+
+`expected.json`
+```json
+[
+  { "profile_name": "Alice", "root_id": 7, "item_key": "v1" }
+]
+```
+
 ## 変換失敗ケース（ランタイム）
 
 ### r01_float_non_finite
@@ -627,5 +669,25 @@ mappings:
 ```json
 [
   { "code": "InvalidArgs", "path": "mappings[0].expr.args[1]" }
+]
+```
+
+### v08_invalid_path
+
+`rules.yaml`
+```yaml
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "items[0]"
+    source: "input.id"
+```
+
+`expected_errors.json`
+```json
+[
+  { "code": "InvalidPath", "path": "mappings[0].target" }
 ]
 ```

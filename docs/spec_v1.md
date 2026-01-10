@@ -169,6 +169,9 @@ expr:
 
 ドットパスは配列インデックスをサポートします（0 始まりの非負整数）。
 例: `input.items[0].id`, `context.matrix[1][0]`
+- ドットを含むキー名はブラケット引用でエスケープする  
+  例: `input.user["profile.name"]`, `input.["a.b"].id`, `input.items[0]["key.name"]`
+- ブラケット引用内のエスケープは `\\` と `\"` / `\'` のみサポート
 - 配列以外/範囲外は `missing` 扱い
 - `[` `]` を含むキー名のエスケープは v1 では未対応
 
@@ -205,6 +208,7 @@ expr:
 - `out.*` が前方参照になっている
 - `op` が未知、または `args` が欠落/不正
 - `lookup/lookup_first` の args が 3〜4 でない、または `key_path/output_path` が文字列リテラルでない
+- パス構文が不正（例: `records_path`/`source`/`ref` のエスケープ不正、`target` のインデックス指定）
 
 ## 例
 
@@ -315,6 +319,7 @@ mappings:
 - `UnknownOp`: `expr.op '<op>' is not supported`
 - `InvalidArgs`: `expr.args must be a non-empty array`
 - `InvalidExprShape`: `expr must be a literal, {ref}, or {op,args}`
+- `InvalidPath`: パス構文が不正（例: `target` にインデックスを含む、ブラケット引用の不正）
 
 **Type**
 - `InvalidTypeName`: `type must be string|int|float|bool`
@@ -330,7 +335,7 @@ mappings:
 - `InvalidRecordsPath`: `records_path` が存在しない
 
 **Reference/Target**
-- `InvalidRef`: 参照の namespace が不正、またはパスが空
+- `InvalidRef`: 参照の namespace が不正、またはパスが不正/空
 - `InvalidTarget`: `target` が不正、または既存値と衝突（非オブジェクトにネスト）
 
 **Data**
@@ -365,6 +370,13 @@ mappings:
 - 任意: `--output <PATH>`（指定時はファイルへ出力。未指定は標準出力。親ディレクトリは自動生成）
 - 任意: `--validate`（変換前にバリデーションを実行。未指定なら省略）
 
+**generate**
+- 目的: ルールに従った DTO を生成
+- 入力: `--rules <PATH>`
+- 必須: `--lang <rust|typescript|python|go|java|kotlin|swift>`（`ts` は `typescript` のエイリアス）
+- 任意: `--name <NAME>`（既定 `Record`）
+- 任意: `--output <PATH>`（指定時はファイルへ出力。未指定は標準出力）
+
 ### 共通オプション
 
 - `--error-format <text|json>`（任意）
@@ -385,6 +397,21 @@ mappings:
 ```
 E InvalidRefNamespace path=mappings[0].expr line=7 col=5 msg="ref namespace must be input|context|out"
 ```
+
+## DTO 生成（案）
+
+- 対応言語: Rust / TypeScript / Python / Go / Java / Kotlin / Swift
+- 生成対象: 1レコード分の型のみ（既定の型名 `Record`）
+- `target` のドットパスに応じてネスト構造を生成
+- 型推定: `type` 指定あり → 具体型、`required=false` → Optional/nullable、未指定 → JSON 値型
+- 識別子は各言語の命名規則に合わせてサニタイズし、元のキーはリネーム注釈で保持
+- 未指定型の JSON 値型:
+  - Rust: `serde_json::Value`
+  - TypeScript: `unknown`
+  - Python: `Any`
+  - Go: `json.RawMessage`
+  - Java/Kotlin: `JsonNode`
+  - Swift: `JSONValue`
 
 **json**
 ```json

@@ -130,6 +130,17 @@ fn t07_array_index_paths() {
     assert_eq!(output, expected);
 }
 
+#[test]
+fn t08_escaped_keys() {
+    let base = fixtures_dir().join("t08_escaped_keys");
+    let rule = load_rule(&base.join("rules.yaml"));
+    let input = fs::read_to_string(base.join("input.json"))
+        .unwrap_or_else(|_| panic!("failed to read input.json"));
+    let expected = load_json(&base.join("expected.json"));
+    let output = transform(&rule, &input, None).expect("transform failed");
+    assert_eq!(output, expected);
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct ExpectedTransformError {
     kind: String,
