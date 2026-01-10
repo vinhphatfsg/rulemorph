@@ -21,6 +21,30 @@ A small Rust library and CLI to transform CSV/JSON data using YAML rules.
 
 Prerequisites: a Rust toolchain (via rustup).
 
+### Download prebuilt binaries (GitHub Releases)
+1) Open the release page and download the asset for your OS/arch:
+   - macOS (Apple Silicon): `transform-rules-<TAG>-aarch64-apple-darwin.tar.gz`
+   - macOS (Intel): `transform-rules-<TAG>-x86_64-apple-darwin.tar.gz`
+   - Linux (x86_64): `transform-rules-<TAG>-x86_64-unknown-linux-gnu.tar.gz`
+   - Windows (x86_64): `transform-rules-<TAG>-x86_64-pc-windows-msvc.zip`
+   `<TAG>` is the GitHub release tag (e.g. `v0.1.0`).
+2) Extract the archive and put `transform-rules` on your `PATH`.
+
+macOS/Linux example:
+```
+tar -xzf transform-rules-<TAG>-x86_64-unknown-linux-gnu.tar.gz
+chmod +x transform-rules
+mkdir -p ~/.local/bin
+mv transform-rules ~/.local/bin/
+```
+Ensure `~/.local/bin` is on your `PATH`.
+
+Windows (PowerShell) example:
+```
+Expand-Archive .\transform-rules-<TAG>-x86_64-pc-windows-msvc.zip -DestinationPath .
+.\transform-rules.exe --help
+```
+
 ### Build the CLI
 ```
 cargo build -p transform_rules_cli --release
