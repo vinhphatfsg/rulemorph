@@ -1,0 +1,7 @@
+version: 1
+input:
+  format: json
+mappings:
+  - target: "price"
+    source: "price"
+    type: "int"

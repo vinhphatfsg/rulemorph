@@ -193,6 +193,46 @@ expr:
 - `source`/`expr` が `missing` を返した場合も同様に `default/required` の規則を適用する
 - 出力は常に JSON 配列
 
+## プリフライト検証
+
+変換前に入力データを走査し、実行時エラー（必須欠落・型変換失敗）を事前に検出する。
+
+- 入力パースは `transform` と同じ規則（CSV/JSON）
+- 各レコードで `mappings` を順番に評価
+- `source/ref/expr` の参照を解決し、`required=true` の `missing/null` を検出
+- `type` 変換の可否を検証（`string|int|float|bool`）
+- `out.*` 参照は同一レコード内の「直前までに生成した出力」を参照
+- 出力 JSON は生成しない
+
+### ルール例
+
+```yaml
+version: 1
+input:
+  format: json
+mappings:
+  - target: "user.id"
+    source: "id"
+    type: "int"
+    required: true
+  - target: "user.name"
+    expr:
+      op: "trim"
+      args: [ { ref: "input.name" } ]
+```
+
+### エラー例
+
+MissingRequired:
+```
+E MissingRequired path=mappings[0] msg="required value is missing"
+```
+
+TypeCastFailed:
+```
+E TypeCastFailed path=mappings[0].type msg="failed to cast to int"
+```
+
 ## バリデーション（静的）
 
 以下の場合はルールを不正とする:
@@ -362,6 +402,12 @@ mappings:
 - 入力: `--rules <PATH>`
 - 出力: 成功時は終了コード 0。エラーは標準エラー出力。
 
+**preflight**
+- 目的: 入力に対する必須欠落/型変換失敗の事前検証
+- 入力: `--rules <PATH>`, `--input <PATH>`
+- 任意: `--format <csv|json>`（ルール内の `input.format` を上書き）
+- 任意: `--context <PATH>`（JSON）
+
 **transform**
 - 目的: ルールに従って入力を変換し JSON を出力
 - 入力: `--rules <PATH>`, `--input <PATH>`
@@ -388,7 +434,7 @@ mappings:
 
 - `0`: 成功
 - `2`: バリデーションエラー
-- `3`: 変換エラー
+- `3`: 変換/プリフライトエラー
 - `1`: その他のエラー（IO など）
 
 ### エラー出力形式

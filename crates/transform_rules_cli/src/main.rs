@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use transform_rules::{
-    generate_dto, parse_rule_file, transform, validate_rule_file_with_source, DtoLanguage,
-    InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
+    generate_dto, parse_rule_file, preflight_validate, transform, validate_rule_file_with_source,
+    DtoLanguage, InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
 };
 
 #[derive(Parser)]
@@ -19,6 +19,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Validate(ValidateArgs),
+    Preflight(PreflightArgs),
     Transform(TransformArgs),
     Generate(GenerateArgs),
 }
@@ -27,6 +28,20 @@ enum Commands {
 struct ValidateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(short = 'e', long, default_value = "text")]
+    error_format: ErrorFormat,
+}
+
+#[derive(Args)]
+struct PreflightArgs {
+    #[arg(short = 'r', long)]
+    rules: PathBuf,
+    #[arg(short = 'i', long)]
+    input: PathBuf,
+    #[arg(short = 'f', long)]
+    format: Option<FormatOverride>,
+    #[arg(short = 'c', long)]
+    context: Option<PathBuf>,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
 }
@@ -89,6 +104,7 @@ fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Commands::Validate(args) => run_validate(args),
+        Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
         Commands::Generate(args) => run_generate(args),
     };
@@ -110,18 +126,39 @@ fn run_validate(args: ValidateArgs) -> i32 {
     }
 }
 
+fn run_preflight(args: PreflightArgs) -> i32 {
+    let (mut rule, _) = match load_rule(&args.rules) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+
+    apply_format_override(&mut rule, args.format);
+
+    let input = match load_input(&args.input) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+
+    let context_value = match load_context(&args.context) {
+        Ok(value) => value,
+        Err(code) => return code,
+    };
+
+    if let Err(err) = preflight_validate(&rule, &input, context_value.as_ref()) {
+        emit_transform_error(&err, args.error_format);
+        return 3;
+    }
+
+    0
+}
+
 fn run_transform(args: TransformArgs) -> i32 {
     let (mut rule, yaml) = match load_rule(&args.rules) {
         Ok(value) => value,
         Err(code) => return code,
     };
 
-    if let Some(format) = args.format {
-        rule.input.format = match format {
-            FormatOverride::Csv => InputFormat::Csv,
-            FormatOverride::Json => InputFormat::Json,
-        };
-    }
+    apply_format_override(&mut rule, args.format);
 
     if args.validate {
         if let Err(errors) = validate_rule_file_with_source(&rule, &yaml) {
@@ -130,29 +167,14 @@ fn run_transform(args: TransformArgs) -> i32 {
         }
     }
 
-    let input = match fs::read_to_string(&args.input) {
+    let input = match load_input(&args.input) {
         Ok(value) => value,
-        Err(err) => {
-            eprintln!("failed to read input: {}", err);
-            return 1;
-        }
+        Err(code) => return code,
     };
 
-    let context_value = match args.context {
-        Some(path) => match fs::read_to_string(&path) {
-            Ok(data) => match serde_json::from_str(&data) {
-                Ok(json) => Some(json),
-                Err(err) => {
-                    eprintln!("failed to parse context JSON: {}", err);
-                    return 1;
-                }
-            },
-            Err(err) => {
-                eprintln!("failed to read context: {}", err);
-                return 1;
-            }
-        },
-        None => None,
+    let context_value = match load_context(&args.context) {
+        Ok(value) => value,
+        Err(code) => return code,
     };
 
     let output = match transform(&rule, &input, context_value.as_ref()) {
@@ -253,6 +275,44 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     };
 
     Ok((rule, yaml))
+}
+
+fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {
+    if let Some(format) = format {
+        rule.input.format = match format {
+            FormatOverride::Csv => InputFormat::Csv,
+            FormatOverride::Json => InputFormat::Json,
+        };
+    }
+}
+
+fn load_input(path: &PathBuf) -> Result<String, i32> {
+    match fs::read_to_string(path) {
+        Ok(value) => Ok(value),
+        Err(err) => {
+            eprintln!("failed to read input: {}", err);
+            Err(1)
+        }
+    }
+}
+
+fn load_context(path: &Option<PathBuf>) -> Result<Option<serde_json::Value>, i32> {
+    match path {
+        Some(path) => match fs::read_to_string(path) {
+            Ok(data) => match serde_json::from_str(&data) {
+                Ok(json) => Ok(Some(json)),
+                Err(err) => {
+                    eprintln!("failed to parse context JSON: {}", err);
+                    Err(1)
+                }
+            },
+            Err(err) => {
+                eprintln!("failed to read context: {}", err);
+                Err(1)
+            }
+        },
+        None => Ok(None),
+    }
 }
 
 fn emit_validation_errors(errors: &[RuleError], format: ErrorFormat) {

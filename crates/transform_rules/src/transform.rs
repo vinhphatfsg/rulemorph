@@ -10,25 +10,50 @@ pub fn transform(
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<JsonValue, TransformError> {
-    let records = match rule.input.format {
-        InputFormat::Csv => parse_csv(rule, input)?,
-        InputFormat::Json => parse_json(rule, input)?,
-    };
+    let records = parse_input_records(rule, input)?;
 
     let mut output_records = Vec::with_capacity(records.len());
     for record in records {
-        let mut out = JsonValue::Object(Map::new());
-        for (index, mapping) in rule.mappings.iter().enumerate() {
-            let mapping_path = format!("mappings[{}]", index);
-            let value = eval_mapping(mapping, &record, context, &out, &mapping_path)?;
-            if let Some(value) = value {
-                set_path(&mut out, &mapping.target, value, &mapping_path)?;
-            }
-        }
+        let out = apply_mappings(rule, &record, context)?;
         output_records.push(out);
     }
 
     Ok(JsonValue::Array(output_records))
+}
+
+pub fn preflight_validate(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+) -> Result<(), TransformError> {
+    let records = parse_input_records(rule, input)?;
+    for record in records {
+        let _ = apply_mappings(rule, &record, context)?;
+    }
+    Ok(())
+}
+
+fn parse_input_records(rule: &RuleFile, input: &str) -> Result<Vec<JsonValue>, TransformError> {
+    match rule.input.format {
+        InputFormat::Csv => parse_csv(rule, input),
+        InputFormat::Json => parse_json(rule, input),
+    }
+}
+
+fn apply_mappings(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+) -> Result<JsonValue, TransformError> {
+    let mut out = JsonValue::Object(Map::new());
+    for (index, mapping) in rule.mappings.iter().enumerate() {
+        let mapping_path = format!("mappings[{}]", index);
+        let value = eval_mapping(mapping, record, context, &out, &mapping_path)?;
+        if let Some(value) = value {
+            set_path(&mut out, &mapping.target, value, &mapping_path)?;
+        }
+    }
+    Ok(out)
 }
 
 fn parse_json(rule: &RuleFile, input: &str) -> Result<Vec<JsonValue>, TransformError> {

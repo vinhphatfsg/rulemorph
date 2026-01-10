@@ -55,6 +55,48 @@ fn validate_json_errors() {
 }
 
 #[test]
+fn preflight_success_returns_zero() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let rules = base.join("rules.yaml");
+    let input = base.join("input.json");
+    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(rules)
+        .arg("-i")
+        .arg(input)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn preflight_json_errors() {
+    let base = fixtures_dir().join("p03_preflight_type_cast_failed");
+    let rules = base.join("rules.yaml");
+    let input = base.join("input.json");
+    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(rules)
+        .arg("-i")
+        .arg(input)
+        .arg("-e")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&stderr)
+        .unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    assert_eq!(value[0]["type"], "transform");
+    assert_eq!(value[0]["kind"], "TypeCastFailed");
+}
+
+#[test]
 fn transform_outputs_json() {
     let base = fixtures_dir().join("t03_json_out_context");
     let rules = base.join("rules.yaml");

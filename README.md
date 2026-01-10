@@ -124,6 +124,16 @@ mappings:
 transform-rules validate -r <PATH> [-e text|json]
 ```
 
+### preflight
+```
+transform-rules preflight \
+  -r <PATH> \
+  -i <PATH> \
+  [-f csv|json] \
+  [-c <PATH>] \
+  [-e text|json]
+```
+
 ### transform
 ```
 transform-rules transform \
@@ -156,7 +166,9 @@ transform-rules generate \
 ## Library usage (Rust)
 
 ```rust
-use transform_rules::{parse_rule_file, validate_rule_file_with_source, transform};
+use transform_rules::{
+    parse_rule_file, preflight_validate, transform, validate_rule_file_with_source,
+};
 
 let yaml = std::fs::read_to_string("rules.yaml").unwrap();
 let rule = parse_rule_file(&yaml).unwrap();
@@ -164,6 +176,7 @@ validate_rule_file_with_source(&rule, &yaml).unwrap();
 
 let input = std::fs::read_to_string("input.json").unwrap();
 let context = serde_json::json!({ "tenant_id": "t-001" });
+preflight_validate(&rule, &input, Some(&context)).unwrap();
 let output = transform(&rule, &input, Some(&context)).unwrap();
 println!("{}", serde_json::to_string(&output).unwrap());
 ```
