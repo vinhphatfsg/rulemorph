@@ -11,7 +11,7 @@ pub use error::{
 };
 pub use dto::{generate_dto, DtoError, DtoLanguage};
 pub use model::{Expr, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, RuleFile};
-pub use transform::transform;
+pub use transform::{preflight_validate, transform};
 pub use validator::{validate_rule_file, validate_rule_file_with_source};
 
 pub fn parse_rule_file(yaml: &str) -> Result<RuleFile, serde_yaml::Error> {

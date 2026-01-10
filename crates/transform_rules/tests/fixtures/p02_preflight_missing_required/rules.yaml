@@ -1,0 +1,8 @@
+version: 1
+input:
+  format: json
+mappings:
+  - target: "user.id"
+    source: "id"
+    type: "int"
+    required: true
