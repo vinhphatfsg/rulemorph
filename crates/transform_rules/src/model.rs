@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct RuleFile {
     pub version: u8,
@@ -11,13 +11,13 @@ pub struct RuleFile {
     pub mappings: Vec<Mapping>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct OutputSpec {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct InputSpec {
     pub format: InputFormat,
@@ -25,7 +25,7 @@ pub struct InputSpec {
     pub json: Option<JsonInput>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum InputFormat {
     Csv,
@@ -40,7 +40,7 @@ fn default_delimiter() -> String {
     ",".to_string()
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CsvInput {
     #[serde(default = "default_true")]
@@ -50,7 +50,7 @@ pub struct CsvInput {
     pub columns: Option<Vec<Column>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Column {
     pub name: String,
@@ -58,13 +58,13 @@ pub struct Column {
     pub value_type: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct JsonInput {
     pub records_path: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct Mapping {
     pub target: String,

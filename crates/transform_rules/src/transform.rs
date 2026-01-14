@@ -1,11 +1,41 @@
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 use chrono::offset::TimeZone;
 use csv::ReaderBuilder;
+use regex::Regex;
 use serde_json::{Map, Value as JsonValue};
+use std::sync::{Mutex, OnceLock};
 
+use crate::cache::LruCache;
 use crate::error::{TransformError, TransformErrorKind, TransformWarning};
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, RuleFile};
 use crate::path::{get_path, parse_path, PathToken};
+
+const REGEX_CACHE_CAPACITY: usize = 128;
+
+fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
+    static REGEX_CACHE: OnceLock<Mutex<LruCache<String, Regex>>> = OnceLock::new();
+    REGEX_CACHE.get_or_init(|| Mutex::new(LruCache::new(REGEX_CACHE_CAPACITY)))
+}
+
+fn cached_regex(pattern: &str, path: &str) -> Result<Regex, TransformError> {
+    let key = pattern.to_string();
+    if let Some(regex) = {
+        let mut cache = regex_cache().lock().unwrap_or_else(|err| err.into_inner());
+        cache.get_cloned(&key)
+    } {
+        return Ok(regex);
+    }
+
+    let regex = Regex::new(pattern).map_err(|_| {
+        TransformError::new(TransformErrorKind::ExprError, "regex pattern is invalid")
+            .with_path(path)
+    })?;
+    {
+        let mut cache = regex_cache().lock().unwrap_or_else(|err| err.into_inner());
+        cache.insert(key, regex.clone());
+    }
+    Ok(regex)
+}
 
 pub fn transform(
     rule: &RuleFile,
@@ -797,17 +827,11 @@ fn eval_replace(
         ReplaceMode::LiteralFirst => value.replacen(&pattern, &replacement, 1),
         ReplaceMode::LiteralAll => value.replace(&pattern, &replacement),
         ReplaceMode::RegexFirst => {
-            let regex = regex::Regex::new(&pattern).map_err(|_| {
-                TransformError::new(TransformErrorKind::ExprError, "regex pattern is invalid")
-                    .with_path(pattern_path)
-            })?;
+            let regex = cached_regex(&pattern, &pattern_path)?;
             regex.replace(&value, replacement.as_str()).to_string()
         }
         ReplaceMode::RegexAll => {
-            let regex = regex::Regex::new(&pattern).map_err(|_| {
-                TransformError::new(TransformErrorKind::ExprError, "regex pattern is invalid")
-                    .with_path(pattern_path)
-            })?;
+            let regex = cached_regex(&pattern, &pattern_path)?;
             regex.replace_all(&value, replacement.as_str()).to_string()
         }
     };
@@ -1572,10 +1596,7 @@ fn match_regex(
 ) -> Result<bool, TransformError> {
     let value = value_as_string(left, left_path)?;
     let pattern = value_as_string(right, right_path)?;
-    let regex = regex::Regex::new(&pattern).map_err(|_| {
-        TransformError::new(TransformErrorKind::ExprError, "regex pattern is invalid")
-            .with_path(right_path)
-    })?;
+    let regex = cached_regex(&pattern, right_path)?;
     Ok(regex.is_match(&value))
 }
 
