@@ -1,0 +1,64 @@
+{
+  "manifest_version": "0.3",
+  "name": "transform-rules-mcp",
+  "display_name": "Transform Rules MCP",
+  "version": "VERSION_PLACEHOLDER",
+  "description": "MCP server for CSV/JSON data transformation using YAML rules",
+  "author": {
+    "name": "vinhphatfsg",
+    "url": "https://github.com/vinhphatfsg"
+  },
+  "repository": "https://github.com/vinhphatfsg/transform-rules-rs",
+  "license": "MIT",
+  "server": {
+    "type": "binary",
+    "entry_point": "transform-rules-mcp"
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"]
+  },
+  "tools": [
+    {
+      "name": "transform",
+      "description": "Transform CSV/JSON data using YAML rules"
+    },
+    {
+      "name": "validate_rules",
+      "description": "Validate YAML rules"
+    },
+    {
+      "name": "generate_dto",
+      "description": "Generate DTOs from rules"
+    },
+    {
+      "name": "list_ops",
+      "description": "List supported operations"
+    },
+    {
+      "name": "analyze_input",
+      "description": "Analyze input data structure"
+    },
+    {
+      "name": "generate_rules_from_base",
+      "description": "Generate rules from existing targets"
+    },
+    {
+      "name": "generate_rules_from_dto",
+      "description": "Generate rules from DTO schema"
+    }
+  ],
+  "resources": [
+    {
+      "uri": "transform-rules://docs/rules_spec_en",
+      "description": "Rules specification (English)"
+    },
+    {
+      "uri": "transform-rules://docs/rules_spec_ja",
+      "description": "Rules specification (Japanese)"
+    },
+    {
+      "uri": "transform-rules://docs/readme",
+      "description": "README"
+    }
+  ]
+}

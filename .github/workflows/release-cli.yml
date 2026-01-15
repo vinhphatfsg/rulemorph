@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   build-and-upload:
@@ -36,32 +37,56 @@ jobs:
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME}"
           BIN_CLI="transform-rules"
           BIN_MCP="transform-rules-mcp"
           OUT_DIR="dist"
           STAGING="staging"
-          mkdir -p "$OUT_DIR" "$STAGING"
-          cp "target/${{ matrix.target }}/release/${BIN_CLI}" "$STAGING/"
-          cp "target/${{ matrix.target }}/release/${BIN_MCP}" "$STAGING/"
-          tar -C "$STAGING" -czf "${OUT_DIR}/${BIN_CLI}-${VERSION}-${{ matrix.target }}.tar.gz" "$BIN_CLI" "$BIN_MCP"
+          MCPB_DIR="mcpb-staging"
+          mkdir -p "$OUT_DIR" "$STAGING" "$MCPB_DIR"
+
+          # CLI package (tar.gz)
+          cp "target/${TARGET}/release/${BIN_CLI}" "$STAGING/"
+          cp "target/${TARGET}/release/${BIN_MCP}" "$STAGING/"
+          tar -C "$STAGING" -czf "${OUT_DIR}/${BIN_CLI}-${VERSION}-${TARGET}.tar.gz" "$BIN_CLI" "$BIN_MCP"
+
+          # MCPB package (.mcpb = ZIP)
+          VERSION_NUM="${VERSION#v}"
+          sed "s/VERSION_PLACEHOLDER/${VERSION_NUM}/" mcp/manifest.json.template > "$MCPB_DIR/manifest.json"
+          cp "target/${TARGET}/release/${BIN_MCP}" "$MCPB_DIR/"
+          cd "$MCPB_DIR"
+          zip -r "../${OUT_DIR}/${BIN_MCP}-${VERSION}-${TARGET}.mcpb" .
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        env:
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
         shell: pwsh
         run: |
-          $Version = $env:GITHUB_REF_NAME
           $BinCli = 'transform-rules.exe'
           $BinMcp = 'transform-rules-mcp.exe'
           $OutDir = 'dist'
           $Staging = 'staging'
+          $McpbDir = 'mcpb-staging'
           New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
           New-Item -ItemType Directory -Force -Path $Staging | Out-Null
-          Copy-Item "target\\${{ matrix.target }}\\release\\$BinCli" "$Staging\\$BinCli"
-          Copy-Item "target\\${{ matrix.target }}\\release\\$BinMcp" "$Staging\\$BinMcp"
-          Compress-Archive -Path "$Staging\\$BinCli","$Staging\\$BinMcp" -DestinationPath "$OutDir\\transform-rules-$Version-${{ matrix.target }}.zip"
+          New-Item -ItemType Directory -Force -Path $McpbDir | Out-Null
+
+          # CLI package (zip)
+          Copy-Item "target\$env:TARGET\release\$BinCli" "$Staging\$BinCli"
+          Copy-Item "target\$env:TARGET\release\$BinMcp" "$Staging\$BinMcp"
+          Compress-Archive -Path "$Staging\$BinCli","$Staging\$BinMcp" -DestinationPath "$OutDir\transform-rules-$env:VERSION-$env:TARGET.zip"
+
+          # MCPB package (.mcpb = ZIP)
+          $VersionNum = $env:VERSION.TrimStart('v')
+          (Get-Content mcp/manifest.json.template) -replace 'VERSION_PLACEHOLDER', $VersionNum | Set-Content "$McpbDir\manifest.json"
+          Copy-Item "target\$env:TARGET\release\$BinMcp" "$McpbDir\$BinMcp"
+          Compress-Archive -Path "$McpbDir\*" -DestinationPath "$OutDir\transform-rules-mcp-$env:VERSION-$env:TARGET.mcpb"
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
@@ -69,3 +94,133 @@ jobs:
           files: dist/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-mcp-registry:
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+      REPO_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download .mcpb files and compute SHA256
+        run: |
+          set -euo pipefail
+
+          download_with_retry() {
+            local url="$1"
+            local output="$2"
+            local max_attempts=10
+            local attempt=1
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt: Downloading $url..."
+              if curl -L -f -o "$output" "$url"; then
+                echo "Download successful"
+                return 0
+              fi
+              echo "Attempt $attempt failed, retrying in 5 seconds..."
+              sleep 5
+              attempt=$((attempt + 1))
+            done
+            echo "Failed to download after $max_attempts attempts"
+            return 1
+          }
+
+          for TARGET in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+            FILENAME="transform-rules-mcp-${VERSION}-${TARGET}.mcpb"
+            URL="${REPO_URL}/releases/download/${VERSION}/${FILENAME}"
+            download_with_retry "$URL" "$FILENAME"
+            SHA=$(sha256sum "$FILENAME" | cut -d' ' -f1)
+            TARGET_VAR=$(echo "$TARGET" | tr '-' '_')
+            echo "SHA256_${TARGET_VAR}=${SHA}" >> $GITHUB_ENV
+            echo "SHA256 for ${TARGET}: ${SHA}"
+          done
+
+      - name: Update server.json with version and SHA256
+        run: |
+          set -euo pipefail
+          VERSION_NUM="${VERSION#v}"
+          jq --arg v "$VERSION_NUM" \
+             --arg repo_url "$REPO_URL" \
+             --arg sha_arm "$SHA256_aarch64_apple_darwin" \
+             --arg sha_intel "$SHA256_x86_64_apple_darwin" \
+             --arg sha_linux "$SHA256_x86_64_unknown_linux_gnu" \
+             --arg sha_win "$SHA256_x86_64_pc_windows_msvc" \
+             '.version = $v |
+              .packages[0].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-aarch64-apple-darwin.mcpb" |
+              .packages[0].file_sha256 = $sha_arm |
+              .packages[1].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-x86_64-apple-darwin.mcpb" |
+              .packages[1].file_sha256 = $sha_intel |
+              .packages[2].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-x86_64-unknown-linux-gnu.mcpb" |
+              .packages[2].file_sha256 = $sha_linux |
+              .packages[3].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-x86_64-pc-windows-msvc.mcpb" |
+              .packages[3].file_sha256 = $sha_win' \
+             server.json > server.json.tmp
+          mv server.json.tmp server.json
+          echo "Updated server.json:"
+          cat server.json
+
+      - name: Download mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/download/latest/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          chmod +x mcp-publisher
+
+      - name: Publish to MCP Registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+  update-homebrew:
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
+      REPO_URL: https://github.com/${{ github.repository }}
+    steps:
+      - name: Download release assets and compute SHA256
+        run: |
+          set -euo pipefail
+
+          download_with_retry() {
+            local url="$1"
+            local output="$2"
+            local max_attempts=10
+            local attempt=1
+            while [ $attempt -le $max_attempts ]; do
+              echo "Attempt $attempt: Downloading $url..."
+              if curl -L -f -o "$output" "$url"; then
+                echo "Download successful"
+                return 0
+              fi
+              echo "Attempt $attempt failed, retrying in 5 seconds..."
+              sleep 5
+              attempt=$((attempt + 1))
+            done
+            echo "Failed to download after $max_attempts attempts"
+            return 1
+          }
+
+          for TARGET in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            FILENAME="transform-rules-${VERSION}-${TARGET}.tar.gz"
+            URL="${REPO_URL}/releases/download/${VERSION}/${FILENAME}"
+            download_with_retry "$URL" "$FILENAME"
+            SHA=$(sha256sum "$FILENAME" | cut -d' ' -f1)
+            TARGET_VAR=$(echo "$TARGET" | tr '-' '_')
+            echo "SHA256_${TARGET_VAR}=${SHA}" >> $GITHUB_ENV
+            echo "SHA256 for ${TARGET}: ${SHA}"
+          done
+
+      - name: Trigger Homebrew formula update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.TAP_REPO_TOKEN }}
+          repository: vinhphatfsg/homebrew-tap
+          event-type: update-formula
+          client-payload: |
+            {
+              "version": "${{ github.ref_name }}",
+              "sha256_arm": "${{ env.SHA256_aarch64_apple_darwin }}",
+              "sha256_intel": "${{ env.SHA256_x86_64_apple_darwin }}",
+              "sha256_linux": "${{ env.SHA256_x86_64_unknown_linux_gnu }}"
+            }

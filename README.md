@@ -26,7 +26,14 @@ A small Rust library and CLI to transform CSV/JSON data using YAML rules.
 
 ## Installation
 
-Prerequisites: a Rust toolchain (via rustup).
+### Homebrew (macOS/Linux)
+
+```bash
+brew tap vinhphatfsg/tap
+brew install transform-rules
+```
+
+This installs both `transform-rules` (CLI) and `transform-rules-mcp` (MCP server).
 
 ### Download prebuilt binaries (GitHub Releases)
 1) Open the release page and download the asset for your OS/arch:
@@ -72,7 +79,7 @@ Download from GitHub Releases (macOS/Linux example):
 TAG=v0.1.0
 TARGET=x86_64-unknown-linux-gnu # set to your OS/arch
 curl -L -o transform-rules-${TAG}-${TARGET}.tar.gz \\
-  https://github.com/VinhPhat-Projects/transform-rules-rs/releases/download/${TAG}/transform-rules-${TAG}-${TARGET}.tar.gz
+  https://github.com/vinhphatfsg/transform-rules-rs/releases/download/${TAG}/transform-rules-${TAG}-${TARGET}.tar.gz
 tar -xzf transform-rules-${TAG}-${TARGET}.tar.gz
 chmod +x transform-rules-mcp
 ```

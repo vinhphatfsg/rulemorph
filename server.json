@@ -1,0 +1,86 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.vinhphatfsg/transform-rules-mcp",
+  "title": "Transform Rules MCP Server",
+  "description": "MCP server for CSV/JSON data transformation using YAML rules",
+  "repository": "https://github.com/vinhphatfsg/transform-rules-rs",
+  "version": "0.1.3",
+  "packages": [
+    {
+      "registry_type": "mcpb",
+      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-aarch64-apple-darwin.mcpb",
+      "file_sha256": "SHA256_PLACEHOLDER",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registry_type": "mcpb",
+      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-x86_64-apple-darwin.mcpb",
+      "file_sha256": "SHA256_PLACEHOLDER",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registry_type": "mcpb",
+      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-x86_64-unknown-linux-gnu.mcpb",
+      "file_sha256": "SHA256_PLACEHOLDER",
+      "transport": {
+        "type": "stdio"
+      }
+    },
+    {
+      "registry_type": "mcpb",
+      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-x86_64-pc-windows-msvc.mcpb",
+      "file_sha256": "SHA256_PLACEHOLDER",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
+  "tools": [
+    {
+      "name": "transform",
+      "description": "Transform CSV/JSON data using YAML rules"
+    },
+    {
+      "name": "validate_rules",
+      "description": "Validate YAML rules"
+    },
+    {
+      "name": "generate_dto",
+      "description": "Generate DTOs from rules"
+    },
+    {
+      "name": "list_ops",
+      "description": "List supported operations"
+    },
+    {
+      "name": "analyze_input",
+      "description": "Analyze input data structure"
+    },
+    {
+      "name": "generate_rules_from_base",
+      "description": "Generate rules from existing targets"
+    },
+    {
+      "name": "generate_rules_from_dto",
+      "description": "Generate rules from DTO schema"
+    }
+  ],
+  "resources": [
+    {
+      "uri": "transform-rules://docs/rules_spec_en",
+      "description": "Rules specification (English)"
+    },
+    {
+      "uri": "transform-rules://docs/rules_spec_ja",
+      "description": "Rules specification (Japanese)"
+    },
+    {
+      "uri": "transform-rules://docs/readme",
+      "description": "README"
+    }
+  ]
+}
