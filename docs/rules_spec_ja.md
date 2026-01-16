@@ -18,6 +18,10 @@ input:
 output:
   name: "Record"
 
+record_when:
+  op: ">="
+  args: [ { ref: "input.score" }, 10 ]
+
 mappings:
   - target: "user.id"
     source: "id"
@@ -35,6 +39,7 @@ mappings:
 - `input`（必須）: 入力形式と設定
 - `mappings`（必須）: 変換ルール（上から順に評価）
 - `output`（任意）: メタ情報（DTO 生成名など）
+- `record_when`（任意）: レコードを出力するか判定する boolean 式
 
 ## Input
 
@@ -74,6 +79,16 @@ input:
 - 既定は「変換結果の JSON 配列」
 - CLI の `transform --ndjson` 指定時は 1 レコード 1 行の NDJSON を逐次出力
 - `records_path` が object を指す場合は 1 レコードのみ出力
+
+## レコードフィルタ（`record_when`）
+
+`record_when` はレコードごとに 1 回評価される boolean 式です。
+`false` の場合、そのレコードはスキップされ出力されません。
+評価エラーまたは boolean 以外の値になった場合はレコードをスキップし、warning を出力します。
+
+- `record_when` の式は `when` と同じ構文
+- 参照できるのは `input.*` と `context.*`
+- `out.*` は出力前のため参照不可
 
 ## Mapping
 
@@ -266,6 +281,7 @@ expr:
 
 ## 実行時セマンティクス
 
+- `record_when` は mapping の前に評価し、`false`/評価エラーならレコードをスキップ
 - `mappings` は上から順に評価し、`out.*` は過去に生成した値のみ参照可能
 - 未来の `out.*` 参照はバリデーションエラー（実行時は `missing` になりうる）
 - `source/value/expr` が `missing` の場合は `default/required` の規則を適用

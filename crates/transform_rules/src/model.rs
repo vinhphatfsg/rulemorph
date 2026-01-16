@@ -8,6 +8,7 @@ pub struct RuleFile {
     pub input: InputSpec,
     #[serde(default)]
     pub output: Option<OutputSpec>,
+    pub record_when: Option<Expr>,
     pub mappings: Vec<Mapping>,
 }
 

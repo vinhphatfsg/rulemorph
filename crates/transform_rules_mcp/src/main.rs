@@ -4373,7 +4373,11 @@ fn transform_to_ndjson(
             errors: Some(vec![transform_error_json(&err)]),
         })?;
         warnings.extend(item.warnings);
-        let line = serde_json::to_string(&item.output).map_err(|err| {
+        let output_value = match item.output {
+            Some(output_value) => output_value,
+            None => continue,
+        };
+        let line = serde_json::to_string(&output_value).map_err(|err| {
             let message = format!("failed to serialize output JSON: {}", err);
             CallError::Tool {
                 message: message.clone(),
@@ -4395,6 +4399,9 @@ struct RuleWarning {
 
 fn collect_rule_warnings(rule: &RuleFile) -> Vec<RuleWarning> {
     let mut warnings = Vec::new();
+    if let Some(expr) = &rule.record_when {
+        collect_expr_warnings(expr, "record_when", &mut warnings);
+    }
     for (index, mapping) in rule.mappings.iter().enumerate() {
         let base_path = format!("mappings[{}]", index);
         if let Some(expr) = &mapping.expr {

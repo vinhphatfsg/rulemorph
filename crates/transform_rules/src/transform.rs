@@ -55,7 +55,7 @@ pub fn preflight_validate(
 
 #[derive(Debug)]
 pub struct TransformStreamItem {
-    pub output: JsonValue,
+    pub output: Option<JsonValue>,
     pub warnings: Vec<TransformWarning>,
 }
 
@@ -90,24 +90,41 @@ impl<'a> Iterator for TransformStream<'a> {
             return None;
         }
 
-        let record = match self.records.next() {
-            None => {
-                self.done = true;
-                return None;
-            }
-            Some(Ok(record)) => record,
-            Some(Err(err)) => {
-                self.done = true;
-                return Some(Err(err));
-            }
-        };
+        loop {
+            let record = match self.records.next() {
+                None => {
+                    self.done = true;
+                    return None;
+                }
+                Some(Ok(record)) => record,
+                Some(Err(err)) => {
+                    self.done = true;
+                    return Some(Err(err));
+                }
+            };
 
-        let mut warnings = Vec::new();
-        match apply_mappings(self.rule, &record, self.context, &mut warnings) {
-            Ok(output) => Some(Ok(TransformStreamItem { output, warnings })),
-            Err(err) => {
-                self.done = true;
-                Some(Err(err))
+            let mut warnings = Vec::new();
+            if !eval_record_when(self.rule, &record, self.context, &mut warnings) {
+                if warnings.is_empty() {
+                    continue;
+                }
+                return Some(Ok(TransformStreamItem {
+                    output: None,
+                    warnings,
+                }));
+            }
+
+            match apply_mappings(self.rule, &record, self.context, &mut warnings) {
+                Ok(output) => {
+                    return Some(Ok(TransformStreamItem {
+                        output: Some(output),
+                        warnings,
+                    }))
+                }
+                Err(err) => {
+                    self.done = true;
+                    return Some(Err(err));
+                }
             }
         }
     }
@@ -132,7 +149,9 @@ pub fn transform_with_warnings(
     for item in stream {
         let item = item?;
         warnings.extend(item.warnings);
-        output_records.push(item.output);
+        if let Some(output) = item.output {
+            output_records.push(output);
+        }
     }
 
     Ok((JsonValue::Array(output_records), warnings))
@@ -419,7 +438,8 @@ fn eval_when(
         None => return true,
     };
 
-    match eval_when_result(expr, record, context, out, mapping_path) {
+    let when_path = format!("{}.when", mapping_path);
+    match eval_bool_expr(expr, record, context, out, &when_path) {
         Ok(flag) => flag,
         Err(err) => {
             warnings.push(err.into());
@@ -428,29 +448,49 @@ fn eval_when(
     }
 }
 
-fn eval_when_result(
+fn eval_record_when(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    warnings: &mut Vec<TransformWarning>,
+) -> bool {
+    let expr = match &rule.record_when {
+        Some(expr) => expr,
+        None => return true,
+    };
+
+    let empty_out = JsonValue::Object(Map::new());
+    match eval_bool_expr(expr, record, context, &empty_out, "record_when") {
+        Ok(flag) => flag,
+        Err(err) => {
+            warnings.push(err.into());
+            false
+        }
+    }
+}
+
+fn eval_bool_expr(
     expr: &Expr,
     record: &JsonValue,
     context: Option<&JsonValue>,
     out: &JsonValue,
-    mapping_path: &str,
+    path: &str,
 ) -> Result<bool, TransformError> {
-    let when_path = format!("{}.when", mapping_path);
-    let value = eval_expr(expr, record, context, out, &when_path)?;
+    let value = eval_expr(expr, record, context, out, path)?;
     let value = match value {
         EvalValue::Missing => JsonValue::Null,
         EvalValue::Value(value) => value,
     };
     match value {
         JsonValue::Bool(flag) => Ok(flag),
-        _ => Err(when_type_error(&when_path)),
+        _ => Err(when_type_error(path)),
     }
 }
 
 fn when_type_error(path: &str) -> TransformError {
     TransformError::new(
         TransformErrorKind::ExprError,
-        "when must evaluate to boolean",
+        "when/record_when must evaluate to boolean",
     )
     .with_path(path)
 }

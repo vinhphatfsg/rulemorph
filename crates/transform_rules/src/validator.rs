@@ -19,6 +19,7 @@ fn validate_rule_file_with_locator(rule: &RuleFile, locator: Option<&YamlLocator
 
     validate_version(rule, &mut ctx);
     validate_input(rule, &mut ctx);
+    validate_record_when(rule, &mut ctx);
     validate_mappings(rule, &mut ctx);
 
     ctx.finish()
@@ -80,6 +81,18 @@ fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
             }
         }
     }
+}
+
+fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    let expr = match rule.record_when.as_ref() {
+        Some(expr) => expr,
+        None => return,
+    };
+
+    let base_path = "record_when";
+    let produced_targets = HashSet::new();
+    validate_expr(expr, base_path, &produced_targets, ctx);
+    validate_when_expr(expr, base_path, ctx);
 }
 
 fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
@@ -248,7 +261,7 @@ fn validate_when_expr(expr: &Expr, base_path: &str, ctx: &mut ValidationCtx<'_>)
     if matches!(bool_expr_kind(expr), BoolExprKind::NotBool) {
         ctx.push(
             ErrorCode::InvalidWhenType,
-            "when must evaluate to boolean",
+            "when/record_when must evaluate to boolean",
             base_path,
         );
     }

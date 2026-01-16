@@ -74,6 +74,7 @@ fn valid_rules_should_pass_validation() {
         "t11_when_logical_ops",
         "t13_expr_extended",
         "t14_expr_chain",
+        "t15_record_when",
     ];
 
     for case in cases {
@@ -97,6 +98,7 @@ fn invalid_rules_should_match_expected_errors() {
         "v07_invalid_lookup_args",
         "v08_invalid_path",
         "v09_invalid_when_type",
+        "v10_invalid_record_when_type",
     ];
 
     for case in cases {

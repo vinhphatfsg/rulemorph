@@ -176,6 +176,38 @@ transform-rules transform --rules rules.yaml --input input.json --ndjson
 transform-rules transform --rules rules.yaml --input input.csv --format csv
 ```
 
+### Record filtering
+`rules.yaml`
+```yaml
+version: 1
+input:
+  format: json
+  json: {}
+record_when:
+  op: "~="
+  args:
+    - { ref: "input.name" }
+    - "^b.{3,}$"
+mappings:
+  - target: "name"
+    source: "name"
+```
+
+`input.json`
+```json
+[
+  { "name": "aaa" },
+  { "name": "bbbb" }
+]
+```
+
+`output.json`
+```json
+[
+  { "name": "bbbb" }
+]
+```
+
 ### lookup example
 `rules.yaml`
 ```yaml

@@ -18,6 +18,10 @@ input:
 output:
   name: "Record"
 
+record_when:
+  op: ">="
+  args: [ { ref: "input.score" }, 10 ]
+
 mappings:
   - target: "user.id"
     source: "id"
@@ -35,6 +39,7 @@ mappings:
 - `input` (required): input format and options
 - `mappings` (required): transformation rules (evaluated in order)
 - `output` (optional): metadata (e.g., DTO name)
+- `record_when` (optional): boolean expression to decide if the record is included
 
 ## Input
 
@@ -74,6 +79,16 @@ input:
 - Default output is a JSON array of records
 - CLI `transform --ndjson` outputs one JSON object per line (streaming)
 - If `records_path` points to an object, a single record is produced
+
+## Record filter (`record_when`)
+
+`record_when` is an optional boolean expression evaluated once per record before any mappings.
+If it evaluates to `false`, the record is skipped (no output).
+If evaluation fails or returns a non-boolean value, the record is skipped and a warning is emitted.
+
+- `record_when` uses the same expression syntax as `when`
+- `record_when` may reference `input.*` and `context.*`
+- `out.*` references are invalid because outputs do not exist yet
 
 ## Mapping
 
@@ -266,6 +281,7 @@ expr:
 
 ## Runtime semantics
 
+- `record_when` is evaluated before any mappings; if `false` or error, the record is skipped
 - `mappings` are evaluated top to bottom; `out.*` can only reference previously produced values
 - forward `out.*` references are validation errors (runtime may see them as `missing`)
 - if `source/value/expr` is `missing`, apply `default/required` rules
