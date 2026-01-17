@@ -3,6 +3,8 @@ use chrono::offset::TimeZone;
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde_json::{Map, Value as JsonValue};
+use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::{Mutex, OnceLock};
 
 use crate::cache::LruCache;
@@ -381,7 +383,14 @@ fn eval_mapping(
     } else if let Some(literal) = &mapping.value {
         EvalValue::Value(literal.clone())
     } else if let Some(expr) = &mapping.expr {
-        eval_expr(expr, record, context, out, &format!("{}.expr", mapping_path))?
+        eval_expr(
+            expr,
+            record,
+            context,
+            out,
+            &format!("{}.expr", mapping_path),
+            None,
+        )?
     } else {
         return Err(TransformError::new(
             TransformErrorKind::InvalidInput,
@@ -476,7 +485,7 @@ fn eval_bool_expr(
     out: &JsonValue,
     path: &str,
 ) -> Result<bool, TransformError> {
-    let value = eval_expr(expr, record, context, out, path)?;
+    let value = eval_expr(expr, record, context, out, path, None)?;
     let value = match value {
         EvalValue::Missing => JsonValue::Null,
         EvalValue::Value(value) => value,
@@ -513,6 +522,13 @@ fn resolve_source(
         Namespace::Input => Some(record),
         Namespace::Context => context,
         Namespace::Out => Some(out),
+        Namespace::Item | Namespace::Acc => {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidRef,
+                "ref namespace must be input|context|out",
+            )
+            .with_path(format!("{}.source", mapping_path)))
+        }
     };
 
     match target.and_then(|value| get_path(value, &tokens)) {
@@ -527,12 +543,13 @@ fn eval_expr(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     match expr {
         Expr::Literal(value) => Ok(EvalValue::Value(value.clone())),
-        Expr::Ref(expr_ref) => eval_ref(expr_ref, record, context, out, base_path),
-        Expr::Op(expr_op) => eval_op(expr_op, record, context, out, base_path, None),
-        Expr::Chain(expr_chain) => eval_chain(expr_chain, record, context, out, base_path),
+        Expr::Ref(expr_ref) => eval_ref(expr_ref, record, context, out, base_path, locals),
+        Expr::Op(expr_op) => eval_op(expr_op, record, context, out, base_path, None, locals),
+        Expr::Chain(expr_chain) => eval_chain(expr_chain, record, context, out, base_path, locals),
     }
 }
 
@@ -542,6 +559,7 @@ fn eval_chain(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     if expr_chain.chain.is_empty() {
         return Err(TransformError::new(
@@ -552,7 +570,8 @@ fn eval_chain(
     }
 
     let first_path = format!("{}.chain[0]", base_path);
-    let mut current = eval_expr(&expr_chain.chain[0], record, context, out, &first_path)?;
+    let mut current =
+        eval_expr(&expr_chain.chain[0], record, context, out, &first_path, locals)?;
 
     for (index, step) in expr_chain.chain.iter().enumerate().skip(1) {
         let step_path = format!("{}.chain[{}]", base_path, index);
@@ -568,7 +587,15 @@ fn eval_chain(
         };
 
         let injected = current.clone();
-        current = eval_op(expr_op, record, context, out, &step_path, Some(&injected))?;
+        current = eval_op(
+            expr_op,
+            record,
+            context,
+            out,
+            &step_path,
+            Some(&injected),
+            locals,
+        )?;
     }
 
     Ok(current)
@@ -580,6 +607,7 @@ fn eval_ref(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let (namespace, path) = parse_ref(&expr_ref.ref_path).map_err(|err| err.with_path(base_path))?;
     let tokens =
@@ -588,6 +616,59 @@ fn eval_ref(
         Namespace::Input => Some(record),
         Namespace::Context => context,
         Namespace::Out => Some(out),
+        Namespace::Item => {
+            let item = locals.and_then(|locals| locals.item).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "item is only available within array ops",
+                )
+                .with_path(base_path)
+            })?;
+            let (root, rest) = match tokens.split_first() {
+                Some((PathToken::Key(key), rest)) if key == "value" => (item.value, rest),
+                Some((PathToken::Key(key), rest)) if key == "index" => {
+                    if !rest.is_empty() {
+                        return Ok(EvalValue::Missing);
+                    }
+                    let value = JsonValue::Number(serde_json::Number::from(item.index as u64));
+                    return Ok(EvalValue::Value(value));
+                }
+                _ => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "item ref must start with value or index",
+                    )
+                    .with_path(base_path))
+                }
+            };
+            return match get_path(root, rest) {
+                Some(value) => Ok(EvalValue::Value(value.clone())),
+                None => Ok(EvalValue::Missing),
+            };
+        }
+        Namespace::Acc => {
+            let acc = locals.and_then(|locals| locals.acc).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "acc is only available within reduce/fold ops",
+                )
+                .with_path(base_path)
+            })?;
+            let (root, rest) = match tokens.split_first() {
+                Some((PathToken::Key(key), rest)) if key == "value" => (acc, rest),
+                _ => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "acc ref must start with value",
+                    )
+                    .with_path(base_path))
+                }
+            };
+            return match get_path(root, rest) {
+                Some(value) => Ok(EvalValue::Value(value.clone())),
+                None => Ok(EvalValue::Missing),
+            };
+        }
     };
 
     match target.and_then(|value| get_path(value, &tokens)) {
@@ -603,6 +684,7 @@ fn eval_op(
     out: &JsonValue,
     base_path: &str,
     injected: Option<&EvalValue>,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(&expr_op.args, injected);
     if total_len == 0 {
@@ -619,7 +701,7 @@ fn eval_op(
             for index in 0..total_len {
                 let arg_path = format!("{}.args[{}]", base_path, index);
                 let value =
-                    eval_expr_at_index(index, &expr_op.args, injected, record, context, out, base_path)?;
+                    eval_expr_at_index(index, &expr_op.args, injected, record, context, out, base_path, locals)?;
                 match value {
                     EvalValue::Missing => return Ok(EvalValue::Missing),
                     EvalValue::Value(value) => {
@@ -640,7 +722,7 @@ fn eval_op(
         "coalesce" => {
             for index in 0..total_len {
                 let value =
-                    eval_expr_at_index(index, &expr_op.args, injected, record, context, out, base_path)?;
+                    eval_expr_at_index(index, &expr_op.args, injected, record, context, out, base_path, locals)?;
                 match value {
                     EvalValue::Missing => continue,
                     EvalValue::Value(value) => {
@@ -660,6 +742,7 @@ fn eval_op(
             context,
             out,
             base_path,
+            locals,
             |value, path| value_to_string(value, path).map(JsonValue::String),
         ),
         "trim" => eval_unary_string_op(
@@ -669,6 +752,7 @@ fn eval_op(
             context,
             out,
             base_path,
+            locals,
             |value, path| {
                 let s = value_as_string(value, path)?;
                 Ok(JsonValue::String(s.trim().to_string()))
@@ -681,6 +765,7 @@ fn eval_op(
             context,
             out,
             base_path,
+            locals,
             |value, path| {
                 let s = value_as_string(value, path)?;
                 Ok(JsonValue::String(s.to_lowercase()))
@@ -693,31 +778,59 @@ fn eval_op(
             context,
             out,
             base_path,
+            locals,
             |value, path| {
                 let s = value_as_string(value, path)?;
                 Ok(JsonValue::String(s.to_uppercase()))
             },
         ),
-        "replace" => eval_replace(&expr_op.args, injected, record, context, out, base_path),
-        "split" => eval_split(&expr_op.args, injected, record, context, out, base_path),
-        "pad_start" => eval_pad(&expr_op.args, injected, record, context, out, base_path, true),
-        "pad_end" => eval_pad(&expr_op.args, injected, record, context, out, base_path, false),
-        "lookup" => eval_lookup(&expr_op.args, injected, record, context, out, base_path, false),
+        "replace" => eval_replace(&expr_op.args, injected, record, context, out, base_path, locals),
+        "split" => eval_split(&expr_op.args, injected, record, context, out, base_path, locals),
+        "pad_start" => eval_pad(&expr_op.args, injected, record, context, out, base_path, true, locals),
+        "pad_end" => eval_pad(&expr_op.args, injected, record, context, out, base_path, false, locals),
+        "lookup" => eval_lookup(&expr_op.args, injected, record, context, out, base_path, false, locals),
         "lookup_first" => {
-            eval_lookup(&expr_op.args, injected, record, context, out, base_path, true)
+            eval_lookup(&expr_op.args, injected, record, context, out, base_path, true, locals)
         }
-        "+" | "-" | "*" | "/" => eval_numeric_op(expr_op, injected, record, context, out, base_path),
-        "round" => eval_round(&expr_op.args, injected, record, context, out, base_path),
-        "to_base" => eval_to_base(&expr_op.args, injected, record, context, out, base_path),
-        "date_format" => eval_date_format(&expr_op.args, injected, record, context, out, base_path),
+        "map" => eval_array_map(&expr_op.args, injected, record, context, out, base_path, locals),
+        "filter" => eval_array_filter(&expr_op.args, injected, record, context, out, base_path, locals),
+        "flat_map" => eval_array_flat_map(&expr_op.args, injected, record, context, out, base_path, locals),
+        "flatten" => eval_array_flatten(&expr_op.args, injected, record, context, out, base_path, locals),
+        "take" => eval_array_take(&expr_op.args, injected, record, context, out, base_path, locals),
+        "drop" => eval_array_drop(&expr_op.args, injected, record, context, out, base_path, locals),
+        "slice" => eval_array_slice(&expr_op.args, injected, record, context, out, base_path, locals),
+        "chunk" => eval_array_chunk(&expr_op.args, injected, record, context, out, base_path, locals),
+        "zip" => eval_array_zip(&expr_op.args, injected, record, context, out, base_path, locals),
+        "zip_with" => eval_array_zip_with(&expr_op.args, injected, record, context, out, base_path, locals),
+        "unzip" => eval_array_unzip(&expr_op.args, injected, record, context, out, base_path, locals),
+        "group_by" => eval_array_group_by(&expr_op.args, injected, record, context, out, base_path, locals),
+        "key_by" => eval_array_key_by(&expr_op.args, injected, record, context, out, base_path, locals),
+        "partition" => eval_array_partition(&expr_op.args, injected, record, context, out, base_path, locals),
+        "unique" => eval_array_unique(&expr_op.args, injected, record, context, out, base_path, locals),
+        "distinct_by" => eval_array_distinct_by(&expr_op.args, injected, record, context, out, base_path, locals),
+        "sort_by" => eval_array_sort_by(&expr_op.args, injected, record, context, out, base_path, locals),
+        "find" => eval_array_find(&expr_op.args, injected, record, context, out, base_path, locals),
+        "find_index" => eval_array_find_index(&expr_op.args, injected, record, context, out, base_path, locals),
+        "index_of" => eval_array_index_of(&expr_op.args, injected, record, context, out, base_path, locals),
+        "contains" => eval_array_contains(&expr_op.args, injected, record, context, out, base_path, locals),
+        "sum" => eval_array_sum(&expr_op.args, injected, record, context, out, base_path, locals),
+        "avg" => eval_array_avg(&expr_op.args, injected, record, context, out, base_path, locals),
+        "min" => eval_array_min(&expr_op.args, injected, record, context, out, base_path, locals),
+        "max" => eval_array_max(&expr_op.args, injected, record, context, out, base_path, locals),
+        "reduce" => eval_array_reduce(&expr_op.args, injected, record, context, out, base_path, locals),
+        "fold" => eval_array_fold(&expr_op.args, injected, record, context, out, base_path, locals),
+        "+" | "-" | "*" | "/" => eval_numeric_op(expr_op, injected, record, context, out, base_path, locals),
+        "round" => eval_round(&expr_op.args, injected, record, context, out, base_path, locals),
+        "to_base" => eval_to_base(&expr_op.args, injected, record, context, out, base_path, locals),
+        "date_format" => eval_date_format(&expr_op.args, injected, record, context, out, base_path, locals),
         "to_unixtime" => {
-            eval_to_unixtime(&expr_op.args, injected, record, context, out, base_path)
+            eval_to_unixtime(&expr_op.args, injected, record, context, out, base_path, locals)
         }
-        "and" => eval_bool_and_or(&expr_op.args, injected, record, context, out, base_path, true),
-        "or" => eval_bool_and_or(&expr_op.args, injected, record, context, out, base_path, false),
-        "not" => eval_bool_not(&expr_op.args, injected, record, context, out, base_path),
+        "and" => eval_bool_and_or(&expr_op.args, injected, record, context, out, base_path, true, locals),
+        "or" => eval_bool_and_or(&expr_op.args, injected, record, context, out, base_path, false, locals),
+        "not" => eval_bool_not(&expr_op.args, injected, record, context, out, base_path, locals),
         "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
-            eval_compare(expr_op, injected, record, context, out, base_path)
+            eval_compare(expr_op, injected, record, context, out, base_path, locals)
         }
         _ => Err(TransformError::new(
             TransformErrorKind::ExprError,
@@ -734,6 +847,7 @@ fn eval_unary_string_op<F>(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
     op: F,
 ) -> Result<EvalValue, TransformError>
 where
@@ -749,7 +863,8 @@ where
     }
 
     let arg_path = format!("{}.args[0]", base_path);
-    let value = eval_expr_at_index(0, args, injected, record, context, out, base_path)?;
+    let value =
+        eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
     match value {
         EvalValue::Missing => Ok(EvalValue::Missing),
         EvalValue::Value(value) => {
@@ -793,6 +908,7 @@ fn eval_expr_at_index(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     if let Some(injected) = injected {
         if index == 0 {
@@ -806,7 +922,7 @@ fn eval_expr_at_index(
             .with_path(format!("{}.args[{}]", base_path, index))
         })?;
         let arg_path = format!("{}.args[{}]", base_path, index);
-        return eval_expr(arg, record, context, out, &arg_path);
+        return eval_expr(arg, record, context, out, &arg_path, locals);
     }
 
     let arg = args.get(index).ok_or_else(|| {
@@ -817,7 +933,7 @@ fn eval_expr_at_index(
         .with_path(format!("{}.args[{}]", base_path, index))
     })?;
     let arg_path = format!("{}.args[{}]", base_path, index);
-    eval_expr(arg, record, context, out, &arg_path)
+    eval_expr(arg, record, context, out, &arg_path, locals)
 }
 
 fn eval_arg_value_at(
@@ -828,8 +944,9 @@ fn eval_arg_value_at(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<Option<JsonValue>, TransformError> {
-    match eval_expr_at_index(index, args, injected, record, context, out, base_path)? {
+    match eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)? {
         EvalValue::Missing => Ok(None),
         EvalValue::Value(value) => Ok(Some(value)),
     }
@@ -843,8 +960,9 @@ fn eval_arg_string_at(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<Option<String>, TransformError> {
-    let value = match eval_arg_value_at(index, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_value_at(index, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(None),
         Some(value) => value,
     };
@@ -867,8 +985,9 @@ fn eval_expr_value_or_null_at(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<JsonValue, TransformError> {
-    match eval_expr_at_index(index, args, injected, record, context, out, base_path)? {
+    match eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)? {
         EvalValue::Missing => Ok(JsonValue::Null),
         EvalValue::Value(value) => Ok(value),
     }
@@ -902,6 +1021,7 @@ fn eval_replace(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if !(3..=4).contains(&total_len) {
@@ -912,15 +1032,15 @@ fn eval_replace(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
-    let pattern = match eval_arg_string_at(1, args, injected, record, context, out, base_path)? {
+    let pattern = match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
-    let replacement = match eval_arg_string_at(2, args, injected, record, context, out, base_path)?
+    let replacement = match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)?
     {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
@@ -929,7 +1049,7 @@ fn eval_replace(
 
     let mode = if total_len == 4 {
         let mode_path = format!("{}.args[3]", base_path);
-        let mode_value = match eval_arg_string_at(3, args, injected, record, context, out, base_path)?
+        let mode_value = match eval_arg_string_at(3, args, injected, record, context, out, base_path, locals)?
         {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
@@ -962,6 +1082,7 @@ fn eval_split(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if total_len != 2 {
@@ -972,11 +1093,11 @@ fn eval_split(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
-    let delimiter = match eval_arg_string_at(1, args, injected, record, context, out, base_path)? {
+    let delimiter = match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
@@ -1006,6 +1127,7 @@ fn eval_pad(
     out: &JsonValue,
     base_path: &str,
     pad_start: bool,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if !(2..=3).contains(&total_len) {
@@ -1016,12 +1138,12 @@ fn eval_pad(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
 
-    let length_value = match eval_arg_value_at(1, args, injected, record, context, out, base_path)?
+    let length_value = match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)?
     {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
@@ -1048,7 +1170,7 @@ fn eval_pad(
     }
 
     let pad_string = if total_len == 3 {
-        match eval_arg_string_at(2, args, injected, record, context, out, base_path)? {
+        match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         }
@@ -1094,6 +1216,7 @@ fn eval_numeric_op(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let op = expr_op.op.as_str();
     let args = &expr_op.args;
@@ -1118,7 +1241,7 @@ fn eval_numeric_op(
     let mut result: f64 = 0.0;
     for index in 0..total_len {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        let value = match eval_arg_value_at(index, args, injected, record, context, out, base_path)?
+        let value = match eval_arg_value_at(index, args, injected, record, context, out, base_path, locals)?
         {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
@@ -1154,6 +1277,7 @@ fn eval_round(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if !(1..=2).contains(&total_len) {
@@ -1164,7 +1288,7 @@ fn eval_round(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
@@ -1181,7 +1305,7 @@ fn eval_round(
     let scale = if total_len == 2 {
         let scale_path = format!("{}.args[1]", base_path);
         let scale_value =
-            match eval_arg_value_at(1, args, injected, record, context, out, base_path)? {
+            match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         };
@@ -1233,6 +1357,7 @@ fn eval_to_base(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if total_len != 2 {
@@ -1243,11 +1368,11 @@ fn eval_to_base(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
-    let base_value = match eval_arg_value_at(1, args, injected, record, context, out, base_path)?
+    let base_value = match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)?
     {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
@@ -1290,6 +1415,7 @@ fn eval_date_format(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if !(2..=4).contains(&total_len) {
@@ -1300,12 +1426,12 @@ fn eval_date_format(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
     let output_format =
-        match eval_arg_string_at(1, args, injected, record, context, out, base_path)?
+        match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)?
     {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
@@ -1317,7 +1443,7 @@ fn eval_date_format(
     if total_len >= 3 {
         let input_path = format!("{}.args[2]", base_path);
         let input_value =
-            match eval_arg_value_at(2, args, injected, record, context, out, base_path)? {
+            match eval_arg_value_at(2, args, injected, record, context, out, base_path, locals)? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         };
@@ -1343,7 +1469,7 @@ fn eval_date_format(
     if total_len == 4 {
         let tz_path = format!("{}.args[3]", base_path);
         let tz_value =
-            match eval_arg_string_at(3, args, injected, record, context, out, base_path)? {
+            match eval_arg_string_at(3, args, injected, record, context, out, base_path, locals)? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         };
@@ -1366,6 +1492,7 @@ fn eval_to_unixtime(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if !(1..=3).contains(&total_len) {
@@ -1376,7 +1503,7 @@ fn eval_to_unixtime(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path)? {
+    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
@@ -1388,7 +1515,7 @@ fn eval_to_unixtime(
     if total_len >= 2 {
         let arg_path = format!("{}.args[1]", base_path);
         let arg_value =
-            match eval_arg_string_at(1, args, injected, record, context, out, base_path)? {
+            match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         };
@@ -1417,7 +1544,7 @@ fn eval_to_unixtime(
     if total_len == 3 {
         let tz_path = format!("{}.args[2]", base_path);
         let tz_value =
-            match eval_arg_string_at(2, args, injected, record, context, out, base_path)? {
+            match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         };
@@ -1446,6 +1573,7 @@ fn eval_lookup(
     out: &JsonValue,
     base_path: &str,
     first_only: bool,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if !(3..=4).contains(&total_len) {
@@ -1458,7 +1586,7 @@ fn eval_lookup(
 
     let collection_path = format!("{}.args[0]", base_path);
     let collection =
-        match eval_expr_at_index(0, args, injected, record, context, out, base_path)? {
+        match eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)? {
         EvalValue::Missing => return Ok(EvalValue::Missing),
         EvalValue::Value(value) => value,
     };
@@ -1539,7 +1667,7 @@ fn eval_lookup(
 
     let match_path = format!("{}.args[2]", base_path);
     let match_value =
-        match eval_expr_at_index(2, args, injected, record, context, out, base_path)? {
+        match eval_expr_at_index(2, args, injected, record, context, out, base_path, locals)? {
         EvalValue::Missing => return Ok(EvalValue::Missing),
         EvalValue::Value(value) => value,
     };
@@ -1586,6 +1714,1477 @@ fn eval_lookup(
     }
 }
 
+fn locals_with_item<'a>(
+    locals: Option<&EvalLocals<'a>>,
+    item: EvalItem<'a>,
+) -> EvalLocals<'a> {
+    EvalLocals {
+        item: Some(item),
+        acc: locals.and_then(|locals| locals.acc),
+    }
+}
+
+fn eval_array_arg(
+    index: usize,
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<Vec<JsonValue>, TransformError> {
+    let arg_path = format!("{}.args[{}]", base_path, index);
+    match eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)? {
+        EvalValue::Missing => Ok(Vec::new()),
+        EvalValue::Value(value) => {
+            if value.is_null() {
+                Ok(Vec::new())
+            } else if let JsonValue::Array(items) = value {
+                Ok(items)
+            } else {
+                Err(TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "expr arg must be an array",
+                )
+                .with_path(arg_path))
+            }
+        }
+    }
+}
+
+fn eval_expr_or_null(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<JsonValue, TransformError> {
+    match eval_expr(expr, record, context, out, base_path, locals)? {
+        EvalValue::Missing => Ok(JsonValue::Null),
+        EvalValue::Value(value) => Ok(value),
+    }
+}
+
+fn eval_predicate_expr(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<bool, TransformError> {
+    match eval_expr(expr, record, context, out, base_path, locals)? {
+        EvalValue::Missing => Ok(false),
+        EvalValue::Value(value) => {
+            if value.is_null() {
+                return Ok(false);
+            }
+            let flag = value_as_bool(&value, base_path)?;
+            Ok(flag)
+        }
+    }
+}
+
+fn eval_key_expr_string(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<String, TransformError> {
+    let value = match eval_expr(expr, record, context, out, base_path, locals)? {
+        EvalValue::Missing => {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "expr arg must not be missing",
+            )
+            .with_path(base_path))
+        }
+        EvalValue::Value(value) => value,
+    };
+    if value.is_null() {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr arg must not be null",
+        )
+        .with_path(base_path));
+    }
+    value_to_string(&value, base_path)
+}
+
+fn ensure_eq_compatible(value: &JsonValue, path: &str) -> Result<(), TransformError> {
+    if value.is_null() {
+        return Ok(());
+    }
+    if value_to_string_optional(value).is_some() {
+        return Ok(());
+    }
+    Err(expr_type_error("value must be string/number/bool or null", path))
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SortKeyKind {
+    Number,
+    String,
+    Bool,
+}
+
+#[derive(Clone)]
+enum SortKey {
+    Number(f64),
+    String(String),
+    Bool(bool),
+}
+
+impl SortKey {
+    fn kind(&self) -> SortKeyKind {
+        match self {
+            SortKey::Number(_) => SortKeyKind::Number,
+            SortKey::String(_) => SortKeyKind::String,
+            SortKey::Bool(_) => SortKeyKind::Bool,
+        }
+    }
+}
+
+fn compare_sort_keys(left: &SortKey, right: &SortKey) -> Ordering {
+    match (left, right) {
+        (SortKey::Number(l), SortKey::Number(r)) => l.partial_cmp(r).unwrap_or(Ordering::Equal),
+        (SortKey::String(l), SortKey::String(r)) => l.cmp(r),
+        (SortKey::Bool(l), SortKey::Bool(r)) => l.cmp(r),
+        _ => Ordering::Equal,
+    }
+}
+
+fn eval_sort_key(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<SortKey, TransformError> {
+    let value = match eval_expr(expr, record, context, out, base_path, locals)? {
+        EvalValue::Missing => {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "expr arg must not be missing",
+            )
+            .with_path(base_path))
+        }
+        EvalValue::Value(value) => value,
+    };
+    if value.is_null() {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr arg must not be null",
+        )
+        .with_path(base_path));
+    }
+
+    match value {
+        JsonValue::Number(number) => {
+            let value = number
+                .as_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| expr_type_error("sort_by key must be a finite number", base_path))?;
+            Ok(SortKey::Number(value))
+        }
+        JsonValue::String(value) => Ok(SortKey::String(value)),
+        JsonValue::Bool(value) => Ok(SortKey::Bool(value)),
+        _ => Err(expr_type_error(
+            "sort_by key must be string/number/bool",
+            base_path,
+        )),
+    }
+}
+
+fn eval_array_map(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Vec::with_capacity(array.len());
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        results.push(value);
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_filter(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Vec::new();
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        if eval_predicate_expr(expr, record, context, out, &expr_path, Some(&item_locals))? {
+            results.push(item.clone());
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_flat_map(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Vec::new();
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        match value {
+            JsonValue::Array(items) => results.extend(items),
+            value => results.push(value),
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn flatten_value(value: &JsonValue, depth: usize, out: &mut Vec<JsonValue>) {
+    if depth == 0 {
+        out.push(value.clone());
+        return;
+    }
+
+    if let JsonValue::Array(items) = value {
+        for item in items {
+            flatten_value(item, depth - 1, out);
+        }
+    } else {
+        out.push(value.clone());
+    }
+}
+
+fn eval_array_flatten(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if !(1..=2).contains(&total_len) {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain one or two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let depth = if total_len == 2 {
+        let depth_path = format!("{}.args[1]", base_path);
+        let depth_value =
+            match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
+        if depth_value.is_null() {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "expr arg must not be null",
+            )
+            .with_path(depth_path));
+        }
+        let depth =
+            value_to_i64(&depth_value, &depth_path, "depth must be a non-negative integer")?;
+        if depth < 0 {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "depth must be a non-negative integer",
+            )
+            .with_path(depth_path));
+        }
+        usize::try_from(depth).map_err(|_| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "depth is too large",
+            )
+            .with_path(depth_path)
+        })?
+    } else {
+        1
+    };
+
+    let mut results = Vec::new();
+    for item in &array {
+        flatten_value(item, depth, &mut results);
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_take(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let count_path = format!("{}.args[1]", base_path);
+    let count_value =
+        match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    if count_value.is_null() {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr arg must not be null",
+        )
+        .with_path(count_path));
+    }
+    let count = value_to_i64(&count_value, &count_path, "count must be an integer")?;
+
+    let len = array.len() as i64;
+    let results = if count >= 0 {
+        let take_count = count.min(len).max(0) as usize;
+        array[..take_count].to_vec()
+    } else {
+        let abs_count = if count == i64::MIN {
+            (i64::MAX as u64) + 1
+        } else {
+            (-count) as u64
+        };
+        let take_count = abs_count.min(array.len() as u64) as usize;
+        let start = array.len().saturating_sub(take_count);
+        array[start..].to_vec()
+    };
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_drop(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let count_path = format!("{}.args[1]", base_path);
+    let count_value =
+        match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    if count_value.is_null() {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr arg must not be null",
+        )
+        .with_path(count_path));
+    }
+    let count = value_to_i64(&count_value, &count_path, "count must be an integer")?;
+
+    let len = array.len() as i64;
+    let results = if count >= 0 {
+        let drop_count = count.min(len).max(0) as usize;
+        array[drop_count..].to_vec()
+    } else {
+        let abs_count = if count == i64::MIN {
+            (i64::MAX as u64) + 1
+        } else {
+            (-count) as u64
+        };
+        let drop_count = abs_count.min(array.len() as u64) as usize;
+        let end = array.len().saturating_sub(drop_count);
+        array[..end].to_vec()
+    };
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_slice(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if !(2..=3).contains(&total_len) {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain two or three items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let len = array.len() as i64;
+
+    let start_path = format!("{}.args[1]", base_path);
+    let start_value =
+        match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    if start_value.is_null() {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr arg must not be null",
+        )
+        .with_path(start_path));
+    }
+    let start = value_to_i64(&start_value, &start_path, "start must be an integer")?;
+
+    let end = if total_len == 3 {
+        let end_path = format!("{}.args[2]", base_path);
+        let end_value =
+            match eval_arg_value_at(2, args, injected, record, context, out, base_path, locals)? {
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
+        if end_value.is_null() {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "expr arg must not be null",
+            )
+            .with_path(end_path));
+        }
+        value_to_i64(&end_value, &end_path, "end must be an integer")?
+    } else {
+        len
+    };
+
+    let mut start_index = if start < 0 { len + start } else { start };
+    let mut end_index = if end < 0 { len + end } else { end };
+    start_index = start_index.clamp(0, len);
+    end_index = end_index.clamp(0, len);
+
+    let results = if end_index <= start_index {
+        Vec::new()
+    } else {
+        array[start_index as usize..end_index as usize].to_vec()
+    };
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_chunk(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let size_path = format!("{}.args[1]", base_path);
+    let size_value =
+        match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    if size_value.is_null() {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr arg must not be null",
+        )
+        .with_path(size_path));
+    }
+    let size = value_to_i64(&size_value, &size_path, "size must be a positive integer")?;
+    if size <= 0 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "size must be a positive integer",
+        )
+        .with_path(size_path));
+    }
+    let size = usize::try_from(size).map_err(|_| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "size is too large",
+        )
+        .with_path(size_path)
+    })?;
+
+    let mut chunks = Vec::new();
+    let mut index = 0;
+    while index < array.len() {
+        let end = (index + size).min(array.len());
+        chunks.push(JsonValue::Array(array[index..end].to_vec()));
+        index = end;
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(chunks)))
+}
+
+fn eval_array_zip(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len < 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain at least two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let mut arrays = Vec::new();
+    for index in 0..total_len {
+        arrays.push(eval_array_arg(index, args, injected, record, context, out, base_path, locals)?);
+    }
+
+    let min_len = arrays.iter().map(|items| items.len()).min().unwrap_or(0);
+    let mut results = Vec::with_capacity(min_len);
+    for idx in 0..min_len {
+        let mut row = Vec::with_capacity(arrays.len());
+        for array in &arrays {
+            row.push(array[idx].clone());
+        }
+        results.push(JsonValue::Array(row));
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_zip_with(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len < 3 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain at least three items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let expr_index = total_len - 1;
+    let expr = arg_expr_at(expr_index, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[{}]", base_path, expr_index))
+    })?;
+    let expr_arg_index = if injected.is_some() {
+        expr_index - 1
+    } else {
+        expr_index
+    };
+    let expr_path = format!("{}.args[{}]", base_path, expr_arg_index);
+
+    let mut arrays = Vec::new();
+    for index in 0..expr_index {
+        arrays.push(eval_array_arg(index, args, injected, record, context, out, base_path, locals)?);
+    }
+
+    let min_len = arrays.iter().map(|items| items.len()).min().unwrap_or(0);
+    let mut results = Vec::with_capacity(min_len);
+    for idx in 0..min_len {
+        let mut row = Vec::with_capacity(arrays.len());
+        for array in &arrays {
+            row.push(array[idx].clone());
+        }
+        let row_value = JsonValue::Array(row);
+        let item_locals = locals_with_item(
+            locals,
+            EvalItem {
+                value: &row_value,
+                index: idx,
+            },
+        );
+        let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        results.push(value);
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_unzip(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 1 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly one item",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Array(Vec::new())));
+    }
+
+    let mut columns: Vec<Vec<JsonValue>> = Vec::new();
+    let mut expected_len: Option<usize> = None;
+    for item in &array {
+        let items = match item {
+            JsonValue::Array(items) => items,
+            _ => {
+                return Err(TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "unzip items must be arrays",
+                )
+                .with_path(format!("{}.args[0]", base_path)))
+            }
+        };
+        if let Some(expected) = expected_len {
+            if items.len() != expected {
+                return Err(TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "unzip items must have the same length",
+                )
+                .with_path(format!("{}.args[0]", base_path)));
+            }
+        } else {
+            expected_len = Some(items.len());
+            columns = vec![Vec::with_capacity(array.len()); items.len()];
+        }
+        for (index, value) in items.iter().enumerate() {
+            if let Some(column) = columns.get_mut(index) {
+                column.push(value.clone());
+            }
+        }
+    }
+
+    let output = columns
+        .into_iter()
+        .map(JsonValue::Array)
+        .collect::<Vec<_>>();
+    Ok(EvalValue::Value(JsonValue::Array(output)))
+}
+
+fn eval_array_group_by(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Map::new();
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let key = eval_key_expr_string(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        let entry = results
+            .entry(key)
+            .or_insert_with(|| JsonValue::Array(Vec::new()));
+        if let JsonValue::Array(items) = entry {
+            items.push(item.clone());
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Object(results)))
+}
+
+fn eval_array_key_by(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Map::new();
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let key = eval_key_expr_string(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        results.insert(key, item.clone());
+    }
+
+    Ok(EvalValue::Value(JsonValue::Object(results)))
+}
+
+fn eval_array_partition(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut matched = Vec::new();
+    let mut unmatched = Vec::new();
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        if eval_predicate_expr(expr, record, context, out, &expr_path, Some(&item_locals))? {
+            matched.push(item.clone());
+        } else {
+            unmatched.push(item.clone());
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(vec![
+        JsonValue::Array(matched),
+        JsonValue::Array(unmatched),
+    ])))
+}
+
+fn eval_array_unique(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 1 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly one item",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let item_path = format!("{}.args[0]", base_path);
+
+    let mut results: Vec<JsonValue> = Vec::new();
+    for item in array {
+        ensure_eq_compatible(&item, &item_path)?;
+        let mut exists = false;
+        for existing in &results {
+            if compare_eq(&item, existing, &item_path, &item_path)? {
+                exists = true;
+                break;
+            }
+        }
+        if !exists {
+            results.push(item);
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_distinct_by(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let key = eval_key_expr_string(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        if seen.insert(key) {
+            results.push(item.clone());
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_sort_by(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if !(2..=3).contains(&total_len) {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain two or three items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Array(Vec::new())));
+    }
+
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let order = if total_len == 3 {
+        let order_path = format!("{}.args[2]", base_path);
+        let value =
+            match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)? {
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
+        if value != "asc" && value != "desc" {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "order must be asc or desc",
+            )
+            .with_path(order_path));
+        }
+        value
+    } else {
+        "asc".to_string()
+    };
+
+    struct SortItem {
+        key: SortKey,
+        index: usize,
+        value: JsonValue,
+    }
+
+    let mut items = Vec::with_capacity(array.len());
+    let mut key_kind: Option<SortKeyKind> = None;
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let key = eval_sort_key(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        let kind = key.kind();
+        if let Some(existing) = key_kind {
+            if existing != kind {
+                return Err(expr_type_error(
+                    "sort_by keys must be all the same type",
+                    &expr_path,
+                ));
+            }
+        } else {
+            key_kind = Some(kind);
+        }
+        items.push(SortItem {
+            key,
+            index,
+            value: item.clone(),
+        });
+    }
+
+    items.sort_by(|left, right| {
+        let mut ordering = compare_sort_keys(&left.key, &right.key);
+        if order == "desc" {
+            ordering = ordering.reverse();
+        }
+        if ordering == Ordering::Equal {
+            left.index.cmp(&right.index)
+        } else {
+            ordering
+        }
+    });
+
+    let results = items
+        .into_iter()
+        .map(|item| item.value)
+        .collect::<Vec<_>>();
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn eval_array_find(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        if eval_predicate_expr(expr, record, context, out, &expr_path, Some(&item_locals))? {
+            return Ok(EvalValue::Value(item.clone()));
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Null))
+}
+
+fn eval_array_find_index(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        if eval_predicate_expr(expr, record, context, out, &expr_path, Some(&item_locals))? {
+            return Ok(EvalValue::Value(JsonValue::Number((index as i64).into())));
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Number((-1).into())))
+}
+
+fn eval_array_index_of(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let value_path = format!("{}.args[1]", base_path);
+    let value =
+        eval_expr_value_or_null_at(1, args, injected, record, context, out, base_path, locals)?;
+
+    ensure_eq_compatible(&value, &value_path)?;
+    let item_path = format!("{}.args[0]", base_path);
+    for (index, item) in array.iter().enumerate() {
+        ensure_eq_compatible(item, &item_path)?;
+        if compare_eq(item, &value, &item_path, &value_path)? {
+            return Ok(EvalValue::Value(JsonValue::Number((index as i64).into())));
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Number((-1).into())))
+}
+
+fn eval_array_contains(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let value_path = format!("{}.args[1]", base_path);
+    let value =
+        eval_expr_value_or_null_at(1, args, injected, record, context, out, base_path, locals)?;
+
+    ensure_eq_compatible(&value, &value_path)?;
+    let item_path = format!("{}.args[0]", base_path);
+    for item in &array {
+        ensure_eq_compatible(item, &item_path)?;
+        if compare_eq(item, &value, &item_path, &value_path)? {
+            return Ok(EvalValue::Value(JsonValue::Bool(true)));
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Bool(false)))
+}
+
+fn eval_array_sum(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 1 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly one item",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Null));
+    }
+
+    let item_path = format!("{}.args[0]", base_path);
+    let mut sum = 0.0;
+    for item in &array {
+        let value = value_to_number(item, &item_path, "array item must be a number")?;
+        sum += value;
+    }
+
+    Ok(EvalValue::Value(json_number_from_f64(sum, base_path)?))
+}
+
+fn eval_array_avg(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 1 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly one item",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Null));
+    }
+
+    let item_path = format!("{}.args[0]", base_path);
+    let mut sum = 0.0;
+    for item in &array {
+        let value = value_to_number(item, &item_path, "array item must be a number")?;
+        sum += value;
+    }
+    let avg = sum / array.len() as f64;
+
+    Ok(EvalValue::Value(json_number_from_f64(avg, base_path)?))
+}
+
+fn eval_array_min(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 1 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly one item",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Null));
+    }
+
+    let item_path = format!("{}.args[0]", base_path);
+    let mut min_value: Option<f64> = None;
+    for item in &array {
+        let value = value_to_number(item, &item_path, "array item must be a number")?;
+        min_value = Some(match min_value {
+            Some(current) => current.min(value),
+            None => value,
+        });
+    }
+
+    Ok(EvalValue::Value(json_number_from_f64(
+        min_value.unwrap_or(0.0),
+        base_path,
+    )?))
+}
+
+fn eval_array_max(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 1 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly one item",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Null));
+    }
+
+    let item_path = format!("{}.args[0]", base_path);
+    let mut max_value: Option<f64> = None;
+    for item in &array {
+        let value = value_to_number(item, &item_path, "array item must be a number")?;
+        max_value = Some(match max_value {
+            Some(current) => current.max(value),
+            None => value,
+        });
+    }
+
+    Ok(EvalValue::Value(json_number_from_f64(
+        max_value.unwrap_or(0.0),
+        base_path,
+    )?))
+}
+
+fn eval_array_reduce(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Null));
+    }
+
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut acc = array[0].clone();
+    for (index, item) in array.iter().enumerate().skip(1) {
+        let item_locals = EvalLocals {
+            item: Some(EvalItem { value: item, index }),
+            acc: Some(&acc),
+        };
+        let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        acc = value;
+    }
+
+    Ok(EvalValue::Value(acc))
+}
+
+fn eval_array_fold(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 3 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly three items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg(0, args, injected, record, context, out, base_path, locals)?;
+    let initial =
+        match eval_expr_at_index(1, args, injected, record, context, out, base_path, locals)? {
+            EvalValue::Missing => return Ok(EvalValue::Missing),
+            EvalValue::Value(value) => value,
+        };
+
+    let expr = arg_expr_at(2, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[2]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 1 } else { 2 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut acc = initial;
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = EvalLocals {
+            item: Some(EvalItem { value: item, index }),
+            acc: Some(&acc),
+        };
+        let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
+        acc = value;
+    }
+
+    Ok(EvalValue::Value(acc))
+}
+
 fn eval_bool_and_or(
     args: &[Expr],
     injected: Option<&EvalValue>,
@@ -1594,6 +3193,7 @@ fn eval_bool_and_or(
     out: &JsonValue,
     base_path: &str,
     is_and: bool,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if total_len < 2 {
@@ -1607,7 +3207,7 @@ fn eval_bool_and_or(
     let mut saw_missing = false;
     for index in 0..total_len {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        let value = eval_expr_at_index(index, args, injected, record, context, out, base_path)?;
+        let value = eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)?;
         match value {
             EvalValue::Missing => {
                 saw_missing = true;
@@ -1640,6 +3240,7 @@ fn eval_bool_not(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(args, injected);
     if total_len != 1 {
@@ -1651,7 +3252,7 @@ fn eval_bool_not(
     }
 
     let arg_path = format!("{}.args[0]", base_path);
-    let value = eval_expr_at_index(0, args, injected, record, context, out, base_path)?;
+    let value = eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
     match value {
         EvalValue::Missing => Ok(EvalValue::Missing),
         EvalValue::Value(value) => {
@@ -1668,6 +3269,7 @@ fn eval_compare(
     context: Option<&JsonValue>,
     out: &JsonValue,
     base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
     let total_len = args_len(&expr_op.args, injected);
     if total_len != 2 {
@@ -1680,8 +3282,8 @@ fn eval_compare(
 
     let left_path = format!("{}.args[0]", base_path);
     let right_path = format!("{}.args[1]", base_path);
-    let left = eval_expr_value_or_null_at(0, &expr_op.args, injected, record, context, out, base_path)?;
-    let right = eval_expr_value_or_null_at(1, &expr_op.args, injected, record, context, out, base_path)?;
+    let left = eval_expr_value_or_null_at(0, &expr_op.args, injected, record, context, out, base_path, locals)?;
+    let right = eval_expr_value_or_null_at(1, &expr_op.args, injected, record, context, out, base_path, locals)?;
 
     let result = match expr_op.op.as_str() {
         "==" => compare_eq(&left, &right, &left_path, &right_path)?,
@@ -2281,10 +3883,12 @@ fn parse_ref(value: &str) -> Result<(Namespace, &str), TransformError> {
         "input" => Namespace::Input,
         "context" => Namespace::Context,
         "out" => Namespace::Out,
+        "item" => Namespace::Item,
+        "acc" => Namespace::Acc,
         _ => {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidRef,
-                "ref namespace must be input|context|out",
+                "ref namespace must be input|context|out|item|acc",
             ))
         }
     };
@@ -2379,6 +3983,20 @@ enum Namespace {
     Input,
     Context,
     Out,
+    Item,
+    Acc,
+}
+
+#[derive(Clone, Copy)]
+struct EvalItem<'a> {
+    value: &'a JsonValue,
+    index: usize,
+}
+
+#[derive(Clone, Copy)]
+struct EvalLocals<'a> {
+    item: Option<EvalItem<'a>>,
+    acc: Option<&'a JsonValue>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

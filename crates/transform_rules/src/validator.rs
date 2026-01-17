@@ -91,7 +91,7 @@ fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
     let base_path = "record_when";
     let produced_targets = HashSet::new();
-    validate_expr(expr, base_path, &produced_targets, ctx);
+    validate_expr(expr, base_path, &produced_targets, ctx, LocalScope::None);
     validate_when_expr(expr, base_path, ctx);
 }
 
@@ -171,12 +171,12 @@ fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
         if let Some(expr) = &mapping.expr {
             let expr_path = format!("{}.expr", base);
-            validate_expr(expr, &expr_path, &produced_targets, ctx);
+            validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
         }
 
         if let Some(when) = &mapping.when {
             let when_path = format!("{}.when", base);
-            validate_expr(when, &when_path, &produced_targets, ctx);
+            validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
             validate_when_expr(when, &when_path, ctx);
         }
 
@@ -239,14 +239,32 @@ fn validate_expr(
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
+    scope: LocalScope,
 ) {
     match expr {
-        Expr::Ref(expr_ref) => validate_ref(expr_ref, base_path, produced_targets, ctx),
-        Expr::Op(expr_op) => validate_op(expr_op, base_path, produced_targets, ctx),
+        Expr::Ref(expr_ref) => validate_ref(expr_ref, base_path, produced_targets, ctx, scope),
+        Expr::Op(expr_op) => validate_op(expr_op, base_path, produced_targets, ctx, scope),
         Expr::Chain(expr_chain) => {
-            validate_chain(expr_chain, base_path, produced_targets, ctx)
+            validate_chain(expr_chain, base_path, produced_targets, ctx, scope)
         }
         Expr::Literal(_) => {}
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LocalScope {
+    None,
+    Item,
+    ItemAcc,
+}
+
+impl LocalScope {
+    fn allows_item(self) -> bool {
+        matches!(self, LocalScope::Item | LocalScope::ItemAcc)
+    }
+
+    fn allows_acc(self) -> bool {
+        matches!(self, LocalScope::ItemAcc)
     }
 }
 
@@ -289,6 +307,29 @@ fn bool_expr_kind(expr: &Expr) -> BoolExprKind {
             | "pad_end"
             | "lookup"
             | "lookup_first"
+            | "map"
+            | "filter"
+            | "flat_map"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "zip_with"
+            | "unzip"
+            | "group_by"
+            | "key_by"
+            | "partition"
+            | "unique"
+            | "distinct_by"
+            | "sort_by"
+            | "find_index"
+            | "index_of"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
             | "+"
             | "-"
             | "*"
@@ -297,7 +338,7 @@ fn bool_expr_kind(expr: &Expr) -> BoolExprKind {
             | "to_base"
             | "date_format"
             | "to_unixtime" => BoolExprKind::NotBool,
-            "and" | "or" | "not" => BoolExprKind::Bool,
+            "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
             "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
             "coalesce" => {
                 let mut saw_maybe = false;
@@ -338,28 +379,51 @@ fn bool_expr_kind_chain(expr_chain: &ExprChain) -> BoolExprKind {
 
 fn bool_expr_kind_for_op_with_input(expr_op: &ExprOp, injected: BoolExprKind) -> BoolExprKind {
     match expr_op.op.as_str() {
-        "concat"
-        | "to_string"
-        | "trim"
-        | "lowercase"
-        | "uppercase"
-        | "replace"
-        | "split"
-        | "pad_start"
-        | "pad_end"
-        | "lookup"
-        | "lookup_first"
-        | "+"
-        | "-"
-        | "*"
-        | "/"
-        | "round"
-        | "to_base"
-        | "date_format"
-        | "to_unixtime" => BoolExprKind::NotBool,
-        "and" | "or" | "not" => BoolExprKind::Bool,
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
-        "coalesce" => {
+            "concat"
+            | "to_string"
+            | "trim"
+            | "lowercase"
+            | "uppercase"
+            | "replace"
+            | "split"
+            | "pad_start"
+            | "pad_end"
+            | "lookup"
+            | "lookup_first"
+            | "map"
+            | "filter"
+            | "flat_map"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "zip_with"
+            | "unzip"
+            | "group_by"
+            | "key_by"
+            | "partition"
+            | "unique"
+            | "distinct_by"
+            | "sort_by"
+            | "find_index"
+            | "index_of"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "round"
+            | "to_base"
+            | "date_format"
+            | "to_unixtime" => BoolExprKind::NotBool,
+            "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
+            "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
+            "coalesce" => {
             let mut saw_maybe = matches!(injected, BoolExprKind::Maybe);
             if matches!(injected, BoolExprKind::NotBool) {
                 return BoolExprKind::NotBool;
@@ -386,6 +450,7 @@ fn validate_chain(
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
+    scope: LocalScope,
 ) {
     if expr_chain.chain.is_empty() {
         ctx.push(
@@ -399,13 +464,13 @@ fn validate_chain(
     for (index, item) in expr_chain.chain.iter().enumerate() {
         let item_path = format!("{}.chain[{}]", base_path, index);
         if index == 0 {
-            validate_expr(item, &item_path, produced_targets, ctx);
+            validate_expr(item, &item_path, produced_targets, ctx, scope);
             continue;
         }
 
         match item {
             Expr::Op(expr_op) => {
-                validate_chain_op(expr_op, &item_path, produced_targets, ctx);
+                validate_chain_op(expr_op, &item_path, produced_targets, ctx, scope);
             }
             _ => {
                 ctx.push(
@@ -423,6 +488,7 @@ fn validate_chain_op(
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
+    scope: LocalScope,
 ) {
     if !is_valid_op(&expr_op.op) {
         ctx.push(
@@ -473,6 +539,95 @@ fn validate_chain_op(
         "lookup" | "lookup_first" => {
             validate_lookup_args_chain(expr_op, base_path, ctx);
         }
+        "map"
+        | "filter"
+        | "flat_map"
+        | "group_by"
+        | "key_by"
+        | "partition"
+        | "distinct_by"
+        | "find"
+        | "find_index" => {
+            if args_len != 2 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "flatten" => {
+            if !(1..=2).contains(&args_len) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain one or two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "take" | "drop" | "chunk" | "index_of" | "contains" | "reduce" => {
+            if args_len != 2 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "slice" => {
+            if !(2..=3).contains(&args_len) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain two or three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "zip" => {
+            if args_len < 2 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain at least two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "zip_with" => {
+            if args_len < 3 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain at least three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "unzip" | "unique" | "sum" | "avg" | "min" | "max" => {
+            if args_len != 1 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly one item",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "sort_by" => {
+            if !(2..=3).contains(&args_len) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain two or three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "fold" => {
+            if args_len != 3 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
         "+" | "*" | "and" | "or" => {
             if args_len < 2 {
                 ctx.push(
@@ -521,9 +676,52 @@ fn validate_chain_op(
         _ => {}
     }
 
+    let expr_scope = element_expr_scope(&expr_op.op, true, expr_op.args.len(), scope);
     for (index, arg) in expr_op.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        validate_expr(arg, &arg_path, produced_targets, ctx);
+        let arg_scope = match expr_scope {
+            Some((expr_index, expr_scope)) if expr_index == index => expr_scope,
+            _ => scope,
+        };
+        validate_expr(arg, &arg_path, produced_targets, ctx, arg_scope);
+    }
+}
+
+fn element_expr_scope(
+    op: &str,
+    injected: bool,
+    args_len: usize,
+    parent_scope: LocalScope,
+) -> Option<(usize, LocalScope)> {
+    let item_scope = if parent_scope.allows_acc() {
+        LocalScope::ItemAcc
+    } else {
+        LocalScope::Item
+    };
+    match op {
+        "map"
+        | "filter"
+        | "flat_map"
+        | "group_by"
+        | "key_by"
+        | "partition"
+        | "distinct_by"
+        | "sort_by"
+        | "find"
+        | "find_index" => {
+            let index = if injected { 0 } else { 1 };
+            Some((index, item_scope))
+        }
+        "zip_with" => args_len.checked_sub(1).map(|index| (index, item_scope)),
+        "reduce" => {
+            let index = if injected { 0 } else { 1 };
+            Some((index, LocalScope::ItemAcc))
+        }
+        "fold" => {
+            let index = if injected { 1 } else { 2 };
+            Some((index, LocalScope::ItemAcc))
+        }
+        _ => None,
     }
 }
 
@@ -576,18 +774,43 @@ fn validate_ref(
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
+    scope: LocalScope,
 ) {
     let (namespace, path) = match parse_ref(&expr_ref.ref_path) {
         Some(parsed) => parsed,
         None => {
             ctx.push(
                 ErrorCode::InvalidRefNamespace,
-                "ref namespace must be input|context|out",
+                "ref namespace must be input|context|out|item|acc",
                 base_path,
             );
             return;
         }
     };
+
+    match namespace {
+        Namespace::Item => {
+            if !scope.allows_item() {
+                ctx.push(
+                    ErrorCode::InvalidRefNamespace,
+                    "item refs are only allowed inside array ops",
+                    base_path,
+                );
+                return;
+            }
+        }
+        Namespace::Acc => {
+            if !scope.allows_acc() {
+                ctx.push(
+                    ErrorCode::InvalidRefNamespace,
+                    "acc refs are only allowed inside reduce/fold ops",
+                    base_path,
+                );
+                return;
+            }
+        }
+        _ => {}
+    }
 
     let tokens = match parse_path(path) {
         Ok(tokens) => tokens,
@@ -597,12 +820,37 @@ fn validate_ref(
         }
     };
 
-    if namespace == Namespace::Out && !out_ref_resolves(&tokens, produced_targets) {
-        ctx.push(
-            ErrorCode::ForwardOutReference,
-            "out reference must point to previous mappings",
-            base_path,
-        );
+    match namespace {
+        Namespace::Out => {
+            if !out_ref_resolves(&tokens, produced_targets) {
+                ctx.push(
+                    ErrorCode::ForwardOutReference,
+                    "out reference must point to previous mappings",
+                    base_path,
+                );
+            }
+        }
+        Namespace::Item => {
+            let ok = matches!(tokens.first(), Some(PathToken::Key(key)) if key == "value" || key == "index");
+            if !ok {
+                ctx.push(
+                    ErrorCode::InvalidPath,
+                    "item ref must start with value or index",
+                    base_path,
+                );
+            }
+        }
+        Namespace::Acc => {
+            let ok = matches!(tokens.first(), Some(PathToken::Key(key)) if key == "value");
+            if !ok {
+                ctx.push(
+                    ErrorCode::InvalidPath,
+                    "acc ref must start with value",
+                    base_path,
+                );
+            }
+        }
+        _ => {}
     }
 }
 
@@ -631,6 +879,7 @@ fn validate_op(
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
+    scope: LocalScope,
 ) {
     if !is_valid_op(&expr_op.op) {
         ctx.push(
@@ -687,6 +936,95 @@ fn validate_op(
         }
         "lookup" | "lookup_first" => {
             validate_lookup_args(expr_op, base_path, ctx);
+        }
+        "map"
+        | "filter"
+        | "flat_map"
+        | "group_by"
+        | "key_by"
+        | "partition"
+        | "distinct_by"
+        | "find"
+        | "find_index" => {
+            if expr_op.args.len() != 2 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "flatten" => {
+            if !(1..=2).contains(&expr_op.args.len()) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain one or two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "take" | "drop" | "chunk" | "index_of" | "contains" | "reduce" => {
+            if expr_op.args.len() != 2 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "slice" => {
+            if !(2..=3).contains(&expr_op.args.len()) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain two or three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "zip" => {
+            if expr_op.args.len() < 2 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain at least two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "zip_with" => {
+            if expr_op.args.len() < 3 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain at least three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "unzip" | "unique" | "sum" | "avg" | "min" | "max" => {
+            if expr_op.args.len() != 1 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly one item",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "sort_by" => {
+            if !(2..=3).contains(&expr_op.args.len()) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain two or three items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "fold" => {
+            if expr_op.args.len() != 3 {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain exactly three items",
+                    format!("{}.args", base_path),
+                );
+            }
         }
         "+" | "*" => {
             if expr_op.args.len() < 2 {
@@ -763,9 +1101,14 @@ fn validate_op(
         _ => {}
     }
 
+    let expr_scope = element_expr_scope(&expr_op.op, false, expr_op.args.len(), scope);
     for (index, arg) in expr_op.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        validate_expr(arg, &arg_path, produced_targets, ctx);
+        let arg_scope = match expr_scope {
+            Some((expr_index, expr_scope)) if expr_index == index => expr_scope,
+            _ => scope,
+        };
+        validate_expr(arg, &arg_path, produced_targets, ctx, arg_scope);
     }
 }
 
@@ -781,6 +1124,8 @@ fn parse_ref(value: &str) -> Option<(Namespace, &str)> {
         "input" => Namespace::Input,
         "context" => Namespace::Context,
         "out" => Namespace::Out,
+        "item" => Namespace::Item,
+        "acc" => Namespace::Acc,
         _ => return None,
     };
 
@@ -826,6 +1171,33 @@ fn is_valid_op(value: &str) -> bool {
             | "pad_end"
             | "lookup"
             | "lookup_first"
+            | "map"
+            | "filter"
+            | "flat_map"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "zip_with"
+            | "unzip"
+            | "group_by"
+            | "key_by"
+            | "partition"
+            | "unique"
+            | "distinct_by"
+            | "sort_by"
+            | "find"
+            | "find_index"
+            | "index_of"
+            | "contains"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "reduce"
+            | "fold"
             | "+"
             | "-"
             | "*"
@@ -936,4 +1308,6 @@ enum Namespace {
     Input,
     Context,
     Out,
+    Item,
+    Acc,
 }

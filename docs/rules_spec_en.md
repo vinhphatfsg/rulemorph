@@ -134,6 +134,11 @@ References are namespace + dot path.
 - `context.*`: injected external context
 - `out.*`: output values produced earlier in the same record
 
+### Local refs (array ops only)
+- `item.value`: current element
+- `item.index`: 0-based index
+- `acc.value`: accumulator for reduce/fold
+
 `source` can omit the namespace **only for a single key** (defaults to `input.*`).
 If you need dot paths or array indexes, you must use `input.*` explicitly.
 `expr` refs must always include the namespace.
@@ -220,6 +225,38 @@ expr:
 | `>=` | `2 expr` | Numeric comparison. | `args: [ { ref: "input.score" }, 90 ]`<br>`{"score": 90} -> true` |
 | `~=` | `2 expr` | Regex match (left value against right pattern). | `args: [ { ref: "input.email" }, ".+@example\\.com$" ]`<br>`{"email":"a@example.com"} -> true` |
 
+## Array Operations (v1)
+
+| op | args | description |
+| --- | --- | --- |
+| `map` | `array, expr` | Transform each element. |
+| `filter` | `array, predicate` | Keep elements matching the predicate. |
+| `flat_map` | `array, expr` | `map` + `flatten(1)`. |
+| `flatten` | `array, depth?` | Flatten to the specified depth. |
+| `take` | `array, count` | Take from head/tail (negative counts from tail). |
+| `drop` | `array, count` | Drop from head/tail (negative counts from tail). |
+| `slice` | `array, start, end?` | Slice range (`end` exclusive, negatives from tail). |
+| `chunk` | `array, size` | Split into fixed-size chunks. |
+| `zip` | `array1, array2, ...` | Zip to the shortest length. |
+| `zip_with` | `array1, array2, ..., expr` | Combine elements with an expression. |
+| `unzip` | `array` | Convert array-of-arrays to column arrays. |
+| `group_by` | `array, key_expr` | Group elements by key. |
+| `key_by` | `array, key_expr` | Map elements by key (last wins). |
+| `partition` | `array, predicate` | Split into `[matched, unmatched]`. |
+| `unique` | `array` | Remove duplicates by equality. |
+| `distinct_by` | `array, key_expr` | Remove duplicates by key. |
+| `sort_by` | `array, key_expr, order?` | Sort by key. |
+| `find` | `array, predicate` | First matching element. |
+| `find_index` | `array, predicate` | Index of first match. |
+| `index_of` | `array, value` | Index of first equal element. |
+| `contains` | `array, value` | Whether the value exists. |
+| `sum` | `array` | Sum of elements. |
+| `avg` | `array` | Average of elements. |
+| `min` | `array` | Minimum value. |
+| `max` | `array` | Maximum value. |
+| `reduce` | `array, expr` | Reduce with accumulator. |
+| `fold` | `array, initial, expr` | Reduce with initial value. |
+
 ## Evaluation rules (notes)
 
 ### missing vs null
@@ -271,6 +308,16 @@ expr:
 - `~=`:
   - both operands must be strings.
   - invalid regex pattern is an error (Rust regex syntax).
+- Array ops:
+  - Array args `missing`/`null` are treated as empty arrays.
+  - `map`/`flat_map`: element expr `missing` becomes `null`.
+  - `filter`/`partition`/`find`/`find_index`: predicate `missing`/`null` -> `false`.
+  - `group_by`/`key_by`/`distinct_by`/`sort_by`: key expr `missing`/`null` is an error.
+  - `contains`/`index_of`/`unique`: same equality semantics as `==` (string/number/bool + null, arrays/objects are errors).
+  - `sort_by`: keys must be a single type (string/number/bool). `order` is `asc`/`desc`.
+  - `find` returns `null` when not found; `find_index`/`index_of` return `-1`.
+  - `sum`/`avg`/`min`/`max` return `null` for empty arrays.
+  - `reduce` returns `null` for empty arrays; `fold` returns `initial` for empty arrays.
 
 ## Type casting (`type`)
 
