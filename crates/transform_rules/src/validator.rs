@@ -315,6 +315,7 @@ fn bool_expr_kind(expr: &Expr) -> BoolExprKind {
             | "keys"
             | "values"
             | "entries"
+            | "len"
             | "from_entries"
             | "object_flatten"
             | "object_unflatten"
@@ -409,6 +410,7 @@ fn bool_expr_kind_for_op_with_input(expr_op: &ExprOp, injected: BoolExprKind) ->
             | "keys"
             | "values"
             | "entries"
+            | "len"
             | "from_entries"
             | "object_flatten"
             | "object_unflatten"
@@ -522,7 +524,7 @@ fn validate_chain_op(
 
     let args_len = expr_op.args.len() + 1;
     match expr_op.op.as_str() {
-        "trim" | "lowercase" | "uppercase" | "to_string" | "not" => {
+        "trim" | "lowercase" | "uppercase" | "to_string" | "len" | "not" => {
             if args_len != 1 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
@@ -975,7 +977,7 @@ fn validate_op(
     }
 
     match expr_op.op.as_str() {
-        "trim" | "lowercase" | "uppercase" | "to_string" => {
+        "trim" | "lowercase" | "uppercase" | "to_string" | "len" => {
             if expr_op.args.len() != 1 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
@@ -1311,6 +1313,7 @@ fn is_valid_op(value: &str) -> bool {
             | "keys"
             | "values"
             | "entries"
+            | "len"
             | "from_entries"
             | "object_flatten"
             | "object_unflatten"

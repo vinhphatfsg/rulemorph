@@ -87,6 +87,8 @@ fn valid_rules_should_pass_validation() {
         "t25_json_ops_get_chain",
         "t26_chain_all_ops",
         "t27_json_ops_from_entries",
+        "t28_expr_chain_nested",
+        "t29_json_ops_len",
     ];
 
     for case in cases {
