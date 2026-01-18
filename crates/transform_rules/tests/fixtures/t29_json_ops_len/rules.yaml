@@ -1,0 +1,25 @@
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "array_len"
+    expr:
+      op: "len"
+      args:
+        - { ref: "input.array" }
+  - target: "string_len"
+    expr:
+      op: "len"
+      args:
+        - { ref: "input.string" }
+  - target: "object_len"
+    expr:
+      op: "len"
+      args:
+        - { ref: "input.object" }
+  - target: "array_len_chain"
+    expr:
+      chain:
+        - { ref: "input.array" }
+        - { op: "len" }

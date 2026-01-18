@@ -41,6 +41,35 @@
       {"key": "b", "value": 2},
       {"key": "nested", "value": {"x": 1, "y": 2}}
     ],
+    "json_entries_roundtrip": {
+      "a": 1,
+      "arr": [1, 2],
+      "b": 2,
+      "nested": {"x": 1, "y": 2}
+    },
+    "json_from_entries_zip": {
+      "1": "a",
+      "2": "b",
+      "3": "a",
+      "4": "c",
+      "5": "b"
+    },
+    "json_from_entries_kv": {
+      "meta": [1, {"nested": true}]
+    },
+    "json_from_entries_dupe": {
+      "a": 2,
+      "b": 3
+    },
+    "json_from_entries_object": {
+      "a": 1,
+      "b": 2,
+      "nested": {
+        "x": 1,
+        "y": 2
+      },
+      "arr": [1, 2]
+    },
     "json_object_flatten": {
       "a.b": 1,
       "c": 2

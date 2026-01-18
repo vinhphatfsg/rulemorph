@@ -1,0 +1,15 @@
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "nested_chain_map"
+    expr:
+      chain:
+        - { ref: "input.array" }
+        - op: "map"
+          args:
+            - chain:
+                - { ref: "item.value" }
+                - { op: "replace", args: [" ", "_", "all"] }
+                - { op: "uppercase" }
