@@ -329,6 +329,17 @@ fn t26_chain_all_ops() {
     assert_eq!(output, expected);
 }
 
+#[test]
+fn t27_json_ops_from_entries() {
+    let base = fixtures_dir().join("t27_json_ops_from_entries");
+    let rule = load_rule(&base.join("rules.yaml"));
+    let input = fs::read_to_string(base.join("input.json"))
+        .unwrap_or_else(|_| panic!("failed to read input.json"));
+    let expected = load_json(&base.join("expected.json"));
+    let output = transform(&rule, &input, None).expect("transform failed");
+    assert_eq!(output, expected);
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct ExpectedTransformError {
     kind: String,
@@ -416,6 +427,19 @@ fn r06_json_ops_flatten_brackets() {
 #[test]
 fn r07_json_ops_flatten_empty_key() {
     let base = fixtures_dir().join("r07_json_ops_flatten_empty_key");
+    let rule = load_rule(&base.join("rules.yaml"));
+    let input = fs::read_to_string(base.join("input.json"))
+        .unwrap_or_else(|_| panic!("failed to read input.json"));
+    let expected = load_expected_error(&base.join("expected_error.json"));
+
+    let err = transform(&rule, &input, None).expect_err("expected transform error");
+    assert_eq!(transform_kind_to_str(&err.kind), expected.kind);
+    assert_eq!(err.path, expected.path);
+}
+
+#[test]
+fn r08_json_ops_from_entries_single_pair() {
+    let base = fixtures_dir().join("r08_json_ops_from_entries_single_pair");
     let rule = load_rule(&base.join("rules.yaml"));
     let input = fs::read_to_string(base.join("input.json"))
         .unwrap_or_else(|_| panic!("failed to read input.json"));

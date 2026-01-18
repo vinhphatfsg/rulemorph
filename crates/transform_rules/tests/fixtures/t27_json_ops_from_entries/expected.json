@@ -1,0 +1,15 @@
+[
+  {
+    "from_entries_pairs": {
+      "a": 1,
+      "b": 2
+    },
+    "from_entries_kv": {
+      "meta": {"tags": ["x", "y"]}
+    },
+    "from_entries_object": {
+      "a": 1,
+      "b": 2
+    }
+  }
+]

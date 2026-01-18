@@ -315,6 +315,7 @@ fn bool_expr_kind(expr: &Expr) -> BoolExprKind {
             | "keys"
             | "values"
             | "entries"
+            | "from_entries"
             | "object_flatten"
             | "object_unflatten"
             | "map"
@@ -408,6 +409,7 @@ fn bool_expr_kind_for_op_with_input(expr_op: &ExprOp, injected: BoolExprKind) ->
             | "keys"
             | "values"
             | "entries"
+            | "from_entries"
             | "object_flatten"
             | "object_unflatten"
             | "map"
@@ -601,6 +603,15 @@ fn validate_chain_op(
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly one item",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
+        "from_entries" => {
+            if !(1..=2).contains(&args_len) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain one or two items",
                     format!("{}.args", base_path),
                 );
             }
@@ -1049,6 +1060,15 @@ fn validate_op(
                 );
             }
         }
+        "from_entries" => {
+            if !(1..=2).contains(&expr_op.args.len()) {
+                ctx.push(
+                    ErrorCode::InvalidArgs,
+                    "expr.args must contain one or two items",
+                    format!("{}.args", base_path),
+                );
+            }
+        }
         "map"
         | "filter"
         | "flat_map"
@@ -1291,6 +1311,7 @@ fn is_valid_op(value: &str) -> bool {
             | "keys"
             | "values"
             | "entries"
+            | "from_entries"
             | "object_flatten"
             | "object_unflatten"
             | "map"

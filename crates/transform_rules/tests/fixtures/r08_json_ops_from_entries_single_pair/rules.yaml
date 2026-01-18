@@ -1,0 +1,10 @@
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "bad"
+    expr:
+      op: "from_entries"
+      args:
+        - { ref: "input.pair" }
