@@ -1095,6 +1095,8 @@ fn run_list_ops_tool() -> Result<Value, CallError> {
             "keys",
             "values",
             "entries",
+            "len",
+            "from_entries",
             "object_flatten",
             "object_unflatten",
             "map",
@@ -1154,6 +1156,8 @@ fn run_list_ops_tool() -> Result<Value, CallError> {
                 "keys",
                 "values",
                 "entries",
+                "len",
+                "from_entries",
                 "object_flatten",
                 "object_unflatten"
             ],

@@ -55,6 +55,33 @@ mappings:
         - { ref: "input.base" }
         - op: "entries"
           args: []
+  - target: "json_from_entries_zip"
+    expr:
+      chain:
+        - { ref: "input.array_values" }
+        - op: "zip"
+          args:
+            - { ref: "input.strings" }
+        - op: "from_entries"
+          args: []
+  - target: "json_from_entries_kv"
+    expr:
+      chain:
+        - { ref: "input.single_key" }
+        - op: "from_entries"
+          args:
+            - { ref: "input.single_value" }
+  - target: "json_from_entries_dupe"
+    expr:
+      chain:
+        - { ref: "input.pairs_with_dupe" }
+        - op: "from_entries"
+          args: []
+  - target: "json_from_entries_object"
+    expr:
+      op: "from_entries"
+      args:
+        - { ref: "input.base" }
   - target: "json_object_flatten"
     expr:
       chain:

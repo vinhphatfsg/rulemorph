@@ -1,0 +1,21 @@
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "from_entries_pairs"
+    expr:
+      op: "from_entries"
+      args:
+        - { ref: "input.pairs" }
+  - target: "from_entries_kv"
+    expr:
+      op: "from_entries"
+      args:
+        - { ref: "input.key" }
+        - { ref: "input.value" }
+  - target: "from_entries_object"
+    expr:
+      op: "from_entries"
+      args:
+        - { ref: "input.obj" }

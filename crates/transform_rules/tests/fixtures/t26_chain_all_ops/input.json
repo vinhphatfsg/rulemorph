@@ -60,6 +60,9 @@
   "nested_arrays": [[1, 2], [3], []],
   "nested": [1, [2, [3]], 4],
   "pairs": [[1, "a"], [2, "b"], [3, "c"]],
+  "pairs_with_dupe": [["a", 1], ["a", 2], ["b", 3]],
+  "single_key": "meta",
+  "single_value": [1, {"nested": true}],
   "objects": [
     {"id": "a", "score": 2},
     {"id": "b", "score": 1},

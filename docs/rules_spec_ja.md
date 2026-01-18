@@ -195,7 +195,7 @@ expr:
 ### カテゴリ
 
 - 文字列系: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
-- JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `object_flatten`, `object_unflatten`
+- JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`
 - 数値系: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
@@ -254,6 +254,8 @@ expr:
 | `keys` | `obj` | キーの配列。 |
 | `values` | `obj` | 値の配列。 |
 | `entries` | `obj` | `{key, value}` の配列。 |
+| `len` | `value` | string/array/object の長さを返す。 |
+| `from_entries` | `entries` / `key, value` | ペア配列 or key/value から object を生成。 |
 | `object_flatten` | `obj` | オブジェクトを path キーで平坦化。 |
 | `object_unflatten` | `obj` | path キーからオブジェクトを再構成。 |
 
@@ -343,6 +345,11 @@ expr:
 - JSON ops:
   - `get`: base が `missing`/`null` またはパス未存在なら `missing`。
   - `get`: path は空文字不可の valid path 文字列。
+  - `len`: `missing` は `missing`、`null` はエラー。
+  - `len`: string/array/object のみ対応（文字数は Unicode スカラー数）。
+  - `from_entries`: 1 引数は object をそのまま返すか、`[key, value]` の配列から object を生成。
+  - `from_entries`: 2 引数は `key, value` で object を生成。`key` は string/number/bool、重複は後勝ち。
+  - `from_entries`: `missing` は `missing`、`key` の `null` はエラー。`value` は任意 JSON（`null` 可）。
   - オブジェクト系（`merge`/`deep_merge`/`pick`/`omit`/`keys`/`values`/`entries`/`object_*`）:
     - `null` はエラー。base は object 必須。
   - `merge`/`deep_merge`: missing はスキップ、全 missing は `missing`。

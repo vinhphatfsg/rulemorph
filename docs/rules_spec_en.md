@@ -195,7 +195,7 @@ expr:
 ### Operation categories
 
 - String ops: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
-- JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `object_flatten`, `object_unflatten`
+- JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`
 - Numeric ops: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
@@ -254,6 +254,8 @@ expr:
 | `keys` | `obj` | Array of keys. |
 | `values` | `obj` | Array of values. |
 | `entries` | `obj` | Array of `{key, value}` entries. |
+| `len` | `value` | Length of string/array/object. |
+| `from_entries` | `entries` / `key, value` | Build object from pairs or key/value. |
 | `object_flatten` | `obj` | Flatten object keys into path strings. |
 | `object_unflatten` | `obj` | Expand path keys into nested objects. |
 
@@ -343,6 +345,11 @@ expr:
 - JSON ops:
   - `get`: base `missing`/`null` or absent path returns `missing`.
   - `get`: path must be a valid non-empty path string.
+  - `len`: `missing` stays `missing`; `null` is an error.
+  - `len`: supports string/array/object only (string length counts Unicode scalar values).
+  - `from_entries`: with 1 arg, returns object as-is or builds from `[key, value]` pairs.
+  - `from_entries`: with 2 args, builds object from `key, value`. `key` is string/number/bool; duplicates are last-wins.
+  - `from_entries`: `missing` stays `missing`, `key` `null` is an error. `value` can be any JSON (including `null`).
   - Object ops (`merge`/`deep_merge`/`pick`/`omit`/`keys`/`values`/`entries`/`object_*`):
     - `null` is an error; base must be an object.
   - `merge`/`deep_merge`: missing args are skipped; all missing -> `missing`.
