@@ -55,6 +55,14 @@ mappings:
         - { ref: "input.base" }
         - op: "entries"
           args: []
+  - target: "json_entries_roundtrip"
+    expr:
+      chain:
+        - { ref: "input.base" }
+        - op: "entries"
+          args: []
+        - op: "from_entries"
+          args: []
   - target: "json_from_entries_zip"
     expr:
       chain:

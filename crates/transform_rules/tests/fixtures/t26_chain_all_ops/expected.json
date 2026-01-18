@@ -41,6 +41,12 @@
       {"key": "b", "value": 2},
       {"key": "nested", "value": {"x": 1, "y": 2}}
     ],
+    "json_entries_roundtrip": {
+      "a": 1,
+      "arr": [1, 2],
+      "b": 2,
+      "nested": {"x": 1, "y": 2}
+    },
     "json_from_entries_zip": {
       "1": "a",
       "2": "b",

@@ -3576,24 +3576,55 @@ fn eval_json_from_entries(
                 let mut output = Map::new();
                 for (index, item) in items.iter().enumerate() {
                     let entry_path = format!("{}[{}]", arg_path, index);
-                    let pair = item.as_array().ok_or_else(|| {
-                        TransformError::new(
-                            TransformErrorKind::ExprError,
-                            "entries must be arrays",
-                        )
-                        .with_path(&entry_path)
-                    })?;
-                    if pair.len() != 2 {
-                        return Err(TransformError::new(
-                            TransformErrorKind::ExprError,
-                            "entries must have exactly two items",
-                        )
-                        .with_path(&entry_path));
+                    match item {
+                        JsonValue::Array(pair) => {
+                            if pair.len() != 2 {
+                                return Err(TransformError::new(
+                                    TransformErrorKind::ExprError,
+                                    "entries must have exactly two items",
+                                )
+                                .with_path(&entry_path));
+                            }
+                            let key_path = format!("{}[0]", entry_path);
+                            let key = value_to_string(&pair[0], &key_path)?;
+                            let value = pair[1].clone();
+                            output.insert(key, value);
+                        }
+                        JsonValue::Object(map) => {
+                            let key_path = format!("{}.key", entry_path);
+                            let value_path = format!("{}.value", entry_path);
+                            let key_value = map.get("key").ok_or_else(|| {
+                                TransformError::new(
+                                    TransformErrorKind::ExprError,
+                                    "entry must contain key",
+                                )
+                                .with_path(&key_path)
+                            })?;
+                            if key_value.is_null() {
+                                return Err(TransformError::new(
+                                    TransformErrorKind::ExprError,
+                                    "entry key must not be null",
+                                )
+                                .with_path(&key_path));
+                            }
+                            let value_value = map.get("value").ok_or_else(|| {
+                                TransformError::new(
+                                    TransformErrorKind::ExprError,
+                                    "entry must contain value",
+                                )
+                                .with_path(&value_path)
+                            })?;
+                            let key = value_to_string(key_value, &key_path)?;
+                            output.insert(key, value_value.clone());
+                        }
+                        _ => {
+                            return Err(TransformError::new(
+                                TransformErrorKind::ExprError,
+                                "entries must be arrays or objects",
+                            )
+                            .with_path(&entry_path))
+                        }
                     }
-                    let key_path = format!("{}[0]", entry_path);
-                    let key = value_to_string(&pair[0], &key_path)?;
-                    let value = pair[1].clone();
-                    output.insert(key, value);
                 }
                 Ok(EvalValue::Value(JsonValue::Object(output)))
             }
