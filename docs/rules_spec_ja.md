@@ -255,7 +255,7 @@ expr:
 | `values` | `obj` | 値の配列。 |
 | `entries` | `obj` | `{key, value}` の配列。 |
 | `len` | `value` | string/array/object の長さを返す。 |
-| `from_entries` | `entries` / `key, value` | ペア配列 or key/value から object を生成。 |
+| `from_entries` | `entries` / `key, value` | ペア配列（`[key,value]` or `{key,value}`）や key/value から object を生成。 |
 | `object_flatten` | `obj` | オブジェクトを path キーで平坦化。 |
 | `object_unflatten` | `obj` | path キーからオブジェクトを再構成。 |
 
@@ -347,7 +347,7 @@ expr:
   - `get`: path は空文字不可の valid path 文字列。
   - `len`: `missing` は `missing`、`null` はエラー。
   - `len`: string/array/object のみ対応（文字数は Unicode スカラー数）。
-  - `from_entries`: 1 引数は object をそのまま返すか、`[key, value]` の配列から object を生成。
+  - `from_entries`: 1 引数は object をそのまま返すか、`[key,value]`/`{key,value}` の配列から object を生成。
   - `from_entries`: 2 引数は `key, value` で object を生成。`key` は string/number/bool、重複は後勝ち。
   - `from_entries`: `missing` は `missing`、`key` の `null` はエラー。`value` は任意 JSON（`null` 可）。
   - オブジェクト系（`merge`/`deep_merge`/`pick`/`omit`/`keys`/`values`/`entries`/`object_*`）:
