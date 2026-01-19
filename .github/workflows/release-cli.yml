@@ -9,7 +9,53 @@ permissions:
   id-token: write
 
 jobs:
+  update-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "Extracted version: ${VERSION}"
+
+      - name: Update Cargo.toml files
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for TOML in crates/transform_rules/Cargo.toml \
+                      crates/transform_rules_cli/Cargo.toml \
+                      crates/transform_rules_mcp/Cargo.toml; do
+            sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "$TOML"
+            echo "Updated $TOML to version ${VERSION}"
+          done
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Update Cargo.lock
+        run: cargo update -w
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add crates/*/Cargo.toml Cargo.lock
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
+            git push origin main
+          fi
+
   build-and-upload:
+    needs: update-version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -26,6 +72,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
