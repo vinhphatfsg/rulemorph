@@ -2,6 +2,11 @@
 name = "transform_rules_mcp"
 version = "0.1.5"
 edition = "2024"
+license = "MIT"
+description = "MCP server for YAML-based declarative data transformation"
+repository = "https://github.com/vinhphatfsg/transform-rules-rs"
+keywords = ["transform", "yaml", "mcp", "ai", "claude"]
+categories = ["command-line-utilities"]
 
 [[bin]]
 name = "transform-rules-mcp"
