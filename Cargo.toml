@@ -1,7 +1,7 @@
 [workspace]
 members = [
-    "crates/transform_rules",
-    "crates/transform_rules_cli",
-    "crates/transform_rules_mcp",
+    "crates/rulemorph",
+    "crates/rulemorph_cli",
+    "crates/rulemorph_mcp",
 ]
 resolver = "2"

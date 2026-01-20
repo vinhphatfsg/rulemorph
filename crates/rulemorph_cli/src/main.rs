@@ -4,14 +4,14 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
-use transform_rules::{
+use rulemorph::{
     generate_dto, parse_rule_file, preflight_validate_with_warnings, transform_stream,
     transform_with_warnings, validate_rule_file_with_source, DtoLanguage, InputFormat, RuleError,
     RuleFile, TransformError, TransformErrorKind, TransformWarning,
 };
 
 #[derive(Parser)]
-#[command(name = "transform-rules")]
+#[command(name = "rulemorph")]
 #[command(version, about = "Transform CSV/JSON data using YAML rules")]
 struct Cli {
     #[command(subcommand)]

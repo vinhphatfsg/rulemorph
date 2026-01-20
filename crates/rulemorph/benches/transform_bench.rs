@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use serde_json::json;
-use transform_rules::{parse_rule_file, transform};
+use rulemorph::{parse_rule_file, transform};
 
 const EXTENDED_RULES: &str = include_str!("../tests/fixtures/t13_expr_extended/rules.yaml");
 

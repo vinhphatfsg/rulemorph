@@ -1,5 +1,5 @@
 use serde_json::json;
-use transform_rules::{parse_rule_file, transform_with_warnings};
+use rulemorph::{parse_rule_file, transform_with_warnings};
 
 #[test]
 fn record_when_non_bool_warns_and_skips() {

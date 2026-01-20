@@ -1,18 +1,18 @@
 {
   "manifest_version": "0.3",
-  "name": "transform-rules-mcp",
-  "display_name": "Transform Rules MCP",
+  "name": "rulemorph-mcp",
+  "display_name": "Rulemorph MCP",
   "version": "VERSION_PLACEHOLDER",
   "description": "MCP server for CSV/JSON data transformation using YAML rules",
   "author": {
     "name": "vinhphatfsg",
     "url": "https://github.com/vinhphatfsg"
   },
-  "repository": "https://github.com/vinhphatfsg/transform-rules-rs",
+  "repository": "https://github.com/vinhphatfsg/rulemorph",
   "license": "MIT",
   "server": {
     "type": "binary",
-    "entry_point": "transform-rules-mcp"
+    "entry_point": "rulemorph-mcp"
   },
   "compatibility": {
     "platforms": ["darwin", "linux", "win32"]
@@ -49,15 +49,15 @@
   ],
   "resources": [
     {
-      "uri": "transform-rules://docs/rules_spec_en",
+      "uri": "rulemorph://docs/rules_spec_en",
       "description": "Rules specification (English)"
     },
     {
-      "uri": "transform-rules://docs/rules_spec_ja",
+      "uri": "rulemorph://docs/rules_spec_ja",
       "description": "Rules specification (Japanese)"
     },
     {
-      "uri": "transform-rules://docs/readme",
+      "uri": "rulemorph://docs/readme",
       "description": "README"
     }
   ]

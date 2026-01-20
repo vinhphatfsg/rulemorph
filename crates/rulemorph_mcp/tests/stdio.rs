@@ -4,7 +4,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 
 use serde_json::{json, Value};
 use tempfile::tempdir;
-use transform_rules::parse_rule_file;
+use rulemorph::parse_rule_file;
 
 struct McpServer {
     child: Child,
@@ -14,7 +14,7 @@ struct McpServer {
 
 impl McpServer {
     fn start() -> Self {
-        let bin = env!("CARGO_BIN_EXE_transform-rules-mcp");
+        let bin = env!("CARGO_BIN_EXE_rulemorph-mcp");
         let mut child = Command::new(bin)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -932,14 +932,14 @@ fn resources_list_and_read() {
     let resources = list_response["result"]["resources"]
         .as_array()
         .expect("resources array");
-    assert!(resources.iter().any(|item| item["uri"] == "transform-rules://docs/rules_spec_en"));
+    assert!(resources.iter().any(|item| item["uri"] == "rulemorph://docs/rules_spec_en"));
 
     let read_request = json!({
         "jsonrpc": "2.0",
         "id": 18,
         "method": "resources/read",
         "params": {
-            "uri": "transform-rules://docs/rules_spec_en"
+            "uri": "rulemorph://docs/rules_spec_en"
         }
     });
     let read_response = server.send(&read_request);

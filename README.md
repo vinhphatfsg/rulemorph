@@ -1,4 +1,4 @@
-# Transform Rules
+# Rulemorph
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -19,18 +19,18 @@ A Rust CLI and library to transform CSV/JSON data into JSON using YAML rules.
 ### Homebrew (recommended)
 
 ```sh
-brew install vinhphatfsg/tap/transform-rules
+brew install vinhphatfsg/tap/rulemorph
 ```
 
 <details>
 <summary>Other platforms</summary>
 
-Download prebuilt binaries from [GitHub Releases](https://github.com/vinhphatfsg/transform-rules-rs/releases):
+Download prebuilt binaries from [GitHub Releases](https://github.com/vinhphatfsg/rulemorph/releases):
 
-- macOS (Apple Silicon): `transform-rules-<TAG>-aarch64-apple-darwin.tar.gz`
-- macOS (Intel): `transform-rules-<TAG>-x86_64-apple-darwin.tar.gz`
-- Linux (x86_64): `transform-rules-<TAG>-x86_64-unknown-linux-gnu.tar.gz`
-- Windows (x86_64): `transform-rules-<TAG>-x86_64-pc-windows-msvc.zip`
+- macOS (Apple Silicon): `rulemorph-<TAG>-aarch64-apple-darwin.tar.gz`
+- macOS (Intel): `rulemorph-<TAG>-x86_64-apple-darwin.tar.gz`
+- Linux (x86_64): `rulemorph-<TAG>-x86_64-unknown-linux-gnu.tar.gz`
+- Windows (x86_64): `rulemorph-<TAG>-x86_64-pc-windows-msvc.zip`
 
 </details>
 
@@ -65,7 +65,7 @@ mappings:
 
 **Run**
 ```sh
-transform-rules transform -r rules.yaml -i input.json
+rulemorph transform -r rules.yaml -i input.json
 ```
 
 **Output**
@@ -95,7 +95,7 @@ For full rule specification, see [docs/rules_spec_en.md](docs/rules_spec_en.md) 
 Generate type definitions from your rules:
 
 ```sh
-transform-rules generate -r rules.yaml -l typescript
+rulemorph generate -r rules.yaml -l typescript
 ```
 
 Output:
@@ -112,7 +112,7 @@ Supported languages: `rust`, `typescript`, `python`, `go`, `java`, `kotlin`, `sw
 ## Library Usage (Rust)
 
 ```rust
-use transform_rules::{parse_rule_file, transform};
+use rulemorph::{parse_rule_file, transform};
 
 let rule = parse_rule_file(&std::fs::read_to_string("rules.yaml")?)?;
 let output = transform(&rule, &std::fs::read_to_string("input.json")?, None)?;
@@ -120,8 +120,8 @@ let output = transform(&rule, &std::fs::read_to_string("input.json")?, None)?;
 
 ## MCP Server
 
-An MCP server (`transform-rules-mcp`) is included for AI assistant integration:
+An MCP server (`rulemorph-mcp`) is included for AI assistant integration:
 
 ```sh
-claude mcp add transform-rules -- transform-rules-mcp
+claude mcp add rulemorph -- rulemorph-mcp
 ```

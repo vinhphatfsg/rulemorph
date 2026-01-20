@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use transform_rules::{
+use rulemorph::{
     parse_rule_file, validate_rule_file, validate_rule_file_with_source, ErrorCode, RuleError,
 };
 
@@ -18,7 +18,7 @@ fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
-fn load_rule(case: &str) -> transform_rules::RuleFile {
+fn load_rule(case: &str) -> rulemorph::RuleFile {
     let rules_path = fixtures_dir().join(case).join("rules.yaml");
     let yaml = fs::read_to_string(&rules_path)
         .unwrap_or_else(|_| panic!("failed to read {}", rules_path.display()));

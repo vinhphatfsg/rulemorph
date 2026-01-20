@@ -1,10 +1,10 @@
 [package]
-name = "transform_rules"
+name = "rulemorph"
 version = "0.1.5"
 edition = "2024"
 license = "MIT"
 description = "YAML-based declarative data transformation engine for CSV/JSON to JSON"
-repository = "https://github.com/vinhphatfsg/transform-rules-rs"
+repository = "https://github.com/vinhphatfsg/rulemorph"
 keywords = ["transform", "yaml", "json", "csv", "etl"]
 categories = ["command-line-utilities", "data-structures", "encoding"]
 

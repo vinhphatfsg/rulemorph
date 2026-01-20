@@ -5,16 +5,16 @@ use std::io::{self, BufRead, BufReader, Write};
 use csv::ReaderBuilder;
 use serde_json::{json, Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
-use transform_rules::{
+use rulemorph::{
     generate_dto, parse_rule_file, transform_stream, transform_with_warnings,
     validate_rule_file_with_source, DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError,
     RuleFile, TransformError, TransformErrorKind, TransformWarning,
 };
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
-const RESOURCE_URI_RULES_SPEC_EN: &str = "transform-rules://docs/rules_spec_en";
-const RESOURCE_URI_RULES_SPEC_JA: &str = "transform-rules://docs/rules_spec_ja";
-const RESOURCE_URI_README: &str = "transform-rules://docs/readme";
+const RESOURCE_URI_RULES_SPEC_EN: &str = "rulemorph://docs/rules_spec_en";
+const RESOURCE_URI_RULES_SPEC_JA: &str = "rulemorph://docs/rules_spec_ja";
+const RESOURCE_URI_README: &str = "rulemorph://docs/readme";
 const RESOURCE_RULES_SPEC_EN: &str = include_str!("../../../docs/rules_spec_en.md");
 const RESOURCE_RULES_SPEC_JA: &str = include_str!("../../../docs/rules_spec_ja.md");
 const RESOURCE_README: &str = include_str!("../../../README.md");
@@ -206,7 +206,7 @@ fn initialize_result() -> Value {
             }
         },
         "serverInfo": {
-            "name": "transform-rules-mcp",
+            "name": "rulemorph-mcp",
             "version": env!("CARGO_PKG_VERSION")
         }
     })
@@ -354,7 +354,7 @@ fn prompts_get_result(params: &Value) -> Result<Value, String> {
     let (description, template) = match name {
         "rule_from_input_base" => (
             "Generate rules from base rules and input samples.",
-            r#"You are generating a transform-rules YAML file.
+            r#"You are generating a rulemorph YAML file.
 The base rules define the output shape. Keep existing expr/value/default/required unless mapping is unresolved.
 Use the input sample to map sources. Unmapped targets must use value: null and required: false.
 Return YAML only.
@@ -371,7 +371,7 @@ Optional records_path: {{records_path}}
         ),
         "rule_from_dto" => (
             "Generate rules from DTO schema and input samples.",
-            r#"You are generating a transform-rules YAML file whose output matches the DTO schema.
+            r#"You are generating a rulemorph YAML file whose output matches the DTO schema.
 Use the input sample to map sources. Unmapped targets must use value: null and required: false.
 Return YAML only.
 

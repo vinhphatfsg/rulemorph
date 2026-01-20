@@ -28,7 +28,7 @@ What actually happened.
 
 - OS: [e.g., macOS 14.0, Ubuntu 22.04]
 - Rust version: [e.g., 1.85.0]
-- transform-rules version: [e.g., 0.1.5]
+- rulemorph version: [e.g., 0.1.5]
 
 ## Rule File (if applicable)
 

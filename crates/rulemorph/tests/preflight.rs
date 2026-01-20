@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use transform_rules::{parse_rule_file, preflight_validate, TransformErrorKind};
+use rulemorph::{parse_rule_file, preflight_validate, TransformErrorKind};
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -9,7 +9,7 @@ fn fixtures_dir() -> PathBuf {
         .join("fixtures")
 }
 
-fn load_rule(path: &Path) -> transform_rules::RuleFile {
+fn load_rule(path: &Path) -> rulemorph::RuleFile {
     let yaml = fs::read_to_string(path)
         .unwrap_or_else(|_| panic!("failed to read {}", path.display()));
     parse_rule_file(&yaml).unwrap_or_else(|err| {

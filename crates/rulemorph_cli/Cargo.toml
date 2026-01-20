@@ -1,21 +1,21 @@
 [package]
-name = "transform_rules_cli"
+name = "rulemorph_cli"
 version = "0.1.5"
 edition = "2024"
 license = "MIT"
 description = "CLI for YAML-based declarative data transformation"
-repository = "https://github.com/vinhphatfsg/transform-rules-rs"
+repository = "https://github.com/vinhphatfsg/rulemorph"
 keywords = ["transform", "yaml", "json", "csv", "cli"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "transform-rules"
+name = "rulemorph"
 path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 serde_json = "1.0"
-transform_rules = { path = "../transform_rules" }
+rulemorph = { path = "../rulemorph" }
 
 [dev-dependencies]
 assert_cmd = "2.0"

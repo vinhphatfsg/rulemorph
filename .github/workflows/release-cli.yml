@@ -29,9 +29,9 @@ jobs:
       - name: Update Cargo.toml files
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          for TOML in crates/transform_rules/Cargo.toml \
-                      crates/transform_rules_cli/Cargo.toml \
-                      crates/transform_rules_mcp/Cargo.toml; do
+          for TOML in crates/rulemorph/Cargo.toml \
+                      crates/rulemorph_cli/Cargo.toml \
+                      crates/rulemorph_mcp/Cargo.toml; do
             sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "$TOML"
             echo "Updated $TOML to version ${VERSION}"
           done
@@ -81,7 +81,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build
-        run: cargo build -p transform_rules_cli -p transform_rules_mcp --release --locked --target ${{ matrix.target }}
+        run: cargo build -p rulemorph_cli -p rulemorph_mcp --release --locked --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -90,8 +90,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          BIN_CLI="transform-rules"
-          BIN_MCP="transform-rules-mcp"
+          BIN_CLI="rulemorph"
+          BIN_MCP="rulemorph-mcp"
           OUT_DIR="dist"
           STAGING="staging"
           MCPB_DIR="mcpb-staging"
@@ -116,8 +116,8 @@ jobs:
           TARGET: ${{ matrix.target }}
         shell: pwsh
         run: |
-          $BinCli = 'transform-rules.exe'
-          $BinMcp = 'transform-rules-mcp.exe'
+          $BinCli = 'rulemorph.exe'
+          $BinMcp = 'rulemorph-mcp.exe'
           $OutDir = 'dist'
           $Staging = 'staging'
           $McpbDir = 'mcpb-staging'
@@ -128,13 +128,13 @@ jobs:
           # CLI package (zip)
           Copy-Item "target\$env:TARGET\release\$BinCli" "$Staging\$BinCli"
           Copy-Item "target\$env:TARGET\release\$BinMcp" "$Staging\$BinMcp"
-          Compress-Archive -Path "$Staging\$BinCli","$Staging\$BinMcp" -DestinationPath "$OutDir\transform-rules-$env:VERSION-$env:TARGET.zip"
+          Compress-Archive -Path "$Staging\$BinCli","$Staging\$BinMcp" -DestinationPath "$OutDir\rulemorph-$env:VERSION-$env:TARGET.zip"
 
           # MCPB package (.mcpb = ZIP)
           $VersionNum = $env:VERSION.TrimStart('v')
           (Get-Content mcp/manifest.json.template) -replace 'VERSION_PLACEHOLDER', $VersionNum | Set-Content "$McpbDir\manifest.json"
           Copy-Item "target\$env:TARGET\release\$BinMcp" "$McpbDir\$BinMcp"
-          Compress-Archive -Path "$McpbDir\*" -DestinationPath "$OutDir\transform-rules-mcp-$env:VERSION-$env:TARGET.mcpb"
+          Compress-Archive -Path "$McpbDir\*" -DestinationPath "$OutDir\rulemorph-mcp-$env:VERSION-$env:TARGET.mcpb"
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
@@ -176,7 +176,7 @@ jobs:
           }
 
           for TARGET in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
-            FILENAME="transform-rules-mcp-${VERSION}-${TARGET}.mcpb"
+            FILENAME="rulemorph-mcp-${VERSION}-${TARGET}.mcpb"
             URL="${REPO_URL}/releases/download/${VERSION}/${FILENAME}"
             download_with_retry "$URL" "$FILENAME"
             SHA=$(sha256sum "$FILENAME" | cut -d' ' -f1)
@@ -196,13 +196,13 @@ jobs:
              --arg sha_linux "$SHA256_x86_64_unknown_linux_gnu" \
              --arg sha_win "$SHA256_x86_64_pc_windows_msvc" \
              '.version = $v |
-              .packages[0].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-aarch64-apple-darwin.mcpb" |
+              .packages[0].identifier = $repo_url + "/releases/download/v" + $v + "/rulemorph-mcp-v" + $v + "-aarch64-apple-darwin.mcpb" |
               .packages[0].fileSha256 = $sha_arm |
-              .packages[1].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-x86_64-apple-darwin.mcpb" |
+              .packages[1].identifier = $repo_url + "/releases/download/v" + $v + "/rulemorph-mcp-v" + $v + "-x86_64-apple-darwin.mcpb" |
               .packages[1].fileSha256 = $sha_intel |
-              .packages[2].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-x86_64-unknown-linux-gnu.mcpb" |
+              .packages[2].identifier = $repo_url + "/releases/download/v" + $v + "/rulemorph-mcp-v" + $v + "-x86_64-unknown-linux-gnu.mcpb" |
               .packages[2].fileSha256 = $sha_linux |
-              .packages[3].identifier = $repo_url + "/releases/download/v" + $v + "/transform-rules-mcp-v" + $v + "-x86_64-pc-windows-msvc.mcpb" |
+              .packages[3].identifier = $repo_url + "/releases/download/v" + $v + "/rulemorph-mcp-v" + $v + "-x86_64-pc-windows-msvc.mcpb" |
               .packages[3].fileSha256 = $sha_win' \
              server.json > server.json.tmp
           mv server.json.tmp server.json
@@ -252,7 +252,7 @@ jobs:
           }
 
           for TARGET in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
-            FILENAME="transform-rules-${VERSION}-${TARGET}.tar.gz"
+            FILENAME="rulemorph-${VERSION}-${TARGET}.tar.gz"
             URL="${REPO_URL}/releases/download/${VERSION}/${FILENAME}"
             download_with_retry "$URL" "$FILENAME"
             SHA=$(sha256sum "$FILENAME" | cut -d' ' -f1)

@@ -6,7 +6,7 @@ use assert_cmd::cargo::cargo_bin_cmd;
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("transform_rules")
+        .join("rulemorph")
         .join("tests")
         .join("fixtures")
 }
@@ -21,7 +21,7 @@ fn read_json(path: &PathBuf) -> serde_json::Value {
 #[test]
 fn validate_success_returns_zero() {
     let rules = fixtures_dir().join("t01_csv_basic").join("rules.yaml");
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("validate")
         .arg("-r")
@@ -36,7 +36,7 @@ fn validate_json_errors() {
     let rules = fixtures_dir()
         .join("v01_missing_mapping_value")
         .join("rules.yaml");
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("validate")
         .arg("-r")
@@ -59,7 +59,7 @@ fn preflight_success_returns_zero() {
     let base = fixtures_dir().join("p01_preflight_ok");
     let rules = base.join("rules.yaml");
     let input = base.join("input.json");
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("preflight")
         .arg("-r")
@@ -76,7 +76,7 @@ fn preflight_json_errors() {
     let base = fixtures_dir().join("p03_preflight_type_cast_failed");
     let rules = base.join("rules.yaml");
     let input = base.join("input.json");
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("preflight")
         .arg("-r")
@@ -104,7 +104,7 @@ fn transform_outputs_json() {
     let context = base.join("context.json");
     let expected = read_json(&base.join("expected.json"));
 
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("transform")
         .arg("-r")
@@ -131,7 +131,7 @@ fn transform_outputs_ndjson() {
     let expected = fs::read_to_string(base.join("expected.ndjson"))
         .unwrap_or_else(|_| panic!("failed to read expected.ndjson"));
 
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("transform")
         .arg("-r")
@@ -157,7 +157,7 @@ fn transform_writes_output_file() {
     let temp_dir = tempfile::tempdir().unwrap();
     let out_path = temp_dir.path().join("nested").join("out.json");
 
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("transform")
         .arg("-r")
@@ -183,7 +183,7 @@ fn transform_emits_warnings_json() {
     let rules = base.join("rules.yaml");
     let input = base.join("input.json");
 
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("transform")
         .arg("-r")
@@ -210,7 +210,7 @@ fn transform_validate_flag_reports_validation_error() {
         .join("rules.yaml");
     let input = fixtures_dir().join("t01_csv_basic").join("input.csv");
 
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("transform")
         .arg("-r")
@@ -228,7 +228,7 @@ fn transform_validate_flag_reports_validation_error() {
 fn generate_outputs_rust_dto() {
     let rules = fixtures_dir().join("t01_csv_basic").join("rules.yaml");
 
-    let mut cmd = cargo_bin_cmd!("transform-rules");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("generate")
         .arg("-r")

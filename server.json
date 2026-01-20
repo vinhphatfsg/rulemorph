@@ -1,17 +1,17 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.vinhphatfsg/transform-rules-mcp",
-  "title": "Transform Rules MCP Server",
+  "name": "io.github.vinhphatfsg/rulemorph-mcp",
+  "title": "Rulemorph MCP Server",
   "description": "MCP server for CSV/JSON data transformation using YAML rules",
   "repository": {
-    "url": "https://github.com/vinhphatfsg/transform-rules-rs",
+    "url": "https://github.com/vinhphatfsg/rulemorph",
     "source": "github"
   },
   "version": "0.1.3",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-aarch64-apple-darwin.mcpb",
+      "identifier": "https://github.com/vinhphatfsg/rulemorph/releases/download/v0.1.3/rulemorph-mcp-v0.1.3-aarch64-apple-darwin.mcpb",
       "fileSha256": "SHA256_PLACEHOLDER",
       "transport": {
         "type": "stdio"
@@ -19,7 +19,7 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-x86_64-apple-darwin.mcpb",
+      "identifier": "https://github.com/vinhphatfsg/rulemorph/releases/download/v0.1.3/rulemorph-mcp-v0.1.3-x86_64-apple-darwin.mcpb",
       "fileSha256": "SHA256_PLACEHOLDER",
       "transport": {
         "type": "stdio"
@@ -27,7 +27,7 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-x86_64-unknown-linux-gnu.mcpb",
+      "identifier": "https://github.com/vinhphatfsg/rulemorph/releases/download/v0.1.3/rulemorph-mcp-v0.1.3-x86_64-unknown-linux-gnu.mcpb",
       "fileSha256": "SHA256_PLACEHOLDER",
       "transport": {
         "type": "stdio"
@@ -35,7 +35,7 @@
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/vinhphatfsg/transform-rules-rs/releases/download/v0.1.3/transform-rules-mcp-v0.1.3-x86_64-pc-windows-msvc.mcpb",
+      "identifier": "https://github.com/vinhphatfsg/rulemorph/releases/download/v0.1.3/rulemorph-mcp-v0.1.3-x86_64-pc-windows-msvc.mcpb",
       "fileSha256": "SHA256_PLACEHOLDER",
       "transport": {
         "type": "stdio"

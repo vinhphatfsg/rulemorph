@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use serde_json::json;
-use transform_rules::{parse_rule_file, transform};
+use rulemorph::{parse_rule_file, transform};
 
 const PERF_RULES: &str = r#"
 version: 1

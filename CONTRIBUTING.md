@@ -1,6 +1,6 @@
-# Contributing to Transform Rules
+# Contributing to Rulemorph
 
-Thank you for your interest in contributing to Transform Rules! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Rulemorph! This document provides guidelines and instructions for contributing.
 
 ## Ways to Contribute
 
@@ -21,8 +21,8 @@ Thank you for your interest in contributing to Transform Rules! This document pr
 
 ```bash
 # Clone the repository
-git clone https://github.com/vinhphatfsg/transform-rules-rs.git
-cd transform-rules-rs
+git clone https://github.com/vinhphatfsg/rulemorph.git
+cd rulemorph
 
 # Build all crates
 cargo build
@@ -31,16 +31,16 @@ cargo build
 cargo test
 
 # Run a specific test
-cargo test -p transform_rules test_name
+cargo test -p rulemorph test_name
 ```
 
 ### Project Structure
 
 ```
 crates/
-├── transform_rules/      # Core library
-├── transform_rules_cli/  # CLI binary
-└── transform_rules_mcp/  # MCP server
+├── rulemorph/      # Core library
+├── rulemorph_cli/  # CLI binary
+└── rulemorph_mcp/  # MCP server
 ```
 
 ## Pull Request Process
@@ -75,13 +75,13 @@ crates/
 cargo test
 
 # Run tests for a specific crate
-cargo test -p transform_rules
+cargo test -p rulemorph
 
 # Run with output
 cargo test -- --nocapture
 
 # Run performance tests
-cargo test -p transform_rules --test performance -- --ignored --nocapture
+cargo test -p rulemorph --test performance -- --ignored --nocapture
 ```
 
 ## Reporting Issues
