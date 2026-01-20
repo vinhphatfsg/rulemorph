@@ -678,7 +678,7 @@ checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
 
 [[package]]
 name = "rulemorph"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "criterion",
@@ -691,7 +691,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_cli"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -703,7 +703,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_mcp"
-version = "0.1.5"
+version = "0.2.0"
 dependencies = [
  "csv",
  "rulemorph",
