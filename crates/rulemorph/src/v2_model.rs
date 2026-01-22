@@ -53,6 +53,8 @@ pub enum V2Step {
     Let(V2LetStep),
     If(V2IfStep),
     Map(V2MapStep),
+    /// Reference step - returns a reference value (e.g., "@doubled" to return a let-bound variable)
+    Ref(V2Ref),
 }
 
 /// v2 Op Step - a named operation with arguments

@@ -158,18 +158,51 @@ fn validation_errors_include_location_with_source() {
 }
 
 // =============================================================================
-// v2 Validation Tests (T26)
+// v2 Validation Tests
 // =============================================================================
-// Note: v2 validation is performed at runtime during transform.
-// Static validation of v2 expressions is not yet fully implemented.
-// See transform_golden.rs for v2 transform tests.
 
 #[test]
-fn v1_compat_rules_should_pass_validation() {
-    // v1 rules should still pass validation
-    let rule = load_rule("tv27_v1_compat");
-    if let Err(errors) = validate_rule_file(&rule) {
-        let codes: Vec<&'static str> = errors.iter().map(|e| e.code.as_str()).collect();
-        panic!("expected valid rules for tv27_v1_compat, got {:?}", codes);
+fn v2_valid_rules_should_pass_validation() {
+    let cases = [
+        "tv22_basic",
+        "tv23_steps",
+        "tv24_conditions",
+        "tv25_lookup",
+        "tv27_v1_compat",
+        "tv28_map_let_binding",
+    ];
+
+    for case in cases {
+        let rule = load_rule(case);
+        if let Err(errors) = validate_rule_file(&rule) {
+            let codes: Vec<&'static str> = errors.iter().map(|e| e.code.as_str()).collect();
+            panic!("expected valid rules for {}, got {:?}", case, codes);
+        }
     }
+}
+
+#[test]
+fn v2_invalid_rules_should_fail_validation() {
+    // tv26_v01_unknown_op should fail with UnknownOp error
+    let rule = load_rule("tv26_v01_unknown_op");
+    let expected = normalize_expected(load_expected_errors("tv26_v01_unknown_op"));
+    let errors = validate_rule_file(&rule).unwrap_err();
+    let actual = normalize_errors(errors);
+    assert_eq!(
+        actual, expected,
+        "error mismatch for tv26_v01_unknown_op"
+    );
+}
+
+#[test]
+fn v2_forward_out_ref_should_fail_validation() {
+    // tv26_v02_forward_out_ref should fail with ForwardOutReference error
+    let rule = load_rule("tv26_v02_forward_out_ref");
+    let expected = normalize_expected(load_expected_errors("tv26_v02_forward_out_ref"));
+    let errors = validate_rule_file(&rule).unwrap_err();
+    let actual = normalize_errors(errors);
+    assert_eq!(
+        actual, expected,
+        "error mismatch for tv26_v02_forward_out_ref"
+    );
 }

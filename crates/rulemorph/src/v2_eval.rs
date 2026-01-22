@@ -842,6 +842,10 @@ pub fn eval_v2_pipe<'a>(
             V2Step::Map(map_step) => {
                 current = eval_v2_map_step(map_step, current, record, context, out, &step_path, &current_ctx)?;
             }
+            V2Step::Ref(v2_ref) => {
+                // Reference step evaluates the reference and returns its value
+                current = eval_v2_ref(v2_ref, record, context, out, &step_path, &current_ctx)?;
+            }
         }
     }
 
@@ -961,6 +965,10 @@ pub fn eval_v2_map_step<'a>(
                 }
                 V2Step::Map(nested_map) => {
                     current = eval_v2_map_step(nested_map, current, record, context, out, &step_path, &step_ctx)?;
+                }
+                V2Step::Ref(v2_ref) => {
+                    // Reference step evaluates the reference and returns its value
+                    current = eval_v2_ref(v2_ref, record, context, out, &step_path, &step_ctx)?;
                 }
             };
         }

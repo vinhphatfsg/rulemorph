@@ -14,6 +14,7 @@ use crate::v2_model::{
     V2Condition, V2Comparison, V2ComparisonOp,
     V2LetStep, V2IfStep, V2MapStep,
 };
+// Note: V2Step::Ref variant is used for reference steps like "@doubled"
 
 /// Parse a v2 reference string into V2Ref
 ///
@@ -194,6 +195,18 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
             Err(V2ParseError::InvalidStep("unknown step type".to_string()))
         }
         JsonValue::String(s) => {
+            // Check if it's a v2 reference (starts with @)
+            if let Some(v2_ref) = parse_v2_ref(s) {
+                return Ok(V2Step::Ref(v2_ref));
+            }
+            // Check for pipe value ($)
+            if is_pipe_value(s) {
+                // $ as a step means "return current pipe value"
+                // This is essentially a no-op, but we represent it as a PipeValue reference
+                return Err(V2ParseError::InvalidStep(
+                    "$ as a step is not valid, use it as start or in expressions".to_string(),
+                ));
+            }
             // Shorthand for simple operations: "trim" -> { op: "trim" }
             Ok(V2Step::Op(V2OpStep {
                 op: s.clone(),
