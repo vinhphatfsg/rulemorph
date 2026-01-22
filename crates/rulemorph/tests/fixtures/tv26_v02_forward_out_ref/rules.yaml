@@ -1,0 +1,11 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: a
+    expr:
+      - "@out.b"
+  - target: b
+    expr:
+      - "@input.x"

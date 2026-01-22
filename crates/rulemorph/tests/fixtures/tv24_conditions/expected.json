@@ -1,0 +1,23 @@
+[
+  {
+    "is_active": true,
+    "is_not_pending": true,
+    "is_premium_active": true,
+    "is_special": true,
+    "is_email": true
+  },
+  {
+    "is_active": false,
+    "is_not_pending": false,
+    "is_premium_active": false,
+    "is_special": true,
+    "is_email": false
+  },
+  {
+    "is_active": false,
+    "is_not_pending": true,
+    "is_premium_active": false,
+    "is_special": false,
+    "is_email": true
+  }
+]

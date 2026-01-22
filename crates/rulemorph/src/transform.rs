@@ -11,6 +11,8 @@ use crate::cache::LruCache;
 use crate::error::{TransformError, TransformErrorKind, TransformWarning};
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, RuleFile};
 use crate::path::{get_path, parse_path, PathToken};
+use crate::v2_parser::parse_v2_pipe_from_value;
+use crate::v2_eval::{V2EvalContext, eval_v2_pipe, EvalValue as V2EvalValue};
 
 const REGEX_CACHE_CAPACITY: usize = 128;
 
@@ -185,7 +187,7 @@ fn apply_mappings(
         if !eval_when(mapping, record, context, &out, &mapping_path, warnings) {
             continue;
         }
-        let value = eval_mapping(mapping, record, context, &out, &mapping_path)?;
+        let value = eval_mapping(mapping, record, context, &out, &mapping_path, rule.version)?;
         if let Some(value) = value {
             set_path(&mut out, &mapping.target, value, &mapping_path)?;
         }
@@ -377,20 +379,53 @@ fn eval_mapping(
     context: Option<&JsonValue>,
     out: &JsonValue,
     mapping_path: &str,
+    version: u8,
 ) -> Result<Option<JsonValue>, TransformError> {
     let value = if let Some(source) = &mapping.source {
         resolve_source(source, record, context, out, mapping_path)?
     } else if let Some(literal) = &mapping.value {
         EvalValue::Value(literal.clone())
     } else if let Some(expr) = &mapping.expr {
-        eval_expr(
-            expr,
-            record,
-            context,
-            out,
-            &format!("{}.expr", mapping_path),
-            None,
-        )?
+        // Check if this is a v2 expression (version 2)
+        if version >= 2 {
+            let expr_path = format!("{}.expr", mapping_path);
+            // Try to interpret as v2 pipe
+            let v2_json = expr_to_json_for_v2_pipe(expr);
+            if let Some(json_val) = v2_json {
+                let v2_pipe = parse_v2_pipe_from_value(&json_val)
+                    .map_err(|e| {
+                        TransformError::new(TransformErrorKind::ExprError, e.to_string())
+                            .with_path(&expr_path)
+                    })?;
+                let v2_ctx = V2EvalContext::new();
+                let v2_result = eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
+                // Convert v2 EvalValue to v1 EvalValue
+                match v2_result {
+                    V2EvalValue::Missing => EvalValue::Missing,
+                    V2EvalValue::Value(v) => EvalValue::Value(v),
+                }
+            } else {
+                // v2 but not a v2 pipe - use v1 eval
+                eval_expr(
+                    expr,
+                    record,
+                    context,
+                    out,
+                    &expr_path,
+                    None,
+                )?
+            }
+        } else {
+            // v1 rule - use v1 eval
+            eval_expr(
+                expr,
+                record,
+                context,
+                out,
+                &format!("{}.expr", mapping_path),
+                None,
+            )?
+        }
     } else {
         return Err(TransformError::new(
             TransformErrorKind::InvalidInput,
@@ -4931,6 +4966,69 @@ fn literal_string(expr: &Expr) -> Option<&str> {
     }
 }
 
+/// Convert an Expr to JSON value for v2 pipe parsing.
+/// Returns Some if the expr looks like a v2 pipe expression:
+/// - Literal(Array) -> direct array
+/// - Ref where ref_path starts with @ -> single element array
+/// - Chain where first element starts with @ -> convert to array
+/// - Literal(Object) with v2-style keys (lookup_first, etc.) -> single element array
+/// Returns None if it looks like v1 expression and should be handled by v1 eval.
+fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
+    match expr {
+        Expr::Literal(JsonValue::Array(arr)) => {
+            // Direct array - v2 pipe
+            Some(JsonValue::Array(arr.clone()))
+        }
+        Expr::Ref(expr_ref) if expr_ref.ref_path.starts_with('@') => {
+            // Single v2 reference (serde collapsed 1-element array)
+            // Wrap it as single-element array
+            Some(JsonValue::Array(vec![JsonValue::String(expr_ref.ref_path.clone())]))
+        }
+        Expr::Literal(JsonValue::Object(obj)) => {
+            // Check for v2 keywords like lookup_first, lookup
+            if obj.contains_key("lookup_first") || obj.contains_key("lookup") {
+                Some(JsonValue::Array(vec![JsonValue::Object(obj.clone())]))
+            } else {
+                None
+            }
+        }
+        Expr::Chain(chain) => {
+            // Check if first element is a v2 ref
+            if let Some(first) = chain.chain.first() {
+                if let Expr::Ref(r) = first {
+                    if r.ref_path.starts_with('@') {
+                        // Convert chain to array
+                        let arr: Vec<JsonValue> = chain.chain.iter()
+                            .map(|e| expr_to_json_value(e))
+                            .collect();
+                        return Some(JsonValue::Array(arr));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Helper to convert Expr to JsonValue (for Chain conversion)
+fn expr_to_json_value(expr: &Expr) -> JsonValue {
+    match expr {
+        Expr::Ref(r) => JsonValue::String(r.ref_path.clone()),
+        Expr::Literal(v) => v.clone(),
+        Expr::Op(op) => {
+            let mut obj = serde_json::Map::new();
+            let args: Vec<JsonValue> = op.args.iter().map(expr_to_json_value).collect();
+            obj.insert(op.op.clone(), JsonValue::Array(args));
+            JsonValue::Object(obj)
+        }
+        Expr::Chain(chain) => {
+            let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+            JsonValue::Array(arr)
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Namespace {
     Input,
@@ -4956,4 +5054,228 @@ struct EvalLocals<'a> {
 enum EvalValue {
     Missing,
     Value(JsonValue),
+}
+
+// =============================================================================
+// T21: v2 transform integration tests
+// =============================================================================
+
+#[cfg(test)]
+mod v2_transform_tests {
+    use super::*;
+    use crate::parse_rule_file;
+
+    #[test]
+    fn test_v2_simple_ref_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: user_name
+    expr:
+      - "@input.name"
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"name": "Alice"}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"user_name": "Alice"}]));
+    }
+
+    #[test]
+    fn test_v2_pipe_with_ops_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: name
+    expr:
+      - "@input.name"
+      - trim
+      - uppercase
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"name": "  alice  "}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"name": "ALICE"}]));
+    }
+
+    #[test]
+    fn test_v2_context_ref_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: rate
+    expr:
+      - "@context.rate"
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"id": 1}]"#;
+        let context = serde_json::json!({"rate": 1.5});
+        let result = transform(&rule, input, Some(&context)).unwrap();
+        assert_eq!(result, serde_json::json!([{"rate": 1.5}]));
+    }
+
+    #[test]
+    fn test_v2_out_ref_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: first_name
+    expr:
+      - "@input.name"
+  - target: greeting
+    expr:
+      - "Hello, "
+      - concat: ["@out.first_name"]
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"name": "Bob"}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"first_name": "Bob", "greeting": "Hello, Bob"}]));
+    }
+
+    #[test]
+    fn test_v2_with_let_step_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: total
+    expr:
+      - "@input.price"
+      - let: { base: "$" }
+      - multiply: [1.1]
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"price": 100}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        let total = result[0]["total"].as_f64().unwrap();
+        assert!((total - 110.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_v2_with_if_step_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: discount
+    expr:
+      - "@input.total"
+      - if:
+          cond:
+            gt: ["$", 1000]
+          then:
+            - "$"
+            - multiply: [0.9]
+          else:
+            - "$"
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"total": 2000}, {"total": 500}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        let first = result[0]["discount"].as_f64().unwrap();
+        let second = result[1]["discount"].as_f64().unwrap();
+        assert!((first - 1800.0).abs() < 0.001);
+        assert!((second - 500.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_v2_with_map_step_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: items
+    expr:
+      - "@input.values"
+      - map:
+        - multiply: [2]
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"values": [1, 2, 3]}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        // multiply returns f64, so [2.0, 4.0, 6.0]
+        assert_eq!(result, serde_json::json!([{"items": [2.0, 4.0, 6.0]}]));
+    }
+
+    #[test]
+    fn test_v2_v1_mixed_mappings() {
+        // v1 style mapping (source) should still work in version 2
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: name
+    source: name
+  - target: upper_name
+    expr:
+      - "@input.name"
+      - uppercase
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"name": "alice"}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"name": "alice", "upper_name": "ALICE"}]));
+    }
+
+    #[test]
+    fn test_v2_lookup_first_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: dept_name
+    expr:
+      - lookup_first:
+        - "@context.departments"
+        - id
+        - "@input.dept_id"
+        - name
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"dept_id": 2}]"#;
+        let context = serde_json::json!({
+            "departments": [
+                {"id": 1, "name": "Engineering"},
+                {"id": 2, "name": "Marketing"},
+                {"id": 3, "name": "Sales"}
+            ]
+        });
+        let result = transform(&rule, input, Some(&context)).unwrap();
+        assert_eq!(result, serde_json::json!([{"dept_name": "Marketing"}]));
+    }
+
+    #[test]
+    fn test_v1_rules_still_work() {
+        // Ensure v1 rules are not affected
+        let yaml = r#"
+version: 1
+input:
+  format: json
+mappings:
+  - target: name
+    source: name
+  - target: upper
+    expr:
+      op: uppercase
+      args:
+        - { ref: input.name }
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"name": "test"}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"name": "test", "upper": "TEST"}]));
+    }
 }

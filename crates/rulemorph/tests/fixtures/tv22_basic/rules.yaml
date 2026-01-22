@@ -1,0 +1,32 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  # Basic v2 reference
+  - target: name
+    expr:
+      - "@input.name"
+      - trim
+      - uppercase
+
+  # v2 reference with out
+  - target: greeting
+    expr:
+      - "Hello, "
+      - concat: ["@out.name"]
+
+  # v2 with context reference
+  - target: rate
+    expr:
+      - "@context.exchange_rate"
+
+  # v2 with pipe operations
+  - target: price
+    expr:
+      - "@input.base_price"
+      - multiply: ["@context.exchange_rate"]
+
+  # Literal value (v1 compatible)
+  - target: currency
+    value: "USD"

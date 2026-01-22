@@ -1,0 +1,30 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  # lookup_first - get single matching item
+  - target: dept_name
+    expr:
+      - lookup_first:
+        - "@context.departments"
+        - id
+        - "@input.dept_id"
+        - name
+
+  # lookup_first - get whole object
+  - target: dept_info
+    expr:
+      - lookup_first:
+        - "@context.departments"
+        - id
+        - "@input.dept_id"
+
+  # lookup - get all matches
+  - target: all_projects
+    expr:
+      - lookup:
+        - "@context.projects"
+        - owner_id
+        - "@input.id"
+        - name

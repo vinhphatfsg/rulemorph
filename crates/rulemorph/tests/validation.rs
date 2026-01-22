@@ -156,3 +156,20 @@ fn validation_errors_include_location_with_source() {
         .expect("expected location");
     assert_eq!(location.line, 7);
 }
+
+// =============================================================================
+// v2 Validation Tests (T26)
+// =============================================================================
+// Note: v2 validation is performed at runtime during transform.
+// Static validation of v2 expressions is not yet fully implemented.
+// See transform_golden.rs for v2 transform tests.
+
+#[test]
+fn v1_compat_rules_should_pass_validation() {
+    // v1 rules should still pass validation
+    let rule = load_rule("tv27_v1_compat");
+    if let Err(errors) = validate_rule_file(&rule) {
+        let codes: Vec<&'static str> = errors.iter().map(|e| e.code.as_str()).collect();
+        panic!("expected valid rules for tv27_v1_compat, got {:?}", codes);
+    }
+}

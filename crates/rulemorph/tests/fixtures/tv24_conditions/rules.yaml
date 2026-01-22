@@ -1,0 +1,68 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  # eq condition
+  - target: is_active
+    expr:
+      - "@input.status"
+      - if:
+          cond:
+            eq: ["$", "active"]
+          then:
+            - true
+          else:
+            - false
+
+  # ne condition
+  - target: is_not_pending
+    expr:
+      - "@input.status"
+      - if:
+          cond:
+            ne: ["$", "pending"]
+          then:
+            - true
+          else:
+            - false
+
+  # all condition (multiple conditions)
+  - target: is_premium_active
+    expr:
+      - "@input.tier"
+      - if:
+          cond:
+            all:
+              - eq: ["$", "premium"]
+              - eq: ["@input.status", "active"]
+          then:
+            - true
+          else:
+            - false
+
+  # any condition
+  - target: is_special
+    expr:
+      - "@input.tier"
+      - if:
+          cond:
+            any:
+              - eq: ["$", "premium"]
+              - eq: ["$", "gold"]
+          then:
+            - true
+          else:
+            - false
+
+  # match (regex)
+  - target: is_email
+    expr:
+      - "@input.contact"
+      - if:
+          cond:
+            match: ["$", ".*@.*"]
+          then:
+            - true
+          else:
+            - false

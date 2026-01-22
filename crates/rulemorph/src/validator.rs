@@ -26,8 +26,8 @@ fn validate_rule_file_with_locator(rule: &RuleFile, locator: Option<&YamlLocator
 }
 
 fn validate_version(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
-    if rule.version != 1 {
-        ctx.push(ErrorCode::InvalidVersion, "version must be 1", "version");
+    if rule.version != 1 && rule.version != 2 {
+        ctx.push(ErrorCode::InvalidVersion, "version must be 1 or 2", "version");
     }
 }
 

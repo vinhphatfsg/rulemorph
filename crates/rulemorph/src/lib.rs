@@ -6,6 +6,9 @@ mod path;
 mod dto;
 mod transform;
 mod validator;
+pub mod v2_model;
+pub mod v2_parser;
+pub mod v2_eval;
 
 /// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
