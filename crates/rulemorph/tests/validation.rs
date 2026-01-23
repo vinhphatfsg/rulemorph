@@ -186,6 +186,7 @@ fn v2_invalid_rules_should_fail_validation() {
     let cases = [
         "tv26_v01_unknown_op",
         "tv26_v03_literal_start_unknown_op",
+        "tv26_v04_empty_pipe",
     ];
 
     for case in cases {

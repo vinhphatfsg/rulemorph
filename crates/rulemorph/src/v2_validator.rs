@@ -832,8 +832,8 @@ fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
         // Arithmetic (exactly 1 argument for pipe context)
         "+" | "-" | "*" | "/" => (1, Some(1)),
 
-        // Lookup operations (3-4 arguments: from, match_key, match_value, get?)
-        "lookup" | "lookup_first" => (3, Some(4)),
+        // Lookup operations (2-4 arguments: match_key, match_value, get? or from, match_key, match_value, get?)
+        "lookup" | "lookup_first" => (2, Some(4)),
 
         // Default for unknown ops
         _ => (0, None),
@@ -1105,6 +1105,7 @@ mod tests {
         assert_eq!(get_op_arg_range("multiply"), (1, Some(1)));
         assert_eq!(get_op_arg_range("concat"), (1, None));
         assert_eq!(get_op_arg_range("slice"), (2, Some(2)));
+        assert_eq!(get_op_arg_range("lookup_first"), (2, Some(4)));
     }
 
     // Reference validation tests
