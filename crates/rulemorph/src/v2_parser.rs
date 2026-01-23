@@ -1234,7 +1234,10 @@ mod v2_rulefile_parser_tests {
     fn test_is_v2_expr_pipe_array() {
         // Helper function to detect v2 syntax
         assert!(is_v2_expr(&json!(["@input.name", "trim"])));
+        assert!(is_v2_expr(&json!(["hello", "trim"])));
+        assert!(is_v2_expr(&json!([{"lookup_first": []}, "trim"])));
         assert!(is_v2_expr(&json!("@input.name")));
+        assert!(is_v2_expr(&json!("lit:@input.name")));
         assert!(!is_v2_expr(&json!({ "ref": "input.name" })));
         assert!(!is_v2_expr(&json!({ "op": "uppercase", "args": [] })));
     }
@@ -1245,20 +1248,13 @@ mod v2_rulefile_parser_tests {
 /// v1 syntax: { ref: "..." } or { op: "...", args: [...] }
 pub fn is_v2_expr(value: &JsonValue) -> bool {
     match value {
-        JsonValue::Array(arr) => {
-            // Array is v2 syntax if first element looks like v2 start
-            if let Some(first) = arr.first() {
-                if let JsonValue::String(s) = first {
-                    return is_v2_ref(s) || is_pipe_value(s) || is_literal_escape(s);
-                }
-                // Literal start is also v2
-                return matches!(first, JsonValue::Number(_) | JsonValue::Bool(_) | JsonValue::Null);
-            }
-            false
+        JsonValue::Array(_) => {
+            // Any array is treated as v2 pipe syntax, even with literal/object starts.
+            true
         }
         JsonValue::String(s) => {
             // String with @ prefix is v2 reference
-            is_v2_ref(s) || is_pipe_value(s)
+            is_v2_ref(s) || is_pipe_value(s) || is_literal_escape(s)
         }
         JsonValue::Object(obj) => {
             // v1 uses { ref: ... } or { op: ..., args: ... }

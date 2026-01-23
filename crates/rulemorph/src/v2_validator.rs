@@ -832,8 +832,8 @@ fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
         // Arithmetic (exactly 1 argument for pipe context)
         "+" | "-" | "*" | "/" => (1, Some(1)),
 
-        // Lookup operations (2-3 arguments)
-        "lookup" | "lookup_first" => (2, Some(3)),
+        // Lookup operations (3-4 arguments: from, match_key, match_value, get?)
+        "lookup" | "lookup_first" => (3, Some(4)),
 
         // Default for unknown ops
         _ => (0, None),

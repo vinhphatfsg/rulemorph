@@ -183,15 +183,22 @@ fn v2_valid_rules_should_pass_validation() {
 
 #[test]
 fn v2_invalid_rules_should_fail_validation() {
-    // tv26_v01_unknown_op should fail with UnknownOp error
-    let rule = load_rule("tv26_v01_unknown_op");
-    let expected = normalize_expected(load_expected_errors("tv26_v01_unknown_op"));
-    let errors = validate_rule_file(&rule).unwrap_err();
-    let actual = normalize_errors(errors);
-    assert_eq!(
-        actual, expected,
-        "error mismatch for tv26_v01_unknown_op"
-    );
+    let cases = [
+        "tv26_v01_unknown_op",
+        "tv26_v03_literal_start_unknown_op",
+    ];
+
+    for case in cases {
+        let rule = load_rule(case);
+        let expected = normalize_expected(load_expected_errors(case));
+        let errors = validate_rule_file(&rule).unwrap_err();
+        let actual = normalize_errors(errors);
+        assert_eq!(
+            actual, expected,
+            "error mismatch for {}",
+            case
+        );
+    }
 }
 
 #[test]

@@ -1,0 +1,9 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: result
+    expr:
+      - "hello"
+      - nonexistent_op

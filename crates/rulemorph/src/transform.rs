@@ -11,7 +11,7 @@ use crate::cache::LruCache;
 use crate::error::{TransformError, TransformErrorKind, TransformWarning};
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, RuleFile};
 use crate::path::{get_path, parse_path, PathToken};
-use crate::v2_parser::parse_v2_pipe_from_value;
+use crate::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_pipe_from_value};
 use crate::v2_eval::{V2EvalContext, eval_v2_pipe, EvalValue as V2EvalValue};
 
 const REGEX_CACHE_CAPACITY: usize = 128;
@@ -4979,6 +4979,13 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
             // Direct array - v2 pipe
             Some(JsonValue::Array(arr.clone()))
         }
+        Expr::Literal(JsonValue::String(s)) => {
+            if is_v2_ref(s) || is_pipe_value(s) || is_literal_escape(s) {
+                Some(JsonValue::String(s.clone()))
+            } else {
+                None
+            }
+        }
         Expr::Ref(expr_ref) if expr_ref.ref_path.starts_with('@') => {
             // Single v2 reference (serde collapsed 1-element array)
             // Wrap it as single-element array
@@ -5075,6 +5082,22 @@ mappings:
   - target: user_name
     expr:
       - "@input.name"
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"name": "Alice"}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"user_name": "Alice"}]));
+    }
+
+    #[test]
+    fn test_v2_scalar_ref_transform() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: user_name
+    expr: "@input.name"
 "#;
         let rule = parse_rule_file(yaml).unwrap();
         let input = r#"[{"name": "Alice"}]"#;
