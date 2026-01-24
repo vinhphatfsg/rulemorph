@@ -337,15 +337,13 @@ pub fn parse_v2_pipe_from_value(value: &JsonValue) -> Result<V2Pipe, V2ParseErro
 
 /// Parse a V2Pipe from a JSON array
 /// Format: [start_value, step1, step2, ...]
-/// If first element looks like a step (op shorthand object), use implicit `$` as start
 pub fn parse_v2_pipe(arr: &[JsonValue]) -> Result<V2Pipe, V2ParseError> {
     if arr.is_empty() {
         return Err(V2ParseError::EmptyPipe);
     }
 
-    // Check if first element looks like a step rather than a start value
-    if looks_like_step(&arr[0]) {
-        // Use implicit pipe value ($) as start, all elements are steps
+    if arr.len() == 1 && looks_like_step(&arr[0]) {
+        // Single-step pipe can omit explicit `$` start.
         let steps: Result<Vec<V2Step>, _> = arr.iter().map(parse_v2_step).collect();
         return Ok(V2Pipe {
             start: V2Start::PipeValue,
@@ -1134,6 +1132,25 @@ mod v2_rulefile_parser_tests {
 
         if let V2Expr::Pipe(pipe) = expr {
             assert_eq!(pipe.start, V2Start::Literal(json!({"foo": 1})));
+            assert_eq!(pipe.steps.len(), 1);
+            if let V2Step::Op(op) = &pipe.steps[0] {
+                assert_eq!(op.op, "keys");
+            } else {
+                panic!("Expected Op step");
+            }
+        } else {
+            panic!("Expected Pipe expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_v2_expr_literal_object_with_op_key_start_pipe() {
+        // Literal object starts should not be coerced into implicit steps.
+        let value = json!([{"op": "x"}, "keys"]);
+        let expr = parse_v2_expr(&value).unwrap();
+
+        if let V2Expr::Pipe(pipe) = expr {
+            assert_eq!(pipe.start, V2Start::Literal(json!({"op": "x"})));
             assert_eq!(pipe.steps.len(), 1);
             if let V2Step::Op(op) = &pipe.steps[0] {
                 assert_eq!(op.op, "keys");
