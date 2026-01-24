@@ -314,10 +314,10 @@ pub fn eval_v2_ref<'a>(
             }
         }
         V2Ref::Context(ref_path) => {
-            let ctx_value = context.ok_or_else(|| {
-                TransformError::new(TransformErrorKind::ExprError, "context is not available")
-                    .with_path(path)
-            })?;
+            let ctx_value = match context {
+                Some(value) => value,
+                None => return Ok(EvalValue::Missing),
+            };
             if ref_path.is_empty() {
                 Ok(EvalValue::Value(ctx_value.clone()))
             } else {
@@ -465,7 +465,7 @@ mod v2_ref_eval_tests {
     }
 
     #[test]
-    fn test_eval_context_ref_no_context_error() {
+    fn test_eval_context_ref_no_context_missing() {
         let record = json!({});
         let ctx = V2EvalContext::new();
         let result = eval_v2_ref(
@@ -476,7 +476,7 @@ mod v2_ref_eval_tests {
             "test",
             &ctx,
         );
-        assert!(result.is_err());
+        assert!(matches!(result, Ok(EvalValue::Missing)));
     }
 
     #[test]
