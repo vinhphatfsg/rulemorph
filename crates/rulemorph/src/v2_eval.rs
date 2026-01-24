@@ -1708,14 +1708,23 @@ pub fn eval_v2_op_step<'a>(
     match op_step.op.as_str() {
         // String operations
         "trim" => {
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let s = eval_value_as_string(&pipe_value, path)?;
             Ok(EvalValue::Value(JsonValue::String(s.trim().to_string())))
         }
         "lowercase" => {
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let s = eval_value_as_string(&pipe_value, path)?;
             Ok(EvalValue::Value(JsonValue::String(s.to_lowercase())))
         }
         "uppercase" => {
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let s = eval_value_as_string(&pipe_value, path)?;
             Ok(EvalValue::Value(JsonValue::String(s.to_uppercase())))
         }
@@ -1735,10 +1744,16 @@ pub fn eval_v2_op_step<'a>(
         "concat" => {
             // Pipe value is first, then args
             let mut parts = Vec::new();
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             parts.push(eval_value_as_string(&pipe_value, path)?);
             for (i, arg) in op_step.args.iter().enumerate() {
                 let arg_path = format!("{}.args[{}]", path, i);
                 let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
+                if matches!(arg_value, EvalValue::Missing) {
+                    return Ok(EvalValue::Missing);
+                }
                 parts.push(eval_value_as_string(&arg_value, &arg_path)?);
             }
             Ok(EvalValue::Value(JsonValue::String(parts.join(""))))
@@ -1747,10 +1762,16 @@ pub fn eval_v2_op_step<'a>(
 
         // Numeric operations
         "add" | "+" => {
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let mut result = eval_value_as_number(&pipe_value, path)?;
             for (i, arg) in op_step.args.iter().enumerate() {
                 let arg_path = format!("{}.args[{}]", path, i);
                 let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
+                if matches!(arg_value, EvalValue::Missing) {
+                    return Ok(EvalValue::Missing);
+                }
                 result += eval_value_as_number(&arg_value, &arg_path)?;
             }
             Ok(EvalValue::Value(serde_json::json!(result)))
@@ -1763,19 +1784,31 @@ pub fn eval_v2_op_step<'a>(
                 )
                 .with_path(path));
             }
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let mut result = eval_value_as_number(&pipe_value, path)?;
             for (i, arg) in op_step.args.iter().enumerate() {
                 let arg_path = format!("{}.args[{}]", path, i);
                 let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
+                if matches!(arg_value, EvalValue::Missing) {
+                    return Ok(EvalValue::Missing);
+                }
                 result -= eval_value_as_number(&arg_value, &arg_path)?;
             }
             Ok(EvalValue::Value(serde_json::json!(result)))
         }
         "multiply" | "*" => {
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let mut result = eval_value_as_number(&pipe_value, path)?;
             for (i, arg) in op_step.args.iter().enumerate() {
                 let arg_path = format!("{}.args[{}]", path, i);
                 let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
+                if matches!(arg_value, EvalValue::Missing) {
+                    return Ok(EvalValue::Missing);
+                }
                 result *= eval_value_as_number(&arg_value, &arg_path)?;
             }
             Ok(EvalValue::Value(serde_json::json!(result)))
@@ -1788,10 +1821,16 @@ pub fn eval_v2_op_step<'a>(
                 )
                 .with_path(path));
             }
+            if matches!(pipe_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
             let mut result = eval_value_as_number(&pipe_value, path)?;
             for (i, arg) in op_step.args.iter().enumerate() {
                 let arg_path = format!("{}.args[{}]", path, i);
                 let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
+                if matches!(arg_value, EvalValue::Missing) {
+                    return Ok(EvalValue::Missing);
+                }
                 let divisor = eval_value_as_number(&arg_value, &arg_path)?;
                 if divisor == 0.0 {
                     return Err(TransformError::new(
