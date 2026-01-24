@@ -289,12 +289,7 @@ fn validate_v2_mapping_expr(
     // Collect @out dependencies for cyclic check
     let deps = collect_out_references(&v2_expr);
     if !deps.is_empty() {
-        // Extract first key from target path for dependency tracking
-        if let Ok(tokens) = parse_path(target) {
-            if let Some(PathToken::Key(key)) = tokens.first() {
-                v2_targets_with_deps.push((key.clone(), deps));
-            }
-        }
+        v2_targets_with_deps.push((target.to_string(), deps));
     }
 
     // Transfer errors from v2 context to main context

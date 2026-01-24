@@ -1851,16 +1851,30 @@ pub fn eval_v2_op_step<'a>(
                 )
                 .with_path(path));
             }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
+            let array = match pipe_value {
+                EvalValue::Missing => {
+                    return Ok(EvalValue::Missing);
+                }
+                EvalValue::Value(JsonValue::Array(items)) => items,
+                EvalValue::Value(other) => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        format!("expr arg must be an array, got {:?}", other),
+                    )
+                    .with_path(path));
+                }
+            };
             let arg_path = format!("{}.args[0]", path);
-            let mut results = Vec::with_capacity(array.len());
+            let mut results = Vec::new();
             for (index, item) in array.iter().enumerate() {
                 let item_ctx = step_ctx
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let value = eval_v2_expr_or_null(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
-                results.push(value);
+                let value = eval_v2_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
+                if let EvalValue::Value(value) = value {
+                    results.push(value);
+                }
             }
             Ok(EvalValue::Value(JsonValue::Array(results)))
         }

@@ -879,8 +879,8 @@ fn collect_out_refs_recursive(expr: &V2Expr, refs: &mut HashSet<String>) {
 fn collect_out_refs_from_start(start: &V2Start, refs: &mut HashSet<String>) {
     match start {
         V2Start::Ref(V2Ref::Out(path)) => {
-            if let Some(first_key) = extract_first_key(path) {
-                refs.insert(first_key);
+            if !path.is_empty() {
+                refs.insert(path.clone());
             }
         }
         _ => {}
@@ -912,8 +912,8 @@ fn collect_out_refs_from_step(step: &V2Step, refs: &mut HashSet<String>) {
             }
         }
         V2Step::Ref(V2Ref::Out(path)) => {
-            if let Some(first_key) = extract_first_key(path) {
-                refs.insert(first_key);
+            if !path.is_empty() {
+                refs.insert(path.clone());
             }
         }
         V2Step::Ref(_) => {} // Non-out refs don't contribute to cyclic dependencies
@@ -943,20 +943,6 @@ fn collect_out_refs_from_condition(cond: &V2Condition, refs: &mut HashSet<String
             collect_out_refs_recursive(expr, refs);
         }
     }
-}
-
-fn extract_first_key(path: &str) -> Option<String> {
-    if path.is_empty() {
-        return None;
-    }
-    if let Ok(tokens) = parse_path(path) {
-        for token in tokens {
-            if let PathToken::Key(key) = token {
-                return Some(key);
-            }
-        }
-    }
-    None
 }
 
 /// Check for cyclic dependencies among mappings

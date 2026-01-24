@@ -1,0 +1,9 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "user.id"
+    expr: "@input.id"
+  - target: "user.name"
+    expr: "@out.user.id"
