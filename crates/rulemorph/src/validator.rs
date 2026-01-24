@@ -4,10 +4,10 @@ use crate::error::{ErrorCode, RuleError, ValidationResult};
 use crate::locator::YamlLocator;
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, Mapping, RuleFile};
 use crate::path::{parse_path, PathToken};
-use crate::v2_parser::{is_v2_expr, parse_v2_expr};
+use crate::v2_parser::{is_v2_expr, parse_v2_expr, parse_v2_condition};
 use crate::v2_validator::{
-    collect_out_references, validate_no_cyclic_dependencies, validate_v2_expr, V2Scope,
-    V2ValidationCtx,
+    collect_out_references, validate_no_cyclic_dependencies, validate_v2_condition,
+    validate_v2_expr, V2Scope, V2ValidationCtx,
 };
 
 pub fn validate_rule_file(rule: &RuleFile) -> ValidationResult {
@@ -96,6 +96,13 @@ fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
     let base_path = "record_when";
     let produced_targets = HashSet::new();
+    if rule.version == 2 {
+        if let Some(raw_value) = expr_to_json_value(expr) {
+            validate_v2_condition_expr(&raw_value, base_path, &produced_targets, ctx);
+            return;
+        }
+    }
+
     validate_expr(expr, base_path, &produced_targets, ctx, LocalScope::None);
     validate_when_expr(expr, base_path, ctx);
 }
@@ -204,8 +211,17 @@ fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
         if let Some(when) = &mapping.when {
             let when_path = format!("{}.when", base);
-            validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
-            validate_when_expr(when, &when_path, ctx);
+            if is_v2_rule {
+                if let Some(raw_value) = expr_to_json_value(when) {
+                    validate_v2_condition_expr(&raw_value, &when_path, &produced_targets, ctx);
+                } else {
+                    validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
+                    validate_when_expr(when, &when_path, ctx);
+                }
+            } else {
+                validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
+                validate_when_expr(when, &when_path, ctx);
+            }
         }
 
         produced_targets.insert(target_tokens);
@@ -282,6 +298,33 @@ fn validate_v2_mapping_expr(
     }
 
     // Transfer errors from v2 context to main context
+    for err in v2_ctx.errors() {
+        ctx.errors.push(err.clone());
+    }
+}
+
+fn validate_v2_condition_expr(
+    raw_value: &serde_json::Value,
+    base_path: &str,
+    produced_targets: &HashSet<Vec<PathToken>>,
+    ctx: &mut ValidationCtx<'_>,
+) {
+    let condition = match parse_v2_condition(raw_value) {
+        Ok(cond) => cond,
+        Err(e) => {
+            ctx.push(
+                ErrorCode::InvalidExprShape,
+                &format!("invalid v2 condition: {:?}", e),
+                base_path,
+            );
+            return;
+        }
+    };
+
+    let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, produced_targets.clone());
+    let scope = V2Scope::new();
+    validate_v2_condition(&condition, base_path, &scope, &mut v2_ctx);
+
     for err in v2_ctx.errors() {
         ctx.errors.push(err.clone());
     }

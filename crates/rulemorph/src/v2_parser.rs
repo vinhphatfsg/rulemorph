@@ -9,6 +9,7 @@
 //! - Pipe arrays: `[start_value, step1, step2, ...]`
 
 use serde_json::Value as JsonValue;
+use crate::v2_validator::is_valid_op;
 use crate::v2_model::{
     V2Ref, V2Expr, V2Pipe, V2Start, V2Step, V2OpStep,
     V2Condition, V2Comparison, V2ComparisonOp,
@@ -372,9 +373,8 @@ fn looks_like_step(value: &JsonValue) -> bool {
                 let key = obj.keys().next().unwrap();
                 // Skip values that are likely starts (plain objects)
                 if !["op", "let", "if", "map", "then", "else", "cond", "ref"].contains(&key.as_str()) {
-                    // If the key is a known operation name or ends with common patterns, it's a step
-                    // This includes: lookup_first, lookup, multiply, concat, trim, etc.
-                    return true;
+                    // Only treat as step when the key matches a known v2 op name.
+                    return is_valid_op(key);
                 }
             }
             false
@@ -1098,6 +1098,25 @@ mod v2_rulefile_parser_tests {
             if let V2Step::Op(op) = &pipe.steps[0] {
                 assert_eq!(op.op, "multiply");
                 assert_eq!(op.args.len(), 1);
+            } else {
+                panic!("Expected Op step");
+            }
+        } else {
+            panic!("Expected Pipe expression");
+        }
+    }
+
+    #[test]
+    fn test_parse_v2_expr_literal_object_start_pipe() {
+        // Pipe start can be a literal object followed by steps
+        let value = json!([{"foo": 1}, "keys"]);
+        let expr = parse_v2_expr(&value).unwrap();
+
+        if let V2Expr::Pipe(pipe) = expr {
+            assert_eq!(pipe.start, V2Start::Literal(json!({"foo": 1})));
+            assert_eq!(pipe.steps.len(), 1);
+            if let V2Step::Op(op) = &pipe.steps[0] {
+                assert_eq!(op.op, "keys");
             } else {
                 panic!("Expected Op step");
             }

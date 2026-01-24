@@ -663,7 +663,7 @@ fn validate_v2_comparison(
 // =============================================================================
 
 /// Check if an operation name is valid
-fn is_valid_op(op: &str) -> bool {
+pub(crate) fn is_valid_op(op: &str) -> bool {
     matches!(
         op,
         // String operations

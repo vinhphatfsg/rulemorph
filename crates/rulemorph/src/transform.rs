@@ -11,8 +11,10 @@ use crate::cache::LruCache;
 use crate::error::{TransformError, TransformErrorKind, TransformWarning};
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, RuleFile};
 use crate::path::{get_path, parse_path, PathToken};
-use crate::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_pipe_from_value};
-use crate::v2_eval::{V2EvalContext, eval_v2_pipe, EvalValue as V2EvalValue};
+use crate::v2_parser::{
+    is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_pipe_from_value, parse_v2_condition,
+};
+use crate::v2_eval::{eval_v2_condition, eval_v2_pipe, EvalValue as V2EvalValue, V2EvalContext};
 
 const REGEX_CACHE_CAPACITY: usize = 128;
 
@@ -184,7 +186,15 @@ fn apply_mappings(
     let mut out = JsonValue::Object(Map::new());
     for (index, mapping) in rule.mappings.iter().enumerate() {
         let mapping_path = format!("mappings[{}]", index);
-        if !eval_when(mapping, record, context, &out, &mapping_path, warnings) {
+        if !eval_when(
+            mapping,
+            record,
+            context,
+            &out,
+            &mapping_path,
+            warnings,
+            rule.version,
+        ) {
             continue;
         }
         let value = eval_mapping(mapping, record, context, &out, &mapping_path, rule.version)?;
@@ -476,6 +486,7 @@ fn eval_when(
     out: &JsonValue,
     mapping_path: &str,
     warnings: &mut Vec<TransformWarning>,
+    rule_version: u8,
 ) -> bool {
     let expr = match &mapping.when {
         Some(expr) => expr,
@@ -483,7 +494,7 @@ fn eval_when(
     };
 
     let when_path = format!("{}.when", mapping_path);
-    match eval_bool_expr(expr, record, context, out, &when_path) {
+    match eval_when_expr(expr, record, context, out, &when_path, rule_version) {
         Ok(flag) => flag,
         Err(err) => {
             warnings.push(err.into());
@@ -504,7 +515,7 @@ fn eval_record_when(
     };
 
     let empty_out = JsonValue::Object(Map::new());
-    match eval_bool_expr(expr, record, context, &empty_out, "record_when") {
+    match eval_when_expr(expr, record, context, &empty_out, "record_when", rule.version) {
         Ok(flag) => flag,
         Err(err) => {
             warnings.push(err.into());
@@ -529,6 +540,31 @@ fn eval_bool_expr(
         JsonValue::Bool(flag) => Ok(flag),
         _ => Err(when_type_error(path)),
     }
+}
+
+fn eval_when_expr(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    path: &str,
+    rule_version: u8,
+) -> Result<bool, TransformError> {
+    if rule_version >= 2 {
+        if let Some(raw_value) = expr_to_json_for_v2_condition(expr) {
+            let condition = parse_v2_condition(&raw_value).map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    format!("invalid v2 condition: {}", err),
+                )
+                .with_path(path)
+            })?;
+            let ctx = V2EvalContext::new();
+            return eval_v2_condition(&condition, record, context, out, path, &ctx);
+        }
+    }
+
+    eval_bool_expr(expr, record, context, out, path)
 }
 
 fn when_type_error(path: &str) -> TransformError {
@@ -5070,6 +5106,33 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
                         // Convert chain to array
                         let arr: Vec<JsonValue> = chain.chain.iter()
                             .map(|e| expr_to_json_value(e))
+                            .collect();
+                        return Some(JsonValue::Array(arr));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Convert an Expr to JSON value for v2 condition parsing.
+/// Accepts literal values and v2-looking refs/chains while avoiding v1-only forms.
+fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
+    match expr {
+        Expr::Literal(value) => Some(value.clone()),
+        Expr::Ref(ref_expr) if ref_expr.ref_path.starts_with('@') => {
+            Some(JsonValue::String(ref_expr.ref_path.clone()))
+        }
+        Expr::Chain(chain) => {
+            if let Some(first) = chain.chain.first() {
+                if let Expr::Ref(r) = first {
+                    if r.ref_path.starts_with('@') {
+                        let arr: Vec<JsonValue> = chain
+                            .chain
+                            .iter()
+                            .map(expr_to_json_value)
                             .collect();
                         return Some(JsonValue::Array(arr));
                     }
