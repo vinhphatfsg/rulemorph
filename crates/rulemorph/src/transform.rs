@@ -5076,7 +5076,6 @@ fn literal_string(expr: &Expr) -> Option<&str> {
 /// - Literal(Array) -> direct array
 /// - Ref where ref_path starts with @ -> single element array
 /// - Chain where first element starts with @ -> convert to array
-/// - Literal(Object) with v2-style keys (lookup_first, etc.) -> single element array
 /// Returns None if it looks like v1 expression and should be handled by v1 eval.
 fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
     match expr {
@@ -5095,14 +5094,6 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
             // Single v2 reference (serde collapsed 1-element array)
             // Wrap it as single-element array
             Some(JsonValue::Array(vec![JsonValue::String(expr_ref.ref_path.clone())]))
-        }
-        Expr::Literal(JsonValue::Object(obj)) => {
-            // Check for v2 keywords like lookup_first, lookup
-            if obj.contains_key("lookup_first") || obj.contains_key("lookup") {
-                Some(JsonValue::Array(vec![JsonValue::Object(obj.clone())]))
-            } else {
-                None
-            }
         }
         Expr::Chain(chain) => {
             // Check if first element is a v2 ref
@@ -5239,6 +5230,23 @@ mappings:
         let input = r#"[{"name": "Alice"}]"#;
         let result = transform(&rule, input, None).unwrap();
         assert_eq!(result, serde_json::json!([{"user_name": "Alice"}]));
+    }
+
+    #[test]
+    fn test_v2_literal_object_with_lookup_key_is_literal() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: payload
+    expr:
+      lookup: 1
+"#;
+        let rule = parse_rule_file(yaml).unwrap();
+        let input = r#"[{"id": 1}]"#;
+        let result = transform(&rule, input, None).unwrap();
+        assert_eq!(result, serde_json::json!([{"payload": {"lookup": 1}}]));
     }
 
     #[test]
