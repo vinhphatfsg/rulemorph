@@ -531,7 +531,9 @@ fn tv26_unknown_op_error() {
     assert!(result.is_err(), "expected error for unknown op");
     let err = result.unwrap_err();
     assert!(
-        err.to_string().contains("unknown op") || err.to_string().contains("nonexistent_op"),
+        err.to_string().contains("unknown op")
+            || err.to_string().contains("nonexistent_op")
+            || err.to_string().contains("expr.op is not supported"),
         "expected unknown op error, got: {}",
         err
     );

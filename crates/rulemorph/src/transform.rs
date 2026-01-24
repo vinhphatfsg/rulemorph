@@ -4,7 +4,7 @@ use csv::ReaderBuilder;
 use regex::Regex;
 use serde_json::{Map, Value as JsonValue};
 use std::cmp::Ordering;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 
 use crate::cache::LruCache;
@@ -557,7 +557,7 @@ fn resolve_source(
         Namespace::Input => Some(record),
         Namespace::Context => context,
         Namespace::Out => Some(out),
-        Namespace::Item | Namespace::Acc => {
+        Namespace::Item | Namespace::Acc | Namespace::Pipe | Namespace::Local => {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidRef,
                 "ref namespace must be input|context|out",
@@ -704,6 +704,61 @@ fn eval_ref(
                 None => Ok(EvalValue::Missing),
             };
         }
+        Namespace::Pipe => {
+            let pipe_value = locals.and_then(|locals| locals.pipe).unwrap_or(&EvalValue::Missing);
+            let (root, rest) = match tokens.split_first() {
+                Some((PathToken::Key(key), rest)) if key == "value" => (pipe_value, rest),
+                _ => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "pipe ref must start with value",
+                    )
+                    .with_path(base_path))
+                }
+            };
+            let value = match root {
+                EvalValue::Missing => return Ok(EvalValue::Missing),
+                EvalValue::Value(value) => value,
+            };
+            return match get_path(value, rest) {
+                Some(value) => Ok(EvalValue::Value(value.clone())),
+                None => Ok(EvalValue::Missing),
+            };
+        }
+        Namespace::Local => {
+            let locals_map = locals.and_then(|locals| locals.locals).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "local is only available within v2 pipes",
+                )
+                .with_path(base_path)
+            })?;
+            let (first, rest) = match tokens.split_first() {
+                Some((PathToken::Key(key), rest)) => (key, rest),
+                _ => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "local ref must start with a key",
+                    )
+                    .with_path(base_path))
+                }
+            };
+            let local_value = locals_map.get(first).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    format!("undefined local: {}", first),
+                )
+                .with_path(base_path)
+            })?;
+            let value = match local_value {
+                EvalValue::Missing => return Ok(EvalValue::Missing),
+                EvalValue::Value(value) => value,
+            };
+            return match get_path(value, rest) {
+                Some(value) => Ok(EvalValue::Value(value.clone())),
+                None => Ok(EvalValue::Missing),
+            };
+        }
     };
 
     match target.and_then(|value| get_path(value, &tokens)) {
@@ -712,7 +767,7 @@ fn eval_ref(
     }
 }
 
-fn eval_op(
+pub(crate) fn eval_op(
     expr_op: &ExprOp,
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -1776,6 +1831,8 @@ fn locals_with_item<'a>(
     EvalLocals {
         item: Some(item),
         acc: locals.and_then(|locals| locals.acc),
+        pipe: locals.and_then(|locals| locals.pipe),
+        locals: locals.and_then(|locals| locals.locals),
     }
 }
 
@@ -3184,6 +3241,8 @@ fn eval_array_reduce(
         let item_locals = EvalLocals {
             item: Some(EvalItem { value: item, index }),
             acc: Some(&acc),
+            pipe: locals.and_then(|locals| locals.pipe),
+            locals: locals.and_then(|locals| locals.locals),
         };
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         acc = value;
@@ -3232,6 +3291,8 @@ fn eval_array_fold(
         let item_locals = EvalLocals {
             item: Some(EvalItem { value: item, index }),
             acc: Some(&acc),
+            pipe: locals.and_then(|locals| locals.pipe),
+            locals: locals.and_then(|locals| locals.locals),
         };
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         acc = value;
@@ -4873,10 +4934,12 @@ fn parse_ref(value: &str) -> Result<(Namespace, &str), TransformError> {
         "out" => Namespace::Out,
         "item" => Namespace::Item,
         "acc" => Namespace::Acc,
+        "pipe" => Namespace::Pipe,
+        "local" => Namespace::Local,
         _ => {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidRef,
-                "ref namespace must be input|context|out|item|acc",
+                "ref namespace must be input|context|out|item|acc|pipe|local",
             ))
         }
     };
@@ -5043,22 +5106,26 @@ enum Namespace {
     Out,
     Item,
     Acc,
+    Pipe,
+    Local,
 }
 
 #[derive(Clone, Copy)]
-struct EvalItem<'a> {
-    value: &'a JsonValue,
-    index: usize,
+pub(crate) struct EvalItem<'a> {
+    pub(crate) value: &'a JsonValue,
+    pub(crate) index: usize,
 }
 
 #[derive(Clone, Copy)]
-struct EvalLocals<'a> {
-    item: Option<EvalItem<'a>>,
-    acc: Option<&'a JsonValue>,
+pub(crate) struct EvalLocals<'a> {
+    pub(crate) item: Option<EvalItem<'a>>,
+    pub(crate) acc: Option<&'a JsonValue>,
+    pub(crate) pipe: Option<&'a EvalValue>,
+    pub(crate) locals: Option<&'a HashMap<String, EvalValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum EvalValue {
+pub(crate) enum EvalValue {
     Missing,
     Value(JsonValue),
 }

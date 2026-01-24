@@ -4,11 +4,13 @@
 
 A Rust CLI and library to transform CSV/JSON data into JSON using YAML rules.
 
+Note: v1 rules are deprecated; use `version: 2`.
+
 ## Features
 
 - **Input formats**: CSV and JSON with nested record extraction
 - **Rule-based mapping**: Declarative YAML rules with static validation
-- **Expressions**: String ops (concat, replace, trim), numeric ops (+, -, *, /), date formatting
+- **Expressions (v2 pipe syntax)**: trim/lowercase/uppercase/concat, add/multiply, coalesce, lookup/lookup_first, plus `let`/`if`/`map` steps
 - **Lookups**: Array lookups from external context data (lookup, lookup_first)
 - **Conditions**: Conditional mapping with comparisons, regex, and logical ops
 - **DTO generation**: Generate type definitions for Rust, TypeScript, Python, Go, Java, Kotlin, Swift
@@ -40,7 +42,7 @@ Transform user data from an external API response to your schema:
 
 **rules.yaml**
 ```yaml
-version: 1
+version: 2
 input:
   format: json
   json:
@@ -49,13 +51,13 @@ mappings:
   - target: "id"
     source: "user_id"
   - target: "name"
-    source: "full_name"
+    expr:
+      - "@input.full_name"
+      - trim
   - target: "email"
     expr:
-      op: "concat"
-      args:
-        - { ref: "input.username" }
-        - "@example.com"
+      - "@input.username"
+      - concat: ["lit:@example.com"]
 ```
 
 **input.json**
@@ -76,16 +78,17 @@ rulemorph transform -r rules.yaml -i input.json
 ## Rule Structure
 
 ```yaml
-version: 1
+version: 2
 input:
   format: json|csv
   json:
     records_path: "path.to.array"  # Optional
 mappings:
   - target: "output.field"
-    source: "input.field"    # OR value: <literal> OR expr: <expression>
+    source: "input.field"    # OR value: <literal> OR expr: <pipe>
     type: string|int|float|bool
-    when: <expression>       # Optional condition
+    when:
+      eq: ["@input.status", "active"]  # Optional condition
 ```
 
 For full rule specification, see [docs/rules_spec_en.md](docs/rules_spec_en.md) (English) or [docs/rules_spec_ja.md](docs/rules_spec_ja.md) (Japanese).

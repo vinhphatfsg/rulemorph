@@ -286,30 +286,16 @@ fn infer_step_result_type(step: &V2Step, _input_type: &V2Type) -> V2Type {
 fn infer_op_result_type(op: &str) -> V2Type {
     match op {
         // String operations
-        "trim" | "lowercase" | "uppercase" | "concat" | "to_string" | "replace" | "pad_start"
-        | "pad_end" => V2Type::String,
-
-        // Boolean operations
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "and" | "or" | "not" | "contains" => {
-            V2Type::Bool
-        }
+        "trim" | "lowercase" | "uppercase" | "concat" | "to_string" => V2Type::String,
 
         // Numeric operations
-        "+" | "-" | "*" | "/" | "round" | "sum" | "avg" | "min" | "max" | "len" | "index_of"
-        | "find_index" => V2Type::Number,
+        "+" | "-" | "*" | "/" | "add" | "subtract" | "multiply" | "divide" => V2Type::Number,
 
-        // Array operations
-        "map" | "filter" | "flat_map" | "flatten" | "take" | "drop" | "slice" | "chunk" | "zip"
-        | "unique" | "sort_by" | "keys" | "values" | "entries" | "split" => {
-            V2Type::Array(Box::new(V2Type::Unknown))
-        }
+        // Lookup returns arrays of matches
+        "lookup" => V2Type::Array(Box::new(V2Type::Unknown)),
 
-        // Object operations
-        "merge" | "deep_merge" | "pick" | "omit" | "from_entries" | "object_flatten"
-        | "object_unflatten" => V2Type::Object,
-
-        // Coalesce and get return unknown (could be any type)
-        "coalesce" | "get" | "first" | "last" | "find" => V2Type::Unknown,
+        // Coalesce and lookup_first return unknown (could be any type)
+        "coalesce" | "lookup_first" => V2Type::Unknown,
 
         // Default to unknown
         _ => V2Type::Unknown,
@@ -537,7 +523,11 @@ fn validate_v2_op_step(
     // Validate each argument expression
     for (i, arg) in op_step.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", base_path, i);
-        let arg_scope = get_arg_scope_for_op(&op_step.op, i, scope);
+        let arg_scope = if op_step.op == "zip_with" && i == op_step.args.len().saturating_sub(1) {
+            V2Scope::with_parent(scope).with_item()
+        } else {
+            get_arg_scope_for_op(&op_step.op, i, scope)
+        };
         validate_v2_expr(arg, &arg_path, &arg_scope, ctx);
     }
 }
@@ -691,6 +681,24 @@ fn is_valid_op(op: &str) -> bool {
             // Lookup
             | "lookup"
             | "lookup_first"
+            // Arithmetic
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "multiply"
+            | "add"
+            | "subtract"
+            | "divide"
+            | "round"
+            | "to_base"
+            // Date
+            | "date_format"
+            | "to_unixtime"
+            // Logical
+            | "and"
+            | "or"
+            | "not"
             // Comparison
             | "=="
             | "!="
@@ -699,19 +707,7 @@ fn is_valid_op(op: &str) -> bool {
             | ">"
             | ">="
             | "~="
-            // Logical
-            | "and"
-            | "or"
-            | "not"
-            // Arithmetic
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "round"
-            | "multiply"
-            | "add"
-            // Object operations
+            // JSON
             | "merge"
             | "deep_merge"
             | "get"
@@ -720,16 +716,15 @@ fn is_valid_op(op: &str) -> bool {
             | "keys"
             | "values"
             | "entries"
+            | "len"
             | "from_entries"
             | "object_flatten"
             | "object_unflatten"
-            // Array operations
+            // Array
             | "map"
             | "filter"
             | "flat_map"
             | "flatten"
-            | "reduce"
-            | "fold"
             | "take"
             | "drop"
             | "slice"
@@ -747,16 +742,19 @@ fn is_valid_op(op: &str) -> bool {
             | "find_index"
             | "index_of"
             | "contains"
-            | "first"
-            | "last"
-            | "len"
             | "sum"
             | "avg"
             | "min"
             | "max"
-            // Type operations
-            | "if_null"
-            | "default"
+            | "reduce"
+            | "fold"
+            | "first"
+            | "last"
+            // Type casts
+            | "string"
+            | "int"
+            | "float"
+            | "bool"
     )
 }
 
@@ -805,32 +803,47 @@ fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
     match op {
         // No arguments
         "trim" | "lowercase" | "uppercase" | "to_string" | "keys" | "values" | "entries"
-        | "flatten" | "unique" | "unzip" | "first" | "last" | "len" | "sum" | "avg" | "min"
-        | "max" | "not" => (0, Some(0)),
+        | "unique" | "unzip" | "first" | "last" | "len" | "sum" | "avg" | "min"
+        | "max" | "not" | "string" | "int" | "float" | "bool" => (0, Some(0)),
+
+        // Optional one argument
+        "round" | "flatten" => (0, Some(1)),
 
         // Exactly 1 argument
-        "multiply" | "add" | "round" | "take" | "drop" | "get" | "if_null" | "default"
-        | "object_flatten" | "object_unflatten" | "chunk" | "map" | "filter" | "flat_map"
-        | "group_by" | "key_by" | "distinct_by" | "sort_by" | "find" | "find_index" | "index_of"
-        | "contains" | "partition" => (1, Some(1)),
-
-        // Exactly 2 arguments
-        "slice" | "zip" | "zip_with" | "reduce" | "fold" | "pad_start" | "pad_end" => {
-            (2, Some(2))
+        "take" | "drop" | "get" | "object_flatten" | "object_unflatten" | "chunk" | "map"
+        | "filter" | "flat_map" | "group_by" | "key_by" | "distinct_by" | "find"
+        | "find_index" | "index_of" | "contains" | "partition" | "split" | "reduce" | "to_base" => {
+            (1, Some(1))
         }
 
-        // Exactly 3 arguments
+        // One or two arguments
+        "sort_by" => (1, Some(2)),
+
+        // One or two arguments
+        "pad_start" | "pad_end" | "slice" => (1, Some(2)),
+
+        // Exactly 2 arguments
+        "fold" => (2, Some(2)),
+
+        // Two or three arguments
         "replace" => (2, Some(3)),
+
+        // Date/Time
+        "date_format" => (1, Some(3)),
+        "to_unixtime" => (0, Some(2)),
 
         // Variable arguments (at least 1)
         "concat" | "coalesce" | "merge" | "deep_merge" | "and" | "or" | "pick" | "omit"
-        | "from_entries" | "split" => (1, None),
+        | "from_entries" | "add" | "subtract" | "multiply" | "divide" | "zip" => (1, None),
+
+        // Variable arguments (at least 2)
+        "zip_with" => (2, None),
 
         // Comparison operators (exactly 1 argument for pipe context)
         "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => (1, Some(1)),
 
-        // Arithmetic (exactly 1 argument for pipe context)
-        "+" | "-" | "*" | "/" => (1, Some(1)),
+        // Arithmetic (at least 1 argument for pipe context)
+        "+" | "-" | "*" | "/" => (1, None),
 
         // Lookup operations (2-4 arguments: match_key, match_value, get? or from, match_key, match_value, get?)
         "lookup" | "lookup_first" => (2, Some(4)),
@@ -1094,18 +1107,129 @@ mod tests {
     fn test_is_valid_op() {
         assert!(is_valid_op("trim"));
         assert!(is_valid_op("concat"));
+        assert!(is_valid_op("coalesce"));
+        assert!(is_valid_op("lookup_first"));
+        assert!(is_valid_op("add"));
+        assert!(is_valid_op("subtract"));
+        assert!(is_valid_op("multiply"));
+        assert!(is_valid_op("divide"));
+        assert!(is_valid_op("+"));
+        assert!(is_valid_op("replace"));
+        assert!(is_valid_op("split"));
+        assert!(is_valid_op("pad_start"));
+        assert!(is_valid_op("merge"));
         assert!(is_valid_op("map"));
         assert!(is_valid_op("filter"));
+        assert!(is_valid_op("round"));
+        assert!(is_valid_op("to_base"));
+        assert!(is_valid_op("date_format"));
+        assert!(is_valid_op("to_unixtime"));
+        assert!(is_valid_op("string"));
         assert!(!is_valid_op("nonexistent_op"));
     }
 
     #[test]
     fn test_op_arg_range() {
         assert_eq!(get_op_arg_range("trim"), (0, Some(0)));
-        assert_eq!(get_op_arg_range("multiply"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("multiply"), (1, None));
+        assert_eq!(get_op_arg_range("subtract"), (1, None));
+        assert_eq!(get_op_arg_range("divide"), (1, None));
         assert_eq!(get_op_arg_range("concat"), (1, None));
-        assert_eq!(get_op_arg_range("slice"), (2, Some(2)));
         assert_eq!(get_op_arg_range("lookup_first"), (2, Some(4)));
+        assert_eq!(get_op_arg_range("split"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("pad_start"), (1, Some(2)));
+        assert_eq!(get_op_arg_range("round"), (0, Some(1)));
+        assert_eq!(get_op_arg_range("zip"), (1, None));
+        assert_eq!(get_op_arg_range("zip_with"), (2, None));
+        assert_eq!(get_op_arg_range("reduce"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("fold"), (2, Some(2)));
+        assert_eq!(get_op_arg_range("to_unixtime"), (0, Some(2)));
+    }
+
+    #[test]
+    fn test_validate_sort_by_order_arg_allowed() {
+        let expr = V2Expr::Pipe(V2Pipe {
+            start: V2Start::Ref(V2Ref::Input("items".to_string())),
+            steps: vec![V2Step::Op(V2OpStep {
+                op: "sort_by".to_string(),
+                args: vec![
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Item("value".to_string())),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("desc")),
+                        steps: vec![],
+                    }),
+                ],
+            })],
+        });
+        let scope = V2Scope::new();
+        let mut ctx = V2ValidationCtx::new(None);
+
+        validate_v2_expr(&expr, "test", &scope, &mut ctx);
+
+        assert!(
+            ctx.errors().is_empty(),
+            "expected no errors, got: {:?}",
+            ctx.errors()
+        );
+    }
+
+    #[test]
+    fn test_validate_zip_with_item_scope_allowed() {
+        let expr = V2Expr::Pipe(V2Pipe {
+            start: V2Start::Ref(V2Ref::Input("left".to_string())),
+            steps: vec![V2Step::Op(V2OpStep {
+                op: "zip_with".to_string(),
+                args: vec![
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Input("right".to_string())),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Item(String::new())),
+                        steps: vec![],
+                    }),
+                ],
+            })],
+        });
+        let scope = V2Scope::new();
+        let mut ctx = V2ValidationCtx::new(None);
+
+        validate_v2_expr(&expr, "test", &scope, &mut ctx);
+
+        assert!(
+            ctx.errors().is_empty(),
+            "expected no errors, got: {:?}",
+            ctx.errors()
+        );
+    }
+
+    #[test]
+    fn test_validate_v2_expr_rejects_unimplemented_op() {
+        let expr = V2Expr::Pipe(V2Pipe {
+            start: V2Start::Literal(json!("hello")),
+            steps: vec![V2Step::Op(V2OpStep {
+                op: "nonexistent_op".to_string(),
+                args: vec![
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("a")),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("b")),
+                        steps: vec![],
+                    }),
+                ],
+            })],
+        });
+        let scope = V2Scope::new();
+        let mut ctx = V2ValidationCtx::new(None);
+
+        validate_v2_expr(&expr, "test", &scope, &mut ctx);
+
+        assert!(ctx.errors().iter().any(|err| err.code == ErrorCode::UnknownOp));
     }
 
     // Reference validation tests
