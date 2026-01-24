@@ -741,7 +741,13 @@ fn eval_ref(
             };
         }
         Namespace::Pipe => {
-            let pipe_value = locals.and_then(|locals| locals.pipe).unwrap_or(&EvalValue::Missing);
+            let pipe_value = locals.and_then(|locals| locals.pipe).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "pipe is only available within v2 pipes",
+                )
+                .with_path(base_path)
+            })?;
             let (root, rest) = match tokens.split_first() {
                 Some((PathToken::Key(key), rest)) if key == "value" => (pipe_value, rest),
                 _ => {

@@ -2421,10 +2421,14 @@ pub fn eval_v2_op_step<'a>(
                 }
                 3 => {
                     if matches!(pipe_value, EvalValue::Missing) {
-                        let from_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
+                        let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
+                        let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
+                        if !use_explicit_from {
+                            return Ok(EvalValue::Missing);
+                        }
                         let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
                         let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
-                        (from_value, match_key_value, match_value, None)
+                        (first_value, match_key_value, match_value, None)
                     } else {
                         let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
                         let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing);
@@ -2512,10 +2516,14 @@ pub fn eval_v2_op_step<'a>(
                 }
                 3 => {
                     if matches!(pipe_value, EvalValue::Missing) {
-                        let from_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
+                        let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
+                        let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
+                        if !use_explicit_from {
+                            return Ok(EvalValue::Missing);
+                        }
                         let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
                         let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
-                        (from_value, match_key_value, match_value, None)
+                        (first_value, match_key_value, match_value, None)
                     } else {
                         let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
                         let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing);
