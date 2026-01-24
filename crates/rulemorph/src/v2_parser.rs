@@ -128,6 +128,12 @@ pub fn parse_v2_start(value: &JsonValue) -> Result<V2Start, V2ParseError> {
             if let Some(v2_ref) = parse_v2_ref(s) {
                 return Ok(V2Start::Ref(v2_ref));
             }
+            if is_v2_ref(s) {
+                return Err(V2ParseError::InvalidStart(format!(
+                    "invalid v2 reference: {}",
+                    s
+                )));
+            }
             // Otherwise, treat as literal string
             Ok(V2Start::Literal(value.clone()))
         }
@@ -414,6 +420,11 @@ pub fn parse_v2_expr(value: &JsonValue) -> Result<V2Expr, V2ParseError> {
                     start: V2Start::Ref(v2_ref),
                     steps: vec![],
                 }))
+            } else if is_v2_ref(s) {
+                Err(V2ParseError::InvalidStart(format!(
+                    "invalid v2 reference: {}",
+                    s
+                )))
             } else {
                 Ok(V2Expr::Pipe(V2Pipe {
                     start: V2Start::Literal(value.clone()),
@@ -789,6 +800,15 @@ mod v2_pipe_parser_tests {
         let result = parse_v2_start(&json!(null)).unwrap();
         assert_eq!(result, V2Start::Literal(json!(null)));
     }
+
+    #[test]
+    fn test_parse_v2_start_invalid_at_ref_error() {
+        let invalid_refs = [json!("@input"), json!("@"), json!("@foo-bar")];
+        for value in invalid_refs {
+            let err = parse_v2_start(&value).unwrap_err();
+            assert!(matches!(err, V2ParseError::InvalidStart(_)));
+        }
+    }
 }
 
 // =============================================================================
@@ -1155,6 +1175,13 @@ mod v2_rulefile_parser_tests {
         } else {
             panic!("Expected Pipe expression");
         }
+    }
+
+    #[test]
+    fn test_parse_v2_expr_invalid_at_ref_error() {
+        let value = json!("@input");
+        let err = parse_v2_expr(&value).unwrap_err();
+        assert!(matches!(err, V2ParseError::InvalidStart(_)));
     }
 
     #[test]
