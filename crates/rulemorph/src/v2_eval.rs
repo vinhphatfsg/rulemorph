@@ -1018,23 +1018,15 @@ pub fn eval_v2_condition<'a>(
         V2Condition::Expr(expr) => {
             let expr_path = format!("{}.expr", path);
             let value = eval_v2_expr(expr, record, context, out, &expr_path, ctx)?;
-            Ok(is_truthy(&value))
+            match value {
+                EvalValue::Value(JsonValue::Bool(flag)) => Ok(flag),
+                EvalValue::Missing | EvalValue::Value(_) => Err(TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "when/record_when must evaluate to boolean",
+                )
+                .with_path(&expr_path)),
+            }
         }
-    }
-}
-
-/// Check if a value is truthy
-fn is_truthy(value: &EvalValue) -> bool {
-    match value {
-        EvalValue::Missing => false,
-        EvalValue::Value(v) => match v {
-            JsonValue::Null => false,
-            JsonValue::Bool(b) => *b,
-            JsonValue::Number(n) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
-            JsonValue::String(s) => !s.is_empty(),
-            JsonValue::Array(arr) => !arr.is_empty(),
-            JsonValue::Object(obj) => !obj.is_empty(),
-        },
     }
 }
 
@@ -3782,6 +3774,23 @@ mod v2_if_step_eval_tests {
     }
 
     #[test]
+    fn test_eval_condition_expr_non_bool_errors() {
+        let cond = V2Condition::Expr(V2Expr::Pipe(V2Pipe {
+            start: V2Start::Literal(json!("active")),
+            steps: vec![],
+        }));
+        let record = json!({});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_condition(&cond, &record, None, &out, "test", &ctx);
+        assert!(matches!(result, Err(err)
+            if err.kind == TransformErrorKind::ExprError
+                && err.message == "when/record_when must evaluate to boolean"
+                && err.path.as_deref() == Some("test.expr")
+        ));
+    }
+
+    #[test]
     fn test_eval_condition_with_pipe_value() {
         // Condition: { gt: ["$", 100] }
         let cond = V2Condition::Comparison(V2Comparison {
@@ -4025,24 +4034,6 @@ mod v2_if_step_eval_tests {
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!("gold")));
     }
 
-    // ------ Truthy tests ------
-
-    #[test]
-    fn test_is_truthy() {
-        assert!(!is_truthy(&EvalValue::Missing));
-        assert!(!is_truthy(&EvalValue::Value(json!(null))));
-        assert!(!is_truthy(&EvalValue::Value(json!(false))));
-        assert!(is_truthy(&EvalValue::Value(json!(true))));
-        assert!(!is_truthy(&EvalValue::Value(json!(0))));
-        assert!(is_truthy(&EvalValue::Value(json!(1))));
-        assert!(is_truthy(&EvalValue::Value(json!(-1))));
-        assert!(!is_truthy(&EvalValue::Value(json!(""))));
-        assert!(is_truthy(&EvalValue::Value(json!("hello"))));
-        assert!(!is_truthy(&EvalValue::Value(json!([]))));
-        assert!(is_truthy(&EvalValue::Value(json!([1]))));
-        assert!(!is_truthy(&EvalValue::Value(json!({}))));
-        assert!(is_truthy(&EvalValue::Value(json!({"a": 1}))));
-    }
 }
 
 // =============================================================================
