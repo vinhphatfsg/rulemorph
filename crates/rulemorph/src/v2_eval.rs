@@ -2468,6 +2468,9 @@ pub fn eval_v2_op_step<'a>(
 
             // Get match key as string
             let match_key = eval_value_as_string(&match_key_value, &match_key_path)?;
+            if matches!(match_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
 
             // Search for first matching item
             for item in arr {
@@ -2563,6 +2566,9 @@ pub fn eval_v2_op_step<'a>(
 
             // Get match key as string
             let match_key = eval_value_as_string(&match_key_value, &match_key_path)?;
+            if matches!(match_value, EvalValue::Missing) {
+                return Ok(EvalValue::Missing);
+            }
 
             // Search for ALL matching items
             let mut results = Vec::new();
@@ -4814,6 +4820,49 @@ mod v2_lookup_eval_tests {
     }
 
     #[test]
+    fn test_lookup_first_missing_match_value_does_not_match_null() {
+        let users = json!([
+            {"id": null, "name": "MissingUser"},
+            {"id": 1, "name": "Alice"}
+        ]);
+        let op = V2OpStep {
+            op: "lookup_first".to_string(),
+            args: vec![
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Ref(V2Ref::Context("users".to_string())),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("id")),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Ref(V2Ref::Input("user_id".to_string())),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("name")),
+                    steps: vec![],
+                }),
+            ],
+        };
+        let record = json!({});
+        let context = json!({"users": users});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!(null)),
+            &record,
+            Some(&context),
+            &out,
+            "test",
+            &ctx,
+        );
+        assert!(matches!(result, Ok(EvalValue::Missing)));
+    }
+
+    #[test]
     fn test_lookup_all_matches() {
         // lookup (not lookup_first) returns all matches
         let employees = json!([
@@ -4892,6 +4941,49 @@ mod v2_lookup_eval_tests {
             &ctx,
         );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!([])));
+    }
+
+    #[test]
+    fn test_lookup_missing_match_value_does_not_match_null() {
+        let users = json!([
+            {"id": null, "name": "MissingUser"},
+            {"id": 1, "name": "Alice"}
+        ]);
+        let op = V2OpStep {
+            op: "lookup".to_string(),
+            args: vec![
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Ref(V2Ref::Context("users".to_string())),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("id")),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Ref(V2Ref::Input("user_id".to_string())),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("name")),
+                    steps: vec![],
+                }),
+            ],
+        };
+        let record = json!({});
+        let context = json!({"users": users});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!(null)),
+            &record,
+            Some(&context),
+            &out,
+            "test",
+            &ctx,
+        );
+        assert!(matches!(result, Ok(EvalValue::Missing)));
     }
 
     #[test]
