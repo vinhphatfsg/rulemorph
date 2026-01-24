@@ -1075,9 +1075,10 @@ fn eval_v2_comparison<'a>(
 /// Compare two values for equality
 fn compare_values_eq(left: &EvalValue, right: &EvalValue) -> bool {
     match (left, right) {
-        (EvalValue::Missing, EvalValue::Missing) => true,
-        (EvalValue::Missing, _) | (_, EvalValue::Missing) => false,
         (EvalValue::Value(l), EvalValue::Value(r)) => l == r,
+        (EvalValue::Missing, EvalValue::Missing) => true,
+        (EvalValue::Missing, EvalValue::Value(r)) => r.is_null(),
+        (EvalValue::Value(l), EvalValue::Missing) => l.is_null(),
     }
 }
 
@@ -3492,6 +3493,28 @@ mod v2_if_step_eval_tests {
         let ctx = V2EvalContext::new();
         let result = eval_v2_condition(&cond, &record, None, &out, "test", &ctx);
         assert!(matches!(result, Ok(false)));
+    }
+
+    #[test]
+    fn test_eval_condition_eq_missing_as_null() {
+        let cond = V2Condition::Comparison(V2Comparison {
+            op: V2ComparisonOp::Eq,
+            args: vec![
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Ref(V2Ref::Input("optional".to_string())),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!(null)),
+                    steps: vec![],
+                }),
+            ],
+        });
+        let record = json!({});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_condition(&cond, &record, None, &out, "test", &ctx);
+        assert!(matches!(result, Ok(true)));
     }
 
     #[test]
