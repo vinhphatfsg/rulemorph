@@ -304,6 +304,18 @@ Support status:
 
 ### JSON operations
 
+Path arguments:
+- `pick`/`omit` accept one or more path strings as separate args.
+- A single arg may also be an array of strings (e.g., `@context.paths`).
+
+Example:
+
+```yaml
+- pick:
+  - "name"
+  - "price"
+```
+
 | op | args | description | support |
 | --- | --- | --- | --- |
 | `merge` | `>=1` | Shallow merge (rightmost wins). | `runtime` |

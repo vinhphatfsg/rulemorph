@@ -1,0 +1,12 @@
+[
+  {
+    "item": {
+      "name": "apple",
+      "price": 100,
+      "category": "fruit",
+      "tags": {"color": "red"}
+    },
+    "pick_paths": ["name", "price"],
+    "numbers": [1, 2, 3, 4]
+  }
+]

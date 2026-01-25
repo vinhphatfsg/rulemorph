@@ -1,0 +1,18 @@
+[
+  {
+    "pick_multi": {
+      "name": "apple",
+      "price": 100
+    },
+    "omit_multi": {
+      "name": "apple",
+      "price": 100
+    },
+    "pick_paths_array": {
+      "name": "apple",
+      "price": 100
+    },
+    "reduce_sum": 10.0,
+    "fold_sum": 10.0
+  }
+]

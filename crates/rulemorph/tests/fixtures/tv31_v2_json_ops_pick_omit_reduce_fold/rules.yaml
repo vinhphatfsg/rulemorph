@@ -1,0 +1,37 @@
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: pick_multi
+    expr:
+      - "@input.item"
+      - pick:
+        - "name"
+        - "price"
+
+  - target: omit_multi
+    expr:
+      - "@input.item"
+      - omit:
+        - "category"
+        - "tags"
+
+  - target: pick_paths_array
+    expr:
+      - "@input.item"
+      - pick: "@input.pick_paths"
+
+  - target: reduce_sum
+    expr:
+      - "@input.numbers"
+      - reduce:
+        - ["@acc", { "+": "@item" }]
+
+  - target: fold_sum
+    expr:
+      - "@input.numbers"
+      - fold:
+        - 0
+        - ["@acc", { "+": "@item" }]

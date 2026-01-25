@@ -305,6 +305,18 @@ when:
 
 ### JSON 操作
 
+パス引数:
+- `pick`/`omit` はパス文字列を複数引数で指定できます。
+- 1 つの引数で文字列配列（例: `@context.paths`）も指定可能です。
+
+例:
+
+```yaml
+- pick:
+  - "name"
+  - "price"
+```
+
 | op | args | 説明 | 対応 |
 | --- | --- | --- | --- |
 | `merge` | `>=1` | 浅い merge（右勝ち）。 | `runtime` |
