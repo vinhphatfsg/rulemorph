@@ -4,7 +4,7 @@ use crate::error::{ErrorCode, RuleError, ValidationResult};
 use crate::locator::YamlLocator;
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, Mapping, RuleFile};
 use crate::path::{parse_path, PathToken};
-use crate::v2_parser::{is_v2_expr, parse_v2_expr, parse_v2_condition};
+use crate::v2_parser::{is_literal_escape, is_v2_expr, parse_v2_condition, parse_v2_expr};
 use crate::v2_validator::{
     collect_out_references, validate_no_cyclic_dependencies, validate_v2_condition,
     validate_v2_expr, V2Scope, V2ValidationCtx,
@@ -243,12 +243,14 @@ fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 fn expr_to_json_value(expr: &Expr) -> Option<serde_json::Value> {
     match expr {
         Expr::Literal(value) => Some(value.clone()),
-        // Handle serde_yaml quirk: single-element YAML array ["@ref"] gets deserialized as ExprRef
-        // If ref_path starts with '@', it's actually a v2 reference that should be treated as v2 expr
-        Expr::Ref(ref_expr) if ref_expr.ref_path.starts_with('@') => {
+        // Handle serde_yaml quirk: single-element YAML array ["@ref"] or ["lit:..."]
+        // gets deserialized as ExprRef, but should be treated as v2 expr.
+        Expr::Ref(ref_expr)
+            if ref_expr.ref_path.starts_with('@') || is_literal_escape(&ref_expr.ref_path) =>
+        {
             // Convert back to a single-element array for v2 parsing
             Some(serde_json::Value::Array(vec![
-                serde_json::Value::String(ref_expr.ref_path.clone())
+                serde_json::Value::String(ref_expr.ref_path.clone()),
             ]))
         }
         // For v1 expressions (Ref, Op, Chain), return None

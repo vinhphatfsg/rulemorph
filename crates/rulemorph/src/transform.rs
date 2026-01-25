@@ -5090,8 +5090,8 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
                 None
             }
         }
-        Expr::Ref(expr_ref) if expr_ref.ref_path.starts_with('@') => {
-            // Single v2 reference (serde collapsed 1-element array)
+        Expr::Ref(expr_ref) if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) => {
+            // Single v2 reference or literal escape (serde collapsed 1-element array)
             // Wrap it as single-element array
             Some(JsonValue::Array(vec![JsonValue::String(expr_ref.ref_path.clone())]))
         }
@@ -5119,7 +5119,10 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
 fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
     match expr {
         Expr::Literal(value) => Some(value.clone()),
-        Expr::Ref(ref_expr) if ref_expr.ref_path.starts_with('@') => {
+        Expr::Ref(ref_expr)
+            if ref_expr.ref_path.starts_with('@')
+                || is_literal_escape(&ref_expr.ref_path) =>
+        {
             Some(JsonValue::String(ref_expr.ref_path.clone()))
         }
         Expr::Chain(chain) => {

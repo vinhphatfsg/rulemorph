@@ -171,6 +171,7 @@ fn v2_valid_rules_should_pass_validation() {
         "tv27_v1_compat",
         "tv28_map_let_binding",
         "tv29_v2_out_sibling_ok",
+        "tv30_literal_escape",
     ];
 
     for case in cases {
