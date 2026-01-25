@@ -2354,7 +2354,7 @@ pub fn eval_v2_op_step<'a>(
                 }
             }
         }
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "match" => {
             if op_step.args.len() != 1 {
                 return Err(TransformError::new(
                     TransformErrorKind::ExprError,
@@ -2369,7 +2369,17 @@ pub fn eval_v2_op_step<'a>(
             let right_path = format!("{}.args[0]", path);
             let right = eval_v2_expr_or_null(&op_step.args[0], record, context, out, &right_path, &step_ctx)?;
             let left_path = path.to_string();
-            let result = match op_step.op.as_str() {
+            let op = match op_step.op.as_str() {
+                "eq" => "==",
+                "ne" => "!=",
+                "lt" => "<",
+                "lte" => "<=",
+                "gt" => ">",
+                "gte" => ">=",
+                "match" => "~=",
+                other => other,
+            };
+            let result = match op {
                 "==" => compare_eq_v1(&left, &right, &left_path, &right_path)?,
                 "!=" => !compare_eq_v1(&left, &right, &left_path, &right_path)?,
                 "<" => compare_numbers_v1(&left, &right, &left_path, &right_path, |l, r| l < r)?,
@@ -2380,6 +2390,65 @@ pub fn eval_v2_op_step<'a>(
                 _ => false,
             };
             Ok(EvalValue::Value(JsonValue::Bool(result)))
+        }
+        "pick" | "omit" => {
+            if op_step.args.is_empty() {
+                return Err(TransformError::new(
+                    TransformErrorKind::ExprError,
+                    format!("{} requires at least one argument", op_step.op),
+                )
+                .with_path(format!("{}.args", path)));
+            }
+
+            let mut path_values = Vec::new();
+            for (index, arg) in op_step.args.iter().enumerate() {
+                let arg_path = format!("{}.args[{}]", path, index);
+                let value = match eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)? {
+                    EvalValue::Missing => return Ok(EvalValue::Missing),
+                    EvalValue::Value(value) => value,
+                };
+                if value.is_null() {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "expr arg must not be null",
+                    )
+                    .with_path(arg_path));
+                }
+                match value {
+                    JsonValue::String(path_value) => {
+                        path_values.push(JsonValue::String(path_value));
+                    }
+                    JsonValue::Array(items) => {
+                        for (item_index, item) in items.iter().enumerate() {
+                            let item_path = format!("{}.args[{}][{}]", path, index, item_index);
+                            let path_value = item.as_str().ok_or_else(|| {
+                                TransformError::new(
+                                    TransformErrorKind::ExprError,
+                                    "paths must be a string or array of strings",
+                                )
+                                .with_path(item_path)
+                            })?;
+                            path_values.push(JsonValue::String(path_value.to_string()));
+                        }
+                    }
+                    _ => {
+                        return Err(TransformError::new(
+                            TransformErrorKind::ExprError,
+                            "paths must be a string or array of strings",
+                        )
+                        .with_path(arg_path));
+                    }
+                }
+            }
+
+            let normalized_op = V2OpStep {
+                op: op_step.op.clone(),
+                args: vec![V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(JsonValue::Array(path_values)),
+                    steps: vec![],
+                })],
+            };
+            eval_v2_op_with_v1_fallback(&normalized_op, pipe_value, record, context, out, path, &step_ctx)
         }
 
         // Lookup operations - v2 keyword format: lookup_first: {from: ..., match: [...], get: ...}
@@ -3084,6 +3153,107 @@ mod v2_op_step_eval_tests {
             &ctx,
         );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(7.0)));
+    }
+
+    #[test]
+    fn test_eval_op_comparison_aliases() {
+        let ctx = V2EvalContext::new();
+        let cases = [
+            ("eq", json!(1), json!("1"), true),
+            ("ne", json!(1), json!(2), true),
+            ("lt", json!(5), json!(10), true),
+            ("lte", json!(10), json!(10), true),
+            ("gt", json!(10), json!(5), true),
+            ("gte", json!(10), json!(10), true),
+            ("match", json!("apple"), json!("^a.*"), true),
+        ];
+
+        for (op, left, right, expected) in cases {
+            let op_step = V2OpStep {
+                op: op.to_string(),
+                args: vec![lit(right)],
+            };
+            let result = eval_v2_op_step(
+                &op_step,
+                EvalValue::Value(left),
+                &json!({}),
+                None,
+                &json!({}),
+                "test",
+                &ctx,
+            );
+            assert!(
+                matches!(result, Ok(EvalValue::Value(v)) if v == json!(expected)),
+                "op {}",
+                op
+            );
+        }
+    }
+
+    #[test]
+    fn test_eval_op_pick_multiple_paths() {
+        let op = V2OpStep {
+            op: "pick".to_string(),
+            args: vec![lit(json!("name")), lit(json!("price"))],
+        };
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!({"name": "apple", "price": 100, "category": "fruit"})),
+            &json!({}),
+            None,
+            &json!({}),
+            "test",
+            &ctx,
+        );
+        assert!(matches!(
+            result,
+            Ok(EvalValue::Value(v)) if v == json!({"name": "apple", "price": 100})
+        ));
+    }
+
+    #[test]
+    fn test_eval_op_omit_multiple_paths() {
+        let op = V2OpStep {
+            op: "omit".to_string(),
+            args: vec![lit(json!("category")), lit(json!("price"))],
+        };
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!({"name": "apple", "price": 100, "category": "fruit"})),
+            &json!({}),
+            None,
+            &json!({}),
+            "test",
+            &ctx,
+        );
+        assert!(matches!(
+            result,
+            Ok(EvalValue::Value(v)) if v == json!({"name": "apple"})
+        ));
+    }
+
+    #[test]
+    fn test_eval_op_pick_paths_array_arg() {
+        let op = V2OpStep {
+            op: "pick".to_string(),
+            args: vec![lit(json!(["name", "price"]))],
+        };
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!({"name": "apple", "price": 100, "category": "fruit"})),
+            &json!({}),
+            None,
+            &json!({}),
+            "test",
+            &ctx,
+        );
+        assert!(matches!(
+            result,
+            Ok(EvalValue::Value(v)) if v == json!({"name": "apple", "price": 100})
+        ));
     }
 
     #[test]

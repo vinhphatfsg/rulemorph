@@ -704,6 +704,13 @@ pub(crate) fn is_valid_op(op: &str) -> bool {
             | ">"
             | ">="
             | "~="
+            | "eq"
+            | "ne"
+            | "lt"
+            | "lte"
+            | "gt"
+            | "gte"
+            | "match"
             // JSON
             | "merge"
             | "deep_merge"
@@ -837,7 +844,8 @@ fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
         "zip_with" => (2, None),
 
         // Comparison operators (exactly 1 argument for pipe context)
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => (1, Some(1)),
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~="
+        | "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "match" => (1, Some(1)),
 
         // Arithmetic (at least 1 argument for pipe context)
         "+" | "-" | "*" | "/" => (1, None),
@@ -1108,6 +1116,13 @@ mod tests {
         assert!(is_valid_op("date_format"));
         assert!(is_valid_op("to_unixtime"));
         assert!(is_valid_op("string"));
+        assert!(is_valid_op("gt"));
+        assert!(is_valid_op("gte"));
+        assert!(is_valid_op("lt"));
+        assert!(is_valid_op("lte"));
+        assert!(is_valid_op("eq"));
+        assert!(is_valid_op("ne"));
+        assert!(is_valid_op("match"));
         assert!(!is_valid_op("nonexistent_op"));
     }
 
@@ -1123,6 +1138,13 @@ mod tests {
         assert_eq!(get_op_arg_range("pad_start"), (1, Some(2)));
         assert_eq!(get_op_arg_range("round"), (0, Some(1)));
         assert_eq!(get_op_arg_range("zip"), (1, None));
+        assert_eq!(get_op_arg_range("gt"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("gte"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("lt"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("lte"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("eq"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("ne"), (1, Some(1)));
+        assert_eq!(get_op_arg_range("match"), (1, Some(1)));
         assert_eq!(get_op_arg_range("zip_with"), (2, None));
         assert_eq!(get_op_arg_range("reduce"), (1, Some(1)));
         assert_eq!(get_op_arg_range("fold"), (2, Some(2)));
