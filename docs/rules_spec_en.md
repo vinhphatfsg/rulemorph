@@ -228,7 +228,7 @@ Supported forms:
 
 Comparison semantics (v2):
 - `eq`/`ne` use **strict JSON equality** (type-sensitive). Example: `"1"` != `1`.
-- `gt`/`gte`/`lt`/`lte` try numeric comparison first (numbers or numeric strings). If both sides are non-numeric strings, they are compared lexicographically. Otherwise, it is an error.
+- `gt`/`gte`/`lt`/`lte` try numeric comparison first (numbers or numeric strings). If both sides are non-numeric strings, they are compared lexicographically using Rust's default `str` ordering (UTF-8 byte order / Unicode code point order). Otherwise, it is an error.
 
 Examples:
 
