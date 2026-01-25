@@ -374,13 +374,10 @@ fn validate_item_path(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'_>
     if path.is_empty() {
         return; // @item with no path is valid
     }
-    if path == "index" || path.starts_with("index.") {
-        return; // @item.index is valid
+    if path == "index" || path == "value" {
+        return; // @item.index / @item.value are valid
     }
-    if path == "value" || path.starts_with("value.") {
-        return; // @item.value is valid
-    }
-    // Direct field access on item is also valid
+    // Direct field access on item value is also valid
     validate_path_syntax(path, base_path, ctx);
 }
 
@@ -1251,6 +1248,21 @@ mod tests {
         validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
 
         assert!(!ctx.has_errors());
+    }
+
+    #[test]
+    fn test_validate_item_ref_invalid_subpath() {
+        let scope = V2Scope::new().with_item();
+
+        let mut ctx = V2ValidationCtx::new(None);
+        let v2_ref = V2Ref::Item("value..foo".to_string());
+        validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
+        assert!(ctx.errors().iter().any(|err| err.code == ErrorCode::InvalidPath));
+
+        let mut ctx = V2ValidationCtx::new(None);
+        let v2_ref = V2Ref::Item("index..foo".to_string());
+        validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
+        assert!(ctx.errors().iter().any(|err| err.code == ErrorCode::InvalidPath));
     }
 
     #[test]
