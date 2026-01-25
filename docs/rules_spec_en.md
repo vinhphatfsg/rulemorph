@@ -226,6 +226,10 @@ Supported forms:
 - `any: [ <cond>, ... ]`
 - comparison objects: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `match`
 
+Comparison semantics (v2):
+- `eq`/`ne` use **strict JSON equality** (type-sensitive). Example: `"1"` != `1`.
+- `gt`/`gte`/`lt`/`lte` try numeric comparison first (numbers or numeric strings). If both sides are non-numeric strings, they are compared lexicographically. Otherwise, it is an error.
+
 Examples:
 
 ```yaml

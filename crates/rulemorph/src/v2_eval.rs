@@ -1585,6 +1585,7 @@ fn value_to_string(value: &JsonValue, path: &str) -> Result<String, TransformErr
     }
 }
 
+
 fn cast_to_int(value: &JsonValue, path: &str) -> Result<JsonValue, TransformError> {
     match value {
         JsonValue::Number(n) => {
@@ -3494,6 +3495,28 @@ mod v2_if_step_eval_tests {
     }
 
     #[test]
+    fn test_eval_condition_eq_numeric_string_is_false() {
+        let cond = V2Condition::Comparison(V2Comparison {
+            op: V2ComparisonOp::Eq,
+            args: vec![
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("1")),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!(1)),
+                    steps: vec![],
+                }),
+            ],
+        });
+        let record = json!({});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_condition(&cond, &record, None, &out, "test", &ctx);
+        assert!(matches!(result, Ok(false)));
+    }
+
+    #[test]
     fn test_eval_condition_eq_missing_as_null() {
         let cond = V2Condition::Comparison(V2Comparison {
             op: V2ComparisonOp::Eq,
@@ -3548,6 +3571,28 @@ mod v2_if_step_eval_tests {
                 }),
                 V2Expr::Pipe(V2Pipe {
                     start: V2Start::Literal(json!(10)),
+                    steps: vec![],
+                }),
+            ],
+        });
+        let record = json!({});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_condition(&cond, &record, None, &out, "test", &ctx);
+        assert!(matches!(result, Ok(true)));
+    }
+
+    #[test]
+    fn test_eval_condition_gt_non_numeric_string_compares_lexicographically() {
+        let cond = V2Condition::Comparison(V2Comparison {
+            op: V2ComparisonOp::Gt,
+            args: vec![
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("B")),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("A")),
                     steps: vec![],
                 }),
             ],

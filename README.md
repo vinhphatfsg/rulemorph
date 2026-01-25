@@ -91,6 +91,8 @@ mappings:
       eq: ["@input.status", "active"]  # Optional condition
 ```
 
+Note: v2 condition comparisons are type-sensitive (`"1"` != `1`). Ordering (`gt/gte/lt/lte`) compares numerically when possible, otherwise compares strings lexicographically.
+
 For full rule specification, see [docs/rules_spec_en.md](docs/rules_spec_en.md) (English) or [docs/rules_spec_ja.md](docs/rules_spec_ja.md) (Japanese).
 
 ## DTO Generation
