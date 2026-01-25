@@ -1219,6 +1219,26 @@ mod v2_rulefile_parser_tests {
     }
 
     #[test]
+    fn test_parse_v2_expr_single_step_comparison_alias() {
+        // Single-step pipe should treat alias comparison op as a step.
+        let value = json!([{ "gt": 80 }]);
+        let expr = parse_v2_expr(&value).unwrap();
+
+        if let V2Expr::Pipe(pipe) = expr {
+            assert_eq!(pipe.start, V2Start::PipeValue);
+            assert_eq!(pipe.steps.len(), 1);
+            if let V2Step::Op(op) = &pipe.steps[0] {
+                assert_eq!(op.op, "gt");
+                assert_eq!(op.args.len(), 1);
+            } else {
+                panic!("Expected Op step");
+            }
+        } else {
+            panic!("Expected Pipe expression");
+        }
+    }
+
+    #[test]
     fn test_parse_v2_mapping_when_condition() {
         // mapping.when with v2 condition syntax
         let value = json!({ "eq": ["@input.role", "admin"] });

@@ -2354,7 +2354,7 @@ pub fn eval_v2_op_step<'a>(
                 }
             }
         }
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "match" => {
             if op_step.args.len() != 1 {
                 return Err(TransformError::new(
                     TransformErrorKind::ExprError,
@@ -2369,7 +2369,17 @@ pub fn eval_v2_op_step<'a>(
             let right_path = format!("{}.args[0]", path);
             let right = eval_v2_expr_or_null(&op_step.args[0], record, context, out, &right_path, &step_ctx)?;
             let left_path = path.to_string();
-            let result = match op_step.op.as_str() {
+            let op = match op_step.op.as_str() {
+                "eq" => "==",
+                "ne" => "!=",
+                "lt" => "<",
+                "lte" => "<=",
+                "gt" => ">",
+                "gte" => ">=",
+                "match" => "~=",
+                other => other,
+            };
+            let result = match op {
                 "==" => compare_eq_v1(&left, &right, &left_path, &right_path)?,
                 "!=" => !compare_eq_v1(&left, &right, &left_path, &right_path)?,
                 "<" => compare_numbers_v1(&left, &right, &left_path, &right_path, |l, r| l < r)?,
@@ -3084,6 +3094,41 @@ mod v2_op_step_eval_tests {
             &ctx,
         );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(7.0)));
+    }
+
+    #[test]
+    fn test_eval_op_comparison_aliases() {
+        let ctx = V2EvalContext::new();
+        let cases = [
+            ("eq", json!(1), json!("1"), true),
+            ("ne", json!(1), json!(2), true),
+            ("lt", json!(5), json!(10), true),
+            ("lte", json!(10), json!(10), true),
+            ("gt", json!(10), json!(5), true),
+            ("gte", json!(10), json!(10), true),
+            ("match", json!("apple"), json!("^a.*"), true),
+        ];
+
+        for (op, left, right, expected) in cases {
+            let op_step = V2OpStep {
+                op: op.to_string(),
+                args: vec![lit(right)],
+            };
+            let result = eval_v2_op_step(
+                &op_step,
+                EvalValue::Value(left),
+                &json!({}),
+                None,
+                &json!({}),
+                "test",
+                &ctx,
+            );
+            assert!(
+                matches!(result, Ok(EvalValue::Value(v)) if v == json!(expected)),
+                "op {}",
+                op
+            );
+        }
     }
 
     #[test]

@@ -258,7 +258,7 @@ Support status:
 - Numeric ops: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
 - Logical ops: `and`, `or`, `not`
-- Comparison ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`
+- Comparison ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=` (aliases: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`)
 - Type casts: `string`, `int`, `float`, `bool`
 
 ### Naming conventions
@@ -320,6 +320,26 @@ Support status:
 | `object_unflatten` | `1` | Expand path keys into nested objects. | `runtime` |
 
 ### Array operations
+
+Predicate expressions:
+- `filter`, `partition`, `find`, `find_index` take a v2 expression that must evaluate to boolean.
+- These are not condition objects; use comparison ops (`==`, `!=`, `>`, `>=`, `<`, `<=`, `~=`) with `@item`.
+- Comparison op aliases (`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`) are also accepted.
+- `missing`/`null` predicate values are treated as false; non-boolean values are an error.
+
+Example:
+
+```yaml
+- filter:
+  - ["@item", {"!=": null}]
+```
+
+Another example (partition):
+
+```yaml
+- partition:
+  - ["@item.price", {">": 80}]
+```
 
 | op | args | description | support |
 | --- | --- | --- | --- |

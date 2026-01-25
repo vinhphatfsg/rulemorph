@@ -259,7 +259,7 @@ when:
 - 数値系: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
 - 論理演算: `and`, `or`, `not`
-- 比較演算: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`
+- 比較演算: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`（エイリアス: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`）
 - 型変換: `string`, `int`, `float`, `bool`
 
 ### 命名規則
@@ -321,6 +321,26 @@ when:
 | `object_unflatten` | `1` | path キーからオブジェクトを再構成。 | `runtime` |
 
 ### 配列オペレーション
+
+述語式の注意:
+- `filter` / `partition` / `find` / `find_index` は v2 の式（boolean を返すパイプ式）を受け取ります。
+- 条件オブジェクトではありません。`@item` と比較 op（`==`, `!=`, `>`, `>=`, `<`, `<=`, `~=`）を使います。
+- 比較 op のエイリアス（`eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`）も利用できます。
+- 述語が `missing` / `null` の場合は false 扱いで、boolean 以外はエラーになります。
+
+例:
+
+```yaml
+- filter:
+  - ["@item", {"!=": null}]
+```
+
+別例（partition）:
+
+```yaml
+- partition:
+  - ["@item.price", {">": 80}]
+```
 
 | op | args | 説明 | 対応 |
 | --- | --- | --- | --- |
