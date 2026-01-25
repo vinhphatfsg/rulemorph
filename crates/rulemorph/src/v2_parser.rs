@@ -43,6 +43,15 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
     if let Some(path) = rest.strip_prefix("out.") {
         return Some(V2Ref::Out(path.to_string()));
     }
+    if rest == "input" {
+        return Some(V2Ref::Input(String::new()));
+    }
+    if rest == "context" {
+        return Some(V2Ref::Context(String::new()));
+    }
+    if rest == "out" {
+        return Some(V2Ref::Out(String::new()));
+    }
     if let Some(path) = rest.strip_prefix("item.") {
         return Some(V2Ref::Item(path.to_string()));
     }
@@ -568,6 +577,7 @@ mod v2_ref_parser_tests {
             parse_v2_ref("@input.items[0].id"),
             Some(V2Ref::Input("items[0].id".to_string()))
         );
+        assert_eq!(parse_v2_ref("@input"), Some(V2Ref::Input(String::new())));
     }
 
     #[test]
@@ -579,6 +589,10 @@ mod v2_ref_parser_tests {
         assert_eq!(
             parse_v2_ref("@context.users[0].id"),
             Some(V2Ref::Context("users[0].id".to_string()))
+        );
+        assert_eq!(
+            parse_v2_ref("@context"),
+            Some(V2Ref::Context(String::new()))
         );
     }
 
@@ -592,6 +606,7 @@ mod v2_ref_parser_tests {
             parse_v2_ref("@out.computed_field"),
             Some(V2Ref::Out("computed_field".to_string()))
         );
+        assert_eq!(parse_v2_ref("@out"), Some(V2Ref::Out(String::new())));
     }
 
     #[test]
@@ -644,10 +659,6 @@ mod v2_ref_parser_tests {
         assert_eq!(parse_v2_ref("input.name"), None);
         // Empty after @
         assert_eq!(parse_v2_ref("@"), None);
-        // Reserved names without path
-        assert_eq!(parse_v2_ref("@input"), None);
-        assert_eq!(parse_v2_ref("@context"), None);
-        assert_eq!(parse_v2_ref("@out"), None);
         // Invalid identifier
         assert_eq!(parse_v2_ref("@123invalid"), None);
     }
@@ -801,7 +812,7 @@ mod v2_pipe_parser_tests {
 
     #[test]
     fn test_parse_v2_start_invalid_at_ref_error() {
-        let invalid_refs = [json!("@input"), json!("@"), json!("@foo-bar")];
+        let invalid_refs = [json!("@"), json!("@foo-bar"), json!("@123invalid")];
         for value in invalid_refs {
             let err = parse_v2_start(&value).unwrap_err();
             assert!(matches!(err, V2ParseError::InvalidStart(_)));
@@ -1196,7 +1207,7 @@ mod v2_rulefile_parser_tests {
 
     #[test]
     fn test_parse_v2_expr_invalid_at_ref_error() {
-        let value = json!("@input");
+        let value = json!("@foo-bar");
         let err = parse_v2_expr(&value).unwrap_err();
         assert!(matches!(err, V2ParseError::InvalidStart(_)));
     }

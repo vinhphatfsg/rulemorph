@@ -384,11 +384,6 @@ fn validate_item_path(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'_>
 /// Validate @out reference is not a forward reference
 fn validate_out_not_forward(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'_>) {
     if path.is_empty() {
-        ctx.push_error(
-            ErrorCode::ForwardOutReference,
-            "out reference path is empty",
-            base_path,
-        );
         return;
     }
 

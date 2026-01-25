@@ -1,0 +1,18 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: "score"
+        source: "input.score"
+  - branch:
+      when: { gte: ["@input.score", 50] }
+      then: tests/fixtures/tv33_branch_return/high.yaml
+      else: tests/fixtures/tv33_branch_return/low.yaml
+      return: false
+  - mappings:
+      - target: "label"
+        expr:
+          - "@out.tier"
+          - concat: ["-tier"]

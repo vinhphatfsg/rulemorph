@@ -9,12 +9,18 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::cache::LruCache;
 use crate::error::{TransformError, TransformErrorKind, TransformWarning};
-use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, RuleFile};
+use crate::model::{
+    Expr, ExprChain, ExprOp, ExprRef, FinalizeSpec, InputFormat, Mapping, RuleFile, V2RuleStep,
+};
 use crate::path::{get_path, parse_path, PathToken};
 use crate::v2_parser::{
-    is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_pipe_from_value, parse_v2_condition,
+    is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
+    parse_v2_pipe_from_value,
 };
-use crate::v2_eval::{eval_v2_condition, eval_v2_pipe, EvalValue as V2EvalValue, V2EvalContext};
+use crate::v2_eval::{
+    eval_v2_condition, eval_v2_expr, eval_v2_pipe, EvalItem as V2EvalItem,
+    EvalValue as V2EvalValue, V2EvalContext,
+};
 
 const REGEX_CACHE_CAPACITY: usize = 128;
 
@@ -110,22 +116,12 @@ impl<'a> Iterator for TransformStream<'a> {
             };
 
             let mut warnings = Vec::new();
-            if !eval_record_when(self.rule, &record, self.context, &mut warnings) {
-                if warnings.is_empty() {
-                    continue;
-                }
-                return Some(Ok(TransformStreamItem {
-                    output: None,
-                    warnings,
-                }));
-            }
-
-            match apply_mappings(self.rule, &record, self.context, &mut warnings) {
+            match apply_rule_to_record(self.rule, &record, self.context, &mut warnings) {
                 Ok(output) => {
-                    return Some(Ok(TransformStreamItem {
-                        output: Some(output),
-                        warnings,
-                    }))
+                    if output.is_none() && warnings.is_empty() {
+                        continue;
+                    }
+                    return Some(Ok(TransformStreamItem { output, warnings }));
                 }
                 Err(err) => {
                     self.done = true;
@@ -141,6 +137,12 @@ pub fn transform_stream<'a>(
     input: &'a str,
     context: Option<&'a JsonValue>,
 ) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
     TransformStream::new(rule, input, context)
 }
 
@@ -151,16 +153,33 @@ pub fn transform_with_warnings(
 ) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let mut output_records = Vec::new();
-    let stream = transform_stream(rule, input, context)?;
-    for item in stream {
-        let item = item?;
-        warnings.extend(item.warnings);
-        if let Some(output) = item.output {
-            output_records.push(output);
+    if rule.finalize.is_some() {
+        let mut records = input_records_iter(rule, input)?;
+        while let Some(record) = records.next() {
+            let record = record?;
+            let mut record_warnings = Vec::new();
+            if let Some(output) = apply_rule_to_record(rule, &record, context, &mut record_warnings)? {
+                output_records.push(output);
+            }
+            warnings.extend(record_warnings);
+        }
+    } else {
+        let stream = transform_stream(rule, input, context)?;
+        for item in stream {
+            let item = item?;
+            warnings.extend(item.warnings);
+            if let Some(output) = item.output {
+                output_records.push(output);
+            }
         }
     }
 
-    Ok((JsonValue::Array(output_records), warnings))
+    let mut output = JsonValue::Array(output_records);
+    if let Some(finalize) = &rule.finalize {
+        output = apply_finalize(finalize, output, context)?;
+    }
+
+    Ok((output, warnings))
 }
 
 pub fn preflight_validate_with_warnings(
@@ -184,25 +203,366 @@ fn apply_mappings(
     warnings: &mut Vec<TransformWarning>,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
-    for (index, mapping) in rule.mappings.iter().enumerate() {
-        let mapping_path = format!("mappings[{}]", index);
+    apply_mappings_into(
+        &rule.mappings,
+        record,
+        context,
+        &mut out,
+        warnings,
+        rule.version,
+        "mappings",
+    )?;
+    Ok(out)
+}
+
+fn apply_mappings_into(
+    mappings: &[Mapping],
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &mut JsonValue,
+    warnings: &mut Vec<TransformWarning>,
+    rule_version: u8,
+    base_path: &str,
+) -> Result<(), TransformError> {
+    for (index, mapping) in mappings.iter().enumerate() {
+        let mapping_path = format!("{}[{}]", base_path, index);
         if !eval_when(
             mapping,
             record,
             context,
-            &out,
+            out,
             &mapping_path,
             warnings,
-            rule.version,
+            rule_version,
         ) {
             continue;
         }
-        let value = eval_mapping(mapping, record, context, &out, &mapping_path, rule.version)?;
+        let value = eval_mapping(mapping, record, context, out, &mapping_path, rule_version)?;
         if let Some(value) = value {
-            set_path(&mut out, &mapping.target, value, &mapping_path)?;
+            set_path(out, &mapping.target, value, &mapping_path)?;
         }
     }
-    Ok(out)
+    Ok(())
+}
+
+fn apply_rule_to_record(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    warnings: &mut Vec<TransformWarning>,
+) -> Result<Option<JsonValue>, TransformError> {
+    if let Some(steps) = &rule.steps {
+        return apply_steps(steps, record, context, warnings, rule.version);
+    }
+
+    if !eval_record_when(rule, record, context, warnings) {
+        return Ok(None);
+    }
+
+    let output = apply_mappings(rule, record, context, warnings)?;
+    Ok(Some(output))
+}
+
+fn apply_steps(
+    steps: &[V2RuleStep],
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    warnings: &mut Vec<TransformWarning>,
+    rule_version: u8,
+) -> Result<Option<JsonValue>, TransformError> {
+    let mut out = JsonValue::Object(Map::new());
+
+    for (step_index, step) in steps.iter().enumerate() {
+        let base_path = format!("steps[{}]", step_index);
+
+        if let Some(mappings) = &step.mappings {
+            apply_mappings_into(
+                mappings,
+                record,
+                context,
+                &mut out,
+                warnings,
+                rule_version,
+                &format!("{}.mappings", base_path),
+            )?;
+            continue;
+        }
+
+        if let Some(expr) = &step.record_when {
+            let when_path = format!("{}.record_when", base_path);
+            let keep = eval_when_expr(expr, record, context, &out, &when_path, rule_version)?;
+            if !keep {
+                return Ok(None);
+            }
+            continue;
+        }
+
+        if let Some(asserts) = &step.asserts {
+            for (assert_index, assert) in asserts.iter().enumerate() {
+                let assert_path = format!("{}.asserts[{}]", base_path, assert_index);
+                let ok = eval_when_expr(
+                    &assert.when,
+                    record,
+                    context,
+                    &out,
+                    &format!("{}.when", assert_path),
+                    rule_version,
+                )?;
+                if !ok {
+                    return Err(
+                        TransformError::new(
+                            TransformErrorKind::AssertionFailed,
+                            format!(
+                                "assert failed: {}: {}",
+                                assert.error.code, assert.error.message
+                            ),
+                        )
+                        .with_path(assert_path),
+                    );
+                }
+            }
+            continue;
+        }
+
+        if let Some(branch) = &step.branch {
+            let branch_path = format!("{}.branch", base_path);
+            let take = eval_when_expr(
+                &branch.when,
+                record,
+                context,
+                &out,
+                &format!("{}.when", branch_path),
+                rule_version,
+            )?;
+            let (target, target_field) = if take {
+                (Some(branch.then.as_str()), "then")
+            } else {
+                (branch.r#else.as_deref(), "else")
+            };
+            if let Some(target) = target {
+                let branch_rule = load_rule_from_path(target)
+                    .map_err(|err| err.with_path(format!("{}.{}", branch_path, target_field)))?;
+                let branch_input = out.clone();
+                let mut branch_warnings = Vec::new();
+                let branch_output = match apply_rule_to_record(
+                    &branch_rule,
+                    &branch_input,
+                    context,
+                    &mut branch_warnings,
+                )? {
+                    Some(value) => value,
+                    None => JsonValue::Object(Map::new()),
+                };
+                warnings.extend(branch_warnings);
+
+                if branch.return_ {
+                    return Ok(Some(branch_output));
+                }
+                merge_branch_output(&mut out, &branch_output, &branch_path)?;
+            }
+            continue;
+        }
+    }
+
+    Ok(Some(out))
+}
+
+fn merge_branch_output(
+    out: &mut JsonValue,
+    other: &JsonValue,
+    path: &str,
+) -> Result<(), TransformError> {
+    let out_map = out.as_object_mut().ok_or_else(|| {
+        TransformError::new(TransformErrorKind::InvalidTarget, "output must be object")
+            .with_path(path)
+    })?;
+    let other_map = other.as_object().ok_or_else(|| {
+        TransformError::new(TransformErrorKind::InvalidTarget, "branch output must be object")
+            .with_path(path)
+    })?;
+    for (key, value) in other_map {
+        out_map.insert(key.clone(), value.clone());
+    }
+    Ok(())
+}
+
+fn load_rule_from_path(path: &str) -> Result<RuleFile, TransformError> {
+    let yaml = std::fs::read_to_string(path).map_err(|err| {
+        TransformError::new(
+            TransformErrorKind::InvalidInput,
+            format!("failed to read rule: {}", err),
+        )
+        .with_path(path)
+    })?;
+    crate::parse_rule_file(&yaml).map_err(|err| {
+        TransformError::new(
+            TransformErrorKind::InvalidInput,
+            format!("failed to parse rule: {}", err),
+        )
+        .with_path(path)
+    })
+}
+
+fn apply_finalize(
+    finalize: &FinalizeSpec,
+    output: JsonValue,
+    context: Option<&JsonValue>,
+) -> Result<JsonValue, TransformError> {
+    let mut records = match output {
+        JsonValue::Array(records) => records,
+        _ => {
+            return Err(
+                TransformError::new(TransformErrorKind::InvalidInput, "finalize expects array output")
+                    .with_path("finalize"),
+            )
+        }
+    };
+
+    if let Some(filter) = &finalize.filter {
+        let raw = expr_to_json_for_v2_condition(filter).ok_or_else(|| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "finalize.filter must be a v2 condition",
+            )
+            .with_path("finalize.filter")
+        })?;
+        let cond = parse_v2_condition(&raw).map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                format!("invalid v2 condition: {}", err),
+            )
+            .with_path("finalize.filter")
+        })?;
+        let base_out = JsonValue::Array(records.clone());
+        let mut filtered = Vec::new();
+        for (index, item) in records.iter().enumerate() {
+            let ctx = V2EvalContext::new().with_item(V2EvalItem { value: item, index });
+            let keep = eval_v2_condition(&cond, item, context, &base_out, "finalize.filter", &ctx)?;
+            if keep {
+                filtered.push(item.clone());
+            }
+        }
+        records = filtered;
+    }
+
+    if let Some(sort) = &finalize.sort {
+        let tokens = parse_path(&sort.by).map_err(|_| {
+            TransformError::new(
+                TransformErrorKind::InvalidRecordsPath,
+                "finalize.sort.by is invalid",
+            )
+            .with_path("finalize.sort.by")
+        })?;
+
+        struct SortItem {
+            key: SortKey,
+            index: usize,
+            value: JsonValue,
+        }
+
+        let mut items = Vec::with_capacity(records.len());
+        for (index, item) in records.iter().enumerate() {
+            let key_value = get_path(item, &tokens).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::InvalidRef,
+                    "finalize.sort.by path not found",
+                )
+                .with_path("finalize.sort.by")
+            })?;
+            let key = sort_key_from_value(key_value, "finalize.sort.by")?;
+            items.push(SortItem {
+                key,
+                index,
+                value: item.clone(),
+            });
+        }
+
+        items.sort_by(|left, right| {
+            let mut ordering = compare_sort_keys(&left.key, &right.key);
+            if sort.order == "desc" {
+                ordering = ordering.reverse();
+            }
+            if ordering == Ordering::Equal {
+                left.index.cmp(&right.index)
+            } else {
+                ordering
+            }
+        });
+
+        records = items.into_iter().map(|item| item.value).collect();
+    }
+
+    if let Some(offset) = finalize.offset {
+        if offset > 0 && offset < records.len() {
+            records = records.split_off(offset);
+        } else if offset >= records.len() {
+            records = Vec::new();
+        }
+    }
+
+    if let Some(limit) = finalize.limit {
+        if limit < records.len() {
+            records.truncate(limit);
+        }
+    }
+
+    let output = JsonValue::Array(records);
+    if let Some(wrap) = &finalize.wrap {
+        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap")?;
+        return Ok(wrapped);
+    }
+
+    Ok(output)
+}
+
+fn eval_wrap_value(
+    value: &JsonValue,
+    out: &JsonValue,
+    context: Option<&JsonValue>,
+    path: &str,
+) -> Result<JsonValue, TransformError> {
+    match value {
+        JsonValue::Object(map) => {
+            let mut out_map = serde_json::Map::new();
+            for (key, value) in map {
+                let child_path = format!("{}.{}", path, key);
+                out_map.insert(key.clone(), eval_wrap_value(value, out, context, &child_path)?);
+            }
+            Ok(JsonValue::Object(out_map))
+        }
+        _ => {
+            let expr = parse_v2_expr(value).map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    format!("invalid v2 expr: {}", err),
+                )
+                .with_path(path)
+            })?;
+            let ctx = V2EvalContext::new();
+            match eval_v2_expr(&expr, out, context, out, path, &ctx)? {
+                V2EvalValue::Missing => Ok(JsonValue::Null),
+                V2EvalValue::Value(value) => Ok(value),
+            }
+        }
+    }
+}
+
+fn sort_key_from_value(value: &JsonValue, path: &str) -> Result<SortKey, TransformError> {
+    match value {
+        JsonValue::Number(number) => number
+            .as_f64()
+            .map(SortKey::Number)
+            .ok_or_else(|| {
+                TransformError::new(TransformErrorKind::ExprError, "sort key must be a finite number")
+                    .with_path(path)
+            }),
+        JsonValue::String(value) => Ok(SortKey::String(value.clone())),
+        JsonValue::Bool(value) => Ok(SortKey::Bool(*value)),
+        _ => Err(
+            TransformError::new(TransformErrorKind::ExprError, "sort key must be string/number/bool")
+                .with_path(path),
+        ),
+    }
 }
 
 fn input_records_iter<'a>(

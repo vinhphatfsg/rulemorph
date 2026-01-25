@@ -4803,5 +4803,6 @@ fn transform_kind_to_str(kind: &TransformErrorKind) -> &'static str {
         TransformErrorKind::MissingRequired => "MissingRequired",
         TransformErrorKind::TypeCastFailed => "TypeCastFailed",
         TransformErrorKind::ExprError => "ExprError",
+        TransformErrorKind::AssertionFailed => "AssertionFailed",
     }
 }

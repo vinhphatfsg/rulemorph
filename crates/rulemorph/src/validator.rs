@@ -24,97 +24,233 @@ fn validate_rule_file_with_locator(rule: &RuleFile, locator: Option<&YamlLocator
 
     validate_version(rule, &mut ctx);
     validate_input(rule, &mut ctx);
+    validate_steps(rule, &mut ctx);
     validate_record_when(rule, &mut ctx);
     validate_mappings(rule, &mut ctx);
+    validate_finalize(rule, &mut ctx);
 
     ctx.finish()
 }
 
-fn validate_version(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
-    if rule.version != 1 && rule.version != 2 {
-        ctx.push(ErrorCode::InvalidVersion, "version must be 1 or 2", "version");
+fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    let steps = match rule.steps.as_ref() {
+        Some(steps) => steps,
+        None => {
+            if rule.mappings.is_empty() {
+                ctx.push(
+                    ErrorCode::MissingMappings,
+                    "mappings is required when steps is not set",
+                    "mappings",
+                );
+            }
+            return;
+        }
+    };
+
+    if rule.version != 2 {
+        ctx.push(
+            ErrorCode::InvalidStep,
+            "steps is only supported in version 2",
+            "steps",
+        );
+    }
+
+    if !rule.mappings.is_empty() || rule.record_when.is_some() {
+        ctx.push(
+            ErrorCode::StepsMappingExclusive,
+            "steps cannot be combined with mappings or record_when",
+            "steps",
+        );
+    }
+
+    let mut produced_targets: HashSet<Vec<PathToken>> = HashSet::new();
+    let mut v2_targets_with_deps: Vec<(String, HashSet<String>)> = Vec::new();
+
+    for (index, step) in steps.iter().enumerate() {
+        let base = format!("steps[{}]", index);
+        let step_kind_count = [
+            step.mappings.is_some(),
+            step.record_when.is_some(),
+            step.asserts.is_some(),
+            step.branch.is_some(),
+        ]
+        .into_iter()
+        .filter(|v| *v)
+        .count();
+
+        if step_kind_count != 1 {
+            ctx.push(
+                ErrorCode::InvalidStep,
+                "step must contain exactly one of mappings/record_when/asserts/branch",
+                &base,
+            );
+            continue;
+        }
+
+        if let Some(mappings) = &step.mappings {
+            validate_mappings_list(
+                mappings,
+                &format!("{}.mappings", base),
+                &mut produced_targets,
+                &mut v2_targets_with_deps,
+                ctx,
+                rule.version,
+            );
+        }
+
+        if let Some(expr) = &step.record_when {
+            let expr_path = format!("{}.record_when", base);
+            if rule.version == 2 {
+                if let Some(raw_value) = expr_to_json_value(expr) {
+                    validate_v2_condition_expr(&raw_value, &expr_path, &produced_targets, ctx);
+                    continue;
+                }
+            }
+            validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+            validate_when_expr(expr, &expr_path, ctx);
+        }
+
+        if let Some(asserts) = &step.asserts {
+            for (assert_idx, assert) in asserts.iter().enumerate() {
+                let assert_path = format!("{}.asserts[{}]", base, assert_idx);
+                if assert.error.code.trim().is_empty() || assert.error.message.trim().is_empty() {
+                    ctx.push(
+                        ErrorCode::InvalidStep,
+                        "asserts.error.code and message are required",
+                        &format!("{}.error", assert_path),
+                    );
+                }
+
+                if rule.version == 2 {
+                    if let Some(raw_value) = expr_to_json_value(&assert.when) {
+                        validate_v2_condition_expr(
+                            &raw_value,
+                            &format!("{}.when", assert_path),
+                            &produced_targets,
+                            ctx,
+                        );
+                        continue;
+                    }
+                }
+                validate_expr(
+                    &assert.when,
+                    &format!("{}.when", assert_path),
+                    &produced_targets,
+                    ctx,
+                    LocalScope::None,
+                );
+                validate_when_expr(&assert.when, &format!("{}.when", assert_path), ctx);
+            }
+        }
+
+        if let Some(branch) = &step.branch {
+            let branch_path = format!("{}.branch", base);
+            if rule.version == 2 {
+                if let Some(raw_value) = expr_to_json_value(&branch.when) {
+                    validate_v2_condition_expr(
+                        &raw_value,
+                        &format!("{}.when", branch_path),
+                        &produced_targets,
+                        ctx,
+                    );
+                }
+            } else {
+                validate_expr(
+                    &branch.when,
+                    &format!("{}.when", branch_path),
+                    &produced_targets,
+                    ctx,
+                    LocalScope::None,
+                );
+                validate_when_expr(&branch.when, &format!("{}.when", branch_path), ctx);
+            }
+
+            if branch.then.trim().is_empty() {
+                ctx.push(
+                    ErrorCode::InvalidStep,
+                    "branch.then is required",
+                    &format!("{}.then", branch_path),
+                );
+            }
+            if let Some(r#else) = &branch.r#else {
+                if r#else.trim().is_empty() {
+                    ctx.push(
+                        ErrorCode::InvalidStep,
+                        "branch.else must not be empty",
+                        &format!("{}.else", branch_path),
+                    );
+                }
+            }
+        }
+    }
+
+    if !v2_targets_with_deps.is_empty() {
+        let mut v2_ctx = V2ValidationCtx::new(ctx.locator);
+        validate_no_cyclic_dependencies(&v2_targets_with_deps, "steps", &mut v2_ctx);
+        for err in v2_ctx.errors() {
+            ctx.errors.push(err.clone());
+        }
     }
 }
 
-fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
-    match rule.input.format {
-        InputFormat::Csv => {
-            if rule.input.csv.is_none() {
-                ctx.push(
-                    ErrorCode::MissingCsvSection,
-                    "input.csv is required when format=csv",
-                    "input.csv",
-                );
-            }
-        }
-        InputFormat::Json => {
-            if rule.input.json.is_none() {
-                ctx.push(
-                    ErrorCode::MissingJsonSection,
-                    "input.json is required when format=json",
-                    "input.json",
-                );
-            }
-        }
-    }
-
-    if let Some(csv) = &rule.input.csv {
-        if csv.delimiter.chars().count() != 1 {
-            ctx.push(
-                ErrorCode::InvalidDelimiterLength,
-                "csv.delimiter must be a single character",
-                "input.csv.delimiter",
-            );
-        }
-        if !csv.has_header && csv.columns.is_none() {
-            ctx.push(
-                ErrorCode::MissingCsvColumns,
-                "csv.columns is required when has_header=false",
-                "input.csv.columns",
-            );
-        }
-    }
-
-    if let Some(json) = &rule.input.json {
-        if let Some(path) = json.records_path.as_deref() {
-            if parse_path(path).is_err() {
-                ctx.push(
-                    ErrorCode::InvalidPath,
-                    "records_path is invalid",
-                    "input.json.records_path",
-                );
-            }
-        }
-    }
-}
-
-fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
-    let expr = match rule.record_when.as_ref() {
-        Some(expr) => expr,
+fn validate_finalize(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    let finalize = match rule.finalize.as_ref() {
+        Some(finalize) => finalize,
         None => return,
     };
 
-    let base_path = "record_when";
-    let produced_targets = HashSet::new();
-    if rule.version == 2 {
-        if let Some(raw_value) = expr_to_json_value(expr) {
-            validate_v2_condition_expr(&raw_value, base_path, &produced_targets, ctx);
-            return;
+    if rule.version != 2 {
+        ctx.push(
+            ErrorCode::InvalidFinalize,
+            "finalize is only supported in version 2",
+            "finalize",
+        );
+        return;
+    }
+
+    if let Some(filter) = &finalize.filter {
+        let base_path = "finalize.filter";
+        if let Some(raw_value) = expr_to_json_value(filter) {
+            validate_v2_condition_expr(&raw_value, base_path, &HashSet::new(), ctx);
+        } else {
+            ctx.push(
+                ErrorCode::InvalidFinalize,
+                "finalize.filter must be a v2 condition",
+                base_path,
+            );
         }
     }
 
-    validate_expr(expr, base_path, &produced_targets, ctx, LocalScope::None);
-    validate_when_expr(expr, base_path, ctx);
+    if let Some(sort) = &finalize.sort {
+        let base_path = "finalize.sort";
+        if parse_path(&sort.by).is_err() {
+            ctx.push(
+                ErrorCode::InvalidPath,
+                "finalize.sort.by is invalid",
+                format!("{}.by", base_path),
+            );
+        }
+        if sort.order != "asc" && sort.order != "desc" {
+            ctx.push(
+                ErrorCode::InvalidFinalize,
+                "finalize.sort.order must be asc or desc",
+                format!("{}.order", base_path),
+            );
+        }
+    }
 }
 
-fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
-    let mut produced_targets: HashSet<Vec<PathToken>> = HashSet::new();
-    // Track targets and their dependencies for v2 cyclic dependency check
-    let mut v2_targets_with_deps: Vec<(String, HashSet<String>)> = Vec::new();
-    let is_v2_rule = rule.version == 2;
-
-    for (index, mapping) in rule.mappings.iter().enumerate() {
-        let base = format!("mappings[{}]", index);
+fn validate_mappings_list(
+    mappings: &[Mapping],
+    base_path: &str,
+    produced_targets: &mut HashSet<Vec<PathToken>>,
+    v2_targets_with_deps: &mut Vec<(String, HashSet<String>)>,
+    ctx: &mut ValidationCtx<'_>,
+    rule_version: u8,
+) {
+    let is_v2_rule = rule_version == 2;
+    for (index, mapping) in mappings.iter().enumerate() {
+        let base = format!("{}[{}]", base_path, index);
 
         if mapping.target.trim().is_empty() {
             ctx.push(
@@ -181,57 +317,158 @@ fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
         }
 
         if let Some(source) = &mapping.source {
-            validate_source(source, &base, &produced_targets, ctx);
+            validate_source(source, &base, produced_targets, ctx);
         }
 
         if let Some(expr) = &mapping.expr {
             let expr_path = format!("{}.expr", base);
-            // For v2 rules, check if the expr is v2 syntax (Literal containing array or v2 ref)
+            let mut v2_handled = false;
             if is_v2_rule {
                 if let Some(raw_value) = expr_to_json_value(expr) {
                     if is_v2_expr(&raw_value) {
                         validate_v2_mapping_expr(
                             &raw_value,
                             &expr_path,
-                            &produced_targets,
+                            produced_targets,
                             &mapping.target,
                             ctx,
-                            &mut v2_targets_with_deps,
+                            v2_targets_with_deps,
                         );
-                    } else {
-                        validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+                        v2_handled = true;
                     }
-                } else {
-                    validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
                 }
-            } else {
-                validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+            }
+            if !v2_handled {
+                validate_expr(expr, &expr_path, produced_targets, ctx, LocalScope::None);
             }
         }
 
         if let Some(when) = &mapping.when {
             let when_path = format!("{}.when", base);
+            let mut v2_handled = false;
             if is_v2_rule {
                 if let Some(raw_value) = expr_to_json_value(when) {
-                    validate_v2_condition_expr(&raw_value, &when_path, &produced_targets, ctx);
-                } else {
-                    validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
-                    validate_when_expr(when, &when_path, ctx);
+                    if is_v2_expr(&raw_value) {
+                        validate_v2_condition_expr(
+                            &raw_value,
+                            &when_path,
+                            produced_targets,
+                            ctx,
+                        );
+                        v2_handled = true;
+                    }
                 }
-            } else {
-                validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
+            }
+            if !v2_handled {
+                validate_expr(when, &when_path, produced_targets, ctx, LocalScope::None);
                 validate_when_expr(when, &when_path, ctx);
             }
         }
 
         produced_targets.insert(target_tokens);
     }
+}
 
-    // Check for cyclic dependencies in v2 rules
-    if is_v2_rule && !v2_targets_with_deps.is_empty() {
+fn validate_version(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    if rule.version != 1 && rule.version != 2 {
+        ctx.push(ErrorCode::InvalidVersion, "version must be 1 or 2", "version");
+    }
+}
+
+fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    match rule.input.format {
+        InputFormat::Csv => {
+            if rule.input.csv.is_none() {
+                ctx.push(
+                    ErrorCode::MissingCsvSection,
+                    "input.csv is required when format=csv",
+                    "input.csv",
+                );
+            }
+        }
+        InputFormat::Json => {
+            if rule.input.json.is_none() {
+                ctx.push(
+                    ErrorCode::MissingJsonSection,
+                    "input.json is required when format=json",
+                    "input.json",
+                );
+            }
+        }
+    }
+
+    if let Some(csv) = &rule.input.csv {
+        if csv.delimiter.chars().count() != 1 {
+            ctx.push(
+                ErrorCode::InvalidDelimiterLength,
+                "csv.delimiter must be a single character",
+                "input.csv.delimiter",
+            );
+        }
+        if !csv.has_header && csv.columns.is_none() {
+            ctx.push(
+                ErrorCode::MissingCsvColumns,
+                "csv.columns is required when has_header=false",
+                "input.csv.columns",
+            );
+        }
+    }
+
+    if let Some(json) = &rule.input.json {
+        if let Some(path) = json.records_path.as_deref() {
+            if parse_path(path).is_err() {
+                ctx.push(
+                    ErrorCode::InvalidPath,
+                    "records_path is invalid",
+                    "input.json.records_path",
+                );
+            }
+        }
+    }
+}
+
+fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    if rule.steps.is_some() {
+        return;
+    }
+    let expr = match rule.record_when.as_ref() {
+        Some(expr) => expr,
+        None => return,
+    };
+
+    let base_path = "record_when";
+    let produced_targets = HashSet::new();
+    if rule.version == 2 {
+        if let Some(raw_value) = expr_to_json_value(expr) {
+            validate_v2_condition_expr(&raw_value, base_path, &produced_targets, ctx);
+            return;
+        }
+    }
+
+    validate_expr(expr, base_path, &produced_targets, ctx, LocalScope::None);
+    validate_when_expr(expr, base_path, ctx);
+}
+
+fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    if rule.steps.is_some() {
+        return;
+    }
+
+    let mut produced_targets: HashSet<Vec<PathToken>> = HashSet::new();
+    let mut v2_targets_with_deps: Vec<(String, HashSet<String>)> = Vec::new();
+
+    validate_mappings_list(
+        &rule.mappings,
+        "mappings",
+        &mut produced_targets,
+        &mut v2_targets_with_deps,
+        ctx,
+        rule.version,
+    );
+
+    if rule.version == 2 && !v2_targets_with_deps.is_empty() {
         let mut v2_ctx = V2ValidationCtx::new(ctx.locator);
         validate_no_cyclic_dependencies(&v2_targets_with_deps, "mappings", &mut v2_ctx);
-        // Transfer errors from v2 context to main context
         for err in v2_ctx.errors() {
             ctx.errors.push(err.clone());
         }

@@ -1,0 +1,16 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: "base"
+        value: 1
+  - branch:
+      when: { eq: ["@input.kind", "a"] }
+      then: tests/fixtures/tv34_branch_return_true/then.yaml
+      else: tests/fixtures/tv34_branch_return_true/else.yaml
+      return: true
+  - mappings:
+      - target: "after"
+        value: true

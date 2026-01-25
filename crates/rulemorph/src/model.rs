@@ -8,8 +8,14 @@ pub struct RuleFile {
     pub input: InputSpec,
     #[serde(default)]
     pub output: Option<OutputSpec>,
+    #[serde(default)]
     pub record_when: Option<Expr>,
+    #[serde(default)]
     pub mappings: Vec<Mapping>,
+    #[serde(default)]
+    pub steps: Option<Vec<V2RuleStep>>,
+    #[serde(default)]
+    pub finalize: Option<FinalizeSpec>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -78,6 +84,77 @@ pub struct Mapping {
     #[serde(default)]
     pub required: bool,
     pub default: Option<JsonValue>,
+}
+
+// =============================================================================
+// v2 Rule Steps / Finalize
+// =============================================================================
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct V2RuleStep {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub mappings: Option<Vec<Mapping>>,
+    #[serde(default)]
+    pub record_when: Option<Expr>,
+    #[serde(default)]
+    pub asserts: Option<Vec<V2Assert>>,
+    #[serde(default)]
+    pub branch: Option<V2Branch>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct V2Assert {
+    pub when: Expr,
+    pub error: V2AssertError,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct V2AssertError {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct V2Branch {
+    pub when: Expr,
+    pub then: String,
+    #[serde(default)]
+    pub r#else: Option<String>,
+    #[serde(rename = "return", default)]
+    pub return_: bool,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct FinalizeSpec {
+    #[serde(default)]
+    pub filter: Option<Expr>,
+    #[serde(default)]
+    pub sort: Option<FinalizeSort>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub offset: Option<usize>,
+    #[serde(default)]
+    pub wrap: Option<JsonValue>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct FinalizeSort {
+    pub by: String,
+    #[serde(default = "default_sort_order")]
+    pub order: String,
+}
+
+fn default_sort_order() -> String {
+    "asc".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]
