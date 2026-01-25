@@ -1,0 +1,12 @@
+[
+  {
+    "email_domain": "@example.com",
+    "currency": "$100",
+    "at_mention": "@alice"
+  },
+  {
+    "email_domain": "@example.com",
+    "currency": "$100",
+    "at_mention": "@bob"
+  }
+]

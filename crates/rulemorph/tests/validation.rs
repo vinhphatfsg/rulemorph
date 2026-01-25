@@ -156,3 +156,63 @@ fn validation_errors_include_location_with_source() {
         .expect("expected location");
     assert_eq!(location.line, 7);
 }
+
+// =============================================================================
+// v2 Validation Tests
+// =============================================================================
+
+#[test]
+fn v2_valid_rules_should_pass_validation() {
+    let cases = [
+        "tv22_basic",
+        "tv23_steps",
+        "tv24_conditions",
+        "tv25_lookup",
+        "tv27_v1_compat",
+        "tv28_map_let_binding",
+        "tv29_v2_out_sibling_ok",
+        "tv30_literal_escape",
+    ];
+
+    for case in cases {
+        let rule = load_rule(case);
+        if let Err(errors) = validate_rule_file(&rule) {
+            let codes: Vec<&'static str> = errors.iter().map(|e| e.code.as_str()).collect();
+            panic!("expected valid rules for {}, got {:?}", case, codes);
+        }
+    }
+}
+
+#[test]
+fn v2_invalid_rules_should_fail_validation() {
+    let cases = [
+        "tv26_v01_unknown_op",
+        "tv26_v03_literal_start_unknown_op",
+        "tv26_v04_empty_pipe",
+    ];
+
+    for case in cases {
+        let rule = load_rule(case);
+        let expected = normalize_expected(load_expected_errors(case));
+        let errors = validate_rule_file(&rule).unwrap_err();
+        let actual = normalize_errors(errors);
+        assert_eq!(
+            actual, expected,
+            "error mismatch for {}",
+            case
+        );
+    }
+}
+
+#[test]
+fn v2_forward_out_ref_should_fail_validation() {
+    // tv26_v02_forward_out_ref should fail with ForwardOutReference error
+    let rule = load_rule("tv26_v02_forward_out_ref");
+    let expected = normalize_expected(load_expected_errors("tv26_v02_forward_out_ref"));
+    let errors = validate_rule_file(&rule).unwrap_err();
+    let actual = normalize_errors(errors);
+    assert_eq!(
+        actual, expected,
+        "error mismatch for tv26_v02_forward_out_ref"
+    );
+}

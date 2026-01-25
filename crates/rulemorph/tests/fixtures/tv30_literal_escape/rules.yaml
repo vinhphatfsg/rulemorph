@@ -1,0 +1,20 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  # lit: prefix to escape @ as literal string
+  - target: email_domain
+    expr:
+      - "lit:@example.com"
+
+  # lit: prefix to escape $ as literal string
+  - target: currency
+    expr:
+      - "lit:$100"
+
+  # lit: with pipe operations
+  - target: at_mention
+    expr:
+      - "lit:@"
+      - concat: ["@input.username"]

@@ -1,0 +1,15 @@
+[
+  {
+    "all_projects": ["Project Alpha", "Project Beta", "Project Delta"],
+    "dept_info": {"budget": 50000, "id": 2, "name": "Marketing"},
+    "dept_name": "Marketing"
+  },
+  {
+    "all_projects": ["Project Gamma"],
+    "dept_info": {"budget": 100000, "id": 1, "name": "Engineering"},
+    "dept_name": "Engineering"
+  },
+  {
+    "all_projects": []
+  }
+]

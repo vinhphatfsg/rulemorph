@@ -22,6 +22,14 @@ pub enum ErrorCode {
     InvalidPath,
 
     InvalidTypeName,
+
+    // v2 validation errors
+    UndefinedVariable,
+    InvalidItemRef,
+    InvalidAccRef,
+    CyclicDependency,
+    EmptyPipe,
+    InvalidPipeStep,
 }
 
 impl ErrorCode {
@@ -46,6 +54,12 @@ impl ErrorCode {
             ErrorCode::InvalidExprShape => "InvalidExprShape",
             ErrorCode::InvalidPath => "InvalidPath",
             ErrorCode::InvalidTypeName => "InvalidTypeName",
+            ErrorCode::UndefinedVariable => "UndefinedVariable",
+            ErrorCode::InvalidItemRef => "InvalidItemRef",
+            ErrorCode::InvalidAccRef => "InvalidAccRef",
+            ErrorCode::CyclicDependency => "CyclicDependency",
+            ErrorCode::EmptyPipe => "EmptyPipe",
+            ErrorCode::InvalidPipeStep => "InvalidPipeStep",
         }
     }
 }

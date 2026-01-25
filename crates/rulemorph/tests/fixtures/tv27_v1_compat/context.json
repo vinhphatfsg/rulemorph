@@ -1,0 +1,7 @@
+{
+  "exchange_rate": 1.5,
+  "departments": [
+    {"id": 1, "name": "Engineering"},
+    {"id": 2, "name": "Marketing"}
+  ]
+}
