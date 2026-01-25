@@ -3,6 +3,10 @@
 このドキュメントは v2 のルール仕様、参照、式構文、評価ルールを説明します。
 英語版は `docs/rules_spec_en.md` を参照してください。
 
+`endpoint`/`network` ルールの仕様は別ドキュメントに分離しています。
+- `docs/rules_spec_endpoint_ja.md`
+- `docs/rules_spec_network_ja.md`
+
 ## ルールファイル構成
 
 ```yaml
@@ -35,6 +39,8 @@ mappings:
 - `mappings`（必須）: 変換ルール（上から順に評価）
 - `output`（任意）: メタデータ（DTO 名など）
 - `record_when`（任意）: レコードの採用/除外条件
+- `steps`（任意）: 段階実行（`mappings` / `record_when` と併用不可）
+- `finalize`（任意）: 出力配列の最終加工（`mappings` / `steps` どちらでも利用可）
 
 ## Input
 
@@ -84,6 +90,7 @@ input:
 - `record_when` は `when`/`if.cond` と同じ条件構文を使用
 - `@input.*` と `@context.*` を参照可能
 - `@out.*` は出力が未生成のため利用不可
+- `steps` を使う場合は `record_when` ステップを使用し、トップレベルの `record_when` は使用しません
 
 ## Mapping
 
@@ -121,6 +128,145 @@ input:
 ### `target` の制約
 - `target` はオブジェクトキーのみ（配列インデックス不可）
 - 中間パスがオブジェクトでない場合はエラー
+
+## Steps（段階実行）
+
+`steps` は **段階的に評価順を制御**するための構文です。
+`steps` が存在する場合、`mappings` / `record_when` は **併用不可**です。
+
+```yaml
+version: 2
+input: { format: json, json: { records_path: "items" } }
+
+steps:
+  - mappings:
+      - target: "total"
+        expr: ["@input.a", { "+": ["@input.b"] }]
+  - record_when:
+      gt: ["@out.total", 0]
+  - asserts:
+      - when: { gt: ["@out.total", 10] }
+        error:
+          code: "INVALID_TOTAL"
+          message: "total must be > 10"
+  - branch:
+      when: { eq: ["@input.type", "premium"] }
+      then: ./rules/premium.yaml
+      else: ./rules/basic.yaml
+      return: true
+
+finalize:
+  sort: { by: "total", order: "desc" }
+```
+
+### ステップ要素
+各ステップは **1つのキー**のみを持ちます（`name` は例外）。
+
+| 要素 | 説明 |
+| --- | --- |
+| `mappings` | v2 mappings と同じ構文 |
+| `record_when` | v2 条件。false ならレコードを除外 |
+| `asserts` | 条件バリデーション（false でエラー） |
+| `branch` | 条件分岐 |
+
+### データフロー
+- `@input` は **元の入力レコード**（固定）
+- `@out` は **累積出力**（ステップごとにマージされる）
+- `mappings` の結果は `@out` に上書きマージされます
+
+### record_when（steps 内）
+- `record_when` が false の場合、そのレコードは出力されません
+- 評価エラーはステップエラーとして扱われます
+
+### asserts
+`asserts` は配列で記述します。`when` が false の場合にエラーを発生させ、
+以降のステップは実行されません。
+
+```yaml
+asserts:
+  - when: { gt: ["@input.age", 0] }
+    error:
+      code: "INVALID_AGE"
+      message: "age must be > 0"
+```
+
+### branch
+`branch` は条件により他のルールに分岐します。
+`then` / `else` は **rule 参照のみ**（inline は不可）。
+
+- `return: true` の場合、分岐先の出力で終了（以後の steps は実行しない）
+- `return: false`（省略）なら、分岐先の出力を `@out` にマージして続行
+
+```yaml
+branch:
+  when: { eq: ["@input.type", "premium"] }
+  then: ./rules/premium.yaml
+  else: ./rules/basic.yaml
+  return: true
+```
+
+## Finalize（出力配列の最終加工）
+
+`finalize` は **すべてのレコード処理後**に出力配列へ適用されます。
+`mappings` / `steps` どちらでも利用可能です。
+`finalize` は **複数の処理を併用可能**で、上から順に適用されます。
+
+### 対応要素（MVP）
+- `filter`: v2 条件（`@item` を参照）
+- `sort`: 並び替え
+- `limit` / `offset`: ページング
+- `wrap`: 出力をオブジェクトで包む
+
+### filter
+`filter` は v2 条件で、`@item` が現在の要素を指します。
+
+```yaml
+finalize:
+  filter:
+    eq: ["@item.status", "active"]
+```
+
+### sort
+
+```yaml
+finalize:
+  sort:
+    by: "created_at"
+    order: "desc"  # asc | desc
+```
+
+### limit / offset
+
+```yaml
+finalize:
+  limit: 10
+  offset: 20
+```
+
+### wrap
+`wrap` は **v2 expr** で値を定義します。
+`@out` は現在の出力配列を表します。
+
+```yaml
+finalize:
+  wrap:
+    data: "@out"
+    meta:
+      total:
+        - "@out"
+        - len
+```
+
+### 併用例（MVP）
+`sort` と `limit` を組み合わせて上位N件を返せます。
+
+```yaml
+finalize:
+  sort:
+    by: "score"
+    order: "desc"
+  limit: 5
+```
 
 ## Reference
 
