@@ -1,0 +1,20 @@
+[
+  {
+    "total_with_tax": 55.00000000000001,
+    "discount_applied": 50,
+    "doubled_items": [2.0, 4.0, 6.0],
+    "tier": "bronze"
+  },
+  {
+    "total_with_tax": 165.0,
+    "discount_applied": 135.0,
+    "doubled_items": [20.0, 40.0],
+    "tier": "silver"
+  },
+  {
+    "total_with_tax": 275.0,
+    "discount_applied": 225.0,
+    "doubled_items": [200.0],
+    "tier": "gold"
+  }
+]

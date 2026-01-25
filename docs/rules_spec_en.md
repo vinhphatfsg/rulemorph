@@ -1,26 +1,21 @@
 # Transformation Rules Spec (Implementation-Aligned)
 
-This document describes the current rule spec, references, expression ops, and evaluation rules.
+This document describes the current v2 rule spec, references, expression syntax, and evaluation rules.
 For the Japanese version, see `docs/rules_spec_ja.md`.
 
 ## Rule File Structure
 
 ```yaml
-version: 1
+version: 2
 input:
-  format: csv # csv | json
-  csv:
-    has_header: true
-    delimiter: ","
-  # json:
-  #   records_path: "items"
-
-output:
-  name: "Record"
+  format: json
+  json:
+    records_path: "items"
 
 record_when:
-  op: ">="
-  args: [ { ref: "input.score" }, 10 ]
+  all:
+    - { gt: ["@input.score", 10] }
+    - { eq: ["@input.active", true] }
 
 mappings:
   - target: "user.id"
@@ -29,17 +24,17 @@ mappings:
     required: true
   - target: "user.name"
     expr:
-      op: "trim"
-      args: [ { ref: "input.name" } ]
+      - "@input.name"
+      - trim
   - target: "meta.source"
-    value: "csv"
+    value: "api"
 ```
 
-- `version` (required): fixed to `1`
+- `version` (required): fixed to `2`
 - `input` (required): input format and options
 - `mappings` (required): transformation rules (evaluated in order)
 - `output` (optional): metadata (e.g., DTO name)
-- `record_when` (optional): boolean expression to decide if the record is included
+- `record_when` (optional): condition to include/exclude records
 
 ## Input
 
@@ -82,13 +77,13 @@ input:
 
 ## Record filter (`record_when`)
 
-`record_when` is an optional boolean expression evaluated once per record before any mappings.
+`record_when` is an optional condition evaluated once per record before any mappings.
 If it evaluates to `false`, the record is skipped (no output).
-If evaluation fails or returns a non-boolean value, the record is skipped and a warning is emitted.
+If evaluation fails, the record is skipped and a warning is emitted.
 
-- `record_when` uses the same expression syntax as `when`
-- `record_when` may reference `input.*` and `context.*`
-- `out.*` references are invalid because outputs do not exist yet
+- `record_when` uses the same condition syntax as `when` and `if.cond`
+- `record_when` may reference `@input.*` and `@context.*`
+- `@out.*` references are invalid because outputs do not exist yet
 
 ## Mapping
 
@@ -106,8 +101,8 @@ Fields:
 - `source` | `value` | `expr` (required, mutually exclusive)
   - `source`: reference path (see Reference)
   - `value`: JSON literal
-  - `expr`: expression tree
-- `when` (optional): boolean expression. If `false` or evaluation error, mapping is skipped (warning)
+  - `expr`: v2 pipe expression
+- `when` (optional): condition. If `false` or evaluation error, mapping is skipped (warning)
 - `type` (optional): `string|int|float|bool`
 - `required` (optional): default `false`
 - `default` (optional): literal used only when value is `missing`
@@ -116,7 +111,7 @@ Fields:
 - `when` is evaluated at the start of mapping
 - `false` or evaluation error skips the mapping (error becomes warning)
 - If skipped, `required/default/type` are not evaluated
-- `missing` is treated as `null`, but the final result must be boolean. `null`/`missing` causes an error.
+- `missing` is treated as false
 
 ### `required`/`default` behavior
 - If value is `missing`, use `default` if present
@@ -129,26 +124,22 @@ Fields:
 
 ## Reference
 
-References are namespace + dot path.
-- `input.*`: input record
-- `context.*`: injected external context
-- `out.*`: output values produced earlier in the same record
-
-### Local refs (array ops only)
-- `item.value`: current element
-- `item.index`: 0-based index
-- `acc.value`: accumulator for reduce/fold
+References are `@`-prefixed namespaces + dot paths:
+- `@input.*`: input record
+- `@context.*`: injected external context
+- `@out.*`: output values produced earlier in the same record
+- `@item.*`: current element in a `map` step (`@item.index` is the 0-based index)
+- `@<var>`: let-bound variable (e.g., `@total`)
 
 `source` can omit the namespace **only for a single key** (defaults to `input.*`).
 If you need dot paths or array indexes, you must use `input.*` explicitly.
-`expr` refs must always include the namespace.
 
 Examples:
 - `source: "id"` means `input.id`
-- `source: "user.name"` is invalid (use `input.user.name`)
+- `source: "input.user.name"`
 - `source: "input.items[0].id"`
 - `source: "context.tenant_id"`
-- `expr: { ref: "out.text" }`
+- `expr: "@out.text"`
 
 ### Dot paths
 - Array indexes supported: `input.items[0].id`, `context.matrix[1][0]`
@@ -157,46 +148,113 @@ Examples:
 - `[` and `]` are not allowed inside bracket quotes
 - Non-array or out-of-range indexes are treated as `missing`
 
-## Expr
+## Expr (v2 pipe)
 
-Expressions can be literal, reference, or operation.
-
-```yaml
-expr:
-  op: "concat"
-  args:
-    - { ref: "out.id" }
-    - "-"
-    - { ref: "out.price" }
-```
-
-Forms:
-- Literal: string/number/bool/null
-- Ref: `{ ref: "input.user_id" }`
-- Op: `{ op: "<name>", args: [Expr, ...] }`
-- Chain: `{ chain: [ Expr, { op: "<name>", args: [...] }, ... ] }`
-
-### Chain (pipe shorthand)
-
-`chain` evaluates the first expression, then injects the previous result as the **first arg** for each subsequent `op`.
-Items after the first must be `{ op: ... }`, and `args` can be omitted.
+`expr` is a pipe array or a single start value.
 
 ```yaml
 expr:
-  chain:
-    - { ref: "input.name" }
-    - { op: "trim" }
-    - { op: "replace", args: [ " ", "_", "all" ] }
-    - { op: "lowercase" }
+  - "@input.name"
+  - trim
+  - uppercase
 ```
 
-## Operations (v1)
+Also valid:
+
+```yaml
+expr: "@input.name"
+```
+
+### Pipe format
+
+A pipe is an array: `[start, step1, step2, ...]`.
+
+Start value can be:
+- `@` reference (`@input.*`, `@context.*`, `@out.*`, `@item.*`, `@var`)
+- `$` (current pipe value)
+- literal string/number/bool/null/object/array
+
+Use `lit:` to force a literal string that would otherwise be treated as a ref or `$`:
+
+```yaml
+expr:
+  - "lit:@input.name"
+  - trim
+```
+
+### Steps
+
+- **Op step**: string op name (`trim`) or object form
+  - `{ op: "trim", args: [...] }`
+  - `{ concat: ["@out.name"] }` (shorthand)
+- **Let step**: `{ let: { varName: <expr>, ... } }`
+- **If step**: `{ if: <cond>, then: <pipe>, else: <pipe?> }`
+- **Map step**: `{ map: [ <step>, <step>, ... ] }`
+
+Example with `let` and `if`:
+
+```yaml
+expr:
+  - "@input.price"
+  - let: { base: "$" }
+  - if:
+      cond:
+        gt: ["@base", 100]
+      then:
+        - "$"
+        - multiply: [0.9]
+      else:
+        - "$"
+```
+
+Example with `map`:
+
+```yaml
+expr:
+  - "@input.items"
+  - map:
+    - "@item.value"
+    - multiply: [2]
+```
+
+## Conditions
+
+Conditions are used in `record_when`, `when`, and `if.cond`.
+
+Supported forms:
+- `all: [ <cond>, ... ]`
+- `any: [ <cond>, ... ]`
+- comparison objects: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `match`
+
+Comparison semantics (v2):
+- `eq`/`ne` use **strict JSON equality** (type-sensitive). Example: `"1"` != `1`.
+- `gt`/`gte`/`lt`/`lte` try numeric comparison first (numbers or numeric strings). If both sides are non-numeric strings, they are compared lexicographically. Otherwise, it is an error.
+
+Examples:
+
+```yaml
+record_when:
+  all:
+    - { gt: ["@input.score", 10] }
+    - { eq: ["@input.active", true] }
+
+when:
+  match: ["@input.email", ".+@example\\.com$"]
+```
+
+## Operations (v2)
+
+Operations are applied as pipe steps. The current pipe value is the implicit first operand.
+`args` only list additional arguments.
+
+Support status:
+- `runtime`: implemented in v2 runtime
 
 ### Operation categories
 
 - String ops: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
-- Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`
+- Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - Numeric ops: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
 - Logical ops: `and`, `or`, `not`
@@ -209,181 +267,149 @@ expr:
 - `*_by`: key-based variants (`group_by`, `key_by`, `distinct_by`, `sort_by`)
 - `object_*`: object-specific structural ops (`object_flatten`, `object_unflatten`)
 
-| op | args | description | usage/example |
+### Core operations
+
+| op | args | description | support |
 | --- | --- | --- | --- |
-| `concat` | `>=1 expr` | Concatenate all args as strings. Missing propagates; `null` is an error. | `op: "concat"`<br>`args: [ { ref: "input.first" }, " ", { ref: "input.last" } ]`<br>`{"first":"Ada","last":"Lovelace"} -> "Ada Lovelace"` |
-| `coalesce` | `>=1 expr` | Return the first value that is neither missing nor null. | `args: [ { ref: "input.nick" }, { ref: "input.name" }, "unknown" ]`<br>`{"name":"Ada"} -> "Ada"` |
-| `to_string` | `1 expr` | Convert string/number/bool to string. Missing propagates; `null` is an error. | `args: [ { ref: "input.age" } ]`<br>`{"age": 42} -> "42"` |
-| `trim` | `1 expr` | Trim leading/trailing whitespace. | `args: [ { ref: "input.name" } ]`<br>`{"name":"  Ada "} -> "Ada"` |
-| `lowercase` | `1 expr` | Lowercase a string. | `args: [ { ref: "input.code" } ]`<br>`{"code":"AbC"} -> "abc"` |
-| `uppercase` | `1 expr` | Uppercase a string. | `args: [ { ref: "input.code" } ]`<br>`{"code":"abC"} -> "ABC"` |
-| `replace` | `3-4 expr` | Replace text. Default replaces first match. `mode`: `all`/`regex`/`regex_all`. | `args: [ { ref: "input.text" }, "abc", "XYZ" ]`<br>`{"text":"abc-123-abc"} -> "XYZ-123-abc"` |
-| `split` | `2 expr` | Split a string into an array by delimiter. | `args: [ { ref: "input.tags" }, "," ]`<br>`{"tags":"a,b"} -> ["a","b"]` |
-| `pad_start` | `2-3 expr` | Pad the start to target length (default pad is space). | `args: [ { ref: "input.code" }, 5, "0" ]`<br>`{"code":"42"} -> "00042"` |
-| `pad_end` | `2-3 expr` | Pad the end to target length (default pad is space). | `args: [ "x", 3, "_" ]`<br>`"x" -> "x__"` |
-| `lookup` | `collection, key_path, match_value, output_path?` | Filter an array and return all matches as an array. Returns `missing` if none. | `args: [ { ref: "context.users" }, "id", { ref: "input.user_id" }, "name" ]`<br>`users=[{"id":1,"name":"Ada"}], user_id=1 -> ["Ada"]` |
-| `lookup_first` | `collection, key_path, match_value, output_path?` | Same as `lookup`, but returns the first match. | `args: [ { ref: "context.users" }, "id", { ref: "input.user_id" }, "name" ]`<br>`users=[{"id":1,"name":"Ada"}], user_id=1 -> "Ada"` |
-| `+` | `>=2 expr` | Numeric addition. | `args: [ 1, "2", 3 ]`<br>`-> 6` |
-| `-` | `2 expr` | Numeric subtraction. | `args: [ 10, 4 ]`<br>`-> 6` |
-| `*` | `>=2 expr` | Numeric multiplication. | `args: [ 2, 3 ]`<br>`-> 6` |
-| `/` | `2 expr` | Numeric division. | `args: [ 9, 2 ]`<br>`-> 4.5` |
-| `round` | `1-2 expr` | Round a number. `scale` controls decimal places. | `args: [ 12.345, 2 ]`<br>`-> 12.35` |
-| `to_base` | `2 expr` | Convert an integer to a base-N string (2-36). | `args: [ 255, 16 ]`<br>`-> "ff"` |
-| `date_format` | `2-4 expr` | Reformat date strings. `input_format` may be string or array; `timezone` accepts `UTC`/`+09:00`. | `args: [ { ref: "input.date" }, "%Y/%m/%d" ]`<br>`{"date":"2024-01-02"} -> "2024/01/02"` |
-| `to_unixtime` | `1-3 expr` | Convert date strings to unix time. `unit`: `s`/`ms`. | `args: [ "1970-01-01T00:00:01Z" ]`<br>`-> 1` |
-| `and` | `>=2 expr` | Boolean AND with short-circuit. Missing propagates if no decisive false. | `args: [ { op: ">=", args: [ { ref: "input.age" }, 18 ] }, { ref: "input.active" } ]`<br>`{"age":20,"active":true} -> true` |
-| `or` | `>=2 expr` | Boolean OR with short-circuit. Missing propagates if no decisive true. | `args: [ { ref: "input.is_admin" }, { ref: "input.is_owner" } ]`<br>`{"is_admin":false,"is_owner":true} -> true` |
-| `not` | `1 expr` | Boolean NOT. | `args: [ { ref: "input.disabled" } ]`<br>`{"disabled": false} -> true` |
-| `==` | `2 expr` | Equality (stringified). Missing is treated as `null`. | `args: [ { ref: "input.status" }, "active" ]`<br>`{"status":"active"} -> true` |
-| `!=` | `2 expr` | Inequality. | `args: [ { ref: "input.status" }, "active" ]`<br>`{"status":"active"} -> false` |
-| `<` | `2 expr` | Numeric comparison (number or numeric string only). | `args: [ { ref: "input.count" }, 10 ]`<br>`{"count": 5} -> true` |
-| `<=` | `2 expr` | Numeric comparison. | `args: [ { ref: "input.count" }, 10 ]`<br>`{"count": 10} -> true` |
-| `>` | `2 expr` | Numeric comparison. | `args: [ { ref: "input.score" }, 90 ]`<br>`{"score": 95} -> true` |
-| `>=` | `2 expr` | Numeric comparison. | `args: [ { ref: "input.score" }, 90 ]`<br>`{"score": 90} -> true` |
-| `~=` | `2 expr` | Regex match (left value against right pattern). | `args: [ { ref: "input.email" }, ".+@example\\.com$" ]`<br>`{"email":"a@example.com"} -> true` |
+| `concat` | `>=1` | Concatenate pipe value with args as strings. | `runtime` |
+| `coalesce` | `>=1` | Return first non-null value from pipe + args. | `runtime` |
+| `to_string` | `0` | Convert pipe value to string. | `runtime` |
+| `trim` | `0` | Trim leading/trailing whitespace. | `runtime` |
+| `lowercase` | `0` | Lowercase a string. | `runtime` |
+| `uppercase` | `0` | Uppercase a string. | `runtime` |
+| `replace` | `2-3` | Replace text (`pattern`, `replacement`, `mode?`). | `runtime` |
+| `split` | `1` | Split string by delimiter(s). | `runtime` |
+| `pad_start` | `1-2` | Pad to target length (`length`, `pad?`). | `runtime` |
+| `pad_end` | `1-2` | Pad to target length (`length`, `pad?`). | `runtime` |
+| `lookup` | `2-4` | Lookup all matches in an array. | `runtime` |
+| `lookup_first` | `2-4` | Lookup first match in an array. | `runtime` |
+| `+` | `>=1` | Numeric addition (alias: `add`). | `runtime` |
+| `-` | `>=1` | Numeric subtraction (pipe value minus arg). | `runtime` |
+| `*` | `>=1` | Numeric multiplication (alias: `multiply`). | `runtime` |
+| `/` | `>=1` | Numeric division. | `runtime` |
+| `round` | `0-1` | Round a number (`scale` as arg). | `runtime` |
+| `to_base` | `1` | Convert integer to base-N string (2-36). | `runtime` |
+| `date_format` | `1-3` | Reformat date strings. | `runtime` |
+| `to_unixtime` | `0-2` | Convert date strings to unix time. | `runtime` |
+| `and` | `>=1` | Boolean AND. Prefer `all` conditions. | `runtime` |
+| `or` | `>=1` | Boolean OR. Prefer `any` conditions. | `runtime` |
+| `not` | `0` | Boolean NOT. | `runtime` |
+| `==` | `1` | Equality comparison. Prefer `eq` conditions. | `runtime` |
+| `!=` | `1` | Inequality comparison. Prefer `ne` conditions. | `runtime` |
+| `<` | `1` | Numeric comparison. Prefer `lt` conditions. | `runtime` |
+| `<=` | `1` | Numeric comparison. Prefer `lte` conditions. | `runtime` |
+| `>` | `1` | Numeric comparison. Prefer `gt` conditions. | `runtime` |
+| `>=` | `1` | Numeric comparison. Prefer `gte` conditions. | `runtime` |
+| `~=` | `1` | Regex match. Prefer `match` conditions. | `runtime` |
 
-## JSON Operations (v1)
+### JSON operations
 
-| op | args | description |
-| --- | --- | --- |
-| `merge` | `obj1, obj2, ...` | Shallow merge (rightmost wins). |
-| `deep_merge` | `obj1, obj2, ...` | Recursive merge for objects; arrays are replaced. |
-| `get` | `obj_or_array, path` | Get value at path; missing if path is absent. |
-| `pick` | `obj, paths` | Keep only selected paths (`paths` is string or array). |
-| `omit` | `obj, paths` | Remove selected paths (`paths` is string or array). |
-| `keys` | `obj` | Array of keys. |
-| `values` | `obj` | Array of values. |
-| `entries` | `obj` | Array of `{key, value}` entries. |
-| `len` | `value` | Length of string/array/object. |
-| `from_entries` | `entries` / `key, value` | Build object from pairs (`[key,value]` or `{key,value}`) or key/value. |
-| `object_flatten` | `obj` | Flatten object keys into path strings. |
-| `object_unflatten` | `obj` | Expand path keys into nested objects. |
+| op | args | description | support |
+| --- | --- | --- | --- |
+| `merge` | `>=1` | Shallow merge (rightmost wins). | `runtime` |
+| `deep_merge` | `>=1` | Recursive merge for objects; arrays are replaced. | `runtime` |
+| `get` | `1` | Get value at path; missing if path is absent. | `runtime` |
+| `pick` | `>=1` | Keep only selected paths. | `runtime` |
+| `omit` | `>=1` | Remove selected paths. | `runtime` |
+| `keys` | `0` | Array of keys. | `runtime` |
+| `values` | `0` | Array of values. | `runtime` |
+| `entries` | `0` | Array of `{key, value}` entries. | `runtime` |
+| `len` | `0` | Length of string/array/object. | `runtime` |
+| `from_entries` | `>=1` | Build object from pairs or key/value. | `runtime` |
+| `object_flatten` | `1` | Flatten object keys into path strings. | `runtime` |
+| `object_unflatten` | `1` | Expand path keys into nested objects. | `runtime` |
 
-## Array Operations (v1)
+### Array operations
 
-| op | args | description |
-| --- | --- | --- |
-| `map` | `array, expr` | Transform each element. |
-| `filter` | `array, predicate` | Keep elements matching the predicate. |
-| `flat_map` | `array, expr` | `map` + `flatten(1)`. |
-| `flatten` | `array, depth?` | Flatten to the specified depth. |
-| `take` | `array, count` | Take from head/tail (negative counts from tail). |
-| `drop` | `array, count` | Drop from head/tail (negative counts from tail). |
-| `slice` | `array, start, end?` | Slice range (`end` exclusive, negatives from tail). |
-| `chunk` | `array, size` | Split into fixed-size chunks. |
-| `zip` | `array1, array2, ...` | Zip to the shortest length. |
-| `zip_with` | `array1, array2, ..., expr` | Combine elements with an expression. |
-| `unzip` | `array` | Convert array-of-arrays to column arrays. |
-| `group_by` | `array, key_expr` | Group elements by key. |
-| `key_by` | `array, key_expr` | Map elements by key (last wins). |
-| `partition` | `array, predicate` | Split into `[matched, unmatched]`. |
-| `unique` | `array` | Remove duplicates by equality. |
-| `distinct_by` | `array, key_expr` | Remove duplicates by key. |
-| `sort_by` | `array, key_expr, order?` | Sort by key. |
-| `find` | `array, predicate` | First matching element. |
-| `find_index` | `array, predicate` | Index of first match. |
-| `index_of` | `array, value` | Index of first equal element. |
-| `contains` | `array, value` | Whether the value exists. |
-| `sum` | `array` | Sum of elements. |
-| `avg` | `array` | Average of elements. |
-| `min` | `array` | Minimum value. |
-| `max` | `array` | Maximum value. |
-| `reduce` | `array, expr` | Reduce with accumulator. |
-| `fold` | `array, initial, expr` | Reduce with initial value. |
+| op | args | description | support |
+| --- | --- | --- | --- |
+| `map` | `1` | Transform each element (use `map` step). | `runtime` |
+| `filter` | `1` | Keep elements matching predicate. | `runtime` |
+| `flat_map` | `1` | `map` + `flatten(1)`. | `runtime` |
+| `flatten` | `0-1` | Flatten to specified depth. | `runtime` |
+| `take` | `1` | Take from head/tail (negative counts from tail). | `runtime` |
+| `drop` | `1` | Drop from head/tail (negative counts from tail). | `runtime` |
+| `slice` | `1-2` | Slice range (`end` exclusive). | `runtime` |
+| `chunk` | `1` | Split into fixed-size chunks. | `runtime` |
+| `zip` | `>=1` | Zip to the shortest length. | `runtime` |
+| `zip_with` | `>=2` | Combine elements with an expression. | `runtime` |
+| `unzip` | `0` | Convert array-of-arrays to column arrays. | `runtime` |
+| `group_by` | `1` | Group elements by key. | `runtime` |
+| `key_by` | `1` | Map elements by key (last wins). | `runtime` |
+| `partition` | `1` | Split into `[matched, unmatched]`. | `runtime` |
+| `unique` | `0` | Remove duplicates by equality. | `runtime` |
+| `distinct_by` | `1` | Remove duplicates by key. | `runtime` |
+| `sort_by` | `1` | Sort by key. | `runtime` |
+| `find` | `1` | First matching element. | `runtime` |
+| `find_index` | `1` | Index of first match. | `runtime` |
+| `index_of` | `1` | Index of first equal element. | `runtime` |
+| `contains` | `1` | Whether the value exists. | `runtime` |
+| `sum` | `0` | Sum of elements. | `runtime` |
+| `avg` | `0` | Average of elements. | `runtime` |
+| `min` | `0` | Minimum value. | `runtime` |
+| `max` | `0` | Maximum value. | `runtime` |
+| `reduce` | `1` | Reduce with accumulator. | `runtime` |
+| `fold` | `2` | Reduce with initial value. | `runtime` |
+| `first` | `0` | First element. | `runtime` |
+| `last` | `0` | Last element. | `runtime` |
+
+### Type casts
+
+| op | args | description | support |
+| --- | --- | --- | --- |
+| `string` | `0` | Cast pipe value to string. | `runtime` |
+| `int` | `0` | Cast pipe value to int. | `runtime` |
+| `float` | `0` | Cast pipe value to float. | `runtime` |
+| `bool` | `0` | Cast pipe value to bool. | `runtime` |
+
+### Lookup arguments
+
+Explicit `from`:
+
+```yaml
+expr:
+  - lookup_first:
+    - "@context.users"
+    - id
+    - "@input.user_id"
+    - name
+```
+
+Implicit `from` (use pipe value as the array):
+
+```yaml
+expr:
+  - "@context.users"
+  - lookup_first:
+    - id
+    - "@input.user_id"
+    - name
+```
 
 ## Evaluation rules (notes)
 
 ### missing vs null
 - `missing`: reference does not exist
 - `null`: reference exists and is null
-- `default` applies only to `missing` (not `null`)
 
-### op semantics
-- `concat`: any `missing` -> `missing`. `null` is an error.
-- `trim/lowercase/uppercase/to_string`: `missing` -> `missing`. `null` is an error.
-- `replace/split/pad_start/pad_end`:
-  - `missing` -> `missing`. `null` is an error.
-  - `replace` mode: `all` for replace-all, `regex`/`regex_all` for regex.
-  - `split` delimiter must be non-empty.
-  - `pad_start/pad_end` length must be non-negative; default pad is space.
-- `lookup/lookup_first`:
-  - `collection` must be an array. `null` or non-array is an error.
-  - `key_path` / `output_path` must be non-empty string literals.
-  - `match_value` must not be `null`.
-  - matching compares stringified values.
-  - `lookup` returns an array; if no matches, returns `missing`.
-- `+/-/*//to_base`:
-  - numbers or numeric strings only. `missing` -> `missing`. `null` is an error.
-  - `/` errors on non-finite results.
-  - `to_base` requires an integer; `base` is 2-36.
-- `round`:
-  - `scale` is a non-negative integer (default 0).
-  - rounding uses half away from zero.
-- `date_format/to_unixtime`:
-  - input must be a string. `missing` -> `missing`. `null` is an error.
-  - `date_format` accepts `input_format` as string or array (chrono strftime).
-  - `timezone` supports `UTC` or offsets like `+09:00` (default UTC).
-  - auto parsing accepts common ISO/RFC and `YYYY-MM-DD`/`YYYY/MM/DD` variants.
-- `and/or`:
-  - requires at least two boolean values, with short-circuit.
-  - if any operand is `missing` and no decisive value is found, result is `missing`.
-  - `null`/non-boolean is an error.
-- `not`:
-  - `missing` -> `missing`
-  - `null`/non-boolean is an error.
-- `==` / `!=`:
-  - `missing` is treated as `null`.
-  - only `null` == `null` is true.
-  - non string/number/bool is an error.
-- Numeric comparisons (`<`/`<=`/`>`/`>=`):
-  - numbers or numeric strings only.
-  - `missing` is treated as `null`, which results in an error.
-  - `null`/non-numeric/non-finite values are errors.
-- `~=`:
-  - both operands must be strings.
-  - invalid regex pattern is an error (Rust regex syntax).
-- JSON ops:
-  - `get`: base `missing`/`null` or absent path returns `missing`.
-  - `get`: path must be a valid non-empty path string.
-  - `len`: `missing` stays `missing`; `null` is an error.
-  - `len`: supports string/array/object only (string length counts Unicode scalar values).
-  - `from_entries`: with 1 arg, returns object as-is or builds from `[key,value]`/`{key,value}` entries.
-  - `from_entries`: with 2 args, builds object from `key, value`. `key` is string/number/bool; duplicates are last-wins.
-  - `from_entries`: `missing` stays `missing`, `key` `null` is an error. `value` can be any JSON (including `null`).
-  - Object ops (`merge`/`deep_merge`/`pick`/`omit`/`keys`/`values`/`entries`/`object_*`):
-    - `null` is an error; base must be an object.
-  - `merge`/`deep_merge`: missing args are skipped; all missing -> `missing`.
-  - `deep_merge`: objects merge recursively; arrays and scalars are replaced.
-  - `pick`/`omit`: `paths` is a string or array of strings (path syntax).
-  - `pick`/`omit`: conflicting paths (e.g. `a` and `a.b`) are errors.
-  - `omit`: terminal array index in path is an error; traversal indexes are allowed.
-  - `object_flatten`: arrays are preserved as values (not flattened).
-  - `object_flatten`: keys containing `[` or `]` are errors.
-  - `object_flatten`: empty keys are errors.
-  - `object_unflatten`: array indexes in paths are errors.
-- Array ops:
-  - Array args `missing`/`null` are treated as empty arrays.
-  - `map`/`flat_map`: element expr `missing` becomes `null`.
-  - `filter`/`partition`/`find`/`find_index`: predicate `missing`/`null` -> `false`.
-  - `group_by`/`key_by`/`distinct_by`/`sort_by`: key expr `missing`/`null` is an error.
-  - `contains`/`index_of`/`unique`: same equality semantics as `==` (string/number/bool + null, arrays/objects are errors).
-  - `sort_by`: keys must be a single type (string/number/bool). `order` is `asc`/`desc`.
-  - `find` returns `null` when not found; `find_index`/`index_of` return `-1`.
-  - `sum`/`avg`/`min`/`max` return `null` for empty arrays.
-  - `reduce` returns `null` for empty arrays; `fold` returns `initial` for empty arrays.
+### Pipe evaluation
+- Pipes run left-to-right.
+- `@out.*` can reference previously produced outputs in the same record.
 
-## Type casting (`type`)
+### Map step
+- If the pipe value is `missing`, `map` returns `missing`.
+- If the pipe value is not an array, `map` raises an error.
+- `map` drops `missing` results from the output array.
 
-- `string`: string/number/bool to string
-- `int`: number or numeric string only. `1.0` is OK, `1.1` is invalid
-- `float`: number or numeric string only. NaN/Infinity are invalid
-- `bool`: bool or string `"true"`/`"false"` (case-insensitive)
+### Lookup
+- `lookup` and `lookup_first` require `from` to be an array.
+- `match_key` and optional `get` must be strings.
+- `lookup` returns an array of matches; `lookup_first` returns the first match or `missing`.
 
 ## Runtime semantics
 
 - `record_when` is evaluated before any mappings; if `false` or error, the record is skipped
-- `mappings` are evaluated top to bottom; `out.*` can only reference previously produced values
-- forward `out.*` references are validation errors (runtime may see them as `missing`)
+- `mappings` are evaluated top to bottom; `@out.*` can only reference previously produced values
 - if `source/value/expr` is `missing`, apply `default/required` rules
 - `type` casting happens after expression evaluation; failures are errors
 - `when` evaluation errors are emitted as warnings

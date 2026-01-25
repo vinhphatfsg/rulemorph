@@ -1,0 +1,13 @@
+{
+  "departments": [
+    {"id": 1, "name": "Engineering", "budget": 100000},
+    {"id": 2, "name": "Marketing", "budget": 50000},
+    {"id": 3, "name": "Sales", "budget": 75000}
+  ],
+  "projects": [
+    {"owner_id": 1, "name": "Project Alpha"},
+    {"owner_id": 1, "name": "Project Beta"},
+    {"owner_id": 2, "name": "Project Gamma"},
+    {"owner_id": 1, "name": "Project Delta"}
+  ]
+}

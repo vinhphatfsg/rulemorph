@@ -1,0 +1,16 @@
+[
+  {
+    "name": "ALICE",
+    "greeting": "Hello, ALICE",
+    "rate": 1.5,
+    "price": 150.0,
+    "currency": "USD"
+  },
+  {
+    "name": "BOB",
+    "greeting": "Hello, BOB",
+    "rate": 1.5,
+    "price": 300.0,
+    "currency": "USD"
+  }
+]

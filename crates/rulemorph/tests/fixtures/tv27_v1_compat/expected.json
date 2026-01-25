@@ -1,0 +1,20 @@
+[
+  {
+    "name": "alice",
+    "currency": "USD",
+    "upper_name": "ALICE",
+    "rate": 1.5,
+    "greeting": "Hello, ALICE",
+    "nickname": "ali",
+    "dept_name": "Engineering"
+  },
+  {
+    "name": "bob",
+    "currency": "USD",
+    "upper_name": "BOB",
+    "rate": 1.5,
+    "greeting": "Hello, BOB",
+    "nickname": "bob",
+    "dept_name": "Marketing"
+  }
+]

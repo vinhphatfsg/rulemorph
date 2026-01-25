@@ -1,26 +1,21 @@
 # 変換ルール仕様（実装準拠）
 
-本ドキュメントは、現在の実装に合わせたルール仕様・参照・式（op）・評価ルールを日本語で整理したものです。
+このドキュメントは v2 のルール仕様、参照、式構文、評価ルールを説明します。
 英語版は `docs/rules_spec_en.md` を参照してください。
 
-## ルールファイル構造
+## ルールファイル構成
 
 ```yaml
-version: 1
+version: 2
 input:
-  format: csv # csv | json
-  csv:
-    has_header: true
-    delimiter: ","
-  # json:
-  #   records_path: "items"
-
-output:
-  name: "Record"
+  format: json
+  json:
+    records_path: "items"
 
 record_when:
-  op: ">="
-  args: [ { ref: "input.score" }, 10 ]
+  all:
+    - { gt: ["@input.score", 10] }
+    - { eq: ["@input.active", true] }
 
 mappings:
   - target: "user.id"
@@ -29,17 +24,17 @@ mappings:
     required: true
   - target: "user.name"
     expr:
-      op: "trim"
-      args: [ { ref: "input.name" } ]
+      - "@input.name"
+      - trim
   - target: "meta.source"
-    value: "csv"
+    value: "api"
 ```
 
-- `version`（必須）: `1` 固定
-- `input`（必須）: 入力形式と設定
+- `version`（必須）: `2` 固定
+- `input`（必須）: 入力形式とオプション
 - `mappings`（必須）: 変換ルール（上から順に評価）
-- `output`（任意）: メタ情報（DTO 生成名など）
-- `record_when`（任意）: レコードを出力するか判定する boolean 式
+- `output`（任意）: メタデータ（DTO 名など）
+- `record_when`（任意）: レコードの採用/除外条件
 
 ## Input
 
@@ -47,9 +42,9 @@ mappings:
 - `input.format`（必須）: `csv` または `json`
 
 ### CSV
-- `format=csv` の場合は `input.csv` 必須
+- `input.csv` は `format=csv` のとき必須
 - `has_header`（任意）: 既定 `true`
-- `delimiter`（任意）: 既定 `","`（長さ 1 のみ許可）
+- `delimiter`（任意）: 既定 `","`（1 文字のみ）
 - `columns`（任意）: `has_header=false` のとき必須
 
 ```yaml
@@ -64,8 +59,8 @@ input:
 ```
 
 ### JSON
-- `format=json` の場合は `input.json` 必須
-- `records_path`（任意）: 配列レコードへのドットパス。省略時はルート
+- `input.json` は `format=json` のとき必須
+- `records_path`（任意）: レコード配列のドットパス。省略時はルート。
 
 ```yaml
 input:
@@ -76,23 +71,23 @@ input:
 
 ## Output
 
-- 既定は「変換結果の JSON 配列」
-- CLI の `transform --ndjson` 指定時は 1 レコード 1 行の NDJSON を逐次出力
-- `records_path` が object を指す場合は 1 レコードのみ出力
+- 出力は JSON 配列が既定
+- CLI `transform --ndjson` は 1 行 1 JSON（ストリーミング）
+- `records_path` がオブジェクトを指す場合は単一レコード
 
-## レコードフィルタ（`record_when`）
+## Record filter（`record_when`）
 
-`record_when` はレコードごとに 1 回評価される boolean 式です。
-`false` の場合、そのレコードはスキップされ出力されません。
-評価エラーまたは boolean 以外の値になった場合はレコードをスキップし、warning を出力します。
+`record_when` は各レコードに対してマッピング前に 1 回評価されます。
+`false` の場合はそのレコードを出力しません。
+評価に失敗した場合もスキップされ、警告が出ます。
 
-- `record_when` の式は `when` と同じ構文
-- 参照できるのは `input.*` と `context.*`
-- `out.*` は出力前のため参照不可
+- `record_when` は `when`/`if.cond` と同じ条件構文を使用
+- `@input.*` と `@context.*` を参照可能
+- `@out.*` は出力が未生成のため利用不可
 
 ## Mapping
 
-各 mapping は 1 つの値を `target` に書き込みます。
+各 mapping は `target` に 1 つの値を書き込みます。
 
 ```yaml
 - target: "user.id"
@@ -104,99 +99,163 @@ input:
 項目:
 - `target`（必須）: 出力 JSON のドットパス（配列インデックスは不可）
 - `source` | `value` | `expr`（必須・排他）
-  - `source`: 参照パス（後述）
-  - `value`: リテラル JSON
-  - `expr`: 式ツリー
-- `when`（任意）: boolean を返す式。`false` または評価エラーのとき mapping をスキップ（warning）
+  - `source`: 参照パス（Reference 参照）
+  - `value`: JSON リテラル
+  - `expr`: v2 パイプ式
+- `when`（任意）: 条件。`false` または評価エラーでスキップ（警告）
 - `type`（任意）: `string|int|float|bool`
 - `required`（任意）: 既定 `false`
-- `default`（任意）: `missing` のときのみ使用するリテラル
+- `default`（任意）: 値が `missing` のときのみ使用
 
 ### `when` の挙動
-- `when` は mapping の冒頭で評価
-- `false` または評価エラーなら target を生成しない（評価エラーは warning）
-- `when` が `false`/評価エラーの場合、`required/default/type` の評価は行わない
-- `when` では `missing` を `null` とみなすが、最終結果は boolean 必須。`null`/`missing` は評価エラーとなる
+- `when` は mapping の先頭で評価
+- `false` または評価エラーで mapping をスキップ（エラーは警告扱い）
+- スキップ時は `required/default/type` を評価しない
+- `missing` は `false` 扱い
 
 ### `required`/`default` の挙動
-- `missing` の場合は `default` を使用（あれば）
-- `missing` で `required=true` はエラー
-- `null` は **missing ではない**。`required=true` ならエラー、そうでなければ `null` を保持
+- 値が `missing` の場合、`default` があれば使用
+- 値が `missing` かつ `required=true` はエラー
+- `null` は `missing` ではない。`required=true` ならエラー、それ以外は `null` を保持
 
 ### `target` の制約
 - `target` はオブジェクトキーのみ（配列インデックス不可）
-- 途中パスがオブジェクト以外の場合はエラー
+- 中間パスがオブジェクトでない場合はエラー
 
-## Reference（参照）
+## Reference
 
-参照は namespace + ドットパスで指定します。
-- `input.*`: 入力レコード
-- `context.*`: 実行時に注入される外部コンテキスト
-- `out.*`: 既に生成済みの出力（前段 mapping のみ）
+参照は `@` 付きの名前空間 + ドットパスです。
+- `@input.*`: 入力レコード
+- `@context.*`: 外部コンテキスト
+- `@out.*`: 同一レコード内で先に生成された出力
+- `@item.*`: `map` ステップ内の現在要素（`@item.index` は 0 始まり）
+- `@<var>`: `let` で束縛した変数（例: `@total`）
 
-### ローカル参照（配列 op 内のみ）
-- `item.value`: 現在の要素
-- `item.index`: 0 始まりのインデックス
-- `acc.value`: reduce/fold のアキュムレータ
-
-`source` は **単一キー** の場合のみ namespace を省略可能（省略時は `input.*`）。
-ドット/配列インデックスを使う場合は `input.*` を明示する必要がある。
-`expr` の `ref` は namespace 必須。
+`source` は **単一キーのみ** 省略可（`input.*` が既定）。
+ドットパスや配列インデックスを使う場合は `input.*` を明示してください。
 
 例:
-- `source: "id"` は `input.id` を意味する
-- `source: "user.name"` は無効（`input.user.name` と書く）
+- `source: "id"` は `input.id`
+- `source: "input.user.name"`
 - `source: "input.items[0].id"`
 - `source: "context.tenant_id"`
-- `expr: { ref: "out.text" }`
+- `expr: "@out.text"`
 
 ### ドットパス
 - 配列インデックス対応: `input.items[0].id`, `context.matrix[1][0]`
-- ドットを含むキー名はブラケット引用: `input.user["profile.name"]`
-- ブラケット引用内のエスケープは `\\` と引用符（`\"` / `\'`）のみ対応
-- ブラケット引用内で `[` `]` は使用不可
-- 配列以外や範囲外は `missing` 扱い
+- ドットを含むキーは括弧付きクオート: `input.user["profile.name"]`
+- 括弧内では `\\` とクオート（`\"` / `\'`）のみ許可
+- 括弧内に `[` `]` は不可
+- 非配列や範囲外インデックスは `missing`
 
-## Expr（式）
+## Expr（v2 パイプ）
 
-式はリテラル/参照/オペレーションをサポートします。
+`expr` はパイプ配列、または単一の開始値です。
 
 ```yaml
 expr:
-  op: "concat"
-  args:
-    - { ref: "out.id" }
-    - "-"
-    - { ref: "out.price" }
+  - "@input.name"
+  - trim
+  - uppercase
 ```
+
+単一参照の例:
+
+```yaml
+expr: "@input.name"
+```
+
+### パイプ形式
+
+パイプは `[start, step1, step2, ...]` の配列です。
+
+開始値は以下を利用できます:
+- `@` 参照（`@input.*`, `@context.*`, `@out.*`, `@item.*`, `@var`）
+- `$`（現在のパイプ値）
+- 文字列/数値/真偽値/null/オブジェクト/配列のリテラル
+
+`@` や `$` をリテラル文字列として扱うには `lit:` を使います。
+
+```yaml
+expr:
+  - "lit:@input.name"
+  - trim
+```
+
+### ステップ
+
+- **Op ステップ**: 文字列の op 名、またはオブジェクト形式
+  - `{ op: "trim", args: [...] }`
+  - `{ concat: ["@out.name"] }`（短縮形）
+- **Let ステップ**: `{ let: { varName: <expr>, ... } }`
+- **If ステップ**: `{ if: <cond>, then: <pipe>, else: <pipe?> }`
+- **Map ステップ**: `{ map: [ <step>, <step>, ... ] }`
+
+`let` と `if` の例:
+
+```yaml
+expr:
+  - "@input.price"
+  - let: { base: "$" }
+  - if:
+      cond:
+        gt: ["@base", 100]
+      then:
+        - "$"
+        - multiply: [0.9]
+      else:
+        - "$"
+```
+
+`map` の例:
+
+```yaml
+expr:
+  - "@input.items"
+  - map:
+    - "@item.value"
+    - multiply: [2]
+```
+
+## Conditions（条件構文）
+
+`record_when`、`when`、`if.cond` で使用します。
 
 対応形式:
-- リテラル: string/number/bool/null
-- 参照: `{ ref: "input.user_id" }`
-- オペレーション: `{ op: "<name>", args: [Expr, ...] }`
-- チェーン: `{ chain: [ Expr, { op: "<name>", args: [...] }, ... ] }`
+- `all: [ <cond>, ... ]`
+- `any: [ <cond>, ... ]`
+- 比較オブジェクト: `eq`, `ne`, `gt`, `gte`, `lt`, `lte`, `match`
 
-### チェーン（パイプ構文）
+比較の挙動（v2）:
+- `eq`/`ne` は **JSON の厳密一致**（型も含めて比較）です。例: `"1"` と `1` は一致しません。
+- `gt`/`gte`/`lt`/`lte` はまず数値比較（数値 or 数値文字列）を試みます。両方が非数値文字列の場合は字句順比較を行い、それ以外はエラーになります。
 
-`chain` は先頭の式を評価し、以降の `op` に前段の結果を **第1引数として自動注入** します。
-2 個目以降は `{ op: ... }` のみ許可され、`args` は省略可能です。
+例:
 
 ```yaml
-expr:
-  chain:
-    - { ref: "input.name" }
-    - { op: "trim" }
-    - { op: "replace", args: [ " ", "_" , "all" ] }
-    - { op: "lowercase" }
+record_when:
+  all:
+    - { gt: ["@input.score", 10] }
+    - { eq: ["@input.active", true] }
+
+when:
+  match: ["@input.email", ".+@example\\.com$"]
 ```
 
-## オペレーション一覧（v1）
+## オペレーション一覧（v2）
+
+オペレーションはパイプのステップとして適用されます。
+現在のパイプ値が暗黙の第 1 引数です。
+`args` は追加の引数のみを列挙します。
+
+対応状況:
+- `runtime`: v2 実行時に実装済み
 
 ### カテゴリ
 
 - 文字列系: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
-- 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`
+- 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - 数値系: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
 - 論理演算: `and`, `or`, `not`
@@ -209,186 +268,154 @@ expr:
 - `*_by`: キー指定の派生（`group_by`, `key_by`, `distinct_by`, `sort_by`）
 - `object_*`: object 構造専用（`object_flatten`, `object_unflatten`）
 
-| op名 | 引数 | 説明 | 使用・変換例 |
+### コアオペレーション
+
+| op | args | 説明 | 対応 |
 | --- | --- | --- | --- |
-| `concat` | `>=1 expr` | 全引数を文字列化して連結。`missing` は伝播、`null` はエラー。 | `op: "concat"`<br>`args: [ { ref: "input.first" }, " ", { ref: "input.last" } ]`<br>`{"first":"Ada","last":"Lovelace"} -> "Ada Lovelace"` |
-| `coalesce` | `>=1 expr` | 最初の「missing でも null でもない」値を返す。 | `args: [ { ref: "input.nick" }, { ref: "input.name" }, "unknown" ]`<br>`{"name":"Ada"} -> "Ada"` |
-| `to_string` | `1 expr` | string/number/bool を文字列化。`missing` 伝播、`null` はエラー。 | `args: [ { ref: "input.age" } ]`<br>`{"age": 42} -> "42"` |
-| `trim` | `1 expr` | 文字列の前後空白を削除。`missing` 伝播、`null` はエラー。 | `args: [ { ref: "input.name" } ]`<br>`{"name":"  Ada "} -> "Ada"` |
-| `lowercase` | `1 expr` | 文字列を小文字化。 | `args: [ { ref: "input.code" } ]`<br>`{"code":"AbC"} -> "abc"` |
-| `uppercase` | `1 expr` | 文字列を大文字化。 | `args: [ { ref: "input.code" } ]`<br>`{"code":"abC"} -> "ABC"` |
-| `replace` | `3-4 expr` | 文字列置換。`mode` 省略時は先頭一致のみ。`mode`: `all`/`regex`/`regex_all`。 | `args: [ { ref: "input.text" }, "abc", "XYZ" ]`<br>`{"text":"abc-123-abc"} -> "XYZ-123-abc"` |
-| `split` | `2 expr` | 区切り文字で分割して配列化。 | `args: [ { ref: "input.tags" }, "," ]`<br>`{"tags":"a,b"} -> ["a","b"]` |
-| `pad_start` | `2-3 expr` | 指定長まで先頭を埋める。`pad` 省略時は空白。 | `args: [ { ref: "input.code" }, 5, "0" ]`<br>`{"code":"42"} -> "00042"` |
-| `pad_end` | `2-3 expr` | 指定長まで末尾を埋める。`pad` 省略時は空白。 | `args: [ "x", 3, "_" ]`<br>`"x" -> "x__"` |
-| `lookup` | `collection, key_path, match_value, output_path?` | 配列を検索し一致した要素を **配列** で返す（0件なら `missing`）。 | `args: [ { ref: "context.users" }, "id", { ref: "input.user_id" }, "name" ]`<br>`users=[{"id":1,"name":"Ada"}], user_id=1 -> ["Ada"]` |
-| `lookup_first` | `collection, key_path, match_value, output_path?` | `lookup` の先頭要素のみ返す。 | `args: [ { ref: "context.users" }, "id", { ref: "input.user_id" }, "name" ]`<br>`users=[{"id":1,"name":"Ada"}], user_id=1 -> "Ada"` |
-| `+` | `>=2 expr` | 数値の加算。 | `args: [ 1, "2", 3 ]`<br>`-> 6` |
-| `-` | `2 expr` | 数値の減算。 | `args: [ 10, 4 ]`<br>`-> 6` |
-| `*` | `>=2 expr` | 数値の乗算。 | `args: [ 2, 3 ]`<br>`-> 6` |
-| `/` | `2 expr` | 数値の除算。 | `args: [ 9, 2 ]`<br>`-> 4.5` |
-| `round` | `1-2 expr` | 数値を丸め（四捨五入）。`scale` は小数桁数。 | `args: [ 12.345, 2 ]`<br>`-> 12.35` |
-| `to_base` | `2 expr` | 整数を指定進数の文字列に変換（2-36）。 | `args: [ 255, 16 ]`<br>`-> "ff"` |
-| `date_format` | `2-4 expr` | 日時文字列をフォーマット変換。`input_format` は文字列 or 配列、`timezone` は `UTC`/`+09:00` 形式。 | `args: [ { ref: "input.date" }, "%Y/%m/%d" ]`<br>`{"date":"2024-01-02"} -> "2024/01/02"` |
-| `to_unixtime` | `1-3 expr` | 日時文字列を unix time へ。`unit` は `s`/`ms`。 | `args: [ "1970-01-01T00:00:01Z" ]`<br>`-> 1` |
-| `and` | `>=2 expr` | boolean AND。`false` で短絡。`missing` が残れば `missing`。 | `args: [ { op: ">=", args: [ { ref: "input.age" }, 18 ] }, { ref: "input.active" } ]`<br>`{"age":20,"active":true} -> true` |
-| `or` | `>=2 expr` | boolean OR。`true` で短絡。`missing` が残れば `missing`。 | `args: [ { ref: "input.is_admin" }, { ref: "input.is_owner" } ]`<br>`{"is_admin":false,"is_owner":true} -> true` |
-| `not` | `1 expr` | boolean NOT。 | `args: [ { ref: "input.disabled" } ]`<br>`{"disabled": false} -> true` |
-| `==` | `2 expr` | 等価比較（文字列化して比較）。`missing` は `null` として扱う。 | `args: [ { ref: "input.status" }, "active" ]`<br>`{"status":"active"} -> true` |
-| `!=` | `2 expr` | 非等価比較。 | `args: [ { ref: "input.status" }, "active" ]`<br>`{"status":"active"} -> false` |
-| `<` | `2 expr` | 数値比較（数値 or 数値文字列のみ）。 | `args: [ { ref: "input.count" }, 10 ]`<br>`{"count": 5} -> true` |
-| `<=` | `2 expr` | 数値比較。 | `args: [ { ref: "input.count" }, 10 ]`<br>`{"count": 10} -> true` |
-| `>` | `2 expr` | 数値比較。 | `args: [ { ref: "input.score" }, 90 ]`<br>`{"score": 95} -> true` |
-| `>=` | `2 expr` | 数値比較。 | `args: [ { ref: "input.score" }, 90 ]`<br>`{"score": 90} -> true` |
-| `~=` | `2 expr` | 正規表現マッチ（左辺文字列を右辺パターンで評価）。 | `args: [ { ref: "input.email" }, ".+@example\\.com$" ]`<br>`{"email":"a@example.com"} -> true` |
+| `concat` | `>=1` | 文字列連結（パイプ値 + args）。 | `runtime` |
+| `coalesce` | `>=1` | pipe + args から最初の非 null を返す。 | `runtime` |
+| `to_string` | `0` | 文字列化。 | `runtime` |
+| `trim` | `0` | 先頭/末尾の空白を除去。 | `runtime` |
+| `lowercase` | `0` | 小文字化。 | `runtime` |
+| `uppercase` | `0` | 大文字化。 | `runtime` |
+| `replace` | `2-3` | 文字列置換（`pattern`, `replacement`, `mode?`）。 | `runtime` |
+| `split` | `1` | 区切り文字で分割。 | `runtime` |
+| `pad_start` | `1-2` | 指定長まで先頭を埋める（`length`, `pad?`）。 | `runtime` |
+| `pad_end` | `1-2` | 指定長まで末尾を埋める（`length`, `pad?`）。 | `runtime` |
+| `lookup` | `2-4` | 配列から全一致を取得。 | `runtime` |
+| `lookup_first` | `2-4` | 配列から最初の一致を取得。 | `runtime` |
+| `+` | `>=1` | 数値加算（別名: `add`）。 | `runtime` |
+| `-` | `>=1` | 数値減算（pipe - arg）。 | `runtime` |
+| `*` | `>=1` | 数値乗算（別名: `multiply`）。 | `runtime` |
+| `/` | `>=1` | 数値除算。 | `runtime` |
+| `round` | `0-1` | 数値を丸める（`scale`）。 | `runtime` |
+| `to_base` | `1` | 整数を指定進数の文字列に変換（2-36）。 | `runtime` |
+| `date_format` | `1-3` | 日時文字列をフォーマット変換。 | `runtime` |
+| `to_unixtime` | `0-2` | 日時文字列を unix time へ。 | `runtime` |
+| `and` | `>=1` | boolean AND。条件は `all` を推奨。 | `runtime` |
+| `or` | `>=1` | boolean OR。条件は `any` を推奨。 | `runtime` |
+| `not` | `0` | boolean NOT。 | `runtime` |
+| `==` | `1` | 等価比較。条件は `eq` を推奨。 | `runtime` |
+| `!=` | `1` | 非等価比較。条件は `ne` を推奨。 | `runtime` |
+| `<` | `1` | 数値比較。条件は `lt` を推奨。 | `runtime` |
+| `<=` | `1` | 数値比較。条件は `lte` を推奨。 | `runtime` |
+| `>` | `1` | 数値比較。条件は `gt` を推奨。 | `runtime` |
+| `>=` | `1` | 数値比較。条件は `gte` を推奨。 | `runtime` |
+| `~=` | `1` | 正規表現マッチ。条件は `match` を推奨。 | `runtime` |
 
-## JSON 操作（v1）
+### JSON 操作
 
-| op名 | 引数 | 説明 |
-| --- | --- | --- |
-| `merge` | `obj1, obj2, ...` | 浅い merge（右勝ち）。 |
-| `deep_merge` | `obj1, obj2, ...` | object は再帰 merge、配列は置換。 |
-| `get` | `obj_or_array, path` | パスの値を取得。存在しない場合は `missing`。 |
-| `pick` | `obj, paths` | 指定パスのみ残す（`paths` は文字列 or 配列）。 |
-| `omit` | `obj, paths` | 指定パスを削除する（`paths` は文字列 or 配列）。 |
-| `keys` | `obj` | キーの配列。 |
-| `values` | `obj` | 値の配列。 |
-| `entries` | `obj` | `{key, value}` の配列。 |
-| `len` | `value` | string/array/object の長さを返す。 |
-| `from_entries` | `entries` / `key, value` | ペア配列（`[key,value]` or `{key,value}`）や key/value から object を生成。 |
-| `object_flatten` | `obj` | オブジェクトを path キーで平坦化。 |
-| `object_unflatten` | `obj` | path キーからオブジェクトを再構成。 |
+| op | args | 説明 | 対応 |
+| --- | --- | --- | --- |
+| `merge` | `>=1` | 浅い merge（右勝ち）。 | `runtime` |
+| `deep_merge` | `>=1` | object は再帰 merge、配列は置換。 | `runtime` |
+| `get` | `1` | パスの値を取得。存在しない場合は `missing`。 | `runtime` |
+| `pick` | `>=1` | 指定パスのみ残す。 | `runtime` |
+| `omit` | `>=1` | 指定パスを削除する。 | `runtime` |
+| `keys` | `0` | キーの配列。 | `runtime` |
+| `values` | `0` | 値の配列。 | `runtime` |
+| `entries` | `0` | `{key, value}` の配列。 | `runtime` |
+| `len` | `0` | string/array/object の長さを返す。 | `runtime` |
+| `from_entries` | `>=1` | ペア配列や key/value から object を生成。 | `runtime` |
+| `object_flatten` | `1` | オブジェクトを path キーで平坦化。 | `runtime` |
+| `object_unflatten` | `1` | path キーからオブジェクトを再構成。 | `runtime` |
 
-## 配列オペレーション（v1）
+### 配列オペレーション
 
-| op名 | 引数 | 説明 |
-| --- | --- | --- |
-| `map` | `array, expr` | 要素を変換する。 |
-| `filter` | `array, predicate` | 条件に一致した要素を残す。 |
-| `flat_map` | `array, expr` | `map` + `flatten(1)`。 |
-| `flatten` | `array, depth?` | 指定深さで平坦化する。 |
-| `take` | `array, count` | 先頭/末尾から取得する（負数は末尾基準）。 |
-| `drop` | `array, count` | 先頭/末尾から除外する（負数は末尾基準）。 |
-| `slice` | `array, start, end?` | 範囲抽出（`end` は排他、負数は末尾基準）。 |
-| `chunk` | `array, size` | 固定サイズで分割する。 |
-| `zip` | `array1, array2, ...` | 最短の配列長で束ねる。 |
-| `zip_with` | `array1, array2, ..., expr` | 要素ごとに式で合成する。 |
-| `unzip` | `array` | 配列の配列を列配列に変換する。 |
-| `group_by` | `array, key_expr` | キーでグルーピングする。 |
-| `key_by` | `array, key_expr` | キーで map 化する（重複は後勝ち）。 |
-| `partition` | `array, predicate` | 条件で 2 配列に分割する。 |
-| `unique` | `array` | 等価な要素を除去する。 |
-| `distinct_by` | `array, key_expr` | キーで重複を除去する。 |
-| `sort_by` | `array, key_expr, order?` | キーでソートする。 |
-| `find` | `array, predicate` | 最初の一致要素を返す。 |
-| `find_index` | `array, predicate` | 最初の一致インデックスを返す。 |
-| `index_of` | `array, value` | 最初の一致インデックスを返す。 |
-| `contains` | `array, value` | 含まれているかを返す。 |
-| `sum` | `array` | 合計値を返す。 |
-| `avg` | `array` | 平均値を返す。 |
-| `min` | `array` | 最小値を返す。 |
-| `max` | `array` | 最大値を返す。 |
-| `reduce` | `array, expr` | 累積式で縮約する。 |
-| `fold` | `array, initial, expr` | 初期値付きで縮約する。 |
+| op | args | 説明 | 対応 |
+| --- | --- | --- | --- |
+| `map` | `1` | 要素を変換する（`map` ステップ推奨）。 | `runtime` |
+| `filter` | `1` | 条件に一致した要素を残す。 | `runtime` |
+| `flat_map` | `1` | `map` + `flatten(1)`。 | `runtime` |
+| `flatten` | `0-1` | 指定深さで平坦化する。 | `runtime` |
+| `take` | `1` | 先頭/末尾から取得する。 | `runtime` |
+| `drop` | `1` | 先頭/末尾から除外する。 | `runtime` |
+| `slice` | `1-2` | 範囲抽出（`end` は排他）。 | `runtime` |
+| `chunk` | `1` | 固定サイズで分割する。 | `runtime` |
+| `zip` | `>=1` | 最短の配列長で束ねる。 | `runtime` |
+| `zip_with` | `>=2` | 要素ごとに式で合成する。 | `runtime` |
+| `unzip` | `0` | 配列の配列を列配列に変換する。 | `runtime` |
+| `group_by` | `1` | キーでグルーピングする。 | `runtime` |
+| `key_by` | `1` | キーで map 化する（重複は後勝ち）。 | `runtime` |
+| `partition` | `1` | 条件で 2 配列に分割する。 | `runtime` |
+| `unique` | `0` | 等価な要素を除去する。 | `runtime` |
+| `distinct_by` | `1` | キーで重複を除去する。 | `runtime` |
+| `sort_by` | `1` | キーでソートする。 | `runtime` |
+| `find` | `1` | 最初の一致要素を返す。 | `runtime` |
+| `find_index` | `1` | 最初の一致インデックスを返す。 | `runtime` |
+| `index_of` | `1` | 最初の一致インデックスを返す。 | `runtime` |
+| `contains` | `1` | 含まれているかを返す。 | `runtime` |
+| `sum` | `0` | 合計値を返す。 | `runtime` |
+| `avg` | `0` | 平均値を返す。 | `runtime` |
+| `min` | `0` | 最小値を返す。 | `runtime` |
+| `max` | `0` | 最大値を返す。 | `runtime` |
+| `reduce` | `1` | 累積式で縮約する。 | `runtime` |
+| `fold` | `2` | 初期値付きで縮約する。 | `runtime` |
+| `first` | `0` | 先頭要素を返す。 | `runtime` |
+| `last` | `0` | 末尾要素を返す。 | `runtime` |
+
+### 型変換
+
+| op | args | 説明 | 対応 |
+| --- | --- | --- | --- |
+| `string` | `0` | 文字列に変換。 | `runtime` |
+| `int` | `0` | 整数に変換。 | `runtime` |
+| `float` | `0` | 浮動小数点に変換。 | `runtime` |
+| `bool` | `0` | 真偽値に変換。 | `runtime` |
+
+### Lookup の引数
+
+`from` を明示する場合:
+
+```yaml
+expr:
+  - lookup_first:
+    - "@context.users"
+    - id
+    - "@input.user_id"
+    - name
+```
+
+`from` を省略する場合（パイプ値を配列として利用）:
+
+```yaml
+expr:
+  - "@context.users"
+  - lookup_first:
+    - id
+    - "@input.user_id"
+    - name
+```
 
 ## 評価ルール（補足）
 
 ### missing と null
-- `missing`: 参照先が存在しない状態
-- `null`: 参照先が存在し値が null の状態
-- `default` は `missing` のときのみ適用（`null` には適用しない）
+- `missing`: 参照先が存在しない
+- `null`: 参照先が存在し値が null
 
-### op 仕様の詳細
-- `concat`: いずれかの引数が `missing` なら `missing`。`null` はエラー。
-- `trim/lowercase/uppercase/to_string`: 引数が `missing` なら `missing`。`null` はエラー。
-- `replace/split/pad_start/pad_end`:
-  - 引数が `missing` なら `missing`。`null` はエラー。
-  - `replace` の `mode`: `all` は全置換、`regex`/`regex_all` は正規表現置換。
-  - `split` の区切り文字は空文字不可。
-  - `pad_start/pad_end` の長さは非負整数、`pad` 省略時は空白。
-- `lookup/lookup_first`:
-  - `collection` は配列である必要あり。`null` や配列以外はエラー。
-  - `key_path` / `output_path` は **非空の文字列リテラルのみ**。
-  - `match_value` は `null` 不可。
-  - 一致判定は「両方を文字列化して比較」。
-  - `lookup` は一致結果の配列を返す（0件なら `missing`）。
-- `+/-/*//to_base`:
-  - 数値または数値文字列のみ。`missing` は `missing`。`null` はエラー。
-  - `/` の結果が非有限値になる場合はエラー。
-  - `to_base` は整数のみ、`base` は 2-36。
-- `round`:
-  - `scale` は非負整数（省略時は 0）。
-  - 丸めは 0.5 を絶対値方向に丸める。
-- `date_format/to_unixtime`:
-  - 入力は文字列のみ。`missing` は `missing`。`null` はエラー。
-  - `date_format` の `input_format` は文字列または配列（chrono の `strftime` 形式）。
-  - `timezone` は `UTC` または `+09:00` 形式。未指定時は UTC。
-  - 自動パースは ISO/RFC と代表的な `YYYY-MM-DD`/`YYYY/MM/DD` 形式を吸収。
-- `and/or`:
-  - 2 個以上の boolean を取り、`false/true` で短絡評価。
-  - `missing` が残る場合は `missing`。
-  - `null`/非 boolean はエラー。
-- `not`:
-  - `missing` は `missing`。
-  - `null`/非 boolean はエラー。
-- `==` / `!=`:
-  - `missing` は `null` として扱う。
-  - `null` 同士のみ一致。
-  - 非 string/number/bool はエラー。
-- 数値比較（`<`/`<=`/`>`/>=`）:
-  - 数値または数値文字列のみ。
-  - `missing` は `null` として扱われるためエラーになる。
-  - `null`/非数値/非有限値はエラー。
-- `~=`:
-  - 左辺・パターンともに文字列。
-  - パターンが不正な場合はエラー（Rust regex 準拠）。
-- JSON ops:
-  - `get`: base が `missing`/`null` またはパス未存在なら `missing`。
-  - `get`: path は空文字不可の valid path 文字列。
-  - `len`: `missing` は `missing`、`null` はエラー。
-  - `len`: string/array/object のみ対応（文字数は Unicode スカラー数）。
-  - `from_entries`: 1 引数は object をそのまま返すか、`[key,value]`/`{key,value}` の配列から object を生成。
-  - `from_entries`: 2 引数は `key, value` で object を生成。`key` は string/number/bool、重複は後勝ち。
-  - `from_entries`: `missing` は `missing`、`key` の `null` はエラー。`value` は任意 JSON（`null` 可）。
-  - オブジェクト系（`merge`/`deep_merge`/`pick`/`omit`/`keys`/`values`/`entries`/`object_*`）:
-    - `null` はエラー。base は object 必須。
-  - `merge`/`deep_merge`: missing はスキップ、全 missing は `missing`。
-  - `deep_merge`: object は再帰、配列/スカラーは置換。
-  - `pick`/`omit`: `paths` は文字列または文字列配列（パス構文）。
-  - `pick`/`omit`: 競合パス（`a` と `a.b`）はエラー。
-  - `omit`: 終端が配列インデックスの path はエラー（途中のインデックスは可）。
-  - `object_flatten`: 配列は値として保持（展開しない）。
-  - `object_flatten`: `[` または `]` を含むキーはエラー。
-  - `object_flatten`: 空キーはエラー。
-  - `object_unflatten`: 配列インデックスを含む path はエラー。
-- 配列 op:
-  - 配列引数が `missing`/`null` の場合は空配列扱い。
-  - `map`/`flat_map`: 要素式が `missing` の場合は `null`。
-  - `filter`/`partition`/`find`/`find_index`: 条件式の `missing`/`null` は `false`。
-  - `group_by`/`key_by`/`distinct_by`/`sort_by`: キー式の `missing`/`null` はエラー。
-  - `contains`/`index_of`/`unique`: `==` と同じ等価判定（string/number/bool + null、配列/オブジェクトはエラー）。
-  - `sort_by`: キーは全て同じ型（string/number/bool）。`order` は `asc`/`desc`。
-  - `find` は未検出で `null`、`find_index`/`index_of` は未検出で `-1`。
-  - `sum`/`avg`/`min`/`max` は空配列で `null`。
-  - `reduce` は空配列で `null`、`fold` は空配列で `initial` を返す。
+### パイプ評価
+- パイプは左から右へ評価
+- `@out.*` は同一レコード内の既存出力のみ参照可能
 
-## 型変換（`type`）
+### Map ステップ
+- パイプ値が `missing` の場合は `missing` を返す
+- パイプ値が配列以外ならエラー
+- `map` は `missing` の結果を配列に含めない
 
-- `string`: string/number/bool を文字列化
-- `int`: 数値 or 数値文字列のみ。`1.0` は OK、`1.1` は NG
-- `float`: 数値 or 数値文字列のみ。NaN/Infinity は NG
-- `bool`: bool または文字列 `"true"`/`"false"`（大文字小文字は無視）
+### Lookup
+- `lookup`/`lookup_first` の `from` は配列必須
+- `match_key` と `get` は文字列
+- `lookup` は配列を返し、`lookup_first` は最初の一致を返す（未一致は `missing`）
 
-## 実行時セマンティクス
+## 実行時の挙動
 
-- `record_when` は mapping の前に評価し、`false`/評価エラーならレコードをスキップ
-- `mappings` は上から順に評価し、`out.*` は過去に生成した値のみ参照可能
-- 未来の `out.*` 参照はバリデーションエラー（実行時は `missing` になりうる）
-- `source/value/expr` が `missing` の場合は `default/required` の規則を適用
-- `type` 変換は式評価後に実行し、失敗はエラー
-- `when` の評価エラーは warning として出力される
+- `record_when` はマッピング前に評価し、`false` またはエラーでスキップ
+- `mappings` は上から順に評価し、`@out.*` は前の出力のみ参照可
+- `source/value/expr` が `missing` の場合は `default/required` を適用
+- `type` は式評価後に適用され、失敗はエラー
+- `when` の評価エラーは警告として扱う
 
-## プリフライト検証
+## Preflight 検証
 
-`preflight` は実データを走査し、実行時エラーになりうる箇所を事前検出します。
-入力パース・`mappings` の評価ルールは `transform` と同じです。
+`preflight` は実入力を使って事前に実行時エラーを検出します。
+入力解析と評価ルールは `transform` と同じです。

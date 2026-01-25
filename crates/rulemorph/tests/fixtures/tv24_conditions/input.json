@@ -1,0 +1,5 @@
+[
+  {"status": "active", "tier": "premium", "contact": "user@example.com"},
+  {"status": "pending", "tier": "gold", "contact": "phone:123"},
+  {"status": "inactive", "tier": "basic", "contact": "admin@test.org"}
+]

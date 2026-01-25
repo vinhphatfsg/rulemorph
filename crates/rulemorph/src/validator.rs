@@ -4,6 +4,11 @@ use crate::error::{ErrorCode, RuleError, ValidationResult};
 use crate::locator::YamlLocator;
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, Mapping, RuleFile};
 use crate::path::{parse_path, PathToken};
+use crate::v2_parser::{is_v2_expr, parse_v2_expr, parse_v2_condition};
+use crate::v2_validator::{
+    collect_out_references, validate_no_cyclic_dependencies, validate_v2_condition,
+    validate_v2_expr, V2Scope, V2ValidationCtx,
+};
 
 pub fn validate_rule_file(rule: &RuleFile) -> ValidationResult {
     validate_rule_file_with_locator(rule, None)
@@ -26,8 +31,8 @@ fn validate_rule_file_with_locator(rule: &RuleFile, locator: Option<&YamlLocator
 }
 
 fn validate_version(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
-    if rule.version != 1 {
-        ctx.push(ErrorCode::InvalidVersion, "version must be 1", "version");
+    if rule.version != 1 && rule.version != 2 {
+        ctx.push(ErrorCode::InvalidVersion, "version must be 1 or 2", "version");
     }
 }
 
@@ -91,12 +96,22 @@ fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
     let base_path = "record_when";
     let produced_targets = HashSet::new();
+    if rule.version == 2 {
+        if let Some(raw_value) = expr_to_json_value(expr) {
+            validate_v2_condition_expr(&raw_value, base_path, &produced_targets, ctx);
+            return;
+        }
+    }
+
     validate_expr(expr, base_path, &produced_targets, ctx, LocalScope::None);
     validate_when_expr(expr, base_path, ctx);
 }
 
 fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
     let mut produced_targets: HashSet<Vec<PathToken>> = HashSet::new();
+    // Track targets and their dependencies for v2 cyclic dependency check
+    let mut v2_targets_with_deps: Vec<(String, HashSet<String>)> = Vec::new();
+    let is_v2_rule = rule.version == 2;
 
     for (index, mapping) in rule.mappings.iter().enumerate() {
         let base = format!("mappings[{}]", index);
@@ -171,16 +186,142 @@ fn validate_mappings(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
         if let Some(expr) = &mapping.expr {
             let expr_path = format!("{}.expr", base);
-            validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+            // For v2 rules, check if the expr is v2 syntax (Literal containing array or v2 ref)
+            if is_v2_rule {
+                if let Some(raw_value) = expr_to_json_value(expr) {
+                    if is_v2_expr(&raw_value) {
+                        validate_v2_mapping_expr(
+                            &raw_value,
+                            &expr_path,
+                            &produced_targets,
+                            &mapping.target,
+                            ctx,
+                            &mut v2_targets_with_deps,
+                        );
+                    } else {
+                        validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+                    }
+                } else {
+                    validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+                }
+            } else {
+                validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
+            }
         }
 
         if let Some(when) = &mapping.when {
             let when_path = format!("{}.when", base);
-            validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
-            validate_when_expr(when, &when_path, ctx);
+            if is_v2_rule {
+                if let Some(raw_value) = expr_to_json_value(when) {
+                    validate_v2_condition_expr(&raw_value, &when_path, &produced_targets, ctx);
+                } else {
+                    validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
+                    validate_when_expr(when, &when_path, ctx);
+                }
+            } else {
+                validate_expr(when, &when_path, &produced_targets, ctx, LocalScope::None);
+                validate_when_expr(when, &when_path, ctx);
+            }
         }
 
         produced_targets.insert(target_tokens);
+    }
+
+    // Check for cyclic dependencies in v2 rules
+    if is_v2_rule && !v2_targets_with_deps.is_empty() {
+        let mut v2_ctx = V2ValidationCtx::new(ctx.locator);
+        validate_no_cyclic_dependencies(&v2_targets_with_deps, "mappings", &mut v2_ctx);
+        // Transfer errors from v2 context to main context
+        for err in v2_ctx.errors() {
+            ctx.errors.push(err.clone());
+        }
+    }
+}
+
+/// Convert Expr to JsonValue for v2 validation
+/// Also handles the case where a single-element v2 pipe array gets deserialized as ExprRef
+fn expr_to_json_value(expr: &Expr) -> Option<serde_json::Value> {
+    match expr {
+        Expr::Literal(value) => Some(value.clone()),
+        // Handle serde_yaml quirk: single-element YAML array ["@ref"] gets deserialized as ExprRef
+        // If ref_path starts with '@', it's actually a v2 reference that should be treated as v2 expr
+        Expr::Ref(ref_expr) if ref_expr.ref_path.starts_with('@') => {
+            // Convert back to a single-element array for v2 parsing
+            Some(serde_json::Value::Array(vec![
+                serde_json::Value::String(ref_expr.ref_path.clone())
+            ]))
+        }
+        // For v1 expressions (Ref, Op, Chain), return None
+        // These will be handled by v1 validator
+        _ => None,
+    }
+}
+
+/// Validate a v2 mapping expression
+fn validate_v2_mapping_expr(
+    raw_value: &serde_json::Value,
+    expr_path: &str,
+    produced_targets: &HashSet<Vec<PathToken>>,
+    target: &str,
+    ctx: &mut ValidationCtx<'_>,
+    v2_targets_with_deps: &mut Vec<(String, HashSet<String>)>,
+) {
+    // Parse v2 expression
+    let v2_expr = match parse_v2_expr(raw_value) {
+        Ok(expr) => expr,
+        Err(e) => {
+            ctx.push(
+                ErrorCode::InvalidExprShape,
+                &format!("invalid v2 expression: {:?}", e),
+                expr_path,
+            );
+            return;
+        }
+    };
+
+    // Create v2 validation context with produced targets
+    let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, produced_targets.clone());
+    let scope = V2Scope::new();
+
+    // Validate the v2 expression
+    validate_v2_expr(&v2_expr, expr_path, &scope, &mut v2_ctx);
+
+    // Collect @out dependencies for cyclic check
+    let deps = collect_out_references(&v2_expr);
+    if !deps.is_empty() {
+        v2_targets_with_deps.push((target.to_string(), deps));
+    }
+
+    // Transfer errors from v2 context to main context
+    for err in v2_ctx.errors() {
+        ctx.errors.push(err.clone());
+    }
+}
+
+fn validate_v2_condition_expr(
+    raw_value: &serde_json::Value,
+    base_path: &str,
+    produced_targets: &HashSet<Vec<PathToken>>,
+    ctx: &mut ValidationCtx<'_>,
+) {
+    let condition = match parse_v2_condition(raw_value) {
+        Ok(cond) => cond,
+        Err(e) => {
+            ctx.push(
+                ErrorCode::InvalidExprShape,
+                &format!("invalid v2 condition: {:?}", e),
+                base_path,
+            );
+            return;
+        }
+    };
+
+    let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, produced_targets.clone());
+    let scope = V2Scope::new();
+    validate_v2_condition(&condition, base_path, &scope, &mut v2_ctx);
+
+    for err in v2_ctx.errors() {
+        ctx.errors.push(err.clone());
     }
 }
 

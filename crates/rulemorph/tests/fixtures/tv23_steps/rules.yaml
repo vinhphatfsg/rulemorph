@@ -1,0 +1,50 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  # let step - variable binding
+  - target: total_with_tax
+    expr:
+      - "@input.price"
+      - let: { base: "$" }
+      - multiply: [1.1]
+
+  # if step - conditional with then/else
+  - target: discount_applied
+    expr:
+      - "@input.price"
+      - if:
+          cond:
+            gt: ["$", 100]
+          then:
+            - "$"
+            - multiply: [0.9]
+          else:
+            - "$"
+
+  # map step - array transformation
+  - target: doubled_items
+    expr:
+      - "@input.items"
+      - map:
+        - multiply: [2]
+
+  # Combined let + if
+  - target: tier
+    expr:
+      - "@input.price"
+      - let: { p: "$" }
+      - if:
+          cond:
+            gte: ["@p", 200]
+          then:
+            - "gold"
+          else:
+            - if:
+                cond:
+                  gte: ["@p", 100]
+                then:
+                  - "silver"
+                else:
+                  - "bronze"

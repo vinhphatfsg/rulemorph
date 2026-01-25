@@ -1,0 +1,50 @@
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  # v1 source mapping
+  - target: name
+    source: name
+
+  # v1 literal value
+  - target: currency
+    value: "USD"
+
+  # v1 expr with ref
+  - target: upper_name
+    expr:
+      op: uppercase
+      args:
+        - { ref: input.name }
+
+  # v1 expr with context
+  - target: rate
+    expr:
+      ref: context.exchange_rate
+
+  # v1 out reference
+  - target: greeting
+    expr:
+      op: concat
+      args:
+        - "Hello, "
+        - { ref: out.upper_name }
+
+  # v1 coalesce
+  - target: nickname
+    expr:
+      op: coalesce
+      args:
+        - { ref: input.nickname }
+        - { ref: input.name }
+
+  # v1 lookup_first
+  - target: dept_name
+    expr:
+      op: lookup_first
+      args:
+        - { ref: context.departments }
+        - "id"
+        - { ref: input.dept_id }
+        - "name"
