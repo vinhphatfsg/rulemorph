@@ -94,6 +94,11 @@ mappings:
 Note: v2 condition comparisons are type-sensitive (`"1"` != `1`). Ordering (`gt/gte/lt/lte`) compares numerically when possible, otherwise compares strings lexicographically.
 
 For full rule specification, see [docs/rules_spec_en.md](docs/rules_spec_en.md) (English) or [docs/rules_spec_ja.md](docs/rules_spec_ja.md) (Japanese).
+UIの起動と確認手順は [docs/guide/ui-run-and-verify.md](docs/guide/ui-run-and-verify.md) を参照してください。
+
+UIは `--api-mode rules` が既定です（`--api-mode ui-only` はUI専用モード）。
+ユーザーAPIのみ動かす場合は `--no-ui` を付けてUIを無効化できます。
+既定の `data_dir` は `./.rulemorph`、既定の `rules_dir` は `./.rulemorph/api_rules` です。
 
 ## DTO Generation
 

@@ -182,6 +182,25 @@ pub fn transform_with_warnings(
     Ok((output, warnings))
 }
 
+pub fn transform_record(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+) -> Result<Option<JsonValue>, TransformError> {
+    let mut warnings = Vec::new();
+    apply_rule_to_record(rule, record, context, &mut warnings)
+}
+
+pub fn transform_record_with_warnings(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
+    let mut warnings = Vec::new();
+    let output = apply_rule_to_record(rule, record, context, &mut warnings)?;
+    Ok((output, warnings))
+}
+
 pub fn preflight_validate_with_warnings(
     rule: &RuleFile,
     input: &str,

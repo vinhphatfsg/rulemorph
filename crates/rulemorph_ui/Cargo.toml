@@ -1,0 +1,33 @@
+[package]
+name = "rulemorph_ui"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "UI server for rulemorph trace viewer"
+
+[[bin]]
+name = "rulemorph_ui"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+tempfile = "3.10"
+walkdir = "2.5"
+zip = "2.1"
+anyhow = "1.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+url = "2.5"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.8", features = ["v4"] }
+notify = "6.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+[dependencies.rulemorph]
+path = "../rulemorph"

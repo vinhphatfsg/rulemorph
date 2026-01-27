@@ -2,13 +2,14 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use rulemorph::{
     generate_dto, parse_rule_file, preflight_validate_with_warnings, transform_stream,
     transform_with_warnings, validate_rule_file_with_source, DtoLanguage, InputFormat, RuleError,
     RuleFile, TransformError, TransformErrorKind, TransformWarning,
 };
+use rulemorph_ui::{run as run_ui_server, ApiMode, UiConfig};
 
 #[derive(Parser)]
 #[command(name = "rulemorph")]
@@ -24,6 +25,7 @@ enum Commands {
     Preflight(PreflightArgs),
     Transform(TransformArgs),
     Generate(GenerateArgs),
+    Ui(UiArgs),
 }
 
 #[derive(Args)]
@@ -80,6 +82,22 @@ struct GenerateArgs {
     output: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct UiArgs {
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = UiApiMode::Rules)]
+    api_mode: UiApiMode,
+    #[arg(long)]
+    rules_dir: Option<PathBuf>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    no_ui: bool,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ErrorFormat {
     Text,
@@ -104,6 +122,13 @@ enum DtoLanguageArg {
     Swift,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum UiApiMode {
+    #[value(name = "ui-only", alias = "ui_only", alias = "native")]
+    UiOnly,
+    Rules,
+}
+
 fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
@@ -111,6 +136,7 @@ fn main() {
         Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
         Commands::Generate(args) => run_generate(args),
+        Commands::Ui(args) => run_ui(args),
     };
     std::process::exit(exit_code);
 }
@@ -349,6 +375,44 @@ fn run_generate(args: GenerateArgs) -> i32 {
         }
     } else {
         println!("{}", output);
+    }
+
+    0
+}
+
+fn run_ui(args: UiArgs) -> i32 {
+    let data_dir = args.data_dir.unwrap_or_else(UiConfig::default_data_dir);
+    let ui_dir = args.ui_dir.unwrap_or_else(UiConfig::default_ui_dir);
+    let api_mode = match args.api_mode {
+        UiApiMode::UiOnly => ApiMode::UiOnly,
+        UiApiMode::Rules => ApiMode::Rules,
+    };
+    let ui_enabled = !args.no_ui;
+    if !ui_enabled && api_mode == ApiMode::UiOnly {
+        eprintln!("ui-only mode cannot be used with --no-ui");
+        return 1;
+    }
+
+    let config = UiConfig {
+        port: args.port,
+        data_dir,
+        ui_dir,
+        rules_dir: args.rules_dir,
+        api_mode,
+        ui_enabled,
+    };
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to start runtime: {}", err);
+            return 1;
+        }
+    };
+
+    if let Err(err) = runtime.block_on(run_ui_server(config)) {
+        eprintln!("ui server error: {}", err);
+        return 1;
     }
 
     0

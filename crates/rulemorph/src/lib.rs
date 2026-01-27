@@ -20,9 +20,11 @@ pub use error::{
 };
 pub use dto::{generate_dto, DtoError, DtoLanguage};
 pub use model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, RuleFile};
+pub use path::{get_path, parse_path, PathError, PathToken};
 pub use transform::{
-    preflight_validate, preflight_validate_with_warnings, transform, transform_stream,
-    transform_with_warnings, TransformStream, TransformStreamItem,
+    preflight_validate, preflight_validate_with_warnings, transform, transform_record,
+    transform_record_with_warnings, transform_stream, transform_with_warnings, TransformStream,
+    TransformStreamItem,
 };
 pub use validator::{validate_rule_file, validate_rule_file_with_source};
 
