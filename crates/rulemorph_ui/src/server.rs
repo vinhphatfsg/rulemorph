@@ -17,6 +17,7 @@ use serde_json::json;
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::endpoint_engine::{ApiMode, EndpointEngine};
+use crate::api_graph::{build_api_graph, ApiGraphResponse};
 use crate::trace_store::{ImportResult, TraceMeta, TraceStore};
 
 #[derive(Clone)]
@@ -38,10 +39,11 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
 
     if ui_enabled {
         let internal = Router::new()
-            .route("/internal/traces", get(list_traces))
-            .route("/internal/traces/:id", get(get_trace))
-            .route("/internal/stream", get(stream_traces))
-            .route("/internal/import", post(import_bundle_path));
+        .route("/internal/traces", get(list_traces))
+        .route("/internal/traces/:id", get(get_trace))
+        .route("/internal/stream", get(stream_traces))
+        .route("/internal/api-graph", get(get_api_graph))
+        .route("/internal/import", post(import_bundle_path));
 
         let static_service = ServeDir::new(state.ui_dir.clone())
             .fallback(ServeFile::new(state.ui_dir.join("index.html")));
@@ -133,6 +135,14 @@ async fn stream_traces(
         }
     });
     Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
+}
+
+async fn get_api_graph(
+    state: State<AppState>,
+) -> std::result::Result<Json<ApiGraphResponse>, ApiError> {
+    let state = state.0;
+    let graph = build_api_graph(state.store.data_dir()).map_err(ApiError::internal)?;
+    Ok(Json(graph))
 }
 
 struct ApiError {

@@ -92,6 +92,10 @@ impl TraceStore {
         Ok(())
     }
 
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
     pub async fn import_bundle(&self, bundle_path: &Path) -> Result<ImportResult> {
         let traces_src = bundle_path.join("traces");
         let rules_src = bundle_path.join("rules");

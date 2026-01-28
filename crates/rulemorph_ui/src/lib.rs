@@ -1,4 +1,5 @@
 mod endpoint_engine;
+mod api_graph;
 mod server;
 mod trace_store;
 mod trace_watch;
