@@ -187,8 +187,8 @@ pub fn transform_record(
     record: &JsonValue,
     context: Option<&JsonValue>,
 ) -> Result<Option<JsonValue>, TransformError> {
-    let mut warnings = Vec::new();
-    apply_rule_to_record(rule, record, context, &mut warnings)
+    let (output, _warnings) = transform_record_with_warnings(rule, record, context)?;
+    Ok(output)
 }
 
 pub fn transform_record_with_warnings(
@@ -198,6 +198,14 @@ pub fn transform_record_with_warnings(
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let output = apply_rule_to_record(rule, record, context, &mut warnings)?;
+    if let Some(finalize) = &rule.finalize {
+        let mut records = Vec::new();
+        if let Some(value) = output {
+            records.push(value);
+        }
+        let finalized = apply_finalize(finalize, JsonValue::Array(records), context)?;
+        return Ok((Some(finalized), warnings));
+    }
     Ok((output, warnings))
 }
 
@@ -363,16 +371,16 @@ fn apply_steps(
                     .map_err(|err| err.with_path(format!("{}.{}", branch_path, target_field)))?;
                 let branch_input = out.clone();
                 let mut branch_warnings = Vec::new();
-                let branch_output = match apply_rule_to_record(
+                let branch_output = apply_rule_to_record(
                     &branch_rule,
                     &branch_input,
                     context,
                     &mut branch_warnings,
-                )? {
-                    Some(value) => value,
-                    None => JsonValue::Object(Map::new()),
-                };
+                )?;
                 warnings.extend(branch_warnings);
+                let Some(branch_output) = branch_output else {
+                    return Ok(None);
+                };
 
                 if branch.return_ {
                     return Ok(Some(branch_output));

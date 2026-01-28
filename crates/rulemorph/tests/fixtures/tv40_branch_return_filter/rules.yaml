@@ -1,0 +1,9 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: ["@input.kind", "a"] }
+      then: tests/fixtures/tv40_branch_return_filter/then.yaml
+      return: true

@@ -1192,7 +1192,21 @@ fn eval_expr_string(
     })? {
         EvalValue::Missing => Err(EndpointError::invalid("expected string, got missing")),
         EvalValue::Value(JsonValue::String(value)) => Ok(value),
-        EvalValue::Value(other) => Ok(other.to_string()),
+        EvalValue::Value(other) => Err(EndpointError::invalid(format!(
+            "expected string, got {}",
+            json_value_kind(&other)
+        ))),
+    }
+}
+
+fn json_value_kind(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
     }
 }
 
@@ -1263,6 +1277,9 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         .map(|(k, v)| (k.to_lowercase(), v))
         .collect();
     let timeout = parse_duration(&raw.timeout)?;
+    if timeout.is_zero() {
+        return Err(anyhow!("timeout must be > 0"));
+    }
     let body = match raw.body {
         Some(value) => Some(parse_v2_expr(&value).map_err(|err| anyhow!(err))?),
         None => None,
@@ -2000,6 +2017,7 @@ enum RuleKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn endpoint_path_matches_and_captures() {
@@ -2013,5 +2031,37 @@ mod tests {
     fn compile_retry_defaults_to_none() {
         let retry = compile_retry(None).unwrap();
         assert!(retry.is_none());
+    }
+
+    #[test]
+    fn eval_expr_string_rejects_non_string() {
+        let expr = parse_v2_expr(&json!(123)).expect("parse expr");
+        let input = json!({});
+        let err = eval_expr_string(&expr, &input, None).expect_err("expected error");
+        assert_eq!(err.kind, EndpointErrorKind::Invalid);
+        assert!(err.message.contains("expected string"));
+    }
+
+    #[test]
+    fn compile_network_rule_rejects_zero_timeout() {
+        let raw = NetworkRuleFile {
+            version: 2,
+            rule_type: "network".to_string(),
+            request: NetworkRequest {
+                method: "GET".to_string(),
+                url: json!("https://example.com"),
+                headers: None,
+            },
+            timeout: "0s".to_string(),
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            catch: None,
+            retry: None,
+        };
+        let err = compile_network_rule(raw, Path::new("network.yaml"))
+            .expect_err("expected error");
+        assert!(err.to_string().contains("timeout must be > 0"));
     }
 }
