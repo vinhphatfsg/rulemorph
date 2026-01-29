@@ -846,11 +846,11 @@ impl EndpointEngine {
 
         let body = if let Some(body_expr) = &reply.body {
             match eval_expr_value(body_expr, input, Some(&self.config_json()))? {
-                EvalValue::Missing => JsonValue::Null,
-                EvalValue::Value(value) => value,
+                EvalValue::Missing => Some(JsonValue::Null),
+                EvalValue::Value(value) => Some(value),
             }
         } else {
-            JsonValue::Null
+            None
         };
 
         let mut headers = HeaderMap::new();
@@ -861,16 +861,20 @@ impl EndpointEngine {
                 .map_err(|_| anyhow!("invalid header value"))?;
             headers.insert(name, header_value);
         }
-        if !headers.contains_key("content-type") {
+        if body.is_some() && !headers.contains_key("content-type") {
             headers.insert(
                 HeaderName::from_static("content-type"),
                 HeaderValue::from_static("application/json"),
             );
         }
 
-        let mut response = Response::new(axum::body::Body::from(
-            serde_json::to_vec(&body).unwrap_or_else(|_| b"null".to_vec()),
-        ));
+        let mut response = if let Some(body) = &body {
+            Response::new(axum::body::Body::from(
+                serde_json::to_vec(body).unwrap_or_else(|_| b"null".to_vec()),
+            ))
+        } else {
+            Response::new(axum::body::Body::empty())
+        };
         *response.status_mut() = status;
         *response.headers_mut() = headers;
         Ok(response)
@@ -3128,6 +3132,47 @@ mod tests {
         let ops = build_mapping_ops_with_values(&mappings, &record, None, &mut out, 2, 0);
         let duration = ops[0].get("duration_us").and_then(|value| value.as_u64());
         assert!(duration.is_some());
+    }
+
+    #[tokio::test]
+    async fn reply_body_omitted_returns_empty_body() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/empty
+    steps: []
+    reply:
+      status: 204
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/empty")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine.handle_request(request).await.expect("handle request");
+        assert_eq!(response.status().as_u16(), 204);
+        assert!(response.headers().get("content-type").is_none());
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        assert!(bytes.is_empty());
     }
 
     #[test]

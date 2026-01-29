@@ -498,12 +498,10 @@ fn apply_steps(
                 let (branch_rule, branch_base_dir) = load_rule_from_path(base_dir, target)
                     .map_err(|err| err.with_path(format!("{}.{}", branch_path, target_field)))?;
                 let branch_input = out.clone();
-                let mut branch_warnings = Vec::new();
-                let branch_output = apply_rule_to_record(
+                let (branch_output, branch_warnings) = transform_record_with_warnings_inner(
                     &branch_rule,
                     &branch_input,
                     context,
-                    &mut branch_warnings,
                     Some(&branch_base_dir),
                 )?;
                 warnings.extend(branch_warnings);
