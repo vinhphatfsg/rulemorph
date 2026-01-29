@@ -69,10 +69,7 @@ async fn latest_mtime(dir: &PathBuf) -> Option<SystemTime> {
             if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
-            let modified = entry
-                .metadata()
-                .ok()
-                .and_then(|meta| meta.modified().ok());
+            let modified = entry.metadata().ok().and_then(|meta| meta.modified().ok());
             if let Some(modified) = modified {
                 latest = Some(match latest {
                     Some(prev) if prev > modified => prev,

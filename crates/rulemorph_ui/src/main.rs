@@ -1,4 +1,4 @@
-use rulemorph_ui::{run, ApiMode, UiConfig};
+use rulemorph_ui::{ApiMode, UiConfig, run};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

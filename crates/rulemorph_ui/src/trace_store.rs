@@ -61,7 +61,6 @@ impl TraceStore {
         Ok(store)
     }
 
-
     pub async fn list(&self) -> Result<Vec<TraceMeta>> {
         self.refresh_index().await?;
         let mut items: Vec<_> = self.index.read().await.values().cloned().collect();
@@ -77,12 +76,11 @@ impl TraceStore {
             Some(meta) => PathBuf::from(&meta.path),
             None => return Ok(None),
         };
-        let raw = tokio::fs::read_to_string(&path).await.with_context(|| {
-            format!("failed to read trace: {}", path.display())
-        })?;
-        let value: Value = serde_json::from_str(&raw).with_context(|| {
-            format!("invalid trace json: {}", path.display())
-        })?;
+        let raw = tokio::fs::read_to_string(&path)
+            .await
+            .with_context(|| format!("failed to read trace: {}", path.display()))?;
+        let value: Value = serde_json::from_str(&raw)
+            .with_context(|| format!("invalid trace json: {}", path.display()))?;
         Ok(Some(value))
     }
 
@@ -221,15 +219,38 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
         .get("summary")
         .and_then(|s| s.get("duration_us"))
         .and_then(|v| v.as_u64())
-        .or_else(|| value.get("summary").and_then(|s| s.get("duration_ms")).and_then(|v| v.as_u64()).map(|v| v.saturating_mul(1000)))
+        .or_else(|| {
+            value
+                .get("summary")
+                .and_then(|s| s.get("duration_ms"))
+                .and_then(|v| v.as_u64())
+                .map(|v| v.saturating_mul(1000))
+        })
         .or_else(|| value.get("duration_us").and_then(|v| v.as_u64()))
-        .or_else(|| value.get("duration_ms").and_then(|v| v.as_u64()).map(|v| v.saturating_mul(1000)));
+        .or_else(|| {
+            value
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .map(|v| v.saturating_mul(1000))
+        });
 
     let rule = value.get("rule").map(|rule| RuleMeta {
-        name: rule.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        path: rule.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        r#type: rule.get("type").and_then(|v| v.as_str()).map(|s| s.to_string()),
-        version: rule.get("version").and_then(|v| v.as_u64()).map(|v| v as u8),
+        name: rule
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        path: rule
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        r#type: rule
+            .get("type")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        version: rule
+            .get("version")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u8),
     });
 
     let summary = value.get("summary").map(|summary| TraceSummary {
@@ -248,6 +269,5 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
         path: path.display().to_string(),
     })
 }
-
 
 // copy_dir_recursive was intentionally omitted to avoid counting existing files.

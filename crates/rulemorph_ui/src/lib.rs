@@ -1,5 +1,5 @@
-mod endpoint_engine;
 mod api_graph;
+mod endpoint_engine;
 mod server;
 mod trace_store;
 mod trace_watch;
@@ -9,11 +9,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+pub use endpoint_engine::{ApiMode, RulesDirError, RulesDirErrors, validate_rules_dir};
 use endpoint_engine::{EndpointEngine, EngineConfig};
-pub use endpoint_engine::{validate_rules_dir, ApiMode, RulesDirError, RulesDirErrors};
-use server::{build_router, AppState};
-use trace_store::TraceStore;
+use server::{AppState, build_router};
 use tokio::sync::broadcast;
+use trace_store::TraceStore;
 
 #[derive(Debug, Clone)]
 pub struct UiConfig {
@@ -43,9 +43,7 @@ impl UiConfig {
 }
 
 pub async fn run(config: UiConfig) -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter("info")
-        .init();
+    tracing_subscriber::fmt().with_env_filter("info").init();
 
     if !config.ui_enabled && config.api_mode == ApiMode::UiOnly {
         anyhow::bail!("ui-only mode cannot be used with UI disabled");

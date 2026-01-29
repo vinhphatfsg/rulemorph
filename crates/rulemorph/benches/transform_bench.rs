@@ -1,6 +1,6 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use serde_json::json;
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use rulemorph::{parse_rule_file, transform};
+use serde_json::json;
 
 const EXTENDED_RULES: &str = include_str!("../tests/fixtures/t13_expr_extended/rules.yaml");
 
@@ -51,8 +51,7 @@ fn bench_simple_transform(c: &mut Criterion) {
 
     c.bench_function("transform_simple", |b| {
         b.iter(|| {
-            let output = transform(&rule, black_box(&input), None)
-                .expect("transform failed");
+            let output = transform(&rule, black_box(&input), None).expect("transform failed");
             black_box(output);
         })
     });
@@ -65,8 +64,8 @@ fn bench_lookup_transform(c: &mut Criterion) {
 
     c.bench_function("transform_lookup", |b| {
         b.iter(|| {
-            let output = transform(&rule, black_box(&input), Some(&context))
-                .expect("transform failed");
+            let output =
+                transform(&rule, black_box(&input), Some(&context)).expect("transform failed");
             black_box(output);
         })
     });
@@ -78,8 +77,7 @@ fn bench_extended_transform_with_rule_parse(c: &mut Criterion) {
     c.bench_function("transform_extended_parse_rule", |b| {
         b.iter(|| {
             let rule = parse_rule_file(EXTENDED_RULES).expect("failed to parse rules");
-            let output = transform(&rule, black_box(&input), None)
-                .expect("transform failed");
+            let output = transform(&rule, black_box(&input), None).expect("transform failed");
             black_box(output);
         })
     });

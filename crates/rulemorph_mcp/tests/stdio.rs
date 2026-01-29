@@ -2,9 +2,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-use serde_json::{json, Value};
-use tempfile::tempdir;
 use rulemorph::parse_rule_file;
+use serde_json::{Value, json};
+use tempfile::tempdir;
 
 struct McpServer {
     child: Child,
@@ -39,9 +39,7 @@ impl McpServer {
         stdin.flush().expect("flush request");
 
         let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read response");
+        self.stdout.read_line(&mut line).expect("read response");
         assert!(!line.trim().is_empty(), "empty response");
         serde_json::from_str(&line).expect("parse response")
     }
@@ -82,9 +80,7 @@ fn initialize_and_list_tools() {
     });
     let response = server.send(&request);
 
-    let tools = response["result"]["tools"]
-        .as_array()
-        .expect("tools array");
+    let tools = response["result"]["tools"].as_array().expect("tools array");
     let expected = [
         "transform",
         "validate_rules",
@@ -430,7 +426,9 @@ fn list_ops_success() {
     assert!(response["result"]["meta"]["ops"]["categories"]["json_ops"].is_array());
     assert!(response["result"]["meta"]["ops"]["categories"]["array_ops"].is_array());
     assert!(response["result"]["meta"]["ops"]["category_docs"]["json_ops"]["examples"].is_array());
-    assert!(response["result"]["meta"]["ops"]["category_docs"]["string_ops"]["examples"].is_array());
+    assert!(
+        response["result"]["meta"]["ops"]["category_docs"]["string_ops"]["examples"].is_array()
+    );
 
     server.shutdown();
 }
@@ -932,7 +930,11 @@ fn resources_list_and_read() {
     let resources = list_response["result"]["resources"]
         .as_array()
         .expect("resources array");
-    assert!(resources.iter().any(|item| item["uri"] == "rulemorph://docs/rules_spec_en"));
+    assert!(
+        resources
+            .iter()
+            .any(|item| item["uri"] == "rulemorph://docs/rules_spec_en")
+    );
 
     let read_request = json!({
         "jsonrpc": "2.0",
@@ -965,7 +967,11 @@ fn prompts_list_and_get() {
     let prompts = list_response["result"]["prompts"]
         .as_array()
         .expect("prompts array");
-    assert!(prompts.iter().any(|item| item["name"] == "rule_from_input_base"));
+    assert!(
+        prompts
+            .iter()
+            .any(|item| item["name"] == "rule_from_input_base")
+    );
 
     let get_request = json!({
         "jsonrpc": "2.0",

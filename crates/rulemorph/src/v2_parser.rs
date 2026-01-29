@@ -8,13 +8,12 @@
 //! - `lit:` escape prefix for literals
 //! - Pipe arrays: `[start_value, step1, step2, ...]`
 
-use serde_json::Value as JsonValue;
-use crate::v2_validator::is_valid_op;
 use crate::v2_model::{
-    V2Ref, V2Expr, V2Pipe, V2Start, V2Step, V2OpStep,
-    V2Condition, V2Comparison, V2ComparisonOp,
-    V2LetStep, V2IfStep, V2MapStep,
+    V2Comparison, V2ComparisonOp, V2Condition, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep,
+    V2Pipe, V2Ref, V2Start, V2Step,
 };
+use crate::v2_validator::is_valid_op;
+use serde_json::Value as JsonValue;
 // Note: V2Step::Ref variant is used for reference steps like "@doubled"
 
 /// Parse a v2 reference string into V2Ref
@@ -195,9 +194,10 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
                 // Skip reserved keywords
                 if !["op", "let", "if", "map", "then", "else", "cond"].contains(&op_name.as_str()) {
                     let args = match args_val {
-                        JsonValue::Array(arr) => {
-                            arr.iter().map(parse_v2_expr).collect::<Result<Vec<_>, _>>()?
-                        }
+                        JsonValue::Array(arr) => arr
+                            .iter()
+                            .map(parse_v2_expr)
+                            .collect::<Result<Vec<_>, _>>()?,
                         // Single value (non-array) becomes single arg
                         other => vec![parse_v2_expr(other)?],
                     };
@@ -238,10 +238,10 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
 /// Parse V2Expr arguments from an array value
 fn parse_v2_expr_args(value: &JsonValue) -> Result<Vec<V2Expr>, V2ParseError> {
     match value {
-        JsonValue::Array(arr) => {
-            arr.iter().map(parse_v2_expr).collect()
-        }
-        _ => Err(V2ParseError::InvalidArgs("args must be an array".to_string())),
+        JsonValue::Array(arr) => arr.iter().map(parse_v2_expr).collect(),
+        _ => Err(V2ParseError::InvalidArgs(
+            "args must be an array".to_string(),
+        )),
     }
 }
 
@@ -267,17 +267,20 @@ fn parse_let_step(bindings: &JsonValue) -> Result<V2Step, V2ParseError> {
 /// 1. `{ if: condition, then: pipe, else: pipe }` - condition directly in if value
 /// 2. `{ if: { cond: condition, then: pipe, else: pipe } }` - nested object format
 fn parse_if_step(obj: &serde_json::Map<String, JsonValue>) -> Result<V2Step, V2ParseError> {
-    let if_val = obj.get("if")
+    let if_val = obj
+        .get("if")
         .ok_or_else(|| V2ParseError::InvalidStep("if step missing 'if' key".to_string()))?;
 
     // Check if `if` value is an object with cond/then/else (nested format)
     if let JsonValue::Object(inner_obj) = if_val {
         if inner_obj.contains_key("cond") || inner_obj.contains_key("then") {
             // Nested format: { if: { cond: ..., then: ..., else: ... } }
-            let cond_val = inner_obj.get("cond")
+            let cond_val = inner_obj
+                .get("cond")
                 .ok_or_else(|| V2ParseError::InvalidStep("if step missing 'cond'".to_string()))?;
-            let then_val = inner_obj.get("then")
-                .ok_or_else(|| V2ParseError::InvalidStep("if step missing 'then' branch".to_string()))?;
+            let then_val = inner_obj.get("then").ok_or_else(|| {
+                V2ParseError::InvalidStep("if step missing 'then' branch".to_string())
+            })?;
 
             let condition = parse_v2_condition(cond_val)?;
             let then_branch = parse_v2_pipe_from_value(then_val)?;
@@ -296,7 +299,8 @@ fn parse_if_step(obj: &serde_json::Map<String, JsonValue>) -> Result<V2Step, V2P
     }
 
     // Original format: { if: condition, then: pipe, else: pipe }
-    let then_val = obj.get("then")
+    let then_val = obj
+        .get("then")
         .ok_or_else(|| V2ParseError::InvalidStep("if step missing then branch".to_string()))?;
 
     let condition = parse_v2_condition(if_val)?;
@@ -319,7 +323,9 @@ fn parse_map_step(steps: &JsonValue) -> Result<V2Step, V2ParseError> {
     match steps {
         JsonValue::Array(arr) => {
             let parsed_steps: Result<Vec<V2Step>, _> = arr.iter().map(parse_v2_step).collect();
-            Ok(V2Step::Map(V2MapStep { steps: parsed_steps? }))
+            Ok(V2Step::Map(V2MapStep {
+                steps: parsed_steps?,
+            }))
         }
         _ => Err(V2ParseError::InvalidStep(
             "map steps must be an array".to_string(),
@@ -334,12 +340,18 @@ pub fn parse_v2_pipe_from_value(value: &JsonValue) -> Result<V2Pipe, V2ParseErro
         JsonValue::String(_) => {
             // Single string can be treated as a pipe with just a start
             let start = parse_v2_start(value)?;
-            Ok(V2Pipe { start, steps: vec![] })
+            Ok(V2Pipe {
+                start,
+                steps: vec![],
+            })
         }
         _ => {
             // Other values become a single-element pipe
             let start = parse_v2_start(value)?;
-            Ok(V2Pipe { start, steps: vec![] })
+            Ok(V2Pipe {
+                start,
+                steps: vec![],
+            })
         }
     }
 }
@@ -377,15 +389,20 @@ fn looks_like_step(value: &JsonValue) -> bool {
     match value {
         JsonValue::Object(obj) => {
             // Check for explicit step keywords
-            if obj.contains_key("op") || obj.contains_key("let") ||
-               obj.contains_key("if") || obj.contains_key("map") {
+            if obj.contains_key("op")
+                || obj.contains_key("let")
+                || obj.contains_key("if")
+                || obj.contains_key("map")
+            {
                 return true;
             }
             // Check for op shorthand: single key that's not a reserved keyword
             if obj.len() == 1 {
                 let key = obj.keys().next().unwrap();
                 // Skip values that are likely starts (plain objects)
-                if !["op", "let", "if", "map", "then", "else", "cond", "ref"].contains(&key.as_str()) {
+                if !["op", "let", "if", "map", "then", "else", "cond", "ref"]
+                    .contains(&key.as_str())
+                {
                     // Only treat as step when the key matches a known v2 op name.
                     return is_valid_op(key);
                 }
@@ -518,10 +535,7 @@ fn parse_comparison_from_object(
     for (key, op) in ops.iter() {
         if let Some(args_val) = obj.get(*key) {
             let args = parse_v2_expr_args(args_val)?;
-            return Ok(Some(V2Comparison {
-                op: *op,
-                args,
-            }));
+            return Ok(Some(V2Comparison { op: *op, args }));
         }
     }
 
@@ -615,10 +629,7 @@ mod v2_ref_parser_tests {
             parse_v2_ref("@item.value"),
             Some(V2Ref::Item("value".to_string()))
         );
-        assert_eq!(
-            parse_v2_ref("@item"),
-            Some(V2Ref::Item(String::new()))
-        );
+        assert_eq!(parse_v2_ref("@item"), Some(V2Ref::Item(String::new())));
     }
 
     #[test]
@@ -627,10 +638,7 @@ mod v2_ref_parser_tests {
             parse_v2_ref("@acc.total"),
             Some(V2Ref::Acc("total".to_string()))
         );
-        assert_eq!(
-            parse_v2_ref("@acc"),
-            Some(V2Ref::Acc(String::new()))
-        );
+        assert_eq!(parse_v2_ref("@acc"), Some(V2Ref::Acc(String::new())));
     }
 
     #[test]
@@ -735,10 +743,7 @@ mod v2_pipe_parser_tests {
     #[test]
     fn test_parse_pipe_with_op_object() {
         // ["@input.value", { "op": "add", "args": [10] }]
-        let arr = vec![
-            json!("@input.value"),
-            json!({ "op": "add", "args": [10] }),
-        ];
+        let arr = vec![json!("@input.value"), json!({ "op": "add", "args": [10] })];
         let pipe = parse_v2_pipe(&arr).unwrap();
 
         if let V2Step::Op(op) = &pipe.steps[0] {
@@ -773,10 +778,7 @@ mod v2_pipe_parser_tests {
         let arr = vec![json!("lit:@input.name"), json!("trim")];
         let pipe = parse_v2_pipe(&arr).unwrap();
 
-        assert_eq!(
-            pipe.start,
-            V2Start::Literal(json!("@input.name"))
-        );
+        assert_eq!(pipe.start, V2Start::Literal(json!("@input.name")));
     }
 
     #[test]

@@ -3,13 +3,13 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 
 use csv::ReaderBuilder;
-use serde_json::{json, Map, Value};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use rulemorph::{
-    generate_dto, parse_rule_file, transform_stream, transform_with_warnings,
-    validate_rule_file_with_source, DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError,
-    RuleFile, TransformError, TransformErrorKind, TransformWarning,
+    DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError, RuleFile, TransformError,
+    TransformErrorKind, TransformWarning, generate_dto, parse_rule_file, transform_stream,
+    transform_with_warnings, validate_rule_file_with_source,
 };
+use serde_json::{Map, Value, json};
+use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 const RESOURCE_URI_RULES_SPEC_EN: &str = "rulemorph://docs/rules_spec_en";
@@ -55,8 +55,7 @@ fn run() -> Result<(), String> {
         };
 
         if let Some(response) = handle_message(value) {
-            write_message(&mut writer, output_mode, &response)
-                .map_err(|err| err.to_string())?;
+            write_message(&mut writer, output_mode, &response).map_err(|err| err.to_string())?;
         }
     }
 
@@ -106,7 +105,11 @@ fn read_message(
     }
 }
 
-fn write_message(writer: &mut impl Write, output_mode: OutputMode, message: &Value) -> io::Result<()> {
+fn write_message(
+    writer: &mut impl Write,
+    output_mode: OutputMode,
+    message: &Value,
+) -> io::Result<()> {
     let text = serde_json::to_string(message)
         .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))?;
 
@@ -714,9 +717,9 @@ enum CallError {
 }
 
 fn handle_tools_call(params: &Value) -> Result<Value, CallError> {
-    let obj = params.as_object().ok_or_else(|| {
-        CallError::InvalidParams("params must be an object".to_string())
-    })?;
+    let obj = params
+        .as_object()
+        .ok_or_else(|| CallError::InvalidParams("params must be an object".to_string()))?;
     let name = obj
         .get("name")
         .and_then(|value| value.as_str())
@@ -745,9 +748,12 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
-    let input_json = get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
-    let context_path = get_optional_string(args, "context_path").map_err(CallError::InvalidParams)?;
-    let context_json = get_optional_object(args, "context_json").map_err(CallError::InvalidParams)?;
+    let input_json =
+        get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
+    let context_path =
+        get_optional_string(args, "context_path").map_err(CallError::InvalidParams)?;
+    let context_json =
+        get_optional_object(args, "context_json").map_err(CallError::InvalidParams)?;
     let format = get_optional_string(args, "format").map_err(CallError::InvalidParams)?;
     let ndjson = get_optional_bool(args, "ndjson")
         .map_err(CallError::InvalidParams)?
@@ -758,7 +764,8 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let output_path = get_optional_string(args, "output_path").map_err(CallError::InvalidParams)?;
     let max_output_bytes =
         get_optional_usize(args, "max_output_bytes").map_err(CallError::InvalidParams)?;
-    let preview_rows = get_optional_usize(args, "preview_rows").map_err(CallError::InvalidParams)?;
+    let preview_rows =
+        get_optional_usize(args, "preview_rows").map_err(CallError::InvalidParams)?;
     let return_output_json = get_optional_bool(args, "return_output_json")
         .map_err(CallError::InvalidParams)?
         .unwrap_or(false);
@@ -803,10 +810,9 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
             "format must be json when input_json is provided".to_string(),
         ));
     }
-    if format
-        .as_deref()
-        .is_some_and(|value| !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json"))
-    {
+    if format.as_deref().is_some_and(|value| {
+        !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json")
+    }) {
         return Err(CallError::InvalidParams(
             "format must be csv or json".to_string(),
         ));
@@ -814,7 +820,11 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
 
     let (mut rule, yaml) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
 
-    let input = match (input_path.as_deref(), input_text.as_deref(), input_json.as_ref()) {
+    let input = match (
+        input_path.as_deref(),
+        input_text.as_deref(),
+        input_json.as_ref(),
+    ) {
         (Some(path), None, None) => fs::read_to_string(path).map_err(|err| {
             let message = format!("failed to read input: {}", err);
             CallError::Tool {
@@ -833,7 +843,7 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
         _ => {
             return Err(CallError::InvalidParams(
                 "input_path, input_text, or input_json is required".to_string(),
-            ))
+            ));
         }
     };
 
@@ -882,12 +892,10 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
         let (output_text, warnings) = transform_to_ndjson(&rule, &input, context_value.as_ref())?;
         (None, output_text, warnings)
     } else {
-        let (output, warnings) =
-            transform_with_warnings(&rule, &input, context_value.as_ref()).map_err(|err| {
-                CallError::Tool {
-                    message: transform_error_to_text(&err),
-                    errors: Some(vec![transform_error_json(&err)]),
-                }
+        let (output, warnings) = transform_with_warnings(&rule, &input, context_value.as_ref())
+            .map_err(|err| CallError::Tool {
+                message: transform_error_to_text(&err),
+                errors: Some(vec![transform_error_json(&err)]),
             })?;
         let output_text = serde_json::to_string(&output).map_err(|err| {
             let message = format!("failed to serialize output JSON: {}", err);
@@ -1037,11 +1045,9 @@ fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> 
         ));
     }
 
-    let language = language.ok_or_else(|| {
-        CallError::InvalidParams("language is required".to_string())
-    })?;
-    let language = parse_dto_language(&language)
-        .map_err(CallError::InvalidParams)?;
+    let language =
+        language.ok_or_else(|| CallError::InvalidParams("language is required".to_string()))?;
+    let language = parse_dto_language(&language).map_err(CallError::InvalidParams)?;
 
     let (rule, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
     let dto = generate_dto(&rule, language, name.as_deref()).map_err(|err| {
@@ -1053,10 +1059,7 @@ fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> 
     })?;
 
     let mut meta = serde_json::Map::new();
-    meta.insert(
-        "language".to_string(),
-        json!(dto_language_to_str(language)),
-    );
+    meta.insert("language".to_string(), json!(dto_language_to_str(language)));
     if let Some(name) = name {
         meta.insert("name".to_string(), json!(name));
     }
@@ -1293,7 +1296,8 @@ fn run_list_ops_tool() -> Result<Value, CallError> {
 fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
-    let input_json = get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
+    let input_json =
+        get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
     let format = get_optional_string(args, "format").map_err(CallError::InvalidParams)?;
     let records_path =
         get_optional_string(args, "records_path").map_err(CallError::InvalidParams)?;
@@ -1335,7 +1339,7 @@ fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError>
         _ => {
             return Err(CallError::InvalidParams(
                 "input_path, input_text, or input_json is required".to_string(),
-            ))
+            ));
         }
     };
 
@@ -1394,7 +1398,8 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
-    let input_json = get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
+    let input_json =
+        get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
     let format = get_optional_string(args, "format").map_err(CallError::InvalidParams)?;
     let records_path =
         get_optional_string(args, "records_path").map_err(CallError::InvalidParams)?;
@@ -1435,10 +1440,9 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
             "format must be json when input_json is provided".to_string(),
         ));
     }
-    if format
-        .as_deref()
-        .is_some_and(|value| !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json"))
-    {
+    if format.as_deref().is_some_and(|value| {
+        !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json")
+    }) {
         return Err(CallError::InvalidParams(
             "format must be csv or json".to_string(),
         ));
@@ -1466,7 +1470,7 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
         _ => {
             return Err(CallError::InvalidParams(
                 "input_path, input_text, or input_json is required".to_string(),
-            ))
+            ));
         }
     };
 
@@ -1644,24 +1648,24 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
 
 fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let dto_text = get_optional_string(args, "dto_text").map_err(CallError::InvalidParams)?;
-    let dto_language = get_optional_string(args, "dto_language").map_err(CallError::InvalidParams)?;
+    let dto_language =
+        get_optional_string(args, "dto_language").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
-    let input_json = get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
+    let input_json =
+        get_optional_json_value(args, "input_json").map_err(CallError::InvalidParams)?;
     let format = get_optional_string(args, "format").map_err(CallError::InvalidParams)?;
     let records_path =
         get_optional_string(args, "records_path").map_err(CallError::InvalidParams)?;
     let max_candidates =
         get_optional_usize(args, "max_candidates").map_err(CallError::InvalidParams)?;
 
-    let dto_text = dto_text.ok_or_else(|| {
-        CallError::InvalidParams("dto_text is required".to_string())
-    })?;
-    let dto_language = dto_language.ok_or_else(|| {
-        CallError::InvalidParams("dto_language is required".to_string())
-    })?;
-    let dto_language = parse_dto_source_language(&dto_language)
-        .map_err(CallError::InvalidParams)?;
+    let dto_text =
+        dto_text.ok_or_else(|| CallError::InvalidParams("dto_text is required".to_string()))?;
+    let dto_language = dto_language
+        .ok_or_else(|| CallError::InvalidParams("dto_language is required".to_string()))?;
+    let dto_language =
+        parse_dto_source_language(&dto_language).map_err(CallError::InvalidParams)?;
 
     let input_source_count =
         input_path.is_some() as u8 + input_text.is_some() as u8 + input_json.is_some() as u8;
@@ -1685,10 +1689,9 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
             "format must be json when input_json is provided".to_string(),
         ));
     }
-    if format
-        .as_deref()
-        .is_some_and(|value| !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json"))
-    {
+    if format.as_deref().is_some_and(|value| {
+        !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json")
+    }) {
         return Err(CallError::InvalidParams(
             "format must be csv or json".to_string(),
         ));
@@ -1707,7 +1710,7 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
         _ => {
             return Err(CallError::InvalidParams(
                 "input_path, input_text, or input_json is required".to_string(),
-            ))
+            ));
         }
     };
 
@@ -1747,17 +1750,13 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
         })?,
     };
 
-    let schema = parse_dto_schema(&dto_text, dto_language).map_err(|message| {
-        CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![dto_error_json(&message)]),
-        }
+    let schema = parse_dto_schema(&dto_text, dto_language).map_err(|message| CallError::Tool {
+        message: message.clone(),
+        errors: Some(vec![dto_error_json(&message)]),
     })?;
-    let generated = generate_mappings_from_schema(&schema).map_err(|message| {
-        CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![dto_error_json(&message)]),
-        }
+    let generated = generate_mappings_from_schema(&schema).map_err(|message| CallError::Tool {
+        message: message.clone(),
+        errors: Some(vec![dto_error_json(&message)]),
     })?;
 
     let stats = analyze_records(&records, None);
@@ -1771,12 +1770,20 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
     let mut mappings_yaml = Vec::new();
     for mapping in &generated {
         let target_leaf = leaf_from_path(&mapping.target).unwrap_or_default();
-        let candidates =
-            select_candidates(&target_leaf, None, mapping.value_type.as_deref(), &input_paths, max_candidates);
+        let candidates = select_candidates(
+            &target_leaf,
+            None,
+            mapping.value_type.as_deref(),
+            &input_paths,
+            max_candidates,
+        );
         let selected = candidates.first().cloned();
 
         let mut mapping_map = YamlMapping::new();
-        mapping_map.insert(yaml_key("target"), YamlValue::String(mapping.target.clone()));
+        mapping_map.insert(
+            yaml_key("target"),
+            YamlValue::String(mapping.target.clone()),
+        );
         if let Some(value_type) = mapping.value_type.as_deref() {
             mapping_map.insert(yaml_key("type"), YamlValue::String(value_type.to_string()));
         }
@@ -1992,8 +1999,9 @@ fn parse_dto_language(value: &str) -> Result<DtoLanguage, String> {
         "java" => Ok(DtoLanguage::Java),
         "kotlin" => Ok(DtoLanguage::Kotlin),
         "swift" => Ok(DtoLanguage::Swift),
-        _ => Err("language must be one of rust, typescript, python, go, java, kotlin, swift"
-            .to_string()),
+        _ => Err(
+            "language must be one of rust, typescript, python, go, java, kotlin, swift".to_string(),
+        ),
     }
 }
 
@@ -2029,8 +2037,9 @@ fn parse_dto_source_language(value: &str) -> Result<DtoSourceLanguage, String> {
         "java" => Ok(DtoSourceLanguage::Java),
         "kotlin" => Ok(DtoSourceLanguage::Kotlin),
         "swift" => Ok(DtoSourceLanguage::Swift),
-        _ => Err("dto_language must be rust, typescript, python, go, java, kotlin, or swift"
-            .to_string()),
+        _ => Err(
+            "dto_language must be rust, typescript, python, go, java, kotlin, or swift".to_string(),
+        ),
     }
 }
 
@@ -2067,14 +2076,12 @@ fn json_records_from_value(
         let tokens = parse_path_tokens(path).map_err(|message| {
             CallError::InvalidParams(format!("records_path is invalid: {}", message))
         })?;
-        get_value_by_tokens(value, &tokens).ok_or_else(|| {
-            CallError::Tool {
-                message: "records_path did not match any value".to_string(),
-                errors: Some(vec![parse_error_json(
-                    "records_path did not match any value",
-                    None,
-                )]),
-            }
+        get_value_by_tokens(value, &tokens).ok_or_else(|| CallError::Tool {
+            message: "records_path did not match any value".to_string(),
+            errors: Some(vec![parse_error_json(
+                "records_path did not match any value",
+                None,
+            )]),
         })?
     } else {
         value
@@ -2310,11 +2317,7 @@ fn token_similarity(a: &[String], b: &[String]) -> f64 {
     let set_b: HashSet<&str> = b.iter().map(String::as_str).collect();
     let overlap = set_a.intersection(&set_b).count() as f64;
     let denom = set_a.len().max(set_b.len()) as f64;
-    if denom == 0.0 {
-        0.0
-    } else {
-        overlap / denom
-    }
+    if denom == 0.0 { 0.0 } else { overlap / denom }
 }
 
 fn select_candidates(
@@ -2327,10 +2330,7 @@ fn select_candidates(
     let mut candidates = Vec::new();
     let target_tokens = split_tokens(target_leaf);
     let source_leaf = source_hint.and_then(leaf_from_path);
-    let source_tokens = source_leaf
-        .as_deref()
-        .map(split_tokens)
-        .unwrap_or_default();
+    let source_tokens = source_leaf.as_deref().map(split_tokens).unwrap_or_default();
 
     for input in input_paths {
         let mut score = 0.0;
@@ -2393,7 +2393,9 @@ fn select_candidates(
 }
 
 fn type_boost(type_counts: &HashMap<&'static str, usize>, value_type: Option<&str>) -> f64 {
-    let Some(value_type) = value_type else { return 0.0 };
+    let Some(value_type) = value_type else {
+        return 0.0;
+    };
     let type_name = match value_type {
         "string" => "string",
         "int" | "float" => "number",
@@ -2885,10 +2887,7 @@ fn parse_typescript_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<S
 
         if line.starts_with("export interface ") || line.starts_with("interface ") {
             let line = line.strip_prefix("export ").unwrap_or(line);
-            let name_part = line
-                .strip_prefix("interface ")
-                .unwrap_or(line)
-                .trim();
+            let name_part = line.strip_prefix("interface ").unwrap_or(line).trim();
             let name = name_part
                 .split(|ch: char| ch.is_whitespace() || ch == '{')
                 .next()
@@ -2906,7 +2905,9 @@ fn parse_typescript_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<S
             continue;
         }
 
-        let Some(current_name) = current.clone() else { continue };
+        let Some(current_name) = current.clone() else {
+            continue;
+        };
         if line.starts_with('}') {
             current = None;
             pending_json_key = None;
@@ -2954,7 +2955,9 @@ fn parse_typescript_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<S
             }
         };
 
-        let json_key = pending_json_key.take().unwrap_or_else(|| field_name.clone());
+        let json_key = pending_json_key
+            .take()
+            .unwrap_or_else(|| field_name.clone());
         if let Some(dto_type) = types.get_mut(&current_name) {
             dto_type.fields.push(DtoField {
                 json_key,
@@ -2999,7 +3002,9 @@ fn parse_rust_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String>
             continue;
         }
 
-        let Some(current_name) = current.clone() else { continue };
+        let Some(current_name) = current.clone() else {
+            continue;
+        };
         if line.starts_with('}') {
             current = None;
             pending_json_key = None;
@@ -3036,10 +3041,7 @@ fn parse_rust_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String>
 
         let compact = type_part.replace(' ', "");
         let (type_name, optional) = if compact.starts_with("Option<") && compact.ends_with('>') {
-            (
-                compact[7..compact.len() - 1].to_string(),
-                true,
-            )
+            (compact[7..compact.len() - 1].to_string(), true)
         } else {
             (compact, false)
         };
@@ -3060,7 +3062,9 @@ fn parse_rust_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String>
             _ => DtoFieldType::Object(type_key),
         };
 
-        let json_key = pending_json_key.take().unwrap_or_else(|| field_name.to_string());
+        let json_key = pending_json_key
+            .take()
+            .unwrap_or_else(|| field_name.to_string());
         if let Some(dto_type) = types.get_mut(&current_name) {
             dto_type.fields.push(DtoField {
                 json_key,
@@ -3197,7 +3201,9 @@ fn parse_python_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<Strin
             }
         }
 
-        let Some(current_name) = current.clone() else { continue };
+        let Some(current_name) = current.clone() else {
+            continue;
+        };
 
         if line.starts_with('@') {
             continue;
@@ -3304,14 +3310,12 @@ fn parse_go_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String>),
 
     while index < bytes.len() {
         let slice = &text[index..];
-        let Some(pos) = slice.find("type ") else { break };
+        let Some(pos) = slice.find("type ") else {
+            break;
+        };
         index += pos + 5;
         let rest = &text[index..];
-        let name = rest
-            .trim_start()
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
+        let name = rest.trim_start().split_whitespace().next().unwrap_or("");
         if name.is_empty() {
             index = index.saturating_add(1);
             continue;
@@ -3568,7 +3572,9 @@ fn parse_java_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String>
             }
         }
 
-        let Some(current_name) = current.clone() else { continue };
+        let Some(current_name) = current.clone() else {
+            continue;
+        };
         if line.starts_with('}') {
             current = None;
             record_param_depth = 0;
@@ -3608,7 +3614,8 @@ fn parse_java_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String>
             continue;
         }
 
-        let stripped = strip_leading_annotations(line, &mut pending_json_key, &mut pending_optional);
+        let stripped =
+            strip_leading_annotations(line, &mut pending_json_key, &mut pending_optional);
         line = stripped.trim();
         if line.is_empty() || !line.contains(';') {
             continue;
@@ -3644,7 +3651,13 @@ fn parse_java_field_line(
     }
 
     let modifiers = [
-        "public", "private", "protected", "static", "final", "transient", "volatile",
+        "public",
+        "private",
+        "protected",
+        "static",
+        "final",
+        "transient",
+        "volatile",
     ];
     let mut rest = cleaned;
     loop {
@@ -3665,7 +3678,9 @@ fn parse_java_field_line(
         break;
     }
 
-    let Some(split_pos) = rest.rfind(|ch: char| ch.is_whitespace()) else { return };
+    let Some(split_pos) = rest.rfind(|ch: char| ch.is_whitespace()) else {
+        return;
+    };
     let type_part = rest[..split_pos].trim();
     let field_name = rest[split_pos..].trim();
     if field_name.is_empty() || type_part.is_empty() {
@@ -3681,11 +3696,7 @@ fn parse_java_field_line(
         .unwrap_or(type_part)
         .trim()
         .trim_end_matches('>');
-    let type_key = type_key
-        .rsplit('<')
-        .next()
-        .unwrap_or(type_key)
-        .trim();
+    let type_key = type_key.rsplit('<').next().unwrap_or(type_key).trim();
     let field_type = match type_key {
         "String" => DtoFieldType::Primitive(PrimitiveKind::String),
         "boolean" | "Boolean" => DtoFieldType::Primitive(PrimitiveKind::Bool),
@@ -3697,7 +3708,9 @@ fn parse_java_field_line(
         other => DtoFieldType::Object(other.to_string()),
     };
 
-    let json_key = pending_json_key.take().unwrap_or_else(|| field_name.to_string());
+    let json_key = pending_json_key
+        .take()
+        .unwrap_or_else(|| field_name.to_string());
     if let Some(dto_type) = types.get_mut(current_name) {
         dto_type.fields.push(DtoField {
             json_key,
@@ -3752,7 +3765,9 @@ fn parse_kotlin_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<Strin
             }
         }
 
-        let Some(current_name) = current.clone() else { continue };
+        let Some(current_name) = current.clone() else {
+            continue;
+        };
         if line.starts_with('}') {
             current = None;
             param_depth = 0;
@@ -3829,7 +3844,9 @@ fn parse_kotlin_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<Strin
             }
         };
 
-        let json_key = pending_json_key.take().unwrap_or_else(|| field_name.to_string());
+        let json_key = pending_json_key
+            .take()
+            .unwrap_or_else(|| field_name.to_string());
         if let Some(dto_type) = types.get_mut(&current_name) {
             dto_type.fields.push(DtoField {
                 json_key,
@@ -3860,7 +3877,9 @@ fn parse_swift_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String
             continue;
         }
 
-        if line.contains(" struct ") || line.starts_with("struct ") || line.contains(" class ")
+        if line.contains(" struct ")
+            || line.starts_with("struct ")
+            || line.contains(" class ")
             || line.starts_with("class ")
         {
             let keyword_pos = if let Some(pos) = line.find("struct ") {
@@ -3870,10 +3889,7 @@ fn parse_swift_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String
             } else {
                 0
             };
-            let name_part = line[keyword_pos..]
-                .split_whitespace()
-                .next()
-                .unwrap_or("");
+            let name_part = line[keyword_pos..].split_whitespace().next().unwrap_or("");
             let name = name_part
                 .split(|ch: char| ch == ':' || ch == '{')
                 .next()
@@ -3901,7 +3917,9 @@ fn parse_swift_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String
             }
         }
 
-        let Some(current_name) = current.clone() else { continue };
+        let Some(current_name) = current.clone() else {
+            continue;
+        };
 
         if line.starts_with("enum CodingKeys") {
             in_coding_keys = true;
@@ -3940,11 +3958,10 @@ fn parse_swift_types(text: &str) -> Result<(HashMap<String, DtoType>, Vec<String
             continue;
         }
 
-        let rest = line
-            .trim_end_matches(';')
-            .trim_end_matches(',')
-            .trim();
-        let rest = rest.strip_prefix("let ").or_else(|| rest.strip_prefix("var "));
+        let rest = line.trim_end_matches(';').trim_end_matches(',').trim();
+        let rest = rest
+            .strip_prefix("let ")
+            .or_else(|| rest.strip_prefix("var "));
         let Some(rest) = rest else { continue };
         let mut parts = rest.splitn(2, ':');
         let field_name = parts.next().unwrap_or("").trim();
@@ -4078,7 +4095,14 @@ fn parse_serde_rename(line: &str) -> Option<String> {
 fn generate_mappings_from_schema(schema: &DtoSchema) -> Result<Vec<GeneratedMapping>, String> {
     let mut mappings = Vec::new();
     let mut visiting = HashSet::new();
-    build_mappings_for_type(schema, &schema.root, "", false, &mut visiting, &mut mappings)?;
+    build_mappings_for_type(
+        schema,
+        &schema.root,
+        "",
+        false,
+        &mut visiting,
+        &mut mappings,
+    )?;
     Ok(mappings)
 }
 
@@ -4354,19 +4378,19 @@ fn get_value_by_tokens<'a>(value: &'a Value, tokens: &[PathToken]) -> Option<&'a
     Some(current)
 }
 
-fn update_yaml_input_spec(
-    root: &mut YamlValue,
-    format: Option<&str>,
-    records_path: Option<&str>,
-) {
+fn update_yaml_input_spec(root: &mut YamlValue, format: Option<&str>, records_path: Option<&str>) {
     if format.is_none() && records_path.is_none() {
         return;
     }
-    let Some(root_map) = root.as_mapping_mut() else { return; };
+    let Some(root_map) = root.as_mapping_mut() else {
+        return;
+    };
     let input_value = root_map
         .entry(yaml_key("input"))
         .or_insert_with(|| YamlValue::Mapping(YamlMapping::new()));
-    let Some(input_map) = input_value.as_mapping_mut() else { return; };
+    let Some(input_map) = input_value.as_mapping_mut() else {
+        return;
+    };
 
     if let Some(format) = format {
         input_map.insert(yaml_key("format"), YamlValue::String(format.to_string()));
@@ -4399,15 +4423,13 @@ fn yaml_mappings_sequence_mut(root: &mut YamlValue) -> Result<&mut Vec<YamlValue
             errors: Some(vec![parse_error_json(&message, None)]),
         });
     };
-    mappings_value
-        .as_sequence_mut()
-        .ok_or_else(|| {
-            let message = "rules yaml mappings must be a sequence".to_string();
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![parse_error_json(&message, None)]),
-            }
-        })
+    mappings_value.as_sequence_mut().ok_or_else(|| {
+        let message = "rules yaml mappings must be a sequence".to_string();
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![parse_error_json(&message, None)]),
+        }
+    })
 }
 
 fn update_yaml_mapping(
@@ -4460,7 +4482,9 @@ fn collect_missing_refs(
         let mut refs = Vec::new();
         collect_expr_refs(expr, &mut refs);
         for reference in refs {
-            let Some(path) = input_ref_path(&reference) else { continue };
+            let Some(path) = input_ref_path(&reference) else {
+                continue;
+            };
             if input_paths.contains(&path) {
                 continue;
             }
@@ -4507,7 +4531,9 @@ fn input_ref_path(reference: &str) -> Option<String> {
 }
 
 fn apply_format_override(rule: &mut RuleFile, format: Option<&str>) -> Result<(), String> {
-    let Some(format) = format else { return Ok(()); };
+    let Some(format) = format else {
+        return Ok(());
+    };
     let normalized = format.to_lowercase();
     rule.input.format = match normalized.as_str() {
         "csv" => InputFormat::Csv,

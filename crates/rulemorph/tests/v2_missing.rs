@@ -1,5 +1,5 @@
-use serde_json::json;
 use rulemorph::{parse_rule_file, transform_with_warnings};
+use serde_json::json;
 
 #[test]
 fn v2_missing_string_op_propagates_to_default() {
@@ -16,8 +16,7 @@ mappings:
 "#;
     let rule = parse_rule_file(yaml).expect("failed to parse rules");
     let input = r#"[{ "id": 1 }]"#;
-    let (output, warnings) =
-        transform_with_warnings(&rule, input, None).expect("transform failed");
+    let (output, warnings) = transform_with_warnings(&rule, input, None).expect("transform failed");
 
     assert_eq!(output, json!([{ "name": "unknown" }]));
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
@@ -38,8 +37,7 @@ mappings:
 "#;
     let rule = parse_rule_file(yaml).expect("failed to parse rules");
     let input = r#"[{ "id": 1 }]"#;
-    let (output, warnings) =
-        transform_with_warnings(&rule, input, None).expect("transform failed");
+    let (output, warnings) = transform_with_warnings(&rule, input, None).expect("transform failed");
 
     assert_eq!(output, json!([{ "amount": 0 }]));
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");

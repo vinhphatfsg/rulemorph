@@ -3,11 +3,11 @@ use std::collections::HashSet;
 use crate::error::{ErrorCode, RuleError, ValidationResult};
 use crate::locator::YamlLocator;
 use crate::model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, Mapping, RuleFile};
-use crate::path::{parse_path, PathToken};
+use crate::path::{PathToken, parse_path};
 use crate::v2_parser::{is_literal_escape, is_v2_expr, parse_v2_condition, parse_v2_expr};
 use crate::v2_validator::{
-    collect_out_references, validate_no_cyclic_dependencies, validate_v2_condition,
-    validate_v2_expr, V2Scope, V2ValidationCtx,
+    V2Scope, V2ValidationCtx, collect_out_references, validate_no_cyclic_dependencies,
+    validate_v2_condition, validate_v2_expr,
 };
 
 pub fn validate_rule_file(rule: &RuleFile) -> ValidationResult {
@@ -19,7 +19,10 @@ pub fn validate_rule_file_with_source(rule: &RuleFile, source: &str) -> Validati
     validate_rule_file_with_locator(rule, Some(&locator))
 }
 
-fn validate_rule_file_with_locator(rule: &RuleFile, locator: Option<&YamlLocator>) -> ValidationResult {
+fn validate_rule_file_with_locator(
+    rule: &RuleFile,
+    locator: Option<&YamlLocator>,
+) -> ValidationResult {
     let mut ctx = ValidationCtx::new(locator);
 
     validate_version(rule, &mut ctx);
@@ -352,12 +355,7 @@ fn validate_mappings_list(
             if is_v2_rule {
                 if let Some(raw_value) = expr_to_json_value(when) {
                     if is_v2_expr(&raw_value) {
-                        validate_v2_condition_expr(
-                            &raw_value,
-                            &when_path,
-                            produced_targets,
-                            ctx,
-                        );
+                        validate_v2_condition_expr(&raw_value, &when_path, produced_targets, ctx);
                         v2_handled = true;
                     }
                 }
@@ -374,7 +372,11 @@ fn validate_mappings_list(
 
 fn validate_version(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
     if rule.version != 1 && rule.version != 2 {
-        ctx.push(ErrorCode::InvalidVersion, "version must be 1 or 2", "version");
+        ctx.push(
+            ErrorCode::InvalidVersion,
+            "version must be 1 or 2",
+            "version",
+        );
     }
 }
 
@@ -489,9 +491,9 @@ fn expr_to_json_value(expr: &Expr) -> Option<serde_json::Value> {
             if ref_expr.ref_path.starts_with('@') || is_literal_escape(&ref_expr.ref_path) =>
         {
             // Convert back to a single-element array for v2 parsing
-            Some(serde_json::Value::Array(vec![
-                serde_json::Value::String(ref_expr.ref_path.clone()),
-            ]))
+            Some(serde_json::Value::Array(vec![serde_json::Value::String(
+                ref_expr.ref_path.clone(),
+            )]))
         }
         // For v1 expressions (Ref, Op, Chain), return None
         // These will be handled by v1 validator
@@ -616,7 +618,10 @@ fn validate_source(
         }
     };
 
-    if namespace == Namespace::Out && !ctx.allow_any_out_ref && !out_ref_resolves(&tokens, produced_targets) {
+    if namespace == Namespace::Out
+        && !ctx.allow_any_out_ref
+        && !out_ref_resolves(&tokens, produced_targets)
+    {
         ctx.push(
             ErrorCode::ForwardOutReference,
             "out reference must point to previous mappings",
@@ -687,60 +692,14 @@ fn bool_expr_kind(expr: &Expr) -> BoolExprKind {
         }
         Expr::Ref(_) => BoolExprKind::Maybe,
         Expr::Op(expr_op) => match expr_op.op.as_str() {
-            "concat"
-            | "to_string"
-            | "trim"
-            | "lowercase"
-            | "uppercase"
-            | "replace"
-            | "split"
-            | "pad_start"
-            | "pad_end"
-            | "lookup"
-            | "lookup_first"
-            | "merge"
-            | "deep_merge"
-            | "get"
-            | "pick"
-            | "omit"
-            | "keys"
-            | "values"
-            | "entries"
-            | "len"
-            | "from_entries"
-            | "object_flatten"
-            | "object_unflatten"
-            | "map"
-            | "filter"
-            | "flat_map"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "zip_with"
-            | "unzip"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "unique"
-            | "distinct_by"
-            | "sort_by"
-            | "find_index"
-            | "index_of"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "round"
-            | "to_base"
-            | "date_format"
-            | "to_unixtime" => BoolExprKind::NotBool,
+            "concat" | "to_string" | "trim" | "lowercase" | "uppercase" | "replace" | "split"
+            | "pad_start" | "pad_end" | "lookup" | "lookup_first" | "merge" | "deep_merge"
+            | "get" | "pick" | "omit" | "keys" | "values" | "entries" | "len" | "from_entries"
+            | "object_flatten" | "object_unflatten" | "map" | "filter" | "flat_map" | "flatten"
+            | "take" | "drop" | "slice" | "chunk" | "zip" | "zip_with" | "unzip" | "group_by"
+            | "key_by" | "partition" | "unique" | "distinct_by" | "sort_by" | "find_index"
+            | "index_of" | "sum" | "avg" | "min" | "max" | "+" | "-" | "*" | "/" | "round"
+            | "to_base" | "date_format" | "to_unixtime" => BoolExprKind::NotBool,
             "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
             "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
             "coalesce" => {
@@ -782,63 +741,17 @@ fn bool_expr_kind_chain(expr_chain: &ExprChain) -> BoolExprKind {
 
 fn bool_expr_kind_for_op_with_input(expr_op: &ExprOp, injected: BoolExprKind) -> BoolExprKind {
     match expr_op.op.as_str() {
-            "concat"
-            | "to_string"
-            | "trim"
-            | "lowercase"
-            | "uppercase"
-            | "replace"
-            | "split"
-            | "pad_start"
-            | "pad_end"
-            | "lookup"
-            | "lookup_first"
-            | "merge"
-            | "deep_merge"
-            | "get"
-            | "pick"
-            | "omit"
-            | "keys"
-            | "values"
-            | "entries"
-            | "len"
-            | "from_entries"
-            | "object_flatten"
-            | "object_unflatten"
-            | "map"
-            | "filter"
-            | "flat_map"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "zip_with"
-            | "unzip"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "unique"
-            | "distinct_by"
-            | "sort_by"
-            | "find_index"
-            | "index_of"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "round"
-            | "to_base"
-            | "date_format"
-            | "to_unixtime" => BoolExprKind::NotBool,
-            "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
-            "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
-            "coalesce" => {
+        "concat" | "to_string" | "trim" | "lowercase" | "uppercase" | "replace" | "split"
+        | "pad_start" | "pad_end" | "lookup" | "lookup_first" | "merge" | "deep_merge" | "get"
+        | "pick" | "omit" | "keys" | "values" | "entries" | "len" | "from_entries"
+        | "object_flatten" | "object_unflatten" | "map" | "filter" | "flat_map" | "flatten"
+        | "take" | "drop" | "slice" | "chunk" | "zip" | "zip_with" | "unzip" | "group_by"
+        | "key_by" | "partition" | "unique" | "distinct_by" | "sort_by" | "find_index"
+        | "index_of" | "sum" | "avg" | "min" | "max" | "+" | "-" | "*" | "/" | "round"
+        | "to_base" | "date_format" | "to_unixtime" => BoolExprKind::NotBool,
+        "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
+        "coalesce" => {
             let mut saw_maybe = matches!(injected, BoolExprKind::Maybe);
             if matches!(injected, BoolExprKind::NotBool) {
                 return BoolExprKind::NotBool;
@@ -1009,15 +922,8 @@ fn validate_chain_op(
                 );
             }
         }
-        "map"
-        | "filter"
-        | "flat_map"
-        | "group_by"
-        | "key_by"
-        | "partition"
-        | "distinct_by"
-        | "find"
-        | "find_index" => {
+        "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
+        | "find" | "find_index" => {
             if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
@@ -1169,16 +1075,8 @@ fn element_expr_scope(
         LocalScope::Item
     };
     match op {
-        "map"
-        | "filter"
-        | "flat_map"
-        | "group_by"
-        | "key_by"
-        | "partition"
-        | "distinct_by"
-        | "sort_by"
-        | "find"
-        | "find_index" => {
+        "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
+        | "sort_by" | "find" | "find_index" => {
             let index = if injected { 0 } else { 1 };
             Some((index, item_scope))
         }
@@ -1462,15 +1360,8 @@ fn validate_op(
                 );
             }
         }
-        "map"
-        | "filter"
-        | "flat_map"
-        | "group_by"
-        | "key_by"
-        | "partition"
-        | "distinct_by"
-        | "find"
-        | "find_index" => {
+        "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
+        | "find" | "find_index" => {
             if expr_op.args.len() != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
@@ -1841,7 +1732,6 @@ fn validate_path_array_arg(
 
     let mut paths: Vec<Vec<PathToken>> = Vec::new();
     for (item_path, path) in items {
-
         let tokens = match parse_path(&path) {
             Ok(tokens) => tokens,
             Err(_) => {
@@ -1911,9 +1801,9 @@ fn validate_path_arg(expr: &Expr, base_path: &str, ctx: &mut ValidationCtx<'_>) 
 }
 
 fn has_path_conflict(paths: &[Vec<PathToken>], tokens: &[PathToken]) -> bool {
-    paths.iter().any(|existing| {
-        is_path_prefix(existing, tokens) || is_path_prefix(tokens, existing)
-    })
+    paths
+        .iter()
+        .any(|existing| is_path_prefix(existing, tokens) || is_path_prefix(tokens, existing))
 }
 
 fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {

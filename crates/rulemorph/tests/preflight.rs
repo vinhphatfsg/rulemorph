@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rulemorph::{parse_rule_file, preflight_validate, TransformErrorKind};
+use rulemorph::{TransformErrorKind, parse_rule_file, preflight_validate};
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -10,18 +10,17 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn load_rule(path: &Path) -> rulemorph::RuleFile {
-    let yaml = fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("failed to read {}", path.display()));
-    parse_rule_file(&yaml).unwrap_or_else(|err| {
-        panic!("failed to parse {}: {}", path.display(), err)
-    })
+    let yaml =
+        fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
+    parse_rule_file(&yaml)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {}", path.display(), err))
 }
 
 fn load_expected_error(path: &Path) -> ExpectedTransformError {
-    let json = fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("failed to read {}", path.display()));
-    let value: serde_json::Value = serde_json::from_str(&json)
-        .unwrap_or_else(|_| panic!("invalid json: {}", path.display()));
+    let json =
+        fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
+    let value: serde_json::Value =
+        serde_json::from_str(&json).unwrap_or_else(|_| panic!("invalid json: {}", path.display()));
     serde_json::from_value(value)
         .unwrap_or_else(|err| panic!("invalid expected error: {} ({})", path.display(), err))
 }

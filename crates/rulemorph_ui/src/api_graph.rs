@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rulemorph::{parse_rule_file, Expr, ExprChain, ExprOp, ExprRef, Mapping, RuleFile};
+use rulemorph::{Expr, ExprChain, ExprOp, ExprRef, Mapping, RuleFile, parse_rule_file};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
@@ -500,7 +500,10 @@ mod tests {
         let data_dir = Path::new("/tmp/rules");
         let rule_path = Path::new("/tmp/rules/api_rules/network.yaml");
         let ops = network_ops(&rule, data_dir, rule_path);
-        let body_op = ops.iter().find(|op| op.label == "body_rule").expect("body_rule op");
+        let body_op = ops
+            .iter()
+            .find(|op| op.label == "body_rule")
+            .expect("body_rule op");
         assert_eq!(body_op.refs, vec!["api_rules/body.yaml".to_string()]);
     }
 

@@ -9,7 +9,7 @@ use serde_json::Value as JsonValue;
 
 use crate::error::{ErrorCode, RuleError};
 use crate::locator::YamlLocator;
-use crate::path::{parse_path, PathToken};
+use crate::path::{PathToken, parse_path};
 use crate::v2_model::{
     V2Comparison, V2Condition, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Ref,
     V2Start, V2Step,
@@ -479,9 +479,9 @@ fn validate_v2_start(
 ) {
     match start {
         V2Start::Ref(v2_ref) => validate_v2_ref(v2_ref, base_path, scope, ctx),
-        V2Start::PipeValue => {} // $ is always valid
+        V2Start::PipeValue => {}  // $ is always valid
         V2Start::Literal(_) => {} // Literals are always valid
-        V2Start::V1Expr(_) => {} // V1 expressions are validated elsewhere
+        V2Start::V1Expr(_) => {}  // V1 expressions are validated elsewhere
     }
 }
 
@@ -787,7 +787,10 @@ fn validate_op_args_count(op: &str, count: usize, base_path: &str, ctx: &mut V2V
     if count < min {
         ctx.push_error(
             ErrorCode::InvalidArgs,
-            format!("{} requires at least {} argument(s), got {}", op, min, count),
+            format!(
+                "{} requires at least {} argument(s), got {}",
+                op, min, count
+            ),
             base_path,
         );
     } else if let Some(max_val) = max {
@@ -810,18 +813,16 @@ fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
     match op {
         // No arguments
         "trim" | "lowercase" | "uppercase" | "to_string" | "keys" | "values" | "entries"
-        | "unique" | "unzip" | "first" | "last" | "len" | "sum" | "avg" | "min"
-        | "max" | "not" | "string" | "int" | "float" | "bool" => (0, Some(0)),
+        | "unique" | "unzip" | "first" | "last" | "len" | "sum" | "avg" | "min" | "max" | "not"
+        | "string" | "int" | "float" | "bool" => (0, Some(0)),
 
         // Optional one argument
         "round" | "flatten" => (0, Some(1)),
 
         // Exactly 1 argument
         "take" | "drop" | "get" | "object_flatten" | "object_unflatten" | "chunk" | "map"
-        | "filter" | "flat_map" | "group_by" | "key_by" | "distinct_by" | "find"
-        | "find_index" | "index_of" | "contains" | "partition" | "split" | "reduce" | "to_base" => {
-            (1, Some(1))
-        }
+        | "filter" | "flat_map" | "group_by" | "key_by" | "distinct_by" | "find" | "find_index"
+        | "index_of" | "contains" | "partition" | "split" | "reduce" | "to_base" => (1, Some(1)),
 
         // One or two arguments
         "sort_by" => (1, Some(2)),
@@ -847,8 +848,8 @@ fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
         "zip_with" => (2, None),
 
         // Comparison operators (exactly 1 argument for pipe context)
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~="
-        | "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "match" => (1, Some(1)),
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt"
+        | "gte" | "match" => (1, Some(1)),
 
         // Arithmetic (at least 1 argument for pipe context)
         "+" | "-" | "*" | "/" => (1, None),
@@ -960,10 +961,7 @@ pub fn validate_no_cyclic_dependencies(
     ctx: &mut V2ValidationCtx<'_>,
 ) {
     // Build adjacency list: target -> depends on targets
-    let graph: HashMap<String, HashSet<String>> = targets_with_deps
-        .iter()
-        .cloned()
-        .collect();
+    let graph: HashMap<String, HashSet<String>> = targets_with_deps.iter().cloned().collect();
 
     // Detect cycles using DFS
     let mut visited: HashSet<String> = HashSet::new();
@@ -1237,7 +1235,11 @@ mod tests {
 
         validate_v2_expr(&expr, "test", &scope, &mut ctx);
 
-        assert!(ctx.errors().iter().any(|err| err.code == ErrorCode::UnknownOp));
+        assert!(
+            ctx.errors()
+                .iter()
+                .any(|err| err.code == ErrorCode::UnknownOp)
+        );
     }
 
     // Reference validation tests
@@ -1282,12 +1284,20 @@ mod tests {
         let mut ctx = V2ValidationCtx::new(None);
         let v2_ref = V2Ref::Item("value..foo".to_string());
         validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
-        assert!(ctx.errors().iter().any(|err| err.code == ErrorCode::InvalidPath));
+        assert!(
+            ctx.errors()
+                .iter()
+                .any(|err| err.code == ErrorCode::InvalidPath)
+        );
 
         let mut ctx = V2ValidationCtx::new(None);
         let v2_ref = V2Ref::Item("index..foo".to_string());
         validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
-        assert!(ctx.errors().iter().any(|err| err.code == ErrorCode::InvalidPath));
+        assert!(
+            ctx.errors()
+                .iter()
+                .any(|err| err.code == ErrorCode::InvalidPath)
+        );
     }
 
     #[test]

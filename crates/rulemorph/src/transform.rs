@@ -1,5 +1,5 @@
-use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 use chrono::offset::TimeZone;
+use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
 use csv::ReaderBuilder;
 use regex::Regex;
 use serde_json::{Map, Value as JsonValue};
@@ -13,14 +13,14 @@ use crate::error::{TransformError, TransformErrorKind, TransformWarning};
 use crate::model::{
     Expr, ExprChain, ExprOp, ExprRef, FinalizeSpec, InputFormat, Mapping, RuleFile, V2RuleStep,
 };
-use crate::path::{get_path, parse_path, PathToken};
+use crate::path::{PathToken, get_path, parse_path};
+use crate::v2_eval::{
+    EvalItem as V2EvalItem, EvalValue as V2EvalValue, V2EvalContext, eval_v2_condition,
+    eval_v2_expr, eval_v2_pipe,
+};
 use crate::v2_parser::{
     is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
     parse_v2_pipe_from_value,
-};
-use crate::v2_eval::{
-    eval_v2_condition, eval_v2_expr, eval_v2_pipe, EvalItem as V2EvalItem,
-    EvalValue as V2EvalValue, V2EvalContext,
 };
 
 const REGEX_CACHE_CAPACITY: usize = 128;
@@ -464,16 +464,14 @@ fn apply_steps(
                     rule_version,
                 )?;
                 if !ok {
-                    return Err(
-                        TransformError::new(
-                            TransformErrorKind::AssertionFailed,
-                            format!(
-                                "assert failed: {}: {}",
-                                assert.error.code, assert.error.message
-                            ),
-                        )
-                        .with_path(assert_path),
-                    );
+                    return Err(TransformError::new(
+                        TransformErrorKind::AssertionFailed,
+                        format!(
+                            "assert failed: {}: {}",
+                            assert.error.code, assert.error.message
+                        ),
+                    )
+                    .with_path(assert_path));
                 }
             }
             continue;
@@ -531,8 +529,11 @@ fn merge_branch_output(
             .with_path(path)
     })?;
     let other_map = other.as_object().ok_or_else(|| {
-        TransformError::new(TransformErrorKind::InvalidTarget, "branch output must be object")
-            .with_path(path)
+        TransformError::new(
+            TransformErrorKind::InvalidTarget,
+            "branch output must be object",
+        )
+        .with_path(path)
     })?;
     for (key, value) in other_map {
         out_map.insert(key.clone(), value.clone());
@@ -559,7 +560,10 @@ fn load_rule_from_path(
         )
         .with_path(path)
     })?;
-    let resolved_base = resolved.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    let resolved_base = resolved
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf();
     Ok((rule, resolved_base))
 }
 
@@ -582,10 +586,11 @@ fn apply_finalize(
     let mut records = match output {
         JsonValue::Array(records) => records,
         _ => {
-            return Err(
-                TransformError::new(TransformErrorKind::InvalidInput, "finalize expects array output")
-                    .with_path("finalize"),
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "finalize expects array output",
             )
+            .with_path("finalize"));
         }
     };
 
@@ -697,7 +702,10 @@ fn eval_wrap_value(
             let mut out_map = serde_json::Map::new();
             for (key, value) in map {
                 let child_path = format!("{}.{}", path, key);
-                out_map.insert(key.clone(), eval_wrap_value(value, out, context, &child_path)?);
+                out_map.insert(
+                    key.clone(),
+                    eval_wrap_value(value, out, context, &child_path)?,
+                );
             }
             Ok(JsonValue::Object(out_map))
         }
@@ -720,19 +728,20 @@ fn eval_wrap_value(
 
 fn sort_key_from_value(value: &JsonValue, path: &str) -> Result<SortKey, TransformError> {
     match value {
-        JsonValue::Number(number) => number
-            .as_f64()
-            .map(SortKey::Number)
-            .ok_or_else(|| {
-                TransformError::new(TransformErrorKind::ExprError, "sort key must be a finite number")
-                    .with_path(path)
-            }),
+        JsonValue::Number(number) => number.as_f64().map(SortKey::Number).ok_or_else(|| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "sort key must be a finite number",
+            )
+            .with_path(path)
+        }),
         JsonValue::String(value) => Ok(SortKey::String(value.clone())),
         JsonValue::Bool(value) => Ok(SortKey::Bool(*value)),
-        _ => Err(
-            TransformError::new(TransformErrorKind::ExprError, "sort key must be string/number/bool")
-                .with_path(path),
-        ),
+        _ => Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "sort key must be string/number/bool",
+        )
+        .with_path(path)),
     }
 }
 
@@ -876,7 +885,12 @@ fn parse_json(rule: &RuleFile, input: &str) -> Result<Vec<JsonValue>, TransformE
         )
     })?;
 
-    let records_value = match rule.input.json.as_ref().and_then(|j| j.records_path.as_deref()) {
+    let records_value = match rule
+        .input
+        .json
+        .as_ref()
+        .and_then(|j| j.records_path.as_deref())
+    {
         Some(path) => {
             let tokens = parse_path(path).map_err(|err| {
                 TransformError::new(TransformErrorKind::InvalidRecordsPath, err.message())
@@ -933,11 +947,10 @@ fn eval_mapping(
             // Try to interpret as v2 pipe
             let v2_json = expr_to_json_for_v2_pipe(expr);
             if let Some(json_val) = v2_json {
-                let v2_pipe = parse_v2_pipe_from_value(&json_val)
-                    .map_err(|e| {
-                        TransformError::new(TransformErrorKind::ExprError, e.to_string())
-                            .with_path(&expr_path)
-                    })?;
+                let v2_pipe = parse_v2_pipe_from_value(&json_val).map_err(|e| {
+                    TransformError::new(TransformErrorKind::ExprError, e.to_string())
+                        .with_path(&expr_path)
+                })?;
                 let v2_ctx = V2EvalContext::new();
                 let v2_result = eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
                 // Convert v2 EvalValue to v1 EvalValue
@@ -947,14 +960,7 @@ fn eval_mapping(
                 }
             } else {
                 // v2 but not a v2 pipe - use v1 eval
-                eval_expr(
-                    expr,
-                    record,
-                    context,
-                    out,
-                    &expr_path,
-                    None,
-                )?
+                eval_expr(expr, record, context, out, &expr_path, None)?
             }
         } else {
             // v1 rule - use v1 eval
@@ -1046,7 +1052,14 @@ fn eval_record_when(
     };
 
     let empty_out = JsonValue::Object(Map::new());
-    match eval_when_expr(expr, record, context, &empty_out, "record_when", rule.version) {
+    match eval_when_expr(
+        expr,
+        record,
+        context,
+        &empty_out,
+        "record_when",
+        rule.version,
+    ) {
         Ok(flag) => flag,
         Err(err) => {
             warnings.push(err.into());
@@ -1113,8 +1126,8 @@ fn resolve_source(
     out: &JsonValue,
     mapping_path: &str,
 ) -> Result<EvalValue, TransformError> {
-    let (namespace, path) = parse_source(source)
-        .map_err(|err| err.with_path(format!("{}.source", mapping_path)))?;
+    let (namespace, path) =
+        parse_source(source).map_err(|err| err.with_path(format!("{}.source", mapping_path)))?;
     let tokens = parse_path_tokens(
         path,
         TransformErrorKind::InvalidRef,
@@ -1129,7 +1142,7 @@ fn resolve_source(
                 TransformErrorKind::InvalidRef,
                 "ref namespace must be input|context|out",
             )
-            .with_path(format!("{}.source", mapping_path)))
+            .with_path(format!("{}.source", mapping_path)));
         }
     };
 
@@ -1172,8 +1185,14 @@ fn eval_chain(
     }
 
     let first_path = format!("{}.chain[0]", base_path);
-    let mut current =
-        eval_expr(&expr_chain.chain[0], record, context, out, &first_path, locals)?;
+    let mut current = eval_expr(
+        &expr_chain.chain[0],
+        record,
+        context,
+        out,
+        &first_path,
+        locals,
+    )?;
 
     for (index, step) in expr_chain.chain.iter().enumerate().skip(1) {
         let step_path = format!("{}.chain[{}]", base_path, index);
@@ -1184,7 +1203,7 @@ fn eval_chain(
                     TransformErrorKind::ExprError,
                     "expr.chain items after first must be op",
                 )
-                .with_path(step_path))
+                .with_path(step_path));
             }
         };
 
@@ -1211,9 +1230,9 @@ fn eval_ref(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    let (namespace, path) = parse_ref(&expr_ref.ref_path).map_err(|err| err.with_path(base_path))?;
-    let tokens =
-        parse_path_tokens(path, TransformErrorKind::InvalidRef, base_path.to_string())?;
+    let (namespace, path) =
+        parse_ref(&expr_ref.ref_path).map_err(|err| err.with_path(base_path))?;
+    let tokens = parse_path_tokens(path, TransformErrorKind::InvalidRef, base_path.to_string())?;
     let target = match namespace {
         Namespace::Input => Some(record),
         Namespace::Context => context,
@@ -1240,7 +1259,7 @@ fn eval_ref(
                         TransformErrorKind::ExprError,
                         "item ref must start with value or index",
                     )
-                    .with_path(base_path))
+                    .with_path(base_path));
                 }
             };
             return match get_path(root, rest) {
@@ -1263,7 +1282,7 @@ fn eval_ref(
                         TransformErrorKind::ExprError,
                         "acc ref must start with value",
                     )
-                    .with_path(base_path))
+                    .with_path(base_path));
                 }
             };
             return match get_path(root, rest) {
@@ -1286,7 +1305,7 @@ fn eval_ref(
                         TransformErrorKind::ExprError,
                         "pipe ref must start with value",
                     )
-                    .with_path(base_path))
+                    .with_path(base_path));
                 }
             };
             let value = match root {
@@ -1313,7 +1332,7 @@ fn eval_ref(
                         TransformErrorKind::ExprError,
                         "local ref must start with a key",
                     )
-                    .with_path(base_path))
+                    .with_path(base_path));
                 }
             };
             let local_value = locals_map.get(first).ok_or_else(|| {
@@ -1363,8 +1382,16 @@ pub(crate) fn eval_op(
             let mut parts = Vec::new();
             for index in 0..total_len {
                 let arg_path = format!("{}.args[{}]", base_path, index);
-                let value =
-                    eval_expr_at_index(index, &expr_op.args, injected, record, context, out, base_path, locals)?;
+                let value = eval_expr_at_index(
+                    index,
+                    &expr_op.args,
+                    injected,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    locals,
+                )?;
                 match value {
                     EvalValue::Missing => return Ok(EvalValue::Missing),
                     EvalValue::Value(value) => {
@@ -1384,8 +1411,16 @@ pub(crate) fn eval_op(
         }
         "coalesce" => {
             for index in 0..total_len {
-                let value =
-                    eval_expr_at_index(index, &expr_op.args, injected, record, context, out, base_path, locals)?;
+                let value = eval_expr_at_index(
+                    index,
+                    &expr_op.args,
+                    injected,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    locals,
+                )?;
                 match value {
                     EvalValue::Missing => continue,
                     EvalValue::Value(value) => {
@@ -1447,79 +1482,492 @@ pub(crate) fn eval_op(
                 Ok(JsonValue::String(s.to_uppercase()))
             },
         ),
-        "replace" => eval_replace(&expr_op.args, injected, record, context, out, base_path, locals),
-        "split" => eval_split(&expr_op.args, injected, record, context, out, base_path, locals),
-        "pad_start" => eval_pad(&expr_op.args, injected, record, context, out, base_path, true, locals),
-        "pad_end" => eval_pad(&expr_op.args, injected, record, context, out, base_path, false, locals),
-        "lookup" => eval_lookup(&expr_op.args, injected, record, context, out, base_path, false, locals),
-        "lookup_first" => {
-            eval_lookup(&expr_op.args, injected, record, context, out, base_path, true, locals)
+        "replace" => eval_replace(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "split" => eval_split(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "pad_start" => eval_pad(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            true,
+            locals,
+        ),
+        "pad_end" => eval_pad(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            false,
+            locals,
+        ),
+        "lookup" => eval_lookup(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            false,
+            locals,
+        ),
+        "lookup_first" => eval_lookup(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            true,
+            locals,
+        ),
+        "merge" => eval_json_merge(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            false,
+            locals,
+        ),
+        "deep_merge" => eval_json_merge(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            true,
+            locals,
+        ),
+        "get" => eval_json_get(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "pick" => eval_json_pick(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "omit" => eval_json_omit(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "keys" => eval_json_keys(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "values" => eval_json_values(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "entries" => eval_json_entries(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "len" => eval_len(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "from_entries" => eval_json_from_entries(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "object_flatten" => eval_json_object_flatten(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "object_unflatten" => eval_json_object_unflatten(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "map" => eval_array_map(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "filter" => eval_array_filter(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "flat_map" => eval_array_flat_map(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "flatten" => eval_array_flatten(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "take" => eval_array_take(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "drop" => eval_array_drop(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "slice" => eval_array_slice(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "chunk" => eval_array_chunk(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "zip" => eval_array_zip(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "zip_with" => eval_array_zip_with(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "unzip" => eval_array_unzip(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "group_by" => eval_array_group_by(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "key_by" => eval_array_key_by(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "partition" => eval_array_partition(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "unique" => eval_array_unique(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "distinct_by" => eval_array_distinct_by(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "sort_by" => eval_array_sort_by(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "find" => eval_array_find(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "find_index" => eval_array_find_index(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "index_of" => eval_array_index_of(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "contains" => eval_array_contains(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "sum" => eval_array_sum(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "avg" => eval_array_avg(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "min" => eval_array_min(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "max" => eval_array_max(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "reduce" => eval_array_reduce(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "fold" => eval_array_fold(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "+" | "-" | "*" | "/" => {
+            eval_numeric_op(expr_op, injected, record, context, out, base_path, locals)
         }
-        "merge" => eval_json_merge(&expr_op.args, injected, record, context, out, base_path, false, locals),
-        "deep_merge" => {
-            eval_json_merge(&expr_op.args, injected, record, context, out, base_path, true, locals)
-        }
-        "get" => eval_json_get(&expr_op.args, injected, record, context, out, base_path, locals),
-        "pick" => eval_json_pick(&expr_op.args, injected, record, context, out, base_path, locals),
-        "omit" => eval_json_omit(&expr_op.args, injected, record, context, out, base_path, locals),
-        "keys" => eval_json_keys(&expr_op.args, injected, record, context, out, base_path, locals),
-        "values" => eval_json_values(&expr_op.args, injected, record, context, out, base_path, locals),
-        "entries" => eval_json_entries(&expr_op.args, injected, record, context, out, base_path, locals),
-        "len" => eval_len(&expr_op.args, injected, record, context, out, base_path, locals),
-        "from_entries" => {
-            eval_json_from_entries(&expr_op.args, injected, record, context, out, base_path, locals)
-        }
-        "object_flatten" => {
-            eval_json_object_flatten(&expr_op.args, injected, record, context, out, base_path, locals)
-        }
-        "object_unflatten" => {
-            eval_json_object_unflatten(&expr_op.args, injected, record, context, out, base_path, locals)
-        }
-        "map" => eval_array_map(&expr_op.args, injected, record, context, out, base_path, locals),
-        "filter" => eval_array_filter(&expr_op.args, injected, record, context, out, base_path, locals),
-        "flat_map" => eval_array_flat_map(&expr_op.args, injected, record, context, out, base_path, locals),
-        "flatten" => eval_array_flatten(&expr_op.args, injected, record, context, out, base_path, locals),
-        "take" => eval_array_take(&expr_op.args, injected, record, context, out, base_path, locals),
-        "drop" => eval_array_drop(&expr_op.args, injected, record, context, out, base_path, locals),
-        "slice" => eval_array_slice(&expr_op.args, injected, record, context, out, base_path, locals),
-        "chunk" => eval_array_chunk(&expr_op.args, injected, record, context, out, base_path, locals),
-        "zip" => eval_array_zip(&expr_op.args, injected, record, context, out, base_path, locals),
-        "zip_with" => eval_array_zip_with(&expr_op.args, injected, record, context, out, base_path, locals),
-        "unzip" => eval_array_unzip(&expr_op.args, injected, record, context, out, base_path, locals),
-        "group_by" => eval_array_group_by(&expr_op.args, injected, record, context, out, base_path, locals),
-        "key_by" => eval_array_key_by(&expr_op.args, injected, record, context, out, base_path, locals),
-        "partition" => eval_array_partition(&expr_op.args, injected, record, context, out, base_path, locals),
-        "unique" => eval_array_unique(&expr_op.args, injected, record, context, out, base_path, locals),
-        "distinct_by" => eval_array_distinct_by(&expr_op.args, injected, record, context, out, base_path, locals),
-        "sort_by" => eval_array_sort_by(&expr_op.args, injected, record, context, out, base_path, locals),
-        "find" => eval_array_find(&expr_op.args, injected, record, context, out, base_path, locals),
-        "find_index" => eval_array_find_index(&expr_op.args, injected, record, context, out, base_path, locals),
-        "index_of" => eval_array_index_of(&expr_op.args, injected, record, context, out, base_path, locals),
-        "contains" => eval_array_contains(&expr_op.args, injected, record, context, out, base_path, locals),
-        "sum" => eval_array_sum(&expr_op.args, injected, record, context, out, base_path, locals),
-        "avg" => eval_array_avg(&expr_op.args, injected, record, context, out, base_path, locals),
-        "min" => eval_array_min(&expr_op.args, injected, record, context, out, base_path, locals),
-        "max" => eval_array_max(&expr_op.args, injected, record, context, out, base_path, locals),
-        "reduce" => eval_array_reduce(&expr_op.args, injected, record, context, out, base_path, locals),
-        "fold" => eval_array_fold(&expr_op.args, injected, record, context, out, base_path, locals),
-        "+" | "-" | "*" | "/" => eval_numeric_op(expr_op, injected, record, context, out, base_path, locals),
-        "round" => eval_round(&expr_op.args, injected, record, context, out, base_path, locals),
-        "to_base" => eval_to_base(&expr_op.args, injected, record, context, out, base_path, locals),
-        "date_format" => eval_date_format(&expr_op.args, injected, record, context, out, base_path, locals),
-        "to_unixtime" => {
-            eval_to_unixtime(&expr_op.args, injected, record, context, out, base_path, locals)
-        }
-        "and" => eval_bool_and_or(&expr_op.args, injected, record, context, out, base_path, true, locals),
-        "or" => eval_bool_and_or(&expr_op.args, injected, record, context, out, base_path, false, locals),
-        "not" => eval_bool_not(&expr_op.args, injected, record, context, out, base_path, locals),
+        "round" => eval_round(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "to_base" => eval_to_base(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "date_format" => eval_date_format(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "to_unixtime" => eval_to_unixtime(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "and" => eval_bool_and_or(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            true,
+            locals,
+        ),
+        "or" => eval_bool_and_or(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            false,
+            locals,
+        ),
+        "not" => eval_bool_not(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
         "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
             eval_compare(expr_op, injected, record, context, out, base_path, locals)
         }
-        _ => Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "expr.op is not supported",
-        )
-        .with_path(format!("{}.op", base_path))),
+        _ => Err(
+            TransformError::new(TransformErrorKind::ExprError, "expr.op is not supported")
+                .with_path(format!("{}.op", base_path)),
+        ),
     }
 }
 
@@ -1546,8 +1994,7 @@ where
     }
 
     let arg_path = format!("{}.args[0]", base_path);
-    let value =
-        eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
+    let value = eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
     match value {
         EvalValue::Missing => Ok(EvalValue::Missing),
         EvalValue::Value(value) => {
@@ -1629,7 +2076,9 @@ fn eval_arg_value_at(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<Option<JsonValue>, TransformError> {
-    match eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)? {
+    match eval_expr_at_index(
+        index, args, injected, record, context, out, base_path, locals,
+    )? {
         EvalValue::Missing => Ok(None),
         EvalValue::Value(value) => Ok(Some(value)),
     }
@@ -1645,7 +2094,9 @@ fn eval_arg_string_at(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<Option<String>, TransformError> {
-    let value = match eval_arg_value_at(index, args, injected, record, context, out, base_path, locals)? {
+    let value = match eval_arg_value_at(
+        index, args, injected, record, context, out, base_path, locals,
+    )? {
         None => return Ok(None),
         Some(value) => value,
     };
@@ -1670,7 +2121,9 @@ fn eval_expr_value_or_null_at(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<JsonValue, TransformError> {
-    match eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)? {
+    match eval_expr_at_index(
+        index, args, injected, record, context, out, base_path, locals,
+    )? {
         EvalValue::Missing => Ok(JsonValue::Null),
         EvalValue::Value(value) => Ok(value),
     }
@@ -1715,28 +2168,30 @@ fn eval_replace(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
-    let pattern = match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
-    let replacement = match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)?
-    {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+    let value =
+        match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    let pattern =
+        match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    let replacement =
+        match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let pattern_path = format!("{}.args[1]", base_path);
 
     let mode = if total_len == 4 {
         let mode_path = format!("{}.args[3]", base_path);
-        let mode_value = match eval_arg_string_at(3, args, injected, record, context, out, base_path, locals)?
-        {
-            None => return Ok(EvalValue::Missing),
-            Some(value) => value,
-        };
+        let mode_value =
+            match eval_arg_string_at(3, args, injected, record, context, out, base_path, locals)? {
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
         parse_replace_mode(&mode_value, &mode_path)?
     } else {
         ReplaceMode::LiteralFirst
@@ -1776,14 +2231,16 @@ fn eval_split(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
-    let delimiter = match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+    let value =
+        match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
+    let delimiter =
+        match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let delimiter_path = format!("{}.args[1]", base_path);
 
     if delimiter.is_empty() {
@@ -1821,16 +2278,17 @@ fn eval_pad(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+    let value =
+        match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
 
-    let length_value = match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)?
-    {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+    let length_value =
+        match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let length_path = format!("{}.args[1]", base_path);
     if length_value.is_null() {
         return Err(TransformError::new(
@@ -1924,8 +2382,9 @@ fn eval_numeric_op(
     let mut result: f64 = 0.0;
     for index in 0..total_len {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        let value = match eval_arg_value_at(index, args, injected, record, context, out, base_path, locals)?
-        {
+        let value = match eval_arg_value_at(
+            index, args, injected, record, context, out, base_path, locals,
+        )? {
             None => return Ok(EvalValue::Missing),
             Some(value) => value,
         };
@@ -1971,7 +2430,8 @@ fn eval_round(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path, locals)? {
+    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path, locals)?
+    {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
@@ -1989,9 +2449,9 @@ fn eval_round(
         let scale_path = format!("{}.args[1]", base_path);
         let scale_value =
             match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
-            None => return Ok(EvalValue::Missing),
-            Some(value) => value,
-        };
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
         if scale_value.is_null() {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -2012,11 +2472,10 @@ fn eval_round(
             .with_path(scale_path));
         }
         if scale > 308 {
-            return Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                "scale is too large",
-            )
-            .with_path(scale_path));
+            return Err(
+                TransformError::new(TransformErrorKind::ExprError, "scale is too large")
+                    .with_path(scale_path),
+            );
         }
         scale as i32
     } else {
@@ -2051,15 +2510,16 @@ fn eval_to_base(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
-    let base_value = match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)?
+    let value = match eval_arg_value_at(0, args, injected, record, context, out, base_path, locals)?
     {
         None => return Ok(EvalValue::Missing),
         Some(value) => value,
     };
+    let base_value =
+        match eval_arg_value_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let value_path = format!("{}.args[0]", base_path);
     let base_path_arg = format!("{}.args[1]", base_path);
     if value.is_null() {
@@ -2109,16 +2569,16 @@ fn eval_date_format(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+    let value =
+        match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let output_format =
-        match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)?
-    {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+        match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let value_path = format!("{}.args[0]", base_path);
     let mut input_formats: Option<Vec<String>> = None;
     let mut timezone: Option<FixedOffset> = None;
@@ -2127,9 +2587,9 @@ fn eval_date_format(
         let input_path = format!("{}.args[2]", base_path);
         let input_value =
             match eval_arg_value_at(2, args, injected, record, context, out, base_path, locals)? {
-            None => return Ok(EvalValue::Missing),
-            Some(value) => value,
-        };
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
         if input_value.is_null() {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -2153,9 +2613,9 @@ fn eval_date_format(
         let tz_path = format!("{}.args[3]", base_path);
         let tz_value =
             match eval_arg_string_at(3, args, injected, record, context, out, base_path, locals)? {
-            None => return Ok(EvalValue::Missing),
-            Some(value) => value,
-        };
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
         timezone = Some(parse_timezone(&tz_value, &tz_path)?);
     }
 
@@ -2186,10 +2646,11 @@ fn eval_to_unixtime(
         .with_path(format!("{}.args", base_path)));
     }
 
-    let value = match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
-        None => return Ok(EvalValue::Missing),
-        Some(value) => value,
-    };
+    let value =
+        match eval_arg_string_at(0, args, injected, record, context, out, base_path, locals)? {
+            None => return Ok(EvalValue::Missing),
+            Some(value) => value,
+        };
     let value_path = format!("{}.args[0]", base_path);
 
     let mut unit = "s".to_string();
@@ -2199,9 +2660,9 @@ fn eval_to_unixtime(
         let arg_path = format!("{}.args[1]", base_path);
         let arg_value =
             match eval_arg_string_at(1, args, injected, record, context, out, base_path, locals)? {
-            None => return Ok(EvalValue::Missing),
-            Some(value) => value,
-        };
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
         if total_len == 3 {
             if arg_value != "s" && arg_value != "ms" {
                 return Err(TransformError::new(
@@ -2216,11 +2677,10 @@ fn eval_to_unixtime(
         } else if looks_like_timezone(&arg_value) {
             timezone = Some(parse_timezone(&arg_value, &arg_path)?);
         } else {
-            return Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                "unit must be s or ms",
-            )
-            .with_path(arg_path));
+            return Err(
+                TransformError::new(TransformErrorKind::ExprError, "unit must be s or ms")
+                    .with_path(arg_path),
+            );
         }
     }
 
@@ -2228,9 +2688,9 @@ fn eval_to_unixtime(
         let tz_path = format!("{}.args[2]", base_path);
         let tz_value =
             match eval_arg_string_at(2, args, injected, record, context, out, base_path, locals)? {
-            None => return Ok(EvalValue::Missing),
-            Some(value) => value,
-        };
+                None => return Ok(EvalValue::Missing),
+                Some(value) => value,
+            };
         timezone = Some(parse_timezone(&tz_value, &tz_path)?);
     }
 
@@ -2270,9 +2730,9 @@ fn eval_lookup(
     let collection_path = format!("{}.args[0]", base_path);
     let collection =
         match eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)? {
-        EvalValue::Missing => return Ok(EvalValue::Missing),
-        EvalValue::Value(value) => value,
-    };
+            EvalValue::Missing => return Ok(EvalValue::Missing),
+            EvalValue::Value(value) => value,
+        };
     let collection_array = match collection {
         JsonValue::Array(items) => items,
         JsonValue::Null => {
@@ -2280,14 +2740,14 @@ fn eval_lookup(
                 TransformErrorKind::ExprError,
                 "lookup collection must be an array",
             )
-            .with_path(collection_path))
+            .with_path(collection_path));
         }
         _ => {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
                 "lookup collection must be an array",
             )
-            .with_path(collection_path))
+            .with_path(collection_path));
         }
     };
 
@@ -2340,8 +2800,11 @@ fn eval_lookup(
             .with_path(format!("{}.args[3]", base_path)));
         }
         let tokens = parse_path(value).map_err(|_| {
-            TransformError::new(TransformErrorKind::ExprError, "lookup output_path is invalid")
-                .with_path(format!("{}.args[3]", base_path))
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "lookup output_path is invalid",
+            )
+            .with_path(format!("{}.args[3]", base_path))
         })?;
         Some(tokens)
     } else {
@@ -2351,9 +2814,9 @@ fn eval_lookup(
     let match_path = format!("{}.args[2]", base_path);
     let match_value =
         match eval_expr_at_index(2, args, injected, record, context, out, base_path, locals)? {
-        EvalValue::Missing => return Ok(EvalValue::Missing),
-        EvalValue::Value(value) => value,
-    };
+            EvalValue::Missing => return Ok(EvalValue::Missing),
+            EvalValue::Value(value) => value,
+        };
     if match_value.is_null() {
         return Err(TransformError::new(
             TransformErrorKind::ExprError,
@@ -2397,10 +2860,7 @@ fn eval_lookup(
     }
 }
 
-fn locals_with_item<'a>(
-    locals: Option<&EvalLocals<'a>>,
-    item: EvalItem<'a>,
-) -> EvalLocals<'a> {
+fn locals_with_item<'a>(locals: Option<&EvalLocals<'a>>, item: EvalItem<'a>) -> EvalLocals<'a> {
     EvalLocals {
         item: Some(item),
         acc: locals.and_then(|locals| locals.acc),
@@ -2420,7 +2880,9 @@ fn eval_array_arg(
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<Vec<JsonValue>, TransformError> {
     let arg_path = format!("{}.args[{}]", base_path, index);
-    match eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)? {
+    match eval_expr_at_index(
+        index, args, injected, record, context, out, base_path, locals,
+    )? {
         EvalValue::Missing => Ok(Vec::new()),
         EvalValue::Value(value) => {
             if value.is_null() {
@@ -2428,11 +2890,10 @@ fn eval_array_arg(
             } else if let JsonValue::Array(items) = value {
                 Ok(items)
             } else {
-                Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "expr arg must be an array",
+                Err(
+                    TransformError::new(TransformErrorKind::ExprError, "expr arg must be an array")
+                        .with_path(arg_path),
                 )
-                .with_path(arg_path))
             }
         }
     }
@@ -2486,7 +2947,7 @@ fn eval_key_expr_string(
                 TransformErrorKind::ExprError,
                 "expr arg must not be missing",
             )
-            .with_path(base_path))
+            .with_path(base_path));
         }
         EvalValue::Value(value) => value,
     };
@@ -2507,7 +2968,10 @@ fn ensure_eq_compatible(value: &JsonValue, path: &str) -> Result<(), TransformEr
     if value_to_string_optional(value).is_some() {
         return Ok(());
     }
-    Err(expr_type_error("value must be string/number/bool or null", path))
+    Err(expr_type_error(
+        "value must be string/number/bool or null",
+        path,
+    ))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2557,7 +3021,7 @@ fn eval_sort_key(
                 TransformErrorKind::ExprError,
                 "expr arg must not be missing",
             )
-            .with_path(base_path))
+            .with_path(base_path));
         }
         EvalValue::Value(value) => value,
     };
@@ -2755,8 +3219,11 @@ fn eval_array_flatten(
             )
             .with_path(depth_path));
         }
-        let depth =
-            value_to_i64(&depth_value, &depth_path, "depth must be a non-negative integer")?;
+        let depth = value_to_i64(
+            &depth_value,
+            &depth_path,
+            "depth must be a non-negative integer",
+        )?;
         if depth < 0 {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -2765,11 +3232,8 @@ fn eval_array_flatten(
             .with_path(depth_path));
         }
         usize::try_from(depth).map_err(|_| {
-            TransformError::new(
-                TransformErrorKind::ExprError,
-                "depth is too large",
-            )
-            .with_path(depth_path)
+            TransformError::new(TransformErrorKind::ExprError, "depth is too large")
+                .with_path(depth_path)
         })?
     } else {
         1
@@ -2997,11 +3461,7 @@ fn eval_array_chunk(
         .with_path(size_path));
     }
     let size = usize::try_from(size).map_err(|_| {
-        TransformError::new(
-            TransformErrorKind::ExprError,
-            "size is too large",
-        )
-        .with_path(size_path)
+        TransformError::new(TransformErrorKind::ExprError, "size is too large").with_path(size_path)
     })?;
 
     let mut chunks = Vec::new();
@@ -3035,7 +3495,9 @@ fn eval_array_zip(
 
     let mut arrays = Vec::new();
     for index in 0..total_len {
-        arrays.push(eval_array_arg(index, args, injected, record, context, out, base_path, locals)?);
+        arrays.push(eval_array_arg(
+            index, args, injected, record, context, out, base_path, locals,
+        )?);
     }
 
     let min_len = arrays.iter().map(|items| items.len()).min().unwrap_or(0);
@@ -3086,7 +3548,9 @@ fn eval_array_zip_with(
 
     let mut arrays = Vec::new();
     for index in 0..expr_index {
-        arrays.push(eval_array_arg(index, args, injected, record, context, out, base_path, locals)?);
+        arrays.push(eval_array_arg(
+            index, args, injected, record, context, out, base_path, locals,
+        )?);
     }
 
     let min_len = arrays.iter().map(|items| items.len()).min().unwrap_or(0);
@@ -3144,7 +3608,7 @@ fn eval_array_unzip(
                     TransformErrorKind::ExprError,
                     "unzip items must be arrays",
                 )
-                .with_path(format!("{}.args[0]", base_path)))
+                .with_path(format!("{}.args[0]", base_path)));
             }
         };
         if let Some(expected) = expected_len {
@@ -3476,10 +3940,7 @@ fn eval_array_sort_by(
         }
     });
 
-    let results = items
-        .into_iter()
-        .map(|item| item.value)
-        .collect::<Vec<_>>();
+    let results = items.into_iter().map(|item| item.value).collect::<Vec<_>>();
     Ok(EvalValue::Value(JsonValue::Array(results)))
 }
 
@@ -3896,7 +4357,9 @@ fn eval_json_merge(
     let mut result: Option<Map<String, JsonValue>> = None;
     for index in 0..total_len {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        let value = eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)?;
+        let value = eval_expr_at_index(
+            index, args, injected, record, context, out, base_path, locals,
+        )?;
         let value = match value {
             EvalValue::Missing => continue,
             EvalValue::Value(value) => value,
@@ -3915,7 +4378,7 @@ fn eval_json_merge(
                     TransformErrorKind::ExprError,
                     "expr arg must be object",
                 )
-                .with_path(arg_path))
+                .with_path(arg_path));
             }
         };
 
@@ -4027,12 +4490,14 @@ fn eval_json_pick(
                 TransformErrorKind::ExprError,
                 "expr arg must be object",
             )
-            .with_path(base_path_arg))
+            .with_path(base_path_arg));
         }
     };
     let base_value = JsonValue::Object(base_obj);
 
-    let paths = eval_json_paths_arg(args, injected, record, context, out, base_path, locals, 1, true)?;
+    let paths = eval_json_paths_arg(
+        args, injected, record, context, out, base_path, locals, 1, true,
+    )?;
     let Some(paths) = paths else {
         return Ok(EvalValue::Missing);
     };
@@ -4086,12 +4551,14 @@ fn eval_json_omit(
                 TransformErrorKind::ExprError,
                 "expr arg must be object",
             )
-            .with_path(base_path_arg))
+            .with_path(base_path_arg));
         }
     };
     base_value = JsonValue::Object(base_obj);
 
-    let paths = eval_json_paths_arg(args, injected, record, context, out, base_path, locals, 1, false)?;
+    let paths = eval_json_paths_arg(
+        args, injected, record, context, out, base_path, locals, 1, false,
+    )?;
     let Some(paths) = paths else {
         return Ok(EvalValue::Missing);
     };
@@ -4112,11 +4579,20 @@ fn eval_json_keys(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    eval_json_object_unary(args, injected, record, context, out, base_path, locals, |map| {
-        Ok(JsonValue::Array(
-            map.keys().cloned().map(JsonValue::String).collect(),
-        ))
-    })
+    eval_json_object_unary(
+        args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+        |map| {
+            Ok(JsonValue::Array(
+                map.keys().cloned().map(JsonValue::String).collect(),
+            ))
+        },
+    )
 }
 
 fn eval_json_values(
@@ -4128,9 +4604,16 @@ fn eval_json_values(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    eval_json_object_unary(args, injected, record, context, out, base_path, locals, |map| {
-        Ok(JsonValue::Array(map.values().cloned().collect()))
-    })
+    eval_json_object_unary(
+        args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+        |map| Ok(JsonValue::Array(map.values().cloned().collect())),
+    )
 }
 
 fn eval_json_entries(
@@ -4142,16 +4625,25 @@ fn eval_json_entries(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    eval_json_object_unary(args, injected, record, context, out, base_path, locals, |map| {
-        let mut entries = Vec::with_capacity(map.len());
-        for (key, value) in map {
-            let mut entry = Map::new();
-            entry.insert("key".to_string(), JsonValue::String(key.clone()));
-            entry.insert("value".to_string(), value.clone());
-            entries.push(JsonValue::Object(entry));
-        }
-        Ok(JsonValue::Array(entries))
-    })
+    eval_json_object_unary(
+        args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+        |map| {
+            let mut entries = Vec::with_capacity(map.len());
+            for (key, value) in map {
+                let mut entry = Map::new();
+                entry.insert("key".to_string(), JsonValue::String(key.clone()));
+                entry.insert("value".to_string(), value.clone());
+                entries.push(JsonValue::Object(entry));
+            }
+            Ok(JsonValue::Array(entries))
+        },
+    )
 }
 
 fn eval_len(
@@ -4173,8 +4665,7 @@ fn eval_len(
     }
 
     let arg_path = format!("{}.args[0]", base_path);
-    let value =
-        eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
+    let value = eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
     let value = match value {
         EvalValue::Missing => return Ok(EvalValue::Missing),
         EvalValue::Value(value) => value,
@@ -4196,13 +4687,13 @@ fn eval_len(
                 TransformErrorKind::ExprError,
                 "expr arg must be string, array, or object",
             )
-            .with_path(arg_path))
+            .with_path(arg_path));
         }
     };
 
-    Ok(EvalValue::Value(JsonValue::Number(serde_json::Number::from(
-        len as u64,
-    ))))
+    Ok(EvalValue::Value(JsonValue::Number(
+        serde_json::Number::from(len as u64),
+    )))
 }
 
 fn eval_json_from_entries(
@@ -4291,7 +4782,7 @@ fn eval_json_from_entries(
                                 TransformErrorKind::ExprError,
                                 "entries must be arrays or objects",
                             )
-                            .with_path(&entry_path))
+                            .with_path(&entry_path));
                         }
                     }
                 }
@@ -4306,11 +4797,11 @@ fn eval_json_from_entries(
     }
 
     let key = value_to_string(&first_value, &arg_path)?;
-    let value = match eval_expr_at_index(1, args, injected, record, context, out, base_path, locals)?
-    {
-        EvalValue::Missing => return Ok(EvalValue::Missing),
-        EvalValue::Value(value) => value,
-    };
+    let value =
+        match eval_expr_at_index(1, args, injected, record, context, out, base_path, locals)? {
+            EvalValue::Missing => return Ok(EvalValue::Missing),
+            EvalValue::Value(value) => value,
+        };
     let mut output = Map::new();
     output.insert(key, value);
     Ok(EvalValue::Value(JsonValue::Object(output)))
@@ -4325,12 +4816,21 @@ fn eval_json_object_flatten(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    eval_json_object_unary(args, injected, record, context, out, base_path, locals, |map| {
-        let mut output = Map::new();
-        let mut tokens = Vec::new();
-        flatten_object(map, &mut tokens, &mut output, base_path)?;
-        Ok(JsonValue::Object(output))
-    })
+    eval_json_object_unary(
+        args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+        |map| {
+            let mut output = Map::new();
+            let mut tokens = Vec::new();
+            flatten_object(map, &mut tokens, &mut output, base_path)?;
+            Ok(JsonValue::Object(output))
+        },
+    )
 }
 
 fn eval_json_object_unflatten(
@@ -4342,40 +4842,52 @@ fn eval_json_object_unflatten(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    eval_json_object_unary(args, injected, record, context, out, base_path, locals, |map| {
-        let mut paths = Vec::with_capacity(map.len());
-        let mut values = Vec::with_capacity(map.len());
-        for (key, value) in map {
-            let tokens = parse_path_tokens(
-                key,
-                TransformErrorKind::ExprError,
-                format!("{}.args[0]", base_path),
-            )?;
-            if tokens.iter().any(|token| matches!(token, PathToken::Index(_))) {
-                return Err(TransformError::new(
+    eval_json_object_unary(
+        args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+        |map| {
+            let mut paths = Vec::with_capacity(map.len());
+            let mut values = Vec::with_capacity(map.len());
+            for (key, value) in map {
+                let tokens = parse_path_tokens(
+                    key,
                     TransformErrorKind::ExprError,
-                    "array indexes are not allowed in path",
-                )
-                .with_path(format!("{}.args[0]", base_path)));
+                    format!("{}.args[0]", base_path),
+                )?;
+                if tokens
+                    .iter()
+                    .any(|token| matches!(token, PathToken::Index(_)))
+                {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "array indexes are not allowed in path",
+                    )
+                    .with_path(format!("{}.args[0]", base_path)));
+                }
+                if has_path_conflict(&paths, &tokens) {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "path conflicts with another path",
+                    )
+                    .with_path(format!("{}.args[0]", base_path)));
+                }
+                paths.push(tokens);
+                values.push(value.clone());
             }
-            if has_path_conflict(&paths, &tokens) {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "path conflicts with another path",
-                )
-                .with_path(format!("{}.args[0]", base_path)));
+
+            let mut root = JsonValue::Object(Map::new());
+            for (tokens, value) in paths.into_iter().zip(values) {
+                set_path_object_only(&mut root, &tokens, value, base_path)?;
             }
-            paths.push(tokens);
-            values.push(value.clone());
-        }
 
-        let mut root = JsonValue::Object(Map::new());
-        for (tokens, value) in paths.into_iter().zip(values) {
-            set_path_object_only(&mut root, &tokens, value, base_path)?;
-        }
-
-        Ok(root)
-    })
+            Ok(root)
+        },
+    )
 }
 
 fn eval_json_object_unary<F>(
@@ -4401,8 +4913,7 @@ where
     }
 
     let arg_path = format!("{}.args[0]", base_path);
-    let value =
-        eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
+    let value = eval_expr_at_index(0, args, injected, record, context, out, base_path, locals)?;
     let value = match value {
         EvalValue::Missing => return Ok(EvalValue::Missing),
         EvalValue::Value(value) => value,
@@ -4421,7 +4932,7 @@ where
                 TransformErrorKind::ExprError,
                 "expr arg must be object",
             )
-            .with_path(arg_path))
+            .with_path(arg_path));
         }
     };
 
@@ -4440,8 +4951,9 @@ fn eval_json_paths_arg(
     allow_terminal_index: bool,
 ) -> Result<Option<Vec<Vec<PathToken>>>, TransformError> {
     let arg_path = format!("{}.args[{}]", base_path, index);
-    let value =
-        eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)?;
+    let value = eval_expr_at_index(
+        index, args, injected, record, context, out, base_path, locals,
+    )?;
     let value = match value {
         EvalValue::Missing => return Ok(None),
         EvalValue::Value(value) => value,
@@ -4475,7 +4987,7 @@ fn eval_json_paths_arg(
                 TransformErrorKind::ExprError,
                 "paths must be a string or array of strings",
             )
-            .with_path(arg_path))
+            .with_path(arg_path));
         }
     };
 
@@ -4510,9 +5022,9 @@ fn has_duplicate_path(paths: &[Vec<PathToken>], tokens: &[PathToken]) -> bool {
 }
 
 fn has_path_conflict(paths: &[Vec<PathToken>], tokens: &[PathToken]) -> bool {
-    paths.iter().any(|existing| {
-        is_path_prefix(existing, tokens) || is_path_prefix(tokens, existing)
-    })
+    paths
+        .iter()
+        .any(|existing| is_path_prefix(existing, tokens) || is_path_prefix(tokens, existing))
 }
 
 fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
@@ -4522,7 +5034,11 @@ fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
     prefix.iter().zip(tokens).all(|(left, right)| left == right)
 }
 
-fn merge_object(target: &mut Map<String, JsonValue>, incoming: &Map<String, JsonValue>, deep: bool) {
+fn merge_object(
+    target: &mut Map<String, JsonValue>,
+    incoming: &Map<String, JsonValue>,
+    deep: bool,
+) {
     for (key, value) in incoming {
         if deep {
             if let (Some(JsonValue::Object(target_obj)), JsonValue::Object(incoming_obj)) =
@@ -4617,11 +5133,10 @@ fn set_path_object_only(
     base_path: &str,
 ) -> Result<(), TransformError> {
     if tokens.is_empty() {
-        return Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "path is empty",
-        )
-        .with_path(format!("{}.args[0]", base_path)));
+        return Err(
+            TransformError::new(TransformErrorKind::ExprError, "path is empty")
+                .with_path(format!("{}.args[0]", base_path)),
+        );
     }
 
     let mut current = root;
@@ -4633,7 +5148,7 @@ fn set_path_object_only(
                     TransformErrorKind::ExprError,
                     "array indexes are not allowed in path",
                 )
-                .with_path(format!("{}.args[0]", base_path)))
+                .with_path(format!("{}.args[0]", base_path)));
             }
         };
         let is_last = index == tokens.len() - 1;
@@ -4652,9 +5167,9 @@ fn set_path_object_only(
                     return Ok(());
                 }
 
-                let entry = map.entry(key.clone()).or_insert_with(|| {
-                    JsonValue::Object(Map::new())
-                });
+                let entry = map
+                    .entry(key.clone())
+                    .or_insert_with(|| JsonValue::Object(Map::new()));
                 if !entry.is_object() {
                     return Err(TransformError::new(
                         TransformErrorKind::ExprError,
@@ -4669,7 +5184,7 @@ fn set_path_object_only(
                     TransformErrorKind::ExprError,
                     "path conflicts with non-object value",
                 )
-                .with_path(format!("{}.args[0]", base_path)))
+                .with_path(format!("{}.args[0]", base_path)));
             }
         }
     }
@@ -4684,11 +5199,10 @@ fn set_path_with_indexes(
     base_path: &str,
 ) -> Result<(), TransformError> {
     if tokens.is_empty() {
-        return Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "path is empty",
-        )
-        .with_path(format!("{}.args[1]", base_path)));
+        return Err(
+            TransformError::new(TransformErrorKind::ExprError, "path is empty")
+                .with_path(format!("{}.args[1]", base_path)),
+        );
     }
 
     let mut current = root;
@@ -4703,18 +5217,14 @@ fn set_path_with_indexes(
                             map.insert(key.clone(), value);
                             return Ok(());
                         }
-                        let entry = map.entry(key.clone()).or_insert_with(|| {
-                            match next_token {
-                                Some(PathToken::Index(_)) => JsonValue::Array(Vec::new()),
-                                _ => JsonValue::Object(Map::new()),
-                            }
+                        let entry = map.entry(key.clone()).or_insert_with(|| match next_token {
+                            Some(PathToken::Index(_)) => JsonValue::Array(Vec::new()),
+                            _ => JsonValue::Object(Map::new()),
                         });
                         let expect_index = matches!(next_token, Some(PathToken::Index(_)));
                         let entry_is_array = matches!(entry, JsonValue::Array(_));
                         let entry_is_object = matches!(entry, JsonValue::Object(_));
-                        if !(expect_index && entry_is_array
-                            || !expect_index && entry_is_object)
-                        {
+                        if !(expect_index && entry_is_array || !expect_index && entry_is_object) {
                             return Err(TransformError::new(
                                 TransformErrorKind::ExprError,
                                 "path conflicts with non-object value",
@@ -4728,7 +5238,7 @@ fn set_path_with_indexes(
                             TransformErrorKind::ExprError,
                             "path conflicts with non-object value",
                         )
-                        .with_path(format!("{}.args[1]", base_path)))
+                        .with_path(format!("{}.args[1]", base_path)));
                     }
                 }
             }
@@ -4753,9 +5263,7 @@ fn set_path_with_indexes(
                         let expect_index = matches!(next_token, Some(PathToken::Index(_)));
                         let entry_is_array = matches!(entry, JsonValue::Array(_));
                         let entry_is_object = matches!(entry, JsonValue::Object(_));
-                        if !(expect_index && entry_is_array
-                            || !expect_index && entry_is_object)
-                        {
+                        if !(expect_index && entry_is_array || !expect_index && entry_is_object) {
                             return Err(TransformError::new(
                                 TransformErrorKind::ExprError,
                                 "path conflicts with non-object value",
@@ -4769,7 +5277,7 @@ fn set_path_with_indexes(
                             TransformErrorKind::ExprError,
                             "path conflicts with non-object value",
                         )
-                        .with_path(format!("{}.args[1]", base_path)))
+                        .with_path(format!("{}.args[1]", base_path)));
                     }
                 }
             }
@@ -4829,7 +5337,9 @@ fn eval_bool_and_or(
     let mut saw_missing = false;
     for index in 0..total_len {
         let arg_path = format!("{}.args[{}]", base_path, index);
-        let value = eval_expr_at_index(index, args, injected, record, context, out, base_path, locals)?;
+        let value = eval_expr_at_index(
+            index, args, injected, record, context, out, base_path, locals,
+        )?;
         match value {
             EvalValue::Missing => {
                 saw_missing = true;
@@ -4904,8 +5414,26 @@ fn eval_compare(
 
     let left_path = format!("{}.args[0]", base_path);
     let right_path = format!("{}.args[1]", base_path);
-    let left = eval_expr_value_or_null_at(0, &expr_op.args, injected, record, context, out, base_path, locals)?;
-    let right = eval_expr_value_or_null_at(1, &expr_op.args, injected, record, context, out, base_path, locals)?;
+    let left = eval_expr_value_or_null_at(
+        0,
+        &expr_op.args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+    )?;
+    let right = eval_expr_value_or_null_at(
+        1,
+        &expr_op.args,
+        injected,
+        record,
+        context,
+        out,
+        base_path,
+        locals,
+    )?;
 
     let result = match expr_op.op.as_str() {
         "==" => compare_eq(&left, &right, &left_path, &right_path)?,
@@ -4920,7 +5448,7 @@ fn eval_compare(
                 TransformErrorKind::ExprError,
                 "expr.op is not supported",
             )
-            .with_path(format!("{}.op", base_path)))
+            .with_path(format!("{}.op", base_path)));
         }
     };
 
@@ -5026,7 +5554,7 @@ fn parse_format_list(value: &JsonValue, path: &str) -> Result<Vec<String>, Trans
                             TransformErrorKind::ExprError,
                             "input_format must be a string or array of strings",
                         )
-                        .with_path(item_path))
+                        .with_path(item_path));
                     }
                 };
                 if value.is_empty() {
@@ -5073,7 +5601,10 @@ fn parse_datetime(
 
     parse_datetime_with_formats(
         value,
-        &DEFAULT_DATE_FORMATS.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+        &DEFAULT_DATE_FORMATS
+            .iter()
+            .map(|f| f.to_string())
+            .collect::<Vec<_>>(),
         timezone,
         path,
     )
@@ -5100,11 +5631,10 @@ fn parse_datetime_with_formats(
         }
     }
 
-    Err(TransformError::new(
-        TransformErrorKind::ExprError,
-        "date format is invalid",
+    Err(
+        TransformError::new(TransformErrorKind::ExprError, "date format is invalid")
+            .with_path(path),
     )
-    .with_path(path))
 }
 
 fn apply_timezone(
@@ -5145,7 +5675,7 @@ fn parse_timezone(value: &str, path: &str) -> Result<FixedOffset, TransformError
                 TransformErrorKind::ExprError,
                 "timezone must be UTC or an offset like +09:00",
             )
-            .with_path(path))
+            .with_path(path));
         }
     };
 
@@ -5159,7 +5689,7 @@ fn parse_timezone(value: &str, path: &str) -> Result<FixedOffset, TransformError
                     TransformErrorKind::ExprError,
                     "timezone must be UTC or an offset like +09:00",
                 )
-                .with_path(path))
+                .with_path(path));
             }
         }
     } else {
@@ -5173,7 +5703,7 @@ fn parse_timezone(value: &str, path: &str) -> Result<FixedOffset, TransformError
                             TransformErrorKind::ExprError,
                             "timezone must be UTC or an offset like +09:00",
                         )
-                        .with_path(path))
+                        .with_path(path));
                     }
                 }
             }
@@ -5187,7 +5717,7 @@ fn parse_timezone(value: &str, path: &str) -> Result<FixedOffset, TransformError
                             TransformErrorKind::ExprError,
                             "timezone must be UTC or an offset like +09:00",
                         )
-                        .with_path(path))
+                        .with_path(path));
                     }
                 }
             }
@@ -5196,7 +5726,7 @@ fn parse_timezone(value: &str, path: &str) -> Result<FixedOffset, TransformError
                     TransformErrorKind::ExprError,
                     "timezone must be UTC or an offset like +09:00",
                 )
-                .with_path(path))
+                .with_path(path));
             }
         }
     };
@@ -5235,11 +5765,10 @@ fn value_to_string(value: &JsonValue, path: &str) -> Result<String, TransformErr
 fn value_as_string(value: &JsonValue, path: &str) -> Result<String, TransformError> {
     match value {
         JsonValue::String(s) => Ok(s.clone()),
-        _ => Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "value must be a string",
-        )
-        .with_path(path)),
+        _ => Err(
+            TransformError::new(TransformErrorKind::ExprError, "value must be a string")
+                .with_path(path),
+        ),
     }
 }
 
@@ -5287,9 +5816,7 @@ fn value_to_i64(value: &JsonValue, path: &str, message: &str) -> Result<i64, Tra
                 Err(expr_type_error(message, path))
             }
         }
-        JsonValue::String(s) => s
-            .parse::<i64>()
-            .map_err(|_| expr_type_error(message, path)),
+        JsonValue::String(s) => s.parse::<i64>().map_err(|_| expr_type_error(message, path)),
         _ => Err(expr_type_error(message, path)),
     }
 }
@@ -5320,9 +5847,10 @@ fn to_radix_string(value: i64, base: u32, path: &str) -> Result<String, Transfor
     }
 
     let is_negative = value < 0;
-    let mut n = value.checked_abs().ok_or_else(|| {
-        expr_type_error("value is out of range for base conversion", path)
-    })? as u64;
+    let mut n = value
+        .checked_abs()
+        .ok_or_else(|| expr_type_error("value is out of range for base conversion", path))?
+        as u64;
 
     let mut buf = Vec::new();
     while n > 0 {
@@ -5372,11 +5900,7 @@ fn number_to_string(number: &serde_json::Number) -> String {
     number.to_string()
 }
 
-fn cast_value(
-    value: &JsonValue,
-    type_name: &str,
-    path: &str,
-) -> Result<JsonValue, TransformError> {
+fn cast_value(value: &JsonValue, type_name: &str, path: &str) -> Result<JsonValue, TransformError> {
     match type_name {
         "string" => Ok(JsonValue::String(value_to_string(value, path)?)),
         "int" => cast_to_int(value, path),
@@ -5471,7 +5995,7 @@ fn parse_source(source: &str) -> Result<(Namespace, &str), TransformError> {
                 return Err(TransformError::new(
                     TransformErrorKind::InvalidRef,
                     "ref namespace must be input|context|out",
-                ))
+                ));
             }
         };
         Ok((namespace, path))
@@ -5488,10 +6012,7 @@ fn parse_source(source: &str) -> Result<(Namespace, &str), TransformError> {
 
 fn parse_ref(value: &str) -> Result<(Namespace, &str), TransformError> {
     let (prefix, path) = value.split_once('.').ok_or_else(|| {
-        TransformError::new(
-            TransformErrorKind::InvalidRef,
-            "ref must include namespace",
-        )
+        TransformError::new(TransformErrorKind::InvalidRef, "ref must include namespace")
     })?;
 
     if path.is_empty() {
@@ -5513,7 +6034,7 @@ fn parse_ref(value: &str) -> Result<(Namespace, &str), TransformError> {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidRef,
                 "ref namespace must be input|context|out|item|acc|pipe|local",
-            ))
+            ));
         }
     };
 
@@ -5525,9 +6046,8 @@ fn parse_path_tokens(
     kind: TransformErrorKind,
     error_path: impl Into<String>,
 ) -> Result<Vec<PathToken>, TransformError> {
-    parse_path(path).map_err(|err| {
-        TransformError::new(kind, err.message()).with_path(error_path.into())
-    })
+    parse_path(path)
+        .map_err(|err| TransformError::new(kind, err.message()).with_path(error_path.into()))
 }
 
 fn set_path(
@@ -5559,7 +6079,7 @@ fn set_path(
                     TransformErrorKind::InvalidTarget,
                     "target path must not include indexes",
                 )
-                .with_path(format!("{}.target", mapping_path)))
+                .with_path(format!("{}.target", mapping_path)));
             }
         };
 
@@ -5570,9 +6090,9 @@ fn set_path(
                     return Ok(());
                 }
 
-                let entry = map.entry(key.to_string()).or_insert_with(|| {
-                    JsonValue::Object(Map::new())
-                });
+                let entry = map
+                    .entry(key.to_string())
+                    .or_insert_with(|| JsonValue::Object(Map::new()));
                 if !entry.is_object() {
                     return Err(TransformError::new(
                         TransformErrorKind::InvalidTarget,
@@ -5587,7 +6107,7 @@ fn set_path(
                     TransformErrorKind::InvalidTarget,
                     "target root must be an object",
                 )
-                .with_path(format!("{}.target", mapping_path)))
+                .with_path(format!("{}.target", mapping_path)));
             }
         }
     }
@@ -5621,10 +6141,14 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
                 None
             }
         }
-        Expr::Ref(expr_ref) if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) => {
+        Expr::Ref(expr_ref)
+            if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) =>
+        {
             // Single v2 reference or literal escape (serde collapsed 1-element array)
             // Wrap it as single-element array
-            Some(JsonValue::Array(vec![JsonValue::String(expr_ref.ref_path.clone())]))
+            Some(JsonValue::Array(vec![JsonValue::String(
+                expr_ref.ref_path.clone(),
+            )]))
         }
         Expr::Chain(chain) => {
             // Check if first element is a v2 ref
@@ -5632,9 +6156,8 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
                 if let Expr::Ref(r) = first {
                     if r.ref_path.starts_with('@') {
                         // Convert chain to array
-                        let arr: Vec<JsonValue> = chain.chain.iter()
-                            .map(|e| expr_to_json_value(e))
-                            .collect();
+                        let arr: Vec<JsonValue> =
+                            chain.chain.iter().map(|e| expr_to_json_value(e)).collect();
                         return Some(JsonValue::Array(arr));
                     }
                 }
@@ -5651,8 +6174,7 @@ fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
     match expr {
         Expr::Literal(value) => Some(value.clone()),
         Expr::Ref(ref_expr)
-            if ref_expr.ref_path.starts_with('@')
-                || is_literal_escape(&ref_expr.ref_path) =>
+            if ref_expr.ref_path.starts_with('@') || is_literal_escape(&ref_expr.ref_path) =>
         {
             Some(JsonValue::String(ref_expr.ref_path.clone()))
         }
@@ -5660,11 +6182,8 @@ fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
             if let Some(first) = chain.chain.first() {
                 if let Expr::Ref(r) = first {
                     if r.ref_path.starts_with('@') {
-                        let arr: Vec<JsonValue> = chain
-                            .chain
-                            .iter()
-                            .map(expr_to_json_value)
-                            .collect();
+                        let arr: Vec<JsonValue> =
+                            chain.chain.iter().map(expr_to_json_value).collect();
                         return Some(JsonValue::Array(arr));
                     }
                 }
@@ -5838,7 +6357,10 @@ mappings:
         let rule = parse_rule_file(yaml).unwrap();
         let input = r#"[{"name": "Bob"}]"#;
         let result = transform(&rule, input, None).unwrap();
-        assert_eq!(result, serde_json::json!([{"first_name": "Bob", "greeting": "Hello, Bob"}]));
+        assert_eq!(
+            result,
+            serde_json::json!([{"first_name": "Bob", "greeting": "Hello, Bob"}])
+        );
     }
 
     #[test]
@@ -5927,7 +6449,10 @@ mappings:
         let rule = parse_rule_file(yaml).unwrap();
         let input = r#"[{"name": "alice"}]"#;
         let result = transform(&rule, input, None).unwrap();
-        assert_eq!(result, serde_json::json!([{"name": "alice", "upper_name": "ALICE"}]));
+        assert_eq!(
+            result,
+            serde_json::json!([{"name": "alice", "upper_name": "ALICE"}])
+        );
     }
 
     #[test]
@@ -6005,6 +6530,9 @@ mappings:
         let rule = parse_rule_file(yaml).unwrap();
         let input = r#"[{"name": "test"}]"#;
         let result = transform(&rule, input, None).unwrap();
-        assert_eq!(result, serde_json::json!([{"name": "test", "upper": "TEST"}]));
+        assert_eq!(
+            result,
+            serde_json::json!([{"name": "test", "upper": "TEST"}])
+        );
     }
 }

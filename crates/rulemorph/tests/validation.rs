@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use rulemorph::{
-    parse_rule_file, validate_rule_file, validate_rule_file_with_source, ErrorCode, RuleError,
+    ErrorCode, RuleError, parse_rule_file, validate_rule_file, validate_rule_file_with_source,
 };
+use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
 struct ExpectedError {
@@ -22,9 +22,8 @@ fn load_rule(case: &str) -> rulemorph::RuleFile {
     let rules_path = fixtures_dir().join(case).join("rules.yaml");
     let yaml = fs::read_to_string(&rules_path)
         .unwrap_or_else(|_| panic!("failed to read {}", rules_path.display()));
-    parse_rule_file(&yaml).unwrap_or_else(|err| {
-        panic!("failed to parse YAML {}: {}", rules_path.display(), err)
-    })
+    parse_rule_file(&yaml)
+        .unwrap_or_else(|err| panic!("failed to parse YAML {}: {}", rules_path.display(), err))
 }
 
 fn load_expected_errors(case: &str) -> Vec<ExpectedError> {
@@ -50,10 +49,8 @@ fn normalize_errors(errors: Vec<RuleError>) -> Vec<(String, Option<String>)> {
 }
 
 fn normalize_expected(errors: Vec<ExpectedError>) -> Vec<(String, Option<String>)> {
-    let mut normalized: Vec<(String, Option<String>)> = errors
-        .into_iter()
-        .map(|err| (err.code, err.path))
-        .collect();
+    let mut normalized: Vec<(String, Option<String>)> =
+        errors.into_iter().map(|err| (err.code, err.path)).collect();
     normalized.sort();
     normalized
 }
@@ -121,11 +118,7 @@ fn invalid_rules_should_match_expected_errors() {
         let expected = normalize_expected(load_expected_errors(case));
         let errors = validate_rule_file(&rule).unwrap_err();
         let actual = normalize_errors(errors);
-        assert_eq!(
-            actual, expected,
-            "error mismatch for fixture {}",
-            case
-        );
+        assert_eq!(actual, expected, "error mismatch for fixture {}", case);
     }
 }
 
@@ -150,10 +143,7 @@ fn validation_errors_include_location_with_source() {
         .iter()
         .find(|err| err.code == ErrorCode::MissingMappingValue)
         .expect("expected MissingMappingValue");
-    let location = error
-        .location
-        .clone()
-        .expect("expected location");
+    let location = error.location.clone().expect("expected location");
     assert_eq!(location.line, 7);
 }
 
@@ -197,11 +187,7 @@ fn v2_invalid_rules_should_fail_validation() {
         let expected = normalize_expected(load_expected_errors(case));
         let errors = validate_rule_file(&rule).unwrap_err();
         let actual = normalize_errors(errors);
-        assert_eq!(
-            actual, expected,
-            "error mismatch for {}",
-            case
-        );
+        assert_eq!(actual, expected, "error mismatch for {}", case);
     }
 }
 

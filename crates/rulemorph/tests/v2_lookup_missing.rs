@@ -1,5 +1,5 @@
-use serde_json::json;
 use rulemorph::{parse_rule_file, transform_with_warnings};
+use serde_json::json;
 
 #[test]
 fn v2_lookup_first_missing_pipe_defaults() {
@@ -20,8 +20,7 @@ mappings:
 "#;
     let rule = parse_rule_file(yaml).expect("failed to parse rules");
     let input = r#"[{ "user_id": 1 }]"#;
-    let (output, warnings) =
-        transform_with_warnings(&rule, input, None).expect("transform failed");
+    let (output, warnings) = transform_with_warnings(&rule, input, None).expect("transform failed");
 
     assert_eq!(output, json!([{ "user_name": "unknown" }]));
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
@@ -46,8 +45,7 @@ mappings:
 "#;
     let rule = parse_rule_file(yaml).expect("failed to parse rules");
     let input = r#"[{ "user_id": 1 }]"#;
-    let (output, warnings) =
-        transform_with_warnings(&rule, input, None).expect("transform failed");
+    let (output, warnings) = transform_with_warnings(&rule, input, None).expect("transform failed");
 
     assert_eq!(output, json!([{ "users": ["missing"] }]));
     assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");

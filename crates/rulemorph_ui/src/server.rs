@@ -2,22 +2,25 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
+    Json, Router,
     extract::{Path as AxumPath, State},
     http::StatusCode,
-    response::{sse::{Event, Sse}, IntoResponse},
+    response::{
+        IntoResponse,
+        sse::{Event, Sse},
+    },
     routing::{any, get, post},
-    Json, Router,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::sync::broadcast;
-use tokio_stream::{wrappers::BroadcastStream, StreamExt};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::api_graph::{ApiGraphResponse, build_api_graph};
 use crate::endpoint_engine::{ApiMode, EndpointEngine};
-use crate::api_graph::{build_api_graph, ApiGraphResponse};
 use crate::trace_store::{ImportResult, TraceMeta, TraceStore};
 
 #[derive(Clone)]
@@ -39,11 +42,11 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
 
     if ui_enabled {
         let internal = Router::new()
-        .route("/internal/traces", get(list_traces))
-        .route("/internal/traces/:id", get(get_trace))
-        .route("/internal/stream", get(stream_traces))
-        .route("/internal/api-graph", get(get_api_graph))
-        .route("/internal/import", post(import_bundle_path));
+            .route("/internal/traces", get(list_traces))
+            .route("/internal/traces/:id", get(get_trace))
+            .route("/internal/stream", get(stream_traces))
+            .route("/internal/api-graph", get(get_api_graph))
+            .route("/internal/import", post(import_bundle_path));
 
         let static_service = ServeDir::new(state.ui_dir.clone())
             .fallback(ServeFile::new(state.ui_dir.join("index.html")));
@@ -87,7 +90,11 @@ async fn list_traces(
     let state = state.0;
     let mut traces = state.store.list().await.map_err(ApiError::internal)?;
     if traces.is_empty() {
-        state.store.seed_sample().await.map_err(ApiError::internal)?;
+        state
+            .store
+            .seed_sample()
+            .await
+            .map_err(ApiError::internal)?;
         traces = state.store.list().await.map_err(ApiError::internal)?;
     }
     Ok(Json(TraceListResponse { traces }))
@@ -104,7 +111,6 @@ async fn get_trace(
         None => Err(ApiError::not_found("trace not found")),
     }
 }
-
 
 #[derive(Deserialize)]
 struct ImportPathRequest {
@@ -128,13 +134,13 @@ async fn import_bundle_path(
 async fn stream_traces(
     state: State<AppState>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
-    let stream = BroadcastStream::new(state.trace_events.subscribe()).filter_map(|message| {
-        match message {
+    let stream =
+        BroadcastStream::new(state.trace_events.subscribe()).filter_map(|message| match message {
             Ok(_) => Some(Ok(Event::default().event("traces").data("updated"))),
             Err(_) => None,
-        }
-    });
-    Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
+        });
+    Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 async fn get_api_graph(

@@ -1,33 +1,32 @@
 mod cache;
+mod dto;
 mod error;
 mod locator;
 mod model;
 mod path;
-mod dto;
 mod transform;
-mod validator;
+pub mod v2_eval;
 pub mod v2_model;
 pub mod v2_parser;
-pub mod v2_eval;
 pub mod v2_validator;
+mod validator;
 
 /// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub use dto::{DtoError, DtoLanguage, generate_dto};
 pub use error::{
     ErrorCode, RuleError, TransformError, TransformErrorKind, TransformWarning, ValidationResult,
     YamlLocation,
 };
-pub use dto::{generate_dto, DtoError, DtoLanguage};
 pub use model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, RuleFile};
-pub use path::{get_path, parse_path, PathError, PathToken};
+pub use path::{PathError, PathToken, get_path, parse_path};
 pub use transform::{
-    preflight_validate, preflight_validate_with_base_dir, preflight_validate_with_warnings,
-    preflight_validate_with_warnings_with_base_dir, transform, transform_record,
-    transform_record_with_base_dir, transform_record_with_warnings,
+    TransformStream, TransformStreamItem, preflight_validate, preflight_validate_with_base_dir,
+    preflight_validate_with_warnings, preflight_validate_with_warnings_with_base_dir, transform,
+    transform_record, transform_record_with_base_dir, transform_record_with_warnings,
     transform_record_with_warnings_with_base_dir, transform_stream, transform_stream_with_base_dir,
     transform_with_base_dir, transform_with_warnings, transform_with_warnings_with_base_dir,
-    TransformStream, TransformStreamItem,
 };
 pub use validator::{validate_rule_file, validate_rule_file_with_source};
 

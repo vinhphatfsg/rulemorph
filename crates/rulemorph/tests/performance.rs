@@ -1,7 +1,7 @@
 use std::time::Instant;
 
-use serde_json::json;
 use rulemorph::{parse_rule_file, transform};
+use serde_json::json;
 
 const PERF_RULES: &str = r#"
 version: 1
@@ -45,10 +45,7 @@ fn perf_lookup_transform() {
     let mut last_len = 0;
     for _ in 0..iterations {
         let output = transform(&rule, &input, Some(&context)).expect("transform failed");
-        last_len = output
-            .as_array()
-            .map(|items| items.len())
-            .unwrap_or(0);
+        last_len = output.as_array().map(|items| items.len()).unwrap_or(0);
         std::hint::black_box(output);
     }
     let elapsed = start.elapsed();

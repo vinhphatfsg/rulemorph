@@ -108,10 +108,12 @@ body_rule: bad_rule.yaml
     write_file(rules_dir, "bad_rule.yaml", "version: 2\ninput: [\n");
 
     let result = validate_rules_dir(rules_dir).unwrap_err();
-    assert!(result
-        .errors
-        .iter()
-        .any(|err| err.code == "YamlParseFailed"));
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|err| err.code == "YamlParseFailed")
+    );
 }
 
 #[test]
@@ -161,10 +163,12 @@ timeout: 5s
     );
 
     let result = validate_rules_dir(rules_dir).unwrap_err();
-    assert!(result
-        .errors
-        .iter()
-        .any(|err| err.code == "CatchRuleInvalid"));
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|err| err.code == "CatchRuleInvalid")
+    );
 }
 
 #[test]

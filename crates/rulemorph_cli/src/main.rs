@@ -3,16 +3,14 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
-use serde_json::json;
 use rulemorph::{
-    generate_dto, parse_rule_file, preflight_validate_with_warnings_with_base_dir,
-    transform_stream_with_base_dir, transform_with_warnings_with_base_dir,
-    validate_rule_file_with_source, DtoLanguage, InputFormat, RuleError, RuleFile, TransformError,
-    TransformErrorKind, TransformWarning,
+    DtoLanguage, InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
+    TransformWarning, generate_dto, parse_rule_file,
+    preflight_validate_with_warnings_with_base_dir, transform_stream_with_base_dir,
+    transform_with_warnings_with_base_dir, validate_rule_file_with_source,
 };
-use rulemorph_ui::{
-    run as run_ui_server, validate_rules_dir, ApiMode, RulesDirErrors, UiConfig,
-};
+use rulemorph_ui::{ApiMode, RulesDirErrors, UiConfig, run as run_ui_server, validate_rules_dir};
+use serde_json::json;
 
 #[derive(Parser)]
 #[command(name = "rulemorph")]
@@ -627,7 +625,10 @@ fn emit_transform_error(err: &TransformError, format: ErrorFormat) {
             if let Some(path) = &err.path {
                 value["path"] = json!(path);
             }
-            eprintln!("{}", serde_json::to_string(&vec![value]).unwrap_or_default());
+            eprintln!(
+                "{}",
+                serde_json::to_string(&vec![value]).unwrap_or_default()
+            );
         }
     }
 }

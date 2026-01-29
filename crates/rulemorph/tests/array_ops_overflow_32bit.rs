@@ -1,6 +1,6 @@
 #![cfg(target_pointer_width = "32")]
 
-use rulemorph::{parse_rule_file, transform, TransformErrorKind};
+use rulemorph::{TransformErrorKind, parse_rule_file, transform};
 
 fn run_error(rule_yaml: &str, input_json: &str) -> rulemorph::TransformError {
     let rule = parse_rule_file(rule_yaml).expect("failed to parse rule");

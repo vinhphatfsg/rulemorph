@@ -4,28 +4,28 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use chrono::{Datelike, Utc};
 use reqwest::Client;
+use rulemorph::PathToken;
 use rulemorph::v2_eval::{
-    eval_v2_condition, eval_v2_expr, eval_v2_if_step, eval_v2_let_step, eval_v2_map_step,
-    eval_v2_op_step, eval_v2_pipe, eval_v2_ref, eval_v2_start, EvalValue, V2EvalContext,
+    EvalValue, V2EvalContext, eval_v2_condition, eval_v2_expr, eval_v2_if_step, eval_v2_let_step,
+    eval_v2_map_step, eval_v2_op_step, eval_v2_pipe, eval_v2_ref, eval_v2_start,
 };
+use rulemorph::v2_model::{V2Ref, V2Start, V2Step};
 use rulemorph::v2_parser::{
     is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
     parse_v2_pipe_from_value,
 };
-use rulemorph::PathToken;
-use rulemorph::v2_model::{V2Ref, V2Start, V2Step};
 use rulemorph::{
-    get_path, parse_path, parse_rule_file, transform_record, transform_record_with_base_dir,
-    validate_rule_file_with_source, Expr, Mapping, RuleError, RuleFile, TransformError,
-    TransformErrorKind,
+    Expr, Mapping, RuleError, RuleFile, TransformError, TransformErrorKind, get_path, parse_path,
+    parse_rule_file, transform_record, transform_record_with_base_dir,
+    validate_rule_file_with_source,
 };
-use serde::{de::DeserializeOwned, Deserialize};
-use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use serde::{Deserialize, de::DeserializeOwned};
+use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -270,8 +270,7 @@ impl EndpointEngine {
             .with_context(|| format!("failed to read {}", endpoint_path.display()))?;
         let raw_source: serde_yaml::Value = serde_yaml::from_str(&source)
             .with_context(|| format!("failed to parse {}", endpoint_path.display()))?;
-        let raw_rule_source = serde_json::to_value(raw_source)
-            .unwrap_or_else(|_| json!({}));
+        let raw_rule_source = serde_json::to_value(raw_source).unwrap_or_else(|_| json!({}));
         let raw: EndpointRuleFile = serde_yaml::from_str(&source)
             .with_context(|| format!("failed to parse {}", endpoint_path.display()))?;
         if raw.version != 2 {
@@ -359,7 +358,12 @@ impl EndpointEngine {
             }
             let step_context = self.step_context(step.with.as_ref(), None);
             let step_result = self
-                .execute_rule(&step.rule, &current, Some(&step_context), &self.endpoint_rule.base_dir)
+                .execute_rule(
+                    &step.rule,
+                    &current,
+                    Some(&step_context),
+                    &self.endpoint_rule.base_dir,
+                )
                 .await;
             match step_result {
                 Ok(execution) => {
@@ -477,7 +481,10 @@ impl EndpointEngine {
     ) -> JsonValue {
         let trace_id = Uuid::new_v4().to_string();
         let now = Utc::now();
-        let rule_path = rule_ref_from_path(&self.endpoint_rule.base_dir, &self.endpoint_rule.source_path);
+        let rule_path = rule_ref_from_path(
+            &self.endpoint_rule.base_dir,
+            &self.endpoint_rule.source_path,
+        );
         let rule_source = self.raw_rule_source.clone();
         let record = json!({
             "index": 0,
@@ -594,16 +601,11 @@ impl EndpointEngine {
         let rule_ref = rule_ref_from_path(base_dir, &resolved);
         match load_rule_kind(&resolved).map_err(|err| EndpointError::invalid(err.to_string()))? {
             RuleKind::Normal(rule) => {
-                let output = transform_record_with_base_dir(
-                    &rule.rule,
-                    input,
-                    context,
-                    &rule.base_dir,
-                )
-                .map_err(EndpointError::from_transform)?
-                .unwrap_or_else(empty_object);
-                let nodes =
-                    build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
+                let output =
+                    transform_record_with_base_dir(&rule.rule, input, context, &rule.base_dir)
+                        .map_err(EndpointError::from_transform)?
+                        .unwrap_or_else(empty_object);
+                let nodes = build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
                 let duration_us = sum_node_duration_us(&nodes);
                 let child_trace = build_rule_trace(
                     "normal",
@@ -743,10 +745,14 @@ impl EndpointEngine {
             return Ok(Some(output));
         }
         if let Some(body_rule) = &rule.body_rule {
-            let output =
-                transform_record_with_base_dir(&body_rule.rule, input, context, &body_rule.base_dir)
-                    .map_err(EndpointError::from_transform)?
-                    .unwrap_or_else(empty_object);
+            let output = transform_record_with_base_dir(
+                &body_rule.rule,
+                input,
+                context,
+                &body_rule.base_dir,
+            )
+            .map_err(EndpointError::from_transform)?
+            .unwrap_or_else(empty_object);
             return Ok(Some(output));
         }
         Ok(None)
@@ -811,7 +817,7 @@ impl EndpointEngine {
             {
                 RuleKind::Normal(rule) => rule,
                 RuleKind::Network(_) => {
-                    return Err(EndpointError::invalid("catch rule must be normal"))
+                    return Err(EndpointError::invalid("catch rule must be normal"));
                 }
             };
             let error_context = self.step_context(params, Some(error));
@@ -831,9 +837,9 @@ impl EndpointEngine {
     fn build_reply(&self, reply: &CompiledReply, input: &JsonValue) -> Result<Response> {
         let status_value = eval_expr_value(&reply.status, input, Some(&self.config_json()))?;
         let status = match status_value {
-            EvalValue::Value(JsonValue::Number(num)) => {
-                num.as_u64().ok_or_else(|| anyhow!("status must be integer"))?
-            }
+            EvalValue::Value(JsonValue::Number(num)) => num
+                .as_u64()
+                .ok_or_else(|| anyhow!("status must be integer"))?,
             EvalValue::Value(JsonValue::String(s)) => s
                 .parse::<u64>()
                 .map_err(|_| anyhow!("status must be integer"))?,
@@ -857,8 +863,8 @@ impl EndpointEngine {
         for (key, value) in &reply.headers {
             let name = HeaderName::from_bytes(key.as_bytes())
                 .map_err(|_| anyhow!("invalid header name"))?;
-            let header_value = HeaderValue::from_str(value)
-                .map_err(|_| anyhow!("invalid header value"))?;
+            let header_value =
+                HeaderValue::from_str(value).map_err(|_| anyhow!("invalid header value"))?;
             headers.insert(name, header_value);
         }
         if body.is_some() && !headers.contains_key("content-type") {
@@ -913,7 +919,10 @@ struct CompiledEndpointRule {
 
 impl CompiledEndpointRule {
     fn compile(raw: EndpointRuleFile, source_path: &Path) -> Result<Self> {
-        let base_dir = source_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+        let base_dir = source_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf();
         let endpoints = raw
             .endpoints
             .into_iter()
@@ -954,8 +963,8 @@ struct CompiledEndpoint {
 
 impl CompiledEndpoint {
     fn compile(raw: EndpointDef, _base_dir: &Path) -> Result<Self> {
-        let method = Method::from_bytes(raw.method.as_bytes())
-            .map_err(|_| anyhow!("invalid method"))?;
+        let method =
+            Method::from_bytes(raw.method.as_bytes()).map_err(|_| anyhow!("invalid method"))?;
         let matcher = EndpointPath::parse(&raw.path)?;
         let steps = raw
             .steps
@@ -1024,7 +1033,11 @@ impl CompiledReply {
             .into_iter()
             .map(|(k, v)| (k.to_lowercase(), v))
             .collect();
-        Ok(Self { status, headers, body })
+        Ok(Self {
+            status,
+            headers,
+            body,
+        })
     }
 }
 
@@ -1372,8 +1385,8 @@ fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, Endpoin
     for (key, value) in headers {
         let name = HeaderName::from_bytes(key.as_bytes())
             .map_err(|_| EndpointError::invalid("invalid header name"))?;
-        let header_value =
-            HeaderValue::from_str(value).map_err(|_| EndpointError::invalid("invalid header value"))?;
+        let header_value = HeaderValue::from_str(value)
+            .map_err(|_| EndpointError::invalid("invalid header value"))?;
         map.insert(name, header_value);
     }
     Ok(map)
@@ -1430,9 +1443,9 @@ fn eval_expr_string(
     input: &JsonValue,
     context: Option<&JsonValue>,
 ) -> Result<String, EndpointError> {
-    match eval_expr_value(expr, input, context).map_err(|err| {
-        EndpointError::invalid(format!("expr eval error: {}", err))
-    })? {
+    match eval_expr_value(expr, input, context)
+        .map_err(|err| EndpointError::invalid(format!("expr eval error: {}", err)))?
+    {
         EvalValue::Missing => Err(EndpointError::invalid("expected string, got missing")),
         EvalValue::Value(JsonValue::String(value)) => Ok(value),
         EvalValue::Value(other) => Err(EndpointError::invalid(format!(
@@ -1457,14 +1470,7 @@ fn read_rule_source(path: &Path, errors: &mut Vec<RulesDirError>) -> Option<Stri
     match std::fs::read_to_string(path) {
         Ok(source) => Some(source),
         Err(err) => {
-            push_error(
-                errors,
-                "ReadFailed",
-                path,
-                err.to_string(),
-                None,
-                None,
-            );
+            push_error(errors, "ReadFailed", path, err.to_string(), None, None);
             None
         }
     }
@@ -1484,11 +1490,7 @@ fn parse_yaml<T: DeserializeOwned>(
     }
 }
 
-fn parse_rule_type(
-    path: &Path,
-    source: &str,
-    errors: &mut Vec<RulesDirError>,
-) -> Option<String> {
+fn parse_rule_type(path: &Path, source: &str, errors: &mut Vec<RulesDirError>) -> Option<String> {
     let meta: serde_yaml::Value = match serde_yaml::from_str(source) {
         Ok(value) => value,
         Err(err) => {
@@ -1848,7 +1850,10 @@ fn load_rule_kind(path: &Path) -> Result<RuleKind> {
                 .with_context(|| format!("failed to parse {}", path.display()))?;
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", path.display(), err))?;
-            let base_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            let base_dir = path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
             Ok(RuleKind::Normal(LoadedRule { rule, base_dir }))
         }
     }
@@ -1871,9 +1876,11 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         return Err(anyhow!("body_map and body_rule are mutually exclusive"));
     }
 
-    let method = Method::from_bytes(raw.request.method.as_bytes())
-        .map_err(|_| anyhow!("invalid method"))?;
-    if method == Method::GET && (raw.body.is_some() || raw.body_map.is_some() || raw.body_rule.is_some()) {
+    let method =
+        Method::from_bytes(raw.request.method.as_bytes()).map_err(|_| anyhow!("invalid method"))?;
+    if method == Method::GET
+        && (raw.body.is_some() || raw.body_map.is_some() || raw.body_rule.is_some())
+    {
         return Err(anyhow!("GET with body is not allowed"));
     }
     let url_expr = parse_v2_expr(&raw.request.url).map_err(|err| anyhow!(err))?;
@@ -1902,7 +1909,10 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
                 .with_context(|| format!("failed to parse {}", resolved.display()))?;
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", resolved.display(), err))?;
-            let base_dir = resolved.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            let base_dir = resolved
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
             Some(LoadedRule { rule, base_dir })
         }
         None => None,
@@ -1922,7 +1932,10 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         body_rule,
         catch: raw.catch.map(CatchSpec::from),
         retry,
-        base_dir: path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf(),
+        base_dir: path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
     })
 }
 
@@ -1969,7 +1982,10 @@ impl RetryConfig {
         let factor = attempt.saturating_add(1);
         match self.backoff {
             RetryBackoff::Fixed => self.initial_delay,
-            RetryBackoff::Linear => self.initial_delay.checked_mul(factor).unwrap_or(Duration::MAX),
+            RetryBackoff::Linear => self
+                .initial_delay
+                .checked_mul(factor)
+                .unwrap_or(Duration::MAX),
             RetryBackoff::Exponential => {
                 let exp = 2u32.saturating_pow(attempt);
                 self.initial_delay.checked_mul(exp).unwrap_or(Duration::MAX)
@@ -2141,7 +2157,14 @@ fn build_rule_nodes_from_rule(
 
             if step_active && status != "error" {
                 if let Some(expr) = step.record_when.as_ref() {
-                    match eval_trace_condition(expr, record, context, &step_input, "record_when", rule.version) {
+                    match eval_trace_condition(
+                        expr,
+                        record,
+                        context,
+                        &step_input,
+                        "record_when",
+                        rule.version,
+                    ) {
                         Ok(flag) => {
                             meta.insert("record_when".to_string(), JsonValue::Bool(flag));
                         }
@@ -2245,15 +2268,11 @@ fn build_rule_nodes_from_rule(
                     );
                     meta.insert(
                         "rule_refs".to_string(),
-                        JsonValue::Array(
-                            refs.iter().cloned().map(JsonValue::String).collect(),
-                        ),
+                        JsonValue::Array(refs.iter().cloned().map(JsonValue::String).collect()),
                     );
                     meta.insert(
                         "rule_ref_labels".to_string(),
-                        JsonValue::Array(
-                            labels.iter().cloned().map(JsonValue::String).collect(),
-                        ),
+                        JsonValue::Array(labels.iter().cloned().map(JsonValue::String).collect()),
                     );
                     if branch.return_ && branch_taken != "none" {
                         halted = true;
@@ -2563,13 +2582,11 @@ fn eval_trace_condition(
         }
     }
 
-    Err(
-        TransformError::new(
-            TransformErrorKind::ExprError,
-            "when/record_when must evaluate to boolean",
-        )
-        .with_path(path),
+    Err(TransformError::new(
+        TransformErrorKind::ExprError,
+        "when/record_when must evaluate to boolean",
     )
+    .with_path(path))
 }
 
 fn build_network_nodes_with_timing(
@@ -2578,8 +2595,14 @@ fn build_network_nodes_with_timing(
 ) -> Vec<JsonValue> {
     let mut children = Vec::new();
     let mut request_args = JsonMap::new();
-    request_args.insert("method".to_string(), JsonValue::String(rule.request.method.to_string()));
-    request_args.insert("url".to_string(), JsonValue::String(format!("{:?}", rule.request.url)));
+    request_args.insert(
+        "method".to_string(),
+        JsonValue::String(rule.request.method.to_string()),
+    );
+    request_args.insert(
+        "url".to_string(),
+        JsonValue::String(format!("{:?}", rule.request.url)),
+    );
     if !rule.request.headers.is_empty() {
         request_args.insert(
             "headers".to_string(),
@@ -2671,7 +2694,10 @@ fn build_mapping_ops_with_values(
     for (index, mapping) in mappings.iter().enumerate() {
         let op_started = Instant::now();
         let mut args = JsonMap::new();
-        args.insert("target".to_string(), JsonValue::String(mapping.target.clone()));
+        args.insert(
+            "target".to_string(),
+            JsonValue::String(mapping.target.clone()),
+        );
         if let Some(source) = &mapping.source {
             args.insert("source".to_string(), JsonValue::String(source.clone()));
         }
@@ -2817,13 +2843,21 @@ fn expr_to_json_value_for_condition(expr: &Expr) -> JsonValue {
         Expr::Ref(reference) => JsonValue::String(reference.ref_path.clone()),
         Expr::Literal(value) => value.clone(),
         Expr::Op(op) => {
-            let args: Vec<JsonValue> = op.args.iter().map(expr_to_json_value_for_condition).collect();
+            let args: Vec<JsonValue> = op
+                .args
+                .iter()
+                .map(expr_to_json_value_for_condition)
+                .collect();
             let mut obj = JsonMap::new();
             obj.insert(op.op.clone(), JsonValue::Array(args));
             JsonValue::Object(obj)
         }
         Expr::Chain(chain) => {
-            let items: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value_for_condition).collect();
+            let items: Vec<JsonValue> = chain
+                .chain
+                .iter()
+                .map(expr_to_json_value_for_condition)
+                .collect();
             JsonValue::Array(items)
         }
     }
@@ -2838,9 +2872,7 @@ fn build_pipe_steps(
 ) -> Vec<JsonValue> {
     let mut steps = Vec::new();
     let start_value = eval_v2_start(&pipe.start, record, context, out, "trace", ctx).ok();
-    let start_output = start_value
-        .clone()
-        .and_then(eval_value_to_json);
+    let start_output = start_value.clone().and_then(eval_value_to_json);
     steps.push(json!({
         "index": 0,
         "label": v2_start_label(&pipe.start),
@@ -2860,30 +2892,54 @@ fn build_pipe_steps(
         let step_path = format!("trace[{}]", index + 1);
         match step {
             V2Step::Op(op_step) => {
-                if let Ok(next) =
-                    eval_v2_op_step(op_step, current.clone(), record, context, out, &step_path, &current_ctx)
-                {
+                if let Ok(next) = eval_v2_op_step(
+                    op_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
                     current = next;
                 }
             }
             V2Step::Let(let_step) => {
-                if let Ok(next_ctx) =
-                    eval_v2_let_step(let_step, current.clone(), record, context, out, &step_path, &current_ctx)
-                {
+                if let Ok(next_ctx) = eval_v2_let_step(
+                    let_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
                     current_ctx = next_ctx;
                 }
             }
             V2Step::If(if_step) => {
-                if let Ok(next) =
-                    eval_v2_if_step(if_step, current.clone(), record, context, out, &step_path, &current_ctx)
-                {
+                if let Ok(next) = eval_v2_if_step(
+                    if_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
                     current = next;
                 }
             }
             V2Step::Map(map_step) => {
-                if let Ok(next) =
-                    eval_v2_map_step(map_step, current.clone(), record, context, out, &step_path, &current_ctx)
-                {
+                if let Ok(next) = eval_v2_map_step(
+                    map_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
                     current = next;
                 }
             }
@@ -3025,15 +3081,14 @@ fn set_path_value(root: &mut JsonValue, path: &str, value: JsonValue) -> Result<
         }
 
         let next = match current {
-            JsonValue::Object(map) => map.entry(key.to_string()).or_insert_with(|| {
-                JsonValue::Object(JsonMap::new())
-            }),
+            JsonValue::Object(map) => map
+                .entry(key.to_string())
+                .or_insert_with(|| JsonValue::Object(JsonMap::new())),
             _ => {
                 *current = JsonValue::Object(JsonMap::new());
                 if let JsonValue::Object(map) = current {
-                    map.entry(key.to_string()).or_insert_with(|| {
-                        JsonValue::Object(JsonMap::new())
-                    })
+                    map.entry(key.to_string())
+                        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
                 } else {
                     return Err(());
                 }
@@ -3110,8 +3165,7 @@ mod tests {
             catch: None,
             retry: None,
         };
-        let err = compile_network_rule(raw, Path::new("network.yaml"))
-            .expect_err("expected error");
+        let err = compile_network_rule(raw, Path::new("network.yaml")).expect_err("expected error");
         assert!(err.to_string().contains("timeout must be > 0"));
     }
 
@@ -3165,7 +3219,10 @@ endpoints:
             .body(axum::body::Body::empty())
             .expect("build request");
 
-        let response = engine.handle_request(request).await.expect("handle request");
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
         assert_eq!(response.status().as_u16(), 204);
         assert!(response.headers().get("content-type").is_none());
 
