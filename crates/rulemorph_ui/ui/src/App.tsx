@@ -19,6 +19,7 @@ type TraceListItem = {
   trace_id: string;
   status?: string;
   timestamp?: string;
+  duration_us?: number;
   duration_ms?: number;
   rule?: { name?: string; path?: string; type?: string; version?: number };
   summary?: { record_total?: number; record_success?: number; record_failed?: number };
@@ -29,6 +30,8 @@ type TraceNode = {
   kind: string;
   label: string;
   status?: string;
+  duration_us?: number;
+  duration_ms?: number;
   input?: unknown;
   output?: unknown;
   pipe_value?: unknown;
@@ -43,12 +46,15 @@ type TraceNode = {
 type TraceRecord = {
   index: number;
   status?: string;
+  duration_us?: number;
   duration_ms?: number;
   input?: unknown;
   output?: unknown;
   nodes?: TraceNode[];
   error?: { code?: string; message?: string; path?: string };
 };
+
+type DurationUnit = "us" | "ms";
 
 type EndpointSpec = {
   method: string;
@@ -139,9 +145,26 @@ function formatTime(value?: string) {
   return date.toLocaleString();
 }
 
-function formatDuration(value?: number) {
-  if (value == null) return "-";
-  return `${value} ms`;
+function formatDurationParts(valueUs: number | undefined, unit: DurationUnit) {
+  if (valueUs == null) return null;
+  if (unit === "ms") {
+    const valueMs = valueUs / 1000;
+    const formatted =
+      valueMs >= 100 ? valueMs.toFixed(0) : valueMs >= 10 ? valueMs.toFixed(1) : valueMs.toFixed(2);
+    return { value: formatted, unit: "ms" as const };
+  }
+  return { value: `${valueUs}`, unit: "μs" as const };
+}
+
+function formatDuration(valueUs: number | undefined, unit: DurationUnit) {
+  const parts = formatDurationParts(valueUs, unit);
+  return parts ? `${parts.value} ${parts.unit}` : "-";
+}
+
+function resolveDurationUs(durationUs?: number, durationMs?: number) {
+  if (typeof durationUs === "number") return durationUs;
+  if (typeof durationMs === "number") return durationMs * 1000;
+  return undefined;
 }
 
 type OverviewGraph = {
@@ -768,6 +791,11 @@ function buildMergedApiGraph(
 
 export default function App() {
   const [viewMode, setViewMode] = useState<"trace" | "api">("trace");
+  const [durationUnit, setDurationUnit] = useState<DurationUnit>(() => {
+    if (typeof window === "undefined") return "us";
+    const stored = window.localStorage.getItem("traceDurationUnit");
+    return stored === "ms" ? "ms" : "us";
+  });
   const [traces, setTraces] = useState<TraceListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TracePayload | null>(null);
@@ -992,6 +1020,10 @@ export default function App() {
     if (!flow) return;
     flow.fitView({ padding: 0.22 });
   }, [flow, trace, viewMode, apiGraph]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("traceDurationUnit", durationUnit);
+  }, [durationUnit]);
   const detailNodeMap = useMemo(() => {
     const map = new Map<string, DetailEntry>();
     bundles.forEach((bundle) => {
@@ -1019,6 +1051,8 @@ export default function App() {
     typeof selectedMeta["asserts_ok"] === "boolean" ? selectedMeta["asserts_ok"] : undefined;
   const stepBranchTaken =
     typeof selectedMeta["branch_taken"] === "string" ? String(selectedMeta["branch_taken"]) : undefined;
+  const stepDuration = resolveDurationUs(selectedNode?.duration_us, selectedNode?.duration_ms);
+  const stepDurationParts = formatDurationParts(stepDuration, durationUnit);
 
   const renderJsonBlock = (label: string, value: unknown) => {
     const hasValue = !(value === null || value === undefined);
@@ -1171,8 +1205,24 @@ export default function App() {
         {viewMode === "trace" && (
           <aside className="floating-panel trace-panel">
             <div className="panel__header">
-              <h2>Trace一覧</h2>
-              <p>最新順</p>
+              <div>
+                <h2>Trace一覧</h2>
+                <p>最新順</p>
+              </div>
+              <div className="unit-toggle" role="group" aria-label="Duration unit">
+                <button
+                  className={clsx("unit-toggle__button", durationUnit === "us" && "is-active")}
+                  onClick={() => setDurationUnit("us")}
+                >
+                  μs
+                </button>
+                <button
+                  className={clsx("unit-toggle__button", durationUnit === "ms" && "is-active")}
+                  onClick={() => setDurationUnit("ms")}
+                >
+                  ms
+                </button>
+              </div>
             </div>
             <div className="trace-list">
               {traces.length === 0 && (
@@ -1201,7 +1251,9 @@ export default function App() {
                     </div>
                     <div>
                       <span>duration</span>
-                      <strong>{formatDuration(item.duration_ms)}</strong>
+                      <strong>
+                        {formatDuration(resolveDurationUs(item.duration_us, item.duration_ms), durationUnit)}
+                      </strong>
                     </div>
                   </div>
                 </button>
@@ -1231,7 +1283,9 @@ export default function App() {
                   >
                     <span>#{record.index}</span>
                     <span className="muted">{record.status ?? "ok"}</span>
-                    <span>{formatDuration(record.duration_ms)}</span>
+                    <span>
+                      {formatDuration(resolveDurationUs(record.duration_us, record.duration_ms), durationUnit)}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -1314,6 +1368,12 @@ export default function App() {
                         >
                           {selectedNode.status ?? "ok"}
                         </span>
+                        {stepDurationParts && (
+                          <span className="chip">
+                            duration: {stepDurationParts.value}{" "}
+                            <span className="chip__unit">{stepDurationParts.unit}</span>
+                          </span>
+                        )}
                         {stepRecordWhen !== undefined && (
                           <span className="chip">record_when: {String(stepRecordWhen)}</span>
                         )}
@@ -1345,7 +1405,17 @@ export default function App() {
                       onClick={() => setSelectedOp(child)}
                     >
                       <span>{child.label}</span>
-                      <span className="muted">{child.meta?.op ?? "op"}</span>
+                      <span className="op-item__meta">
+                        <span className="muted">{child.meta?.op ?? "op"}</span>
+                        {resolveDurationUs(child.duration_us, child.duration_ms) !== undefined && (
+                          <span className="op-item__duration">
+                            {formatDuration(
+                              resolveDurationUs(child.duration_us, child.duration_ms),
+                              durationUnit
+                            )}
+                          </span>
+                        )}
+                      </span>
                     </button>
                   ))}
                 </div>
@@ -1360,6 +1430,8 @@ export default function App() {
                     const pipe = op?.pipe_value ?? null;
                     const args = op?.args ?? null;
                     const output = op?.output ?? null;
+                    const opDuration = resolveDurationUs(op?.duration_us, op?.duration_ms);
+                    const opDurationParts = formatDurationParts(opDuration, durationUnit);
                     const pipeSteps = (op?.pipe_steps ?? []) as {
                       index: number;
                       label: string;
@@ -1368,6 +1440,14 @@ export default function App() {
                     }[];
                     return (
                       <>
+                        {opDurationParts && (
+                          <div className="step-badges">
+                            <span className="chip">
+                              duration: {opDurationParts.value}{" "}
+                              <span className="chip__unit">{opDurationParts.unit}</span>
+                            </span>
+                          </div>
+                        )}
                         <div className="inspector-grid">
                           {renderJsonBlock("input", input)}
                           {renderJsonBlock("pipe", pipe)}

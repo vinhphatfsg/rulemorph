@@ -13,7 +13,7 @@ pub struct TraceMeta {
     pub trace_id: String,
     pub status: String,
     pub timestamp: Option<String>,
-    pub duration_ms: Option<u64>,
+    pub duration_us: Option<u64>,
     pub rule: Option<RuleMeta>,
     pub summary: Option<TraceSummary>,
     pub path: String,
@@ -217,11 +217,13 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let duration_ms = value
+    let duration_us = value
         .get("summary")
-        .and_then(|s| s.get("duration_ms"))
+        .and_then(|s| s.get("duration_us"))
         .and_then(|v| v.as_u64())
-        .or_else(|| value.get("duration_ms").and_then(|v| v.as_u64()));
+        .or_else(|| value.get("summary").and_then(|s| s.get("duration_ms")).and_then(|v| v.as_u64()).map(|v| v.saturating_mul(1000)))
+        .or_else(|| value.get("duration_us").and_then(|v| v.as_u64()))
+        .or_else(|| value.get("duration_ms").and_then(|v| v.as_u64()).map(|v| v.saturating_mul(1000)));
 
     let rule = value.get("rule").map(|rule| RuleMeta {
         name: rule.get("name").and_then(|v| v.as_str()).map(|s| s.to_string()),
@@ -240,7 +242,7 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
         trace_id,
         status,
         timestamp,
-        duration_ms,
+        duration_us,
         rule,
         summary,
         path: path.display().to_string(),

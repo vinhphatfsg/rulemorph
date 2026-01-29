@@ -292,6 +292,32 @@ body {
   margin-bottom: 16px;
 }
 
+.unit-toggle {
+  display: inline-flex;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(12, 16, 22, 0.7);
+  border: 1px solid rgba(120, 136, 150, 0.25);
+}
+
+.unit-toggle__button {
+  border: none;
+  background: transparent;
+  color: var(--fog);
+  font-size: 0.7rem;
+  text-transform: none;
+  letter-spacing: 0.08em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.unit-toggle__button.is-active {
+  background: rgba(157, 214, 255, 0.16);
+  color: var(--blueprint);
+}
+
 .panel__header h2 {
   margin: 0;
   font-size: 1.05rem;
@@ -362,6 +388,11 @@ body {
   font-size: 0.7rem;
   text-transform: uppercase;
   letter-spacing: 0.14em;
+}
+
+.chip__unit {
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .chip--error {
@@ -721,6 +752,17 @@ body {
   background: rgba(18, 22, 28, 0.8);
   color: inherit;
   cursor: pointer;
+}
+
+.op-item__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.op-item__duration {
+  font-size: 0.7rem;
+  color: var(--fog);
 }
 
 .op-item.is-active {

@@ -251,6 +251,12 @@ struct RuleExecution {
     child_trace: Option<JsonValue>,
 }
 
+struct NetworkExecution {
+    output: JsonValue,
+    request_us: u64,
+    total_us: u64,
+}
+
 #[derive(Debug)]
 struct LoadedRule {
     rule: RuleFile,
@@ -325,6 +331,7 @@ impl EndpointEngine {
 
         for (step_index, step) in endpoint.steps.iter().enumerate() {
             let step_input = current.clone();
+            let step_started = Instant::now();
             if let Some(condition) = &step.when {
                 let ctx = V2EvalContext::new();
                 let keep = eval_v2_condition(
@@ -336,6 +343,7 @@ impl EndpointEngine {
                     &ctx,
                 )?;
                 if !keep {
+                    let duration_us = step_started.elapsed().as_micros() as u64;
                     nodes.push(self.build_step_trace(
                         step_index,
                         step,
@@ -343,12 +351,12 @@ impl EndpointEngine {
                         step_input,
                         Some(current.clone()),
                         None,
+                        duration_us,
                         None,
                     ));
                     continue;
                 }
             }
-
             let step_context = self.step_context(step.with.as_ref(), None);
             let step_result = self
                 .execute_rule(&step.rule, &current, Some(&step_context), &self.endpoint_rule.base_dir)
@@ -356,6 +364,7 @@ impl EndpointEngine {
             match step_result {
                 Ok(execution) => {
                     current = execution.output.clone();
+                    let duration_us = step_started.elapsed().as_micros() as u64;
                     nodes.push(self.build_step_trace(
                         step_index,
                         step,
@@ -363,6 +372,7 @@ impl EndpointEngine {
                         step_input,
                         Some(execution.output),
                         None,
+                        duration_us,
                         execution.child_trace,
                     ));
                 }
@@ -373,6 +383,7 @@ impl EndpointEngine {
                             .map_err(|err| anyhow!(err.to_string()))?
                         {
                             current = next.clone();
+                            let duration_us = step_started.elapsed().as_micros() as u64;
                             nodes.push(self.build_step_trace(
                                 step_index,
                                 step,
@@ -380,6 +391,7 @@ impl EndpointEngine {
                                 step_input,
                                 Some(next),
                                 None,
+                                duration_us,
                                 None,
                             ));
                             continue;
@@ -392,6 +404,7 @@ impl EndpointEngine {
                             .map_err(|err| anyhow!(err.to_string()))?
                         {
                             current = next.clone();
+                            let duration_us = step_started.elapsed().as_micros() as u64;
                             nodes.push(self.build_step_trace(
                                 step_index,
                                 step,
@@ -399,6 +412,7 @@ impl EndpointEngine {
                                 step_input,
                                 Some(next),
                                 None,
+                                duration_us,
                                 None,
                             ));
                             break;
@@ -408,6 +422,7 @@ impl EndpointEngine {
                     record_status = "error".to_string();
                     record_error = Some(self.endpoint_error_to_trace(&err));
                     last_error_message = Some(err.message.clone());
+                    let duration_us = step_started.elapsed().as_micros() as u64;
                     nodes.push(self.build_step_trace(
                         step_index,
                         step,
@@ -415,6 +430,7 @@ impl EndpointEngine {
                         step_input,
                         None,
                         Some(err),
+                        duration_us,
                         None,
                     ));
                     break;
@@ -430,7 +446,7 @@ impl EndpointEngine {
             self.build_reply(&endpoint.reply, &current)
         };
 
-        let duration_ms = started.elapsed().as_millis() as u64;
+        let duration_us = started.elapsed().as_micros() as u64;
         let trace = self.build_trace(
             &method,
             &path,
@@ -439,7 +455,7 @@ impl EndpointEngine {
             record_status,
             record_error,
             nodes,
-            duration_ms,
+            duration_us,
         );
         if let Err(err) = self.write_trace(&trace).await {
             warn!("failed to write trace: {}", err);
@@ -457,7 +473,7 @@ impl EndpointEngine {
         status: String,
         error: Option<JsonValue>,
         nodes: Vec<JsonValue>,
-        duration_ms: u64,
+        duration_us: u64,
     ) -> JsonValue {
         let trace_id = Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -466,7 +482,7 @@ impl EndpointEngine {
         let record = json!({
             "index": 0,
             "status": status,
-            "duration_ms": duration_ms,
+            "duration_us": duration_us,
             "input": input,
             "output": output,
             "nodes": nodes,
@@ -487,7 +503,7 @@ impl EndpointEngine {
                 "record_total": 1,
                 "record_success": if status == "ok" { 1 } else { 0 },
                 "record_failed": if status == "ok" { 0 } else { 1 },
-                "duration_ms": duration_ms
+                "duration_us": duration_us
             }
         })
     }
@@ -500,6 +516,7 @@ impl EndpointEngine {
         input: JsonValue,
         output: Option<JsonValue>,
         error: Option<EndpointError>,
+        duration_us: u64,
         child_trace: Option<JsonValue>,
     ) -> JsonValue {
         let label = step_label(&step.rule);
@@ -511,6 +528,7 @@ impl EndpointEngine {
             "status": status,
             "input": input,
             "output": output,
+            "duration_us": duration_us,
             "meta": {
                 "rule_ref": rule_ref,
                 "step_index": step_index
@@ -586,6 +604,7 @@ impl EndpointEngine {
                 .unwrap_or_else(empty_object);
                 let nodes =
                     build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
+                let duration_us = sum_node_duration_us(&nodes);
                 let child_trace = build_rule_trace(
                     "normal",
                     rule_display_name(&resolved),
@@ -595,6 +614,7 @@ impl EndpointEngine {
                     input.clone(),
                     output.clone(),
                     nodes,
+                    duration_us,
                     "ok",
                 );
                 Ok(RuleExecution {
@@ -603,11 +623,11 @@ impl EndpointEngine {
                 })
             }
             RuleKind::Network(rule) => {
-                let output = self
+                let execution = self
                     .execute_network(&rule, input, context)
                     .await
                     .map_err(|err| err.with_path(resolved.clone()))?;
-                let nodes = build_network_nodes(&rule);
+                let nodes = build_network_nodes_with_timing(&rule, &execution);
                 let child_trace = build_rule_trace(
                     "network",
                     rule_display_name(&resolved),
@@ -615,12 +635,13 @@ impl EndpointEngine {
                     2,
                     rule_source,
                     input.clone(),
-                    output.clone(),
+                    execution.output.clone(),
                     nodes,
+                    execution.total_us,
                     "ok",
                 );
                 Ok(RuleExecution {
-                    output,
+                    output: execution.output,
                     child_trace: Some(child_trace),
                 })
             }
@@ -632,7 +653,7 @@ impl EndpointEngine {
         rule: &CompiledNetworkRule,
         input: &JsonValue,
         context: Option<&JsonValue>,
-    ) -> Result<JsonValue, EndpointError> {
+    ) -> Result<NetworkExecution, EndpointError> {
         if rule.request.method == Method::GET && rule.body.is_some() {
             return Err(EndpointError::invalid("GET with body is not allowed"));
         }
@@ -641,11 +662,14 @@ impl EndpointEngine {
         let headers = build_headers(&rule.request.headers)?;
         let body = self.build_network_body(rule, input, context)?;
 
+        let total_started = Instant::now();
         let mut attempt = 0;
         loop {
+            let request_started = Instant::now();
             let result = self
                 .send_network_request(rule, &url, &headers, body.as_ref())
                 .await;
+            let request_us = request_started.elapsed().as_micros() as u64;
 
             match result {
                 Ok(value) => {
@@ -656,9 +680,17 @@ impl EndpointEngine {
                         let selected = get_path(&value, &tokens).ok_or_else(|| {
                             EndpointError::invalid(format!("select path not found: {}", select))
                         })?;
-                        return Ok(selected.clone());
+                        return Ok(NetworkExecution {
+                            output: selected.clone(),
+                            request_us,
+                            total_us: total_started.elapsed().as_micros() as u64,
+                        });
                     }
-                    return Ok(value);
+                    return Ok(NetworkExecution {
+                        output: value,
+                        request_us,
+                        total_us: total_started.elapsed().as_micros() as u64,
+                    });
                 }
                 Err(err) => {
                     if let Some(retry) = &rule.retry {
@@ -677,7 +709,11 @@ impl EndpointEngine {
                         if let Some(output) =
                             self.run_catch(catch, &err, input, None, &rule.base_dir)?
                         {
-                            return Ok(output);
+                            return Ok(NetworkExecution {
+                                output,
+                                request_us,
+                                total_us: total_started.elapsed().as_micros() as u64,
+                            });
                         }
                     }
                     return Err(err);
@@ -1985,6 +2021,7 @@ fn build_rule_trace(
     input: JsonValue,
     output: JsonValue,
     nodes: Vec<JsonValue>,
+    duration_us: u64,
     status: &str,
 ) -> JsonValue {
     let trace_id = Uuid::new_v4().to_string();
@@ -1992,7 +2029,7 @@ fn build_rule_trace(
     let record = json!({
         "index": 0,
         "status": status,
-        "duration_ms": 0,
+        "duration_us": duration_us,
         "input": input,
         "output": output,
         "nodes": nodes,
@@ -2012,7 +2049,7 @@ fn build_rule_trace(
             "record_total": 1,
             "record_success": if status == "ok" { 1 } else { 0 },
             "record_failed": if status == "ok" { 0 } else { 1 },
-            "duration_ms": 0
+            "duration_us": duration_us
         }
     })
 }
@@ -2030,12 +2067,15 @@ fn build_rule_nodes_from_rule(
             let mut partial_rule = rule.clone();
             partial_rule.steps = Some(steps[..=index].to_vec());
             partial_rule.finalize = None;
+            let started = Instant::now();
             let result = transform_record_with_base_dir(&partial_rule, record, context, base_dir);
-            step_outputs.push(result);
+            let duration_us = started.elapsed().as_micros() as u64;
+            step_outputs.push((result, duration_us));
         }
 
         let mut prev_output = JsonValue::Object(JsonMap::new());
         let mut halted = false;
+        let mut prev_elapsed = 0u64;
         for (index, step) in steps.iter().enumerate() {
             let label = step
                 .name
@@ -2061,26 +2101,35 @@ fn build_rule_nodes_from_rule(
             let mut meta = JsonMap::new();
 
             let step_active = !halted;
+            let (step_result, elapsed_total) = match step_outputs.get(index) {
+                Some((result, elapsed)) => (result.clone(), *elapsed),
+                None => (
+                    Err(TransformError::new(
+                        TransformErrorKind::InvalidInput,
+                        "missing step output",
+                    )),
+                    0,
+                ),
+            };
+            let step_duration_us = elapsed_total.saturating_sub(prev_elapsed);
+            prev_elapsed = elapsed_total;
+
             if halted {
                 status = "skipped".to_string();
             } else {
-                match step_outputs.get(index) {
-                    Some(Ok(Some(out))) => {
+                match step_result {
+                    Ok(Some(out)) => {
                         prev_output = out.clone();
                         output_value = Some(out.clone());
                     }
-                    Some(Ok(None)) => {
+                    Ok(None) => {
                         status = "skipped".to_string();
                         output_value = Some(JsonValue::Null);
                         halted = true;
                     }
-                    Some(Err(err)) => {
+                    Err(err) => {
                         status = "error".to_string();
-                        error = Some(transform_error_to_trace(err));
-                        halted = true;
-                    }
-                    None => {
-                        status = "skipped".to_string();
+                        error = Some(transform_error_to_trace(&err));
                         halted = true;
                     }
                 }
@@ -2232,6 +2281,7 @@ fn build_rule_nodes_from_rule(
                                 context,
                                 &loaded.base_dir,
                             );
+                            let child_duration_us = sum_node_duration_us(&child_nodes);
                             let child_output = transform_record_with_base_dir(
                                 &loaded.rule,
                                 &step_input,
@@ -2250,6 +2300,7 @@ fn build_rule_nodes_from_rule(
                                 step_input.clone(),
                                 child_output,
                                 child_nodes,
+                                child_duration_us,
                                 "ok",
                             ));
                         }
@@ -2282,6 +2333,7 @@ fn build_rule_nodes_from_rule(
                 "status": status,
                 "input": step_input,
                 "output": output_value,
+                "duration_us": step_duration_us,
             });
             if let Some(err) = error {
                 if let Some(obj) = node.as_object_mut() {
@@ -2306,6 +2358,7 @@ fn build_rule_nodes_from_rule(
             nodes.push(node);
         }
     } else {
+        let started = Instant::now();
         let mut out = JsonValue::Object(JsonMap::new());
         let children = build_mapping_ops_with_values(
             &rule.mappings,
@@ -2315,6 +2368,7 @@ fn build_rule_nodes_from_rule(
             rule.version,
             0,
         );
+        let duration_us = started.elapsed().as_micros() as u64;
         let mut node = json!({
             "id": "step-0",
             "kind": "mapping",
@@ -2322,6 +2376,7 @@ fn build_rule_nodes_from_rule(
             "status": "ok",
             "input": record,
             "output": out,
+            "duration_us": duration_us,
         });
         if !children.is_empty() {
             if let Some(obj) = node.as_object_mut() {
@@ -2334,14 +2389,19 @@ fn build_rule_nodes_from_rule(
     if let Some(finalize) = &rule.finalize {
         let mut base_rule = rule.clone();
         base_rule.finalize = None;
+        let base_started = Instant::now();
         let pre_finalize = transform_record_with_base_dir(&base_rule, record, context, base_dir)
             .ok()
             .and_then(|value| value);
+        let base_duration_us = base_started.elapsed().as_micros() as u64;
         let finalize_input = match pre_finalize {
             Some(value) => JsonValue::Array(vec![value]),
             None => JsonValue::Array(Vec::new()),
         };
+        let finalize_started = Instant::now();
         let finalize_result = transform_record_with_base_dir(rule, record, context, base_dir);
+        let total_duration_us = finalize_started.elapsed().as_micros() as u64;
+        let finalize_duration_us = total_duration_us.saturating_sub(base_duration_us);
         let mut finalize_status = "ok";
         let mut finalize_output: Option<JsonValue> = None;
         let mut finalize_error: Option<JsonValue> = None;
@@ -2416,6 +2476,7 @@ fn build_rule_nodes_from_rule(
             "status": finalize_status,
             "input": finalize_input,
             "output": finalize_output,
+            "duration_us": finalize_duration_us,
         });
         if let Some(err) = finalize_error {
             if let Some(obj) = node.as_object_mut() {
@@ -2431,6 +2492,13 @@ fn build_rule_nodes_from_rule(
     }
 
     nodes
+}
+
+fn sum_node_duration_us(nodes: &[JsonValue]) -> u64 {
+    nodes
+        .iter()
+        .filter_map(|node| node.get("duration_us").and_then(|value| value.as_u64()))
+        .sum()
 }
 
 fn transform_error_to_trace(err: &TransformError) -> JsonValue {
@@ -2500,7 +2568,10 @@ fn eval_trace_condition(
     )
 }
 
-fn build_network_nodes(rule: &CompiledNetworkRule) -> Vec<JsonValue> {
+fn build_network_nodes_with_timing(
+    rule: &CompiledNetworkRule,
+    timing: &NetworkExecution,
+) -> Vec<JsonValue> {
     let mut children = Vec::new();
     let mut request_args = JsonMap::new();
     request_args.insert("method".to_string(), JsonValue::String(rule.request.method.to_string()));
@@ -2516,6 +2587,7 @@ fn build_network_nodes(rule: &CompiledNetworkRule) -> Vec<JsonValue> {
         "kind": "op",
         "label": "request",
         "status": "ok",
+        "duration_us": timing.request_us,
         "meta": { "op": "request" },
         "args": JsonValue::Object(request_args)
     }));
@@ -2575,6 +2647,7 @@ fn build_network_nodes(rule: &CompiledNetworkRule) -> Vec<JsonValue> {
         "kind": "network",
         "label": "request",
         "status": "ok",
+        "duration_us": timing.total_us,
     });
     if let Some(obj) = node.as_object_mut() {
         obj.insert("children".to_string(), JsonValue::Array(children));
@@ -2592,6 +2665,7 @@ fn build_mapping_ops_with_values(
 ) -> Vec<JsonValue> {
     let mut ops = Vec::new();
     for (index, mapping) in mappings.iter().enumerate() {
+        let op_started = Instant::now();
         let mut args = JsonMap::new();
         args.insert("target".to_string(), JsonValue::String(mapping.target.clone()));
         if let Some(source) = &mapping.source {
@@ -2656,6 +2730,7 @@ fn build_mapping_ops_with_values(
             let _ = set_path_value(out, &mapping.target, value);
         }
 
+        let duration_us = op_started.elapsed().as_micros() as u64;
         ops.push(json!({
             "id": format!("op-{}-{}", step_index, index),
             "kind": "op",
@@ -2666,6 +2741,7 @@ fn build_mapping_ops_with_values(
             "pipe_steps": pipe_steps,
             "args": JsonValue::Object(args),
             "output": output_value,
+            "duration_us": duration_us,
             "meta": { "op": "mapping" }
         }));
     }
@@ -3033,5 +3109,108 @@ mod tests {
         let err = compile_network_rule(raw, Path::new("network.yaml"))
             .expect_err("expected error");
         assert!(err.to_string().contains("timeout must be > 0"));
+    }
+
+    #[test]
+    fn mapping_ops_include_duration_us() {
+        let mappings = vec![Mapping {
+            target: "name".to_string(),
+            source: None,
+            value: Some(json!("hello")),
+            expr: None,
+            when: None,
+            value_type: None,
+            required: false,
+            default: None,
+        }];
+        let record = json!({});
+        let mut out = json!({});
+        let ops = build_mapping_ops_with_values(&mappings, &record, None, &mut out, 2, 0);
+        let duration = ops[0].get("duration_us").and_then(|value| value.as_u64());
+        assert!(duration.is_some());
+    }
+
+    #[test]
+    fn rule_nodes_include_step_duration_us() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: name
+        value: "hello"
+"#;
+        let rule = parse_rule_file(yaml).expect("parse rule");
+        let record = json!({});
+        let nodes = build_rule_nodes_from_rule(&rule, &record, None, Path::new("."));
+        let duration = nodes[0].get("duration_us").and_then(|value| value.as_u64());
+        assert!(duration.is_some());
+    }
+
+    #[test]
+    fn network_nodes_include_request_duration_us() {
+        let rule = CompiledNetworkRule {
+            request: CompiledNetworkRequest {
+                method: Method::GET,
+                url: parse_v2_expr(&json!("https://example.com")).expect("parse url"),
+                headers: HashMap::new(),
+            },
+            timeout: Duration::from_secs(1),
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            catch: None,
+            retry: None,
+            base_dir: PathBuf::from("."),
+        };
+        let timing = NetworkExecution {
+            output: json!({}),
+            request_us: 12,
+            total_us: 34,
+        };
+
+        let nodes = build_network_nodes_with_timing(&rule, &timing);
+        let duration = nodes[0].get("duration_us").and_then(|value| value.as_u64());
+        assert_eq!(duration, Some(34));
+
+        let children = nodes[0]
+            .get("children")
+            .and_then(|value| value.as_array())
+            .expect("children");
+        assert_eq!(children.len(), 1);
+        let request = children[0]
+            .get("duration_us")
+            .and_then(|value| value.as_u64());
+        assert_eq!(request, Some(12));
+    }
+
+    #[test]
+    #[ignore]
+    fn trace_timing_perf_smoke() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: name
+        value: "hello"
+  - mappings:
+      - target: upper
+        expr: ["@out.name", uppercase]
+"#;
+        let rule = parse_rule_file(yaml).expect("parse rule");
+        let record = json!({});
+        let iterations = 100u64;
+        let started = Instant::now();
+        for _ in 0..iterations {
+            let _ = build_rule_nodes_from_rule(&rule, &record, None, Path::new("."));
+        }
+        let total_us = started.elapsed().as_micros() as u64;
+        println!("trace timing avg: {} μs", total_us / iterations);
     }
 }
