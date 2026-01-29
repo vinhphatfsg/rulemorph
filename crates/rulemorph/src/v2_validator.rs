@@ -159,6 +159,8 @@ pub struct V2ValidationCtx<'a> {
     errors: Vec<RuleError>,
     /// Previously computed output targets (for @out forward reference check)
     produced_targets: HashSet<Vec<PathToken>>,
+    /// Whether @out forward references are allowed
+    allow_any_out_ref: bool,
     /// Whether @context was referenced (for informational purposes)
     pub context_referenced: bool,
 }
@@ -170,6 +172,7 @@ impl<'a> V2ValidationCtx<'a> {
             locator,
             errors: Vec::new(),
             produced_targets: HashSet::new(),
+            allow_any_out_ref: false,
             context_referenced: false,
         }
     }
@@ -178,11 +181,13 @@ impl<'a> V2ValidationCtx<'a> {
     pub fn with_produced_targets(
         locator: Option<&'a YamlLocator>,
         produced_targets: HashSet<Vec<PathToken>>,
+        allow_any_out_ref: bool,
     ) -> Self {
         Self {
             locator,
             errors: Vec::new(),
             produced_targets,
+            allow_any_out_ref,
             context_referenced: false,
         }
     }
@@ -383,6 +388,9 @@ fn validate_item_path(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'_>
 
 /// Validate @out reference is not a forward reference
 fn validate_out_not_forward(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'_>) {
+    if ctx.allow_any_out_ref {
+        return;
+    }
     if path.is_empty() {
         return;
     }

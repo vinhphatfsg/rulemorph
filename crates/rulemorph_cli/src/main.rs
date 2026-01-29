@@ -5,11 +5,14 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use serde_json::json;
 use rulemorph::{
-    generate_dto, parse_rule_file, preflight_validate_with_warnings, transform_stream,
-    transform_with_warnings, validate_rule_file_with_source, DtoLanguage, InputFormat, RuleError,
-    RuleFile, TransformError, TransformErrorKind, TransformWarning,
+    generate_dto, parse_rule_file, preflight_validate_with_warnings_with_base_dir,
+    transform_stream_with_base_dir, transform_with_warnings_with_base_dir,
+    validate_rule_file_with_source, DtoLanguage, InputFormat, RuleError, RuleFile, TransformError,
+    TransformErrorKind, TransformWarning,
 };
-use rulemorph_ui::{run as run_ui_server, ApiMode, UiConfig};
+use rulemorph_ui::{
+    run as run_ui_server, validate_rules_dir, ApiMode, RulesDirErrors, UiConfig,
+};
 
 #[derive(Parser)]
 #[command(name = "rulemorph")]
@@ -22,6 +25,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Validate(ValidateArgs),
+    ValidateRulesDir(ValidateRulesDirArgs),
     Preflight(PreflightArgs),
     Transform(TransformArgs),
     Generate(GenerateArgs),
@@ -32,6 +36,14 @@ enum Commands {
 struct ValidateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(short = 'e', long, default_value = "text")]
+    error_format: ErrorFormat,
+}
+
+#[derive(Args)]
+struct ValidateRulesDirArgs {
+    #[arg(short = 'r', long)]
+    rules_dir: PathBuf,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
 }
@@ -133,6 +145,7 @@ fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Commands::Validate(args) => run_validate(args),
+        Commands::ValidateRulesDir(args) => run_validate_rules_dir(args),
         Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
         Commands::Generate(args) => run_generate(args),
@@ -156,6 +169,16 @@ fn run_validate(args: ValidateArgs) -> i32 {
     }
 }
 
+fn run_validate_rules_dir(args: ValidateRulesDirArgs) -> i32 {
+    match validate_rules_dir(&args.rules_dir) {
+        Ok(()) => 0,
+        Err(errs) => {
+            emit_rules_dir_errors(&errs, args.error_format);
+            2
+        }
+    }
+}
+
 fn run_preflight(args: PreflightArgs) -> i32 {
     let (mut rule, _) = match load_rule(&args.rules) {
         Ok(value) => value,
@@ -174,7 +197,13 @@ fn run_preflight(args: PreflightArgs) -> i32 {
         Err(code) => return code,
     };
 
-    let warnings = match preflight_validate_with_warnings(&rule, &input, context_value.as_ref()) {
+    let base_dir = rule_base_dir(&args.rules);
+    let warnings = match preflight_validate_with_warnings_with_base_dir(
+        &rule,
+        &input,
+        context_value.as_ref(),
+        &base_dir,
+    ) {
         Ok(warnings) => warnings,
         Err(err) => {
             emit_transform_error(&err, args.error_format);
@@ -219,11 +248,17 @@ fn run_transform(args: TransformArgs) -> i32 {
             context_value.as_ref(),
             args.output,
             args.error_format,
+            &args.rules,
         );
     }
 
-    let (output, warnings) = match transform_with_warnings(&rule, &input, context_value.as_ref())
-    {
+    let base_dir = rule_base_dir(&args.rules);
+    let (output, warnings) = match transform_with_warnings_with_base_dir(
+        &rule,
+        &input,
+        context_value.as_ref(),
+        &base_dir,
+    ) {
         Ok(result) => result,
         Err(err) => {
             emit_transform_error(&err, args.error_format);
@@ -267,8 +302,10 @@ fn run_transform_ndjson(
     context: Option<&serde_json::Value>,
     output: Option<PathBuf>,
     error_format: ErrorFormat,
+    rules_path: &PathBuf,
 ) -> i32 {
-    let stream = match transform_stream(rule, input, context) {
+    let base_dir = rule_base_dir(rules_path);
+    let stream = match transform_stream_with_base_dir(rule, input, context, &base_dir) {
         Ok(stream) => stream,
         Err(err) => {
             emit_transform_error(&err, error_format);
@@ -411,6 +448,10 @@ fn run_ui(args: UiArgs) -> i32 {
     };
 
     if let Err(err) = runtime.block_on(run_ui_server(config)) {
+        if let Some(errs) = err.downcast_ref::<RulesDirErrors>() {
+            eprintln!("{}", errs);
+            return 2;
+        }
         eprintln!("ui server error: {}", err);
         return 1;
     }
@@ -436,6 +477,12 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     };
 
     Ok((rule, yaml))
+}
+
+fn rule_base_dir(path: &PathBuf) -> PathBuf {
+    path.parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
 }
 
 fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {
@@ -493,6 +540,22 @@ fn emit_validation_errors(errors: &[RuleError], format: ErrorFormat) {
     }
 }
 
+fn emit_rules_dir_errors(errors: &RulesDirErrors, format: ErrorFormat) {
+    match format {
+        ErrorFormat::Text => {
+            eprintln!("{}", errors);
+        }
+        ErrorFormat::Json => {
+            let values: Vec<_> = errors
+                .errors
+                .iter()
+                .map(|err| rules_dir_error_json(err))
+                .collect();
+            eprintln!("{}", serde_json::to_string(&values).unwrap_or_default());
+        }
+    }
+}
+
 fn emit_validation_text(err: &RuleError) {
     let mut parts = Vec::new();
     parts.push(format!("E {}", err.code.as_str()));
@@ -522,6 +585,25 @@ fn validation_error_json(err: &RuleError) -> serde_json::Value {
         value["column"] = json!(location.column);
     }
 
+    value
+}
+
+fn rules_dir_error_json(err: &rulemorph_ui::RulesDirError) -> serde_json::Value {
+    let mut value = json!({
+        "type": "rules_dir",
+        "code": err.code,
+        "message": err.message,
+        "file": err.file.to_string_lossy(),
+    });
+    if let Some(path) = &err.path {
+        value["path"] = json!(path);
+    }
+    if let Some(line) = err.line {
+        value["line"] = json!(line);
+    }
+    if let Some(column) = err.column {
+        value["column"] = json!(column);
+    }
     value
 }
 

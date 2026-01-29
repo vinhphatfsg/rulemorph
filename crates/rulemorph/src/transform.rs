@@ -5,6 +5,7 @@ use regex::Regex;
 use serde_json::{Map, Value as JsonValue};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use crate::cache::LruCache;
@@ -57,12 +58,30 @@ pub fn transform(
     transform_with_warnings(rule, input, context).map(|(output, _)| output)
 }
 
+pub fn transform_with_base_dir(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<JsonValue, TransformError> {
+    transform_with_warnings_with_base_dir(rule, input, context, base_dir).map(|(output, _)| output)
+}
+
 pub fn preflight_validate(
     rule: &RuleFile,
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<(), TransformError> {
     preflight_validate_with_warnings(rule, input, context).map(|_| ())
+}
+
+pub fn preflight_validate_with_base_dir(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<(), TransformError> {
+    preflight_validate_with_warnings_with_base_dir(rule, input, context, base_dir).map(|_| ())
 }
 
 #[derive(Debug)]
@@ -75,6 +94,7 @@ pub struct TransformStream<'a> {
     rule: &'a RuleFile,
     context: Option<&'a JsonValue>,
     records: InputRecordsIter<'a>,
+    base_dir: Option<&'a Path>,
     done: bool,
 }
 
@@ -83,12 +103,14 @@ impl<'a> TransformStream<'a> {
         rule: &'a RuleFile,
         input: &'a str,
         context: Option<&'a JsonValue>,
+        base_dir: Option<&'a Path>,
     ) -> Result<Self, TransformError> {
         let records = input_records_iter(rule, input)?;
         Ok(Self {
             rule,
             context,
             records,
+            base_dir,
             done: false,
         })
     }
@@ -116,7 +138,13 @@ impl<'a> Iterator for TransformStream<'a> {
             };
 
             let mut warnings = Vec::new();
-            match apply_rule_to_record(self.rule, &record, self.context, &mut warnings) {
+            match apply_rule_to_record(
+                self.rule,
+                &record,
+                self.context,
+                &mut warnings,
+                self.base_dir,
+            ) {
                 Ok(output) => {
                     if output.is_none() && warnings.is_empty() {
                         continue;
@@ -143,13 +171,46 @@ pub fn transform_stream<'a>(
             "finalize is not supported in stream mode",
         ));
     }
-    TransformStream::new(rule, input, context)
+    TransformStream::new(rule, input, context, None)
+}
+
+pub fn transform_stream_with_base_dir<'a>(
+    rule: &'a RuleFile,
+    input: &'a str,
+    context: Option<&'a JsonValue>,
+    base_dir: &'a Path,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new(rule, input, context, Some(base_dir))
 }
 
 pub fn transform_with_warnings(
     rule: &RuleFile,
     input: &str,
     context: Option<&JsonValue>,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_with_warnings_inner(rule, input, context, None)
+}
+
+pub fn transform_with_warnings_with_base_dir(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_with_warnings_inner(rule, input, context, Some(base_dir))
+}
+
+fn transform_with_warnings_inner(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: Option<&Path>,
 ) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let mut output_records = Vec::new();
@@ -158,13 +219,18 @@ pub fn transform_with_warnings(
         while let Some(record) = records.next() {
             let record = record?;
             let mut record_warnings = Vec::new();
-            if let Some(output) = apply_rule_to_record(rule, &record, context, &mut record_warnings)? {
+            if let Some(output) =
+                apply_rule_to_record(rule, &record, context, &mut record_warnings, base_dir)?
+            {
                 output_records.push(output);
             }
             warnings.extend(record_warnings);
         }
     } else {
-        let stream = transform_stream(rule, input, context)?;
+        let stream = match base_dir {
+            Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir)?,
+            None => transform_stream(rule, input, context)?,
+        };
         for item in stream {
             let item = item?;
             warnings.extend(item.warnings);
@@ -191,13 +257,42 @@ pub fn transform_record(
     Ok(output)
 }
 
+pub fn transform_record_with_base_dir(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<Option<JsonValue>, TransformError> {
+    let (output, _warnings) =
+        transform_record_with_warnings_with_base_dir(rule, record, context, base_dir)?;
+    Ok(output)
+}
+
 pub fn transform_record_with_warnings(
     rule: &RuleFile,
     record: &JsonValue,
     context: Option<&JsonValue>,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
+    transform_record_with_warnings_inner(rule, record, context, None)
+}
+
+pub fn transform_record_with_warnings_with_base_dir(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
+    transform_record_with_warnings_inner(rule, record, context, Some(base_dir))
+}
+
+fn transform_record_with_warnings_inner(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    base_dir: Option<&Path>,
+) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
-    let output = apply_rule_to_record(rule, record, context, &mut warnings)?;
+    let output = apply_rule_to_record(rule, record, context, &mut warnings, base_dir)?;
     if let Some(finalize) = &rule.finalize {
         let mut records = Vec::new();
         if let Some(value) = output {
@@ -214,11 +309,42 @@ pub fn preflight_validate_with_warnings(
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_with_warnings_inner(rule, input, context, None)
+}
+
+pub fn preflight_validate_with_warnings_with_base_dir(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_with_warnings_inner(rule, input, context, Some(base_dir))
+}
+
+fn preflight_validate_with_warnings_inner(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: Option<&Path>,
+) -> Result<Vec<TransformWarning>, TransformError> {
     let mut warnings = Vec::new();
-    let stream = transform_stream(rule, input, context)?;
-    for item in stream {
-        let item = item?;
-        warnings.extend(item.warnings);
+    if rule.finalize.is_some() {
+        let mut records = input_records_iter(rule, input)?;
+        while let Some(record) = records.next() {
+            let record = record?;
+            let mut record_warnings = Vec::new();
+            let _ = apply_rule_to_record(rule, &record, context, &mut record_warnings, base_dir)?;
+            warnings.extend(record_warnings);
+        }
+    } else {
+        let stream = match base_dir {
+            Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir)?,
+            None => transform_stream(rule, input, context)?,
+        };
+        for item in stream {
+            let item = item?;
+            warnings.extend(item.warnings);
+        }
     }
     Ok(warnings)
 }
@@ -277,9 +403,10 @@ fn apply_rule_to_record(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    base_dir: Option<&Path>,
 ) -> Result<Option<JsonValue>, TransformError> {
     if let Some(steps) = &rule.steps {
-        return apply_steps(steps, record, context, warnings, rule.version);
+        return apply_steps(steps, record, context, warnings, rule.version, base_dir);
     }
 
     if !eval_record_when(rule, record, context, warnings) {
@@ -296,6 +423,7 @@ fn apply_steps(
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
+    base_dir: Option<&Path>,
 ) -> Result<Option<JsonValue>, TransformError> {
     let mut out = JsonValue::Object(Map::new());
 
@@ -367,7 +495,7 @@ fn apply_steps(
                 (branch.r#else.as_deref(), "else")
             };
             if let Some(target) = target {
-                let branch_rule = load_rule_from_path(target)
+                let (branch_rule, branch_base_dir) = load_rule_from_path(base_dir, target)
                     .map_err(|err| err.with_path(format!("{}.{}", branch_path, target_field)))?;
                 let branch_input = out.clone();
                 let mut branch_warnings = Vec::new();
@@ -376,6 +504,7 @@ fn apply_steps(
                     &branch_input,
                     context,
                     &mut branch_warnings,
+                    Some(&branch_base_dir),
                 )?;
                 warnings.extend(branch_warnings);
                 let Some(branch_output) = branch_output else {
@@ -413,21 +542,38 @@ fn merge_branch_output(
     Ok(())
 }
 
-fn load_rule_from_path(path: &str) -> Result<RuleFile, TransformError> {
-    let yaml = std::fs::read_to_string(path).map_err(|err| {
+fn load_rule_from_path(
+    base_dir: Option<&Path>,
+    path: &str,
+) -> Result<(RuleFile, PathBuf), TransformError> {
+    let resolved = resolve_rule_path(base_dir, path);
+    let yaml = std::fs::read_to_string(&resolved).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
             format!("failed to read rule: {}", err),
         )
         .with_path(path)
     })?;
-    crate::parse_rule_file(&yaml).map_err(|err| {
+    let rule = crate::parse_rule_file(&yaml).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
             format!("failed to parse rule: {}", err),
         )
         .with_path(path)
-    })
+    })?;
+    let resolved_base = resolved.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+    Ok((rule, resolved_base))
+}
+
+fn resolve_rule_path(base_dir: Option<&Path>, path: &str) -> PathBuf {
+    let rule_path = PathBuf::from(path);
+    if rule_path.is_absolute() {
+        rule_path
+    } else if let Some(base_dir) = base_dir {
+        base_dir.join(rule_path)
+    } else {
+        rule_path
+    }
 }
 
 fn apply_finalize(

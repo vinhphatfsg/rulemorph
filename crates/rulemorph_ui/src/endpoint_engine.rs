@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -19,10 +20,11 @@ use rulemorph::v2_parser::{
 use rulemorph::PathToken;
 use rulemorph::v2_model::{V2Ref, V2Start, V2Step};
 use rulemorph::{
-    get_path, parse_path, parse_rule_file, transform_record, validate_rule_file_with_source, Expr,
-    Mapping, RuleFile, TransformError,
+    get_path, parse_path, parse_rule_file, transform_record, transform_record_with_base_dir,
+    validate_rule_file_with_source, Expr, Mapping, RuleError, RuleFile, TransformError,
+    TransformErrorKind,
 };
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use tracing::warn;
 use uuid::Uuid;
@@ -54,6 +56,189 @@ impl EngineConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct RulesDirError {
+    pub code: String,
+    pub file: PathBuf,
+    pub path: Option<String>,
+    pub line: Option<usize>,
+    pub column: Option<usize>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct RulesDirErrors {
+    pub errors: Vec<RulesDirError>,
+}
+
+impl fmt::Display for RulesDirErrors {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (index, err) in self.errors.iter().enumerate() {
+            if index > 0 {
+                writeln!(f)?;
+            }
+            let mut parts = Vec::new();
+            parts.push(format!("E {}", err.code));
+            parts.push(format!("file={}", err.file.display()));
+            if let Some(path) = &err.path {
+                parts.push(format!("path={}", path));
+            }
+            if let Some(line) = err.line {
+                parts.push(format!("line={}", line));
+            }
+            if let Some(column) = err.column {
+                parts.push(format!("col={}", column));
+            }
+            parts.push(format!("msg=\"{}\"", err.message));
+            write!(f, "{}", parts.join(" "))?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for RulesDirErrors {}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RuleRefUsage {
+    step: bool,
+    body_rule: bool,
+    catch_rule: bool,
+    branch_rule: bool,
+}
+
+impl RuleRefUsage {
+    fn step() -> Self {
+        RuleRefUsage {
+            step: true,
+            ..RuleRefUsage::default()
+        }
+    }
+
+    fn body_rule() -> Self {
+        RuleRefUsage {
+            body_rule: true,
+            ..RuleRefUsage::default()
+        }
+    }
+
+    fn catch_rule() -> Self {
+        RuleRefUsage {
+            catch_rule: true,
+            ..RuleRefUsage::default()
+        }
+    }
+
+    fn branch_rule() -> Self {
+        RuleRefUsage {
+            branch_rule: true,
+            ..RuleRefUsage::default()
+        }
+    }
+
+    fn merge(&mut self, other: RuleRefUsage) {
+        self.step |= other.step;
+        self.body_rule |= other.body_rule;
+        self.catch_rule |= other.catch_rule;
+        self.branch_rule |= other.branch_rule;
+    }
+}
+
+#[derive(Debug, Default)]
+struct ValidationState {
+    validated_content: BTreeSet<PathBuf>,
+}
+
+pub fn validate_rules_dir(rules_dir: &Path) -> std::result::Result<(), RulesDirErrors> {
+    let mut errors = Vec::new();
+    let endpoint_path = rules_dir.join("endpoint.yaml");
+    let source = match read_rule_source(&endpoint_path, &mut errors) {
+        Some(source) => source,
+        None => return Err(RulesDirErrors { errors }),
+    };
+
+    let raw: EndpointRuleFile = match parse_yaml(&endpoint_path, &source, &mut errors) {
+        Some(raw) => raw,
+        None => return Err(RulesDirErrors { errors }),
+    };
+
+    if raw.version != 2 {
+        push_error(
+            &mut errors,
+            "InvalidVersion",
+            &endpoint_path,
+            "endpoint rule version must be 2",
+            Some("version".to_string()),
+            None,
+        );
+    }
+    if raw.rule_type != "endpoint" {
+        push_error(
+            &mut errors,
+            "InvalidRuleType",
+            &endpoint_path,
+            "endpoint rule type must be endpoint",
+            Some("type".to_string()),
+            None,
+        );
+    }
+    if let Err(err) = CompiledEndpointRule::compile(raw.clone(), &endpoint_path) {
+        push_error(
+            &mut errors,
+            "EndpointCompileFailed",
+            &endpoint_path,
+            err.to_string(),
+            None,
+            None,
+        );
+    }
+
+    let base_dir = endpoint_path.parent().unwrap_or_else(|| Path::new("."));
+    let mut refs: BTreeSet<PathBuf> = BTreeSet::new();
+    let mut ref_usage: HashMap<PathBuf, RuleRefUsage> = HashMap::new();
+    for endpoint in &raw.endpoints {
+        for step in &endpoint.steps {
+            let resolved = resolve_rule_path(base_dir, &step.rule);
+            refs.insert(resolved.clone());
+            ref_usage
+                .entry(resolved)
+                .and_modify(|usage| usage.merge(RuleRefUsage::step()))
+                .or_insert_with(RuleRefUsage::step);
+            if let Some(catch) = &step.catch {
+                for target in catch.values() {
+                    let resolved = resolve_rule_path(base_dir, target);
+                    refs.insert(resolved.clone());
+                    ref_usage
+                        .entry(resolved)
+                        .and_modify(|usage| usage.merge(RuleRefUsage::catch_rule()))
+                        .or_insert_with(RuleRefUsage::catch_rule);
+                }
+            }
+        }
+        if let Some(catch) = &endpoint.catch {
+            for target in catch.values() {
+                let resolved = resolve_rule_path(base_dir, target);
+                refs.insert(resolved.clone());
+                ref_usage
+                    .entry(resolved)
+                    .and_modify(|usage| usage.merge(RuleRefUsage::catch_rule()))
+                    .or_insert_with(RuleRefUsage::catch_rule);
+            }
+        }
+    }
+
+    let mut state = ValidationState::default();
+    for path in refs {
+        let usage = ref_usage.get(&path).copied().unwrap_or_default();
+        validate_rule_path(&path, usage, &mut state, &mut errors);
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(RulesDirErrors { errors })
+    }
+}
+
 pub struct EndpointEngine {
     endpoint_rule: CompiledEndpointRule,
     raw_rule_source: JsonValue,
@@ -64,6 +249,12 @@ pub struct EndpointEngine {
 struct RuleExecution {
     output: JsonValue,
     child_trace: Option<JsonValue>,
+}
+
+#[derive(Debug)]
+struct LoadedRule {
+    rule: RuleFile,
+    base_dir: PathBuf,
 }
 
 impl EndpointEngine {
@@ -385,15 +576,21 @@ impl EndpointEngine {
         let rule_ref = rule_ref_from_path(base_dir, &resolved);
         match load_rule_kind(&resolved).map_err(|err| EndpointError::invalid(err.to_string()))? {
             RuleKind::Normal(rule) => {
-                let output = transform_record(&rule, input, context)
-                    .map_err(EndpointError::from_transform)?
-                    .unwrap_or_else(empty_object);
-                let nodes = build_rule_nodes_from_rule(&rule, input, context);
+                let output = transform_record_with_base_dir(
+                    &rule.rule,
+                    input,
+                    context,
+                    &rule.base_dir,
+                )
+                .map_err(EndpointError::from_transform)?
+                .unwrap_or_else(empty_object);
+                let nodes =
+                    build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
                 let child_trace = build_rule_trace(
                     "normal",
                     rule_display_name(&resolved),
                     rule_ref,
-                    rule.version,
+                    rule.rule.version,
                     rule_source,
                     input.clone(),
                     output.clone(),
@@ -510,9 +707,10 @@ impl EndpointEngine {
             return Ok(Some(output));
         }
         if let Some(body_rule) = &rule.body_rule {
-            let output = transform_record(body_rule, input, context)
-                .map_err(EndpointError::from_transform)?
-                .unwrap_or_else(empty_object);
+            let output =
+                transform_record_with_base_dir(&body_rule.rule, input, context, &body_rule.base_dir)
+                    .map_err(EndpointError::from_transform)?
+                    .unwrap_or_else(empty_object);
             return Ok(Some(output));
         }
         Ok(None)
@@ -581,9 +779,14 @@ impl EndpointEngine {
                 }
             };
             let error_context = self.step_context(params, Some(error));
-            let output = transform_record(&rule, input, Some(&error_context))
-                .map_err(EndpointError::from_transform)?
-                .unwrap_or_else(empty_object);
+            let output = transform_record_with_base_dir(
+                &rule.rule,
+                input,
+                Some(&error_context),
+                &rule.base_dir,
+            )
+            .map_err(EndpointError::from_transform)?
+            .unwrap_or_else(empty_object);
             return Ok(Some(output));
         }
         Ok(None)
@@ -900,7 +1103,7 @@ struct CompiledNetworkRule {
     select: Option<String>,
     body: Option<rulemorph::v2_model::V2Expr>,
     body_map: Option<Vec<Mapping>>,
-    body_rule: Option<RuleFile>,
+    body_rule: Option<LoadedRule>,
     catch: Option<CatchSpec>,
     retry: Option<RetryConfig>,
     base_dir: PathBuf,
@@ -1210,6 +1413,370 @@ fn json_value_kind(value: &JsonValue) -> &'static str {
     }
 }
 
+fn read_rule_source(path: &Path, errors: &mut Vec<RulesDirError>) -> Option<String> {
+    match std::fs::read_to_string(path) {
+        Ok(source) => Some(source),
+        Err(err) => {
+            push_error(
+                errors,
+                "ReadFailed",
+                path,
+                err.to_string(),
+                None,
+                None,
+            );
+            None
+        }
+    }
+}
+
+fn parse_yaml<T: DeserializeOwned>(
+    path: &Path,
+    source: &str,
+    errors: &mut Vec<RulesDirError>,
+) -> Option<T> {
+    match serde_yaml::from_str(source) {
+        Ok(value) => Some(value),
+        Err(err) => {
+            push_yaml_error(errors, path, &err);
+            None
+        }
+    }
+}
+
+fn parse_rule_type(
+    path: &Path,
+    source: &str,
+    errors: &mut Vec<RulesDirError>,
+) -> Option<String> {
+    let meta: serde_yaml::Value = match serde_yaml::from_str(source) {
+        Ok(value) => value,
+        Err(err) => {
+            push_yaml_error(errors, path, &err);
+            return None;
+        }
+    };
+    Some(
+        meta.get("type")
+            .and_then(|value| value.as_str())
+            .unwrap_or("normal")
+            .to_string(),
+    )
+}
+
+fn push_yaml_error(errors: &mut Vec<RulesDirError>, path: &Path, err: &serde_yaml::Error) {
+    let location = err.location().map(|loc| (loc.line(), loc.column()));
+    push_error(
+        errors,
+        "YamlParseFailed",
+        path,
+        err.to_string(),
+        None,
+        location,
+    );
+}
+
+fn push_error(
+    errors: &mut Vec<RulesDirError>,
+    code: impl Into<String>,
+    file: &Path,
+    message: impl Into<String>,
+    path: Option<String>,
+    location: Option<(usize, usize)>,
+) {
+    let (line, column) = location
+        .map(|(line, column)| (Some(line), Some(column)))
+        .unwrap_or((None, None));
+    errors.push(RulesDirError {
+        code: code.into(),
+        file: file.to_path_buf(),
+        path,
+        line,
+        column,
+        message: message.into(),
+    });
+}
+
+fn push_rule_error(errors: &mut Vec<RulesDirError>, path: &Path, err: &RuleError) {
+    let location = err.location.as_ref().map(|loc| (loc.line, loc.column));
+    push_error(
+        errors,
+        err.code.as_str(),
+        path,
+        err.message.clone(),
+        err.path.clone(),
+        location,
+    );
+}
+
+fn validate_rule_path(
+    path: &Path,
+    usage: RuleRefUsage,
+    state: &mut ValidationState,
+    errors: &mut Vec<RulesDirError>,
+) {
+    let source = match read_rule_source(path, errors) {
+        Some(source) => source,
+        None => return,
+    };
+    let rule_type = match parse_rule_type(path, &source, errors) {
+        Some(rule_type) => rule_type,
+        None => return,
+    };
+
+    if usage.step && rule_type == "endpoint" {
+        push_error(
+            errors,
+            "EndpointRuleNotAllowed",
+            path,
+            "endpoint rule not allowed as step",
+            Some("type".to_string()),
+            None,
+        );
+    }
+    if usage.body_rule && rule_type != "normal" {
+        push_error(
+            errors,
+            "BodyRuleInvalid",
+            path,
+            "body_rule must be normal",
+            Some("type".to_string()),
+            None,
+        );
+    }
+    if usage.catch_rule && rule_type != "normal" {
+        push_error(
+            errors,
+            "CatchRuleInvalid",
+            path,
+            "catch rule must be normal",
+            Some("type".to_string()),
+            None,
+        );
+    }
+    if usage.branch_rule && rule_type != "normal" {
+        push_error(
+            errors,
+            "BranchRuleInvalid",
+            path,
+            "branch rule must be normal",
+            Some("type".to_string()),
+            None,
+        );
+    }
+
+    if !state.validated_content.insert(path.to_path_buf()) {
+        return;
+    }
+
+    match rule_type.as_str() {
+        "network" => validate_network_rule(&source, path, state, errors),
+        "endpoint" => {}
+        _ => validate_normal_rule(&source, path, state, errors),
+    }
+}
+
+fn validate_normal_rule(
+    source: &str,
+    path: &Path,
+    state: &mut ValidationState,
+    errors: &mut Vec<RulesDirError>,
+) {
+    let rule = match parse_rule_file(source) {
+        Ok(rule) => rule,
+        Err(err) => {
+            push_yaml_error(errors, path, &err);
+            return;
+        }
+    };
+    if let Err(rule_errors) = validate_rule_file_with_source(&rule, source) {
+        for err in rule_errors {
+            push_rule_error(errors, path, &err);
+        }
+    }
+    if let Some(steps) = &rule.steps {
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        for step in steps {
+            if let Some(branch) = &step.branch {
+                if !branch.then.trim().is_empty() {
+                    let resolved = resolve_rule_path(base_dir, branch.then.as_str());
+                    validate_rule_path(&resolved, RuleRefUsage::branch_rule(), state, errors);
+                }
+                if let Some(r#else) = &branch.r#else {
+                    if !r#else.trim().is_empty() {
+                        let resolved = resolve_rule_path(base_dir, r#else.as_str());
+                        validate_rule_path(&resolved, RuleRefUsage::branch_rule(), state, errors);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn validate_network_rule(
+    source: &str,
+    path: &Path,
+    state: &mut ValidationState,
+    errors: &mut Vec<RulesDirError>,
+) {
+    let raw: NetworkRuleFile = match parse_yaml(path, source, errors) {
+        Some(raw) => raw,
+        None => return,
+    };
+
+    if raw.version != 2 {
+        push_error(
+            errors,
+            "InvalidVersion",
+            path,
+            "network rule version must be 2",
+            Some("version".to_string()),
+            None,
+        );
+    }
+    if raw.rule_type != "network" {
+        push_error(
+            errors,
+            "InvalidRuleType",
+            path,
+            "network rule type must be network",
+            Some("type".to_string()),
+            None,
+        );
+    }
+    if raw.body.is_some() && raw.body_map.is_some() {
+        push_error(
+            errors,
+            "NetworkInvalidConfig",
+            path,
+            "body and body_map are mutually exclusive",
+            Some("body".to_string()),
+            None,
+        );
+    }
+    if raw.body.is_some() && raw.body_rule.is_some() {
+        push_error(
+            errors,
+            "NetworkInvalidConfig",
+            path,
+            "body and body_rule are mutually exclusive",
+            Some("body".to_string()),
+            None,
+        );
+    }
+    if raw.body_map.is_some() && raw.body_rule.is_some() {
+        push_error(
+            errors,
+            "NetworkInvalidConfig",
+            path,
+            "body_map and body_rule are mutually exclusive",
+            Some("body_map".to_string()),
+            None,
+        );
+    }
+
+    let method = match Method::from_bytes(raw.request.method.as_bytes()) {
+        Ok(method) => Some(method),
+        Err(_) => {
+            push_error(
+                errors,
+                "InvalidMethod",
+                path,
+                "invalid method",
+                Some("request.method".to_string()),
+                None,
+            );
+            None
+        }
+    };
+
+    if let Some(method) = method {
+        if method == Method::GET
+            && (raw.body.is_some() || raw.body_map.is_some() || raw.body_rule.is_some())
+        {
+            push_error(
+                errors,
+                "NetworkInvalidConfig",
+                path,
+                "GET with body is not allowed",
+                Some("request.method".to_string()),
+                None,
+            );
+        }
+    }
+
+    if let Err(err) = parse_v2_expr(&raw.request.url) {
+        push_error(
+            errors,
+            "InvalidExpr",
+            path,
+            format!("request.url: {}", err),
+            Some("request.url".to_string()),
+            None,
+        );
+    }
+    if let Some(body) = &raw.body {
+        if let Err(err) = parse_v2_expr(body) {
+            push_error(
+                errors,
+                "InvalidExpr",
+                path,
+                format!("body: {}", err),
+                Some("body".to_string()),
+                None,
+            );
+        }
+    }
+
+    match parse_duration(&raw.timeout) {
+        Ok(timeout) => {
+            if timeout.is_zero() {
+                push_error(
+                    errors,
+                    "InvalidTimeout",
+                    path,
+                    "timeout must be > 0",
+                    Some("timeout".to_string()),
+                    None,
+                );
+            }
+        }
+        Err(err) => {
+            push_error(
+                errors,
+                "InvalidTimeout",
+                path,
+                err.to_string(),
+                Some("timeout".to_string()),
+                None,
+            );
+        }
+    }
+
+    if let Err(err) = compile_retry(raw.retry.as_ref()) {
+        push_error(
+            errors,
+            "InvalidRetry",
+            path,
+            err.to_string(),
+            Some("retry".to_string()),
+            None,
+        );
+    }
+
+    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+    if let Some(body_rule) = raw.body_rule.as_deref() {
+        let resolved = resolve_rule_path(base_dir, body_rule);
+        validate_rule_path(&resolved, RuleRefUsage::body_rule(), state, errors);
+    }
+    if let Some(catch) = &raw.catch {
+        for target in catch.values() {
+            let resolved = resolve_rule_path(base_dir, target);
+            validate_rule_path(&resolved, RuleRefUsage::catch_rule(), state, errors);
+        }
+    }
+}
+
 fn resolve_rule_path(base_dir: &Path, rule: &str) -> PathBuf {
     let path = PathBuf::from(rule);
     if path.is_absolute() {
@@ -1241,7 +1808,8 @@ fn load_rule_kind(path: &Path) -> Result<RuleKind> {
                 .with_context(|| format!("failed to parse {}", path.display()))?;
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", path.display(), err))?;
-            Ok(RuleKind::Normal(rule))
+            let base_dir = path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            Ok(RuleKind::Normal(LoadedRule { rule, base_dir }))
         }
     }
 }
@@ -1286,14 +1854,16 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
     };
     let body_rule = match raw.body_rule {
         Some(path_str) => {
-            let resolved = resolve_rule_path(path.parent().unwrap_or_else(|| Path::new(".")), &path_str);
+            let resolved =
+                resolve_rule_path(path.parent().unwrap_or_else(|| Path::new(".")), &path_str);
             let source = std::fs::read_to_string(&resolved)
                 .with_context(|| format!("failed to read {}", resolved.display()))?;
             let rule = parse_rule_file(&source)
                 .with_context(|| format!("failed to parse {}", resolved.display()))?;
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", resolved.display(), err))?;
-            Some(rule)
+            let base_dir = resolved.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
+            Some(LoadedRule { rule, base_dir })
         }
         None => None,
     };
@@ -1451,29 +2021,283 @@ fn build_rule_nodes_from_rule(
     rule: &RuleFile,
     record: &JsonValue,
     context: Option<&JsonValue>,
+    base_dir: &Path,
 ) -> Vec<JsonValue> {
     let mut nodes = Vec::new();
-    let mut out = JsonValue::Object(JsonMap::new());
     if let Some(steps) = &rule.steps {
+        let mut step_outputs = Vec::with_capacity(steps.len());
+        for index in 0..steps.len() {
+            let mut partial_rule = rule.clone();
+            partial_rule.steps = Some(steps[..=index].to_vec());
+            partial_rule.finalize = None;
+            let result = transform_record_with_base_dir(&partial_rule, record, context, base_dir);
+            step_outputs.push(result);
+        }
+
+        let mut prev_output = JsonValue::Object(JsonMap::new());
+        let mut halted = false;
         for (index, step) in steps.iter().enumerate() {
             let label = step
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("step-{}", index + 1));
-            let children = build_mapping_ops_with_values(
-                step.mappings.as_deref().unwrap_or(&[]),
-                record,
-                context,
-                &mut out,
-                rule.version,
-                index,
-            );
+            let kind = if step.branch.is_some() {
+                "branch"
+            } else if step.record_when.is_some() {
+                "record_when"
+            } else if step.asserts.is_some() {
+                "asserts"
+            } else if step.mappings.is_some() {
+                "mappings"
+            } else {
+                "step"
+            };
+
+            let step_input = prev_output.clone();
+            let mut status = "ok".to_string();
+            let mut output_value: Option<JsonValue> = None;
+            let mut error: Option<JsonValue> = None;
+            let mut child_trace: Option<JsonValue> = None;
+            let mut meta = JsonMap::new();
+
+            let step_active = !halted;
+            if halted {
+                status = "skipped".to_string();
+            } else {
+                match step_outputs.get(index) {
+                    Some(Ok(Some(out))) => {
+                        prev_output = out.clone();
+                        output_value = Some(out.clone());
+                    }
+                    Some(Ok(None)) => {
+                        status = "skipped".to_string();
+                        output_value = Some(JsonValue::Null);
+                        halted = true;
+                    }
+                    Some(Err(err)) => {
+                        status = "error".to_string();
+                        error = Some(transform_error_to_trace(err));
+                        halted = true;
+                    }
+                    None => {
+                        status = "skipped".to_string();
+                        halted = true;
+                    }
+                }
+            }
+
+            if step_active && status != "error" {
+                if let Some(expr) = step.record_when.as_ref() {
+                    match eval_trace_condition(expr, record, context, &step_input, "record_when", rule.version) {
+                        Ok(flag) => {
+                            meta.insert("record_when".to_string(), JsonValue::Bool(flag));
+                        }
+                        Err(err) => {
+                            status = "error".to_string();
+                            error = Some(transform_error_to_trace(&err));
+                            halted = true;
+                        }
+                    }
+                }
+            }
+
+            if step_active && status != "error" {
+                if let Some(asserts) = step.asserts.as_ref() {
+                    let mut asserts_ok = true;
+                    for (assert_index, assert) in asserts.iter().enumerate() {
+                        let assert_path =
+                            format!("steps[{}].asserts[{}].when", index, assert_index);
+                        match eval_trace_condition(
+                            &assert.when,
+                            record,
+                            context,
+                            &step_input,
+                            &assert_path,
+                            rule.version,
+                        ) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                asserts_ok = false;
+                                let err = TransformError::new(
+                                    TransformErrorKind::AssertionFailed,
+                                    format!(
+                                        "assert failed: {}: {}",
+                                        assert.error.code, assert.error.message
+                                    ),
+                                )
+                                .with_path(format!("steps[{}].asserts[{}]", index, assert_index));
+                                status = "error".to_string();
+                                error = Some(transform_error_to_trace(&err));
+                                halted = true;
+                                break;
+                            }
+                            Err(err) => {
+                                asserts_ok = false;
+                                status = "error".to_string();
+                                error = Some(transform_error_to_trace(&err));
+                                halted = true;
+                                break;
+                            }
+                        }
+                    }
+                    meta.insert("asserts_ok".to_string(), JsonValue::Bool(asserts_ok));
+                }
+            }
+            if step.asserts.is_some() && !meta.contains_key("asserts_ok") {
+                meta.insert("asserts_ok".to_string(), JsonValue::Bool(false));
+            }
+
+            if step_active && status != "error" {
+                if let Some(branch) = step.branch.as_ref() {
+                    let mut refs = Vec::new();
+                    let mut labels = Vec::new();
+                    let then_ref = rule_ref_from_rule(base_dir, &branch.then);
+                    refs.push(then_ref.clone());
+                    labels.push("branch: then".to_string());
+                    let else_ref = branch
+                        .r#else
+                        .as_ref()
+                        .map(|other| rule_ref_from_rule(base_dir, other));
+                    if let Some(other_ref) = else_ref.as_ref() {
+                        refs.push(other_ref.clone());
+                        labels.push("branch: else".to_string());
+                    }
+
+                    let branch_taken = match eval_trace_condition(
+                        &branch.when,
+                        record,
+                        context,
+                        &step_input,
+                        "branch.when",
+                        rule.version,
+                    ) {
+                        Ok(true) => "then",
+                        Ok(false) => {
+                            if branch.r#else.is_some() {
+                                "else"
+                            } else {
+                                "none"
+                            }
+                        }
+                        Err(err) => {
+                            status = "error".to_string();
+                            error = Some(transform_error_to_trace(&err));
+                            halted = true;
+                            "none"
+                        }
+                    };
+                    meta.insert(
+                        "branch_taken".to_string(),
+                        JsonValue::String(branch_taken.to_string()),
+                    );
+                    meta.insert(
+                        "rule_refs".to_string(),
+                        JsonValue::Array(
+                            refs.iter().cloned().map(JsonValue::String).collect(),
+                        ),
+                    );
+                    meta.insert(
+                        "rule_ref_labels".to_string(),
+                        JsonValue::Array(
+                            labels.iter().cloned().map(JsonValue::String).collect(),
+                        ),
+                    );
+                    if branch.return_ && branch_taken != "none" {
+                        halted = true;
+                    }
+
+                    let taken_ref = match branch_taken {
+                        "then" => Some((branch.then.as_str(), then_ref)),
+                        "else" => branch
+                            .r#else
+                            .as_deref()
+                            .and_then(|path| else_ref.map(|label| (path, label))),
+                        _ => None,
+                    };
+                    if let Some((target_path, ref_label)) = taken_ref {
+                        meta.insert("rule_ref".to_string(), JsonValue::String(ref_label.clone()));
+                        meta.insert(
+                            "rule_ref_label".to_string(),
+                            JsonValue::String(format!("branch: {}", branch_taken)),
+                        );
+                        let resolved = resolve_rule_path(base_dir, target_path);
+                        if let Ok(RuleKind::Normal(loaded)) = load_rule_kind(&resolved) {
+                            let rule_source = std::fs::read_to_string(&resolved)
+                                .ok()
+                                .and_then(|source| yaml_source_to_json(&source))
+                                .unwrap_or_else(|| json!({}));
+                            let child_nodes = build_rule_nodes_from_rule(
+                                &loaded.rule,
+                                &step_input,
+                                context,
+                                &loaded.base_dir,
+                            );
+                            let child_output = transform_record_with_base_dir(
+                                &loaded.rule,
+                                &step_input,
+                                context,
+                                &loaded.base_dir,
+                            )
+                            .ok()
+                            .and_then(|value| value)
+                            .unwrap_or_else(empty_object);
+                            child_trace = Some(build_rule_trace(
+                                "normal",
+                                rule_display_name(&resolved),
+                                rule_ref_from_path(base_dir, &resolved),
+                                loaded.rule.version,
+                                rule_source,
+                                step_input.clone(),
+                                child_output,
+                                child_nodes,
+                                "ok",
+                            ));
+                        }
+                    }
+                }
+            }
+
+            let children = if status == "ok" {
+                if let Some(mappings) = step.mappings.as_deref() {
+                    let mut mapping_out = step_input.clone();
+                    build_mapping_ops_with_values(
+                        mappings,
+                        record,
+                        context,
+                        &mut mapping_out,
+                        rule.version,
+                        index,
+                    )
+                } else {
+                    Vec::new()
+                }
+            } else {
+                Vec::new()
+            };
+
             let mut node = json!({
                 "id": format!("step-{}", index),
-                "kind": "step",
+                "kind": kind,
                 "label": label,
-                "status": "ok",
+                "status": status,
+                "input": step_input,
+                "output": output_value,
             });
+            if let Some(err) = error {
+                if let Some(obj) = node.as_object_mut() {
+                    obj.insert("error".to_string(), err);
+                }
+            }
+            if let Some(trace) = child_trace {
+                if let Some(obj) = node.as_object_mut() {
+                    obj.insert("child_trace".to_string(), trace);
+                }
+            }
+            if !meta.is_empty() {
+                if let Some(obj) = node.as_object_mut() {
+                    obj.insert("meta".to_string(), JsonValue::Object(meta));
+                }
+            }
             if !children.is_empty() {
                 if let Some(obj) = node.as_object_mut() {
                     obj.insert("children".to_string(), JsonValue::Array(children));
@@ -1482,6 +2306,7 @@ fn build_rule_nodes_from_rule(
             nodes.push(node);
         }
     } else {
+        let mut out = JsonValue::Object(JsonMap::new());
         let children = build_mapping_ops_with_values(
             &rule.mappings,
             record,
@@ -1495,6 +2320,8 @@ fn build_rule_nodes_from_rule(
             "kind": "mapping",
             "label": "mappings",
             "status": "ok",
+            "input": record,
+            "output": out,
         });
         if !children.is_empty() {
             if let Some(obj) = node.as_object_mut() {
@@ -1505,6 +2332,31 @@ fn build_rule_nodes_from_rule(
     }
 
     if let Some(finalize) = &rule.finalize {
+        let mut base_rule = rule.clone();
+        base_rule.finalize = None;
+        let pre_finalize = transform_record_with_base_dir(&base_rule, record, context, base_dir)
+            .ok()
+            .and_then(|value| value);
+        let finalize_input = match pre_finalize {
+            Some(value) => JsonValue::Array(vec![value]),
+            None => JsonValue::Array(Vec::new()),
+        };
+        let finalize_result = transform_record_with_base_dir(rule, record, context, base_dir);
+        let mut finalize_status = "ok";
+        let mut finalize_output: Option<JsonValue> = None;
+        let mut finalize_error: Option<JsonValue> = None;
+        match finalize_result {
+            Ok(Some(value)) => {
+                finalize_output = Some(value);
+            }
+            Ok(None) => {
+                finalize_output = Some(JsonValue::Null);
+            }
+            Err(err) => {
+                finalize_status = "error";
+                finalize_error = Some(transform_error_to_trace(&err));
+            }
+        }
         let mut children = Vec::new();
         if let Some(filter) = &finalize.filter {
             children.push(json!({
@@ -1561,8 +2413,15 @@ fn build_rule_nodes_from_rule(
             "id": "step-finalize",
             "kind": "finalize",
             "label": "finalize",
-            "status": "ok",
+            "status": finalize_status,
+            "input": finalize_input,
+            "output": finalize_output,
         });
+        if let Some(err) = finalize_error {
+            if let Some(obj) = node.as_object_mut() {
+                obj.insert("error".to_string(), err);
+            }
+        }
         if !children.is_empty() {
             if let Some(obj) = node.as_object_mut() {
                 obj.insert("children".to_string(), JsonValue::Array(children));
@@ -1572,6 +2431,73 @@ fn build_rule_nodes_from_rule(
     }
 
     nodes
+}
+
+fn transform_error_to_trace(err: &TransformError) -> JsonValue {
+    json!({
+        "code": format!("{:?}", err.kind),
+        "message": err.message,
+        "path": err.path,
+    })
+}
+
+fn eval_trace_condition(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    path: &str,
+    rule_version: u8,
+) -> Result<bool, TransformError> {
+    if rule_version >= 2 {
+        if let Some(raw_value) = expr_to_json_for_v2_condition(expr) {
+            if let Ok(condition) = parse_v2_condition(&raw_value) {
+                let ctx = V2EvalContext::new();
+                return eval_v2_condition(&condition, record, context, out, path, &ctx);
+            }
+            if let Ok(v2_expr) = parse_v2_expr(&raw_value) {
+                let ctx = V2EvalContext::new();
+                let value = eval_v2_expr(&v2_expr, record, context, out, path, &ctx)?;
+                return match value {
+                    EvalValue::Missing => Ok(false),
+                    EvalValue::Value(JsonValue::Bool(flag)) => Ok(flag),
+                    EvalValue::Value(_) => Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "when/record_when must evaluate to boolean",
+                    )
+                    .with_path(path)),
+                };
+            }
+        }
+        if let Some(raw_value) = expr_to_json_for_v2_pipe(expr) {
+            let v2_expr = parse_v2_expr(&raw_value).map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    format!("invalid v2 condition: {}", err),
+                )
+                .with_path(path)
+            })?;
+            let ctx = V2EvalContext::new();
+            let value = eval_v2_expr(&v2_expr, record, context, out, path, &ctx)?;
+            return match value {
+                EvalValue::Missing => Ok(false),
+                EvalValue::Value(JsonValue::Bool(flag)) => Ok(flag),
+                EvalValue::Value(_) => Err(TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "when/record_when must evaluate to boolean",
+                )
+                .with_path(path)),
+            };
+        }
+    }
+
+    Err(
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "when/record_when must evaluate to boolean",
+        )
+        .with_path(path),
+    )
 }
 
 fn build_network_nodes(rule: &CompiledNetworkRule) -> Vec<JsonValue> {
@@ -1776,6 +2702,50 @@ fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
             None
         }
         _ => None,
+    }
+}
+
+fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
+    match expr {
+        Expr::Literal(value) => Some(value.clone()),
+        Expr::Ref(reference)
+            if reference.ref_path.starts_with('@') || is_literal_escape(&reference.ref_path) =>
+        {
+            Some(JsonValue::String(reference.ref_path.clone()))
+        }
+        Expr::Chain(chain) => {
+            if let Some(first) = chain.chain.first() {
+                if let Expr::Ref(reference) = first {
+                    if reference.ref_path.starts_with('@') {
+                        let items: Vec<JsonValue> = chain
+                            .chain
+                            .iter()
+                            .map(expr_to_json_value_for_condition)
+                            .collect();
+                        return Some(JsonValue::Array(items));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn expr_to_json_value_for_condition(expr: &Expr) -> JsonValue {
+    match expr {
+        Expr::Ref(reference) => JsonValue::String(reference.ref_path.clone()),
+        Expr::Literal(value) => value.clone(),
+        Expr::Op(op) => {
+            let args: Vec<JsonValue> = op.args.iter().map(expr_to_json_value_for_condition).collect();
+            let mut obj = JsonMap::new();
+            obj.insert(op.op.clone(), JsonValue::Array(args));
+            JsonValue::Object(obj)
+        }
+        Expr::Chain(chain) => {
+            let items: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value_for_condition).collect();
+            JsonValue::Array(items)
+        }
     }
 }
 
@@ -2010,7 +2980,7 @@ fn expr_to_json_value(expr: &Expr) -> JsonValue {
 }
 
 enum RuleKind {
-    Normal(RuleFile),
+    Normal(LoadedRule),
     Network(CompiledNetworkRule),
 }
 

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use endpoint_engine::{EndpointEngine, EngineConfig};
-pub use endpoint_engine::ApiMode;
+pub use endpoint_engine::{validate_rules_dir, ApiMode, RulesDirError, RulesDirErrors};
 use server::{build_router, AppState};
 use trace_store::TraceStore;
 use tokio::sync::broadcast;
@@ -62,6 +62,9 @@ pub async fn run(config: UiConfig) -> Result<()> {
         ApiMode::UiOnly => None,
         ApiMode::Rules => {
             let rules_dir = config.rules_dir.unwrap_or_else(UiConfig::default_rules_dir);
+            if let Err(errs) = validate_rules_dir(&rules_dir) {
+                return Err(errs.into());
+            }
             let internal_base = format!("http://127.0.0.1:{}", config.port);
             Some(EndpointEngine::load(
                 rules_dir,

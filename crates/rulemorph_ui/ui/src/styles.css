@@ -364,6 +364,17 @@ body {
   letter-spacing: 0.14em;
 }
 
+.chip--error {
+  background: rgba(255, 100, 100, 0.18);
+  color: rgba(255, 210, 210, 0.95);
+}
+
+.step-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .record-list {
   display: grid;
   gap: 8px;

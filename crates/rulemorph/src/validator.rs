@@ -181,6 +181,9 @@ fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
                     );
                 }
             }
+            if !branch.return_ {
+                ctx.allow_any_out_ref = true;
+            }
         }
     }
 
@@ -519,7 +522,11 @@ fn validate_v2_mapping_expr(
     };
 
     // Create v2 validation context with produced targets
-    let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, produced_targets.clone());
+    let mut v2_ctx = V2ValidationCtx::with_produced_targets(
+        ctx.locator,
+        produced_targets.clone(),
+        ctx.allow_any_out_ref,
+    );
     let scope = V2Scope::new();
 
     // Validate the v2 expression
@@ -555,7 +562,11 @@ fn validate_v2_condition_expr(
         }
     };
 
-    let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, produced_targets.clone());
+    let mut v2_ctx = V2ValidationCtx::with_produced_targets(
+        ctx.locator,
+        produced_targets.clone(),
+        ctx.allow_any_out_ref,
+    );
     let scope = V2Scope::new();
     validate_v2_condition(&condition, base_path, &scope, &mut v2_ctx);
 
@@ -605,7 +616,7 @@ fn validate_source(
         }
     };
 
-    if namespace == Namespace::Out && !out_ref_resolves(&tokens, produced_targets) {
+    if namespace == Namespace::Out && !ctx.allow_any_out_ref && !out_ref_resolves(&tokens, produced_targets) {
         ctx.push(
             ErrorCode::ForwardOutReference,
             "out reference must point to previous mappings",
@@ -1281,7 +1292,7 @@ fn validate_ref(
 
     match namespace {
         Namespace::Out => {
-            if !out_ref_resolves(&tokens, produced_targets) {
+            if !ctx.allow_any_out_ref && !out_ref_resolves(&tokens, produced_targets) {
                 ctx.push(
                     ErrorCode::ForwardOutReference,
                     "out reference must point to previous mappings",
@@ -1922,6 +1933,7 @@ fn literal_string(expr: &Expr) -> Option<&str> {
 struct ValidationCtx<'a> {
     locator: Option<&'a YamlLocator>,
     errors: Vec<RuleError>,
+    allow_any_out_ref: bool,
 }
 
 impl<'a> ValidationCtx<'a> {
@@ -1929,6 +1941,7 @@ impl<'a> ValidationCtx<'a> {
         Self {
             locator,
             errors: Vec::new(),
+            allow_any_out_ref: false,
         }
     }
 

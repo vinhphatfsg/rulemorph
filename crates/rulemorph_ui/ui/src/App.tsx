@@ -165,7 +165,7 @@ type DetailBundle = {
   firstId?: string;
   lastId?: string;
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
-  refs: { fromId: string; toRule: string }[];
+  refs: { fromId: string; toRule: string; label?: string }[];
 };
 
 type ApiDetailEntry = {
@@ -182,6 +182,33 @@ type ApiDetailBundle = {
   refs: { fromId: string; toRule: string }[];
 };
 
+type RuleRefEntry = { ref: string; label?: string };
+
+function extractRuleRefs(meta?: Record<string, unknown>): RuleRefEntry[] {
+  if (!meta) return [];
+  const entries: RuleRefEntry[] = [];
+  const push = (ref: unknown, label?: unknown) => {
+    if (typeof ref !== "string" || ref.length === 0) return;
+    entries.push({
+      ref,
+      label: typeof label === "string" ? label : undefined
+    });
+  };
+  push(meta["rule_ref"], meta["rule_ref_label"]);
+  const refs = Array.isArray(meta["rule_refs"]) ? meta["rule_refs"] : [];
+  const labels = Array.isArray(meta["rule_ref_labels"]) ? meta["rule_ref_labels"] : [];
+  refs.forEach((ref, index) => push(ref, labels[index]));
+  const deduped: RuleRefEntry[] = [];
+  const seen = new Set<string>();
+  entries.forEach((entry) => {
+    const key = `${entry.ref}::${entry.label ?? ""}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(entry);
+  });
+  return deduped;
+}
+
 function buildOverviewGraph(trace: TracePayload): OverviewGraph {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
@@ -189,6 +216,7 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
   const endpointEdgeLabels = new Map<string, string>();
   const seen = new Map<string, Node>();
   const edgeKeys = new Set<string>();
+  const edgeIndexByKey = new Map<string, number>();
 
   const pushNode = (id: string, label: string) => {
     if (seen.has(id)) return;
@@ -206,17 +234,30 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
 
   const pushEdge = (from: string, to: string, label?: string) => {
     const key = `${from}::${to}`;
-    if (edgeKeys.has(key)) return;
+    const existingIndex = edgeIndexByKey.get(key);
+    if (existingIndex !== undefined) {
+      if (label && !edges[existingIndex].label) {
+        edges[existingIndex] = {
+          ...edges[existingIndex],
+          label,
+          labelBgPadding: [6, 4],
+          labelBgBorderRadius: 8,
+          className: "edge--endpoint"
+        };
+      }
+      return;
+    }
     edgeKeys.add(key);
     edges.push({
       id: `${from}->${to}-${edges.length}`,
       source: from,
       target: to,
       label,
-      labelBgPadding: [6, 4],
-      labelBgBorderRadius: 8,
+      labelBgPadding: label ? [6, 4] : undefined,
+      labelBgBorderRadius: label ? 8 : undefined,
       className: label ? "edge--endpoint" : undefined
     });
+    edgeIndexByKey.set(key, edges.length - 1);
   };
 
   const walk = (current: TracePayload, parentPath?: string) => {
@@ -235,9 +276,10 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
     const records = current.records ?? [];
     records.forEach((record) => {
       (record.nodes ?? []).forEach((node) => {
-        const ruleRef = node.meta && typeof node.meta["rule_ref"] === "string" ? String(node.meta["rule_ref"]) : undefined;
+        const refs = extractRuleRefs(node.meta);
         const childTrace = node.child_trace;
-        const childPath = childTrace?.rule?.path ?? ruleRef;
+        const primaryRef = refs[0]?.ref;
+        const childPath = childTrace?.rule?.path ?? primaryRef;
         if (childPath) {
           pushNode(childPath, childTrace?.rule?.name ?? childPath);
           let label: string | undefined;
@@ -249,11 +291,20 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
             });
             label = current.rule?.name ?? match?.label;
           }
+          if (!label) {
+            const match = refs.find((entry) => entry.ref === childPath);
+            label = match?.label;
+          }
           pushEdge(currentPath, childPath, label);
           if (label) {
             endpointEdgeLabels.set(`${currentPath}::${childPath}`, label);
           }
         }
+        refs.forEach((entry) => {
+          if (!entry.ref || entry.ref === childPath) return;
+          pushNode(entry.ref, entry.ref);
+          pushEdge(currentPath, entry.ref, entry.label);
+        });
         if (childTrace) {
           walk(childTrace, currentPath);
         }
@@ -356,7 +407,7 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   const map = new Map<string, DetailEntry>();
-  const refs: { fromId: string; toRule: string }[] = [];
+  const refs: { fromId: string; toRule: string; label?: string }[] = [];
   const recordNodes = record?.nodes ?? [];
   const spacing = 90;
   const stepWidth = 200;
@@ -378,11 +429,9 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       style: { width: stepWidth, height: 64 }
     });
     map.set(stepNodeId, { kind: "step", node, ruleId });
-    const ruleRef =
-      node.meta && typeof node.meta["rule_ref"] === "string" ? String(node.meta["rule_ref"]) : undefined;
-    if (ruleRef) {
-      refs.push({ fromId: stepNodeId, toRule: ruleRef });
-    }
+    extractRuleRefs(node.meta).forEach((entry) => {
+      refs.push({ fromId: stepNodeId, toRule: entry.ref, label: entry.label });
+    });
 
     if (previousId) {
       edges.push({ id: `${previousId}->${stepNodeId}`, source: previousId, target: stepNodeId });
@@ -393,8 +442,6 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
     ops.forEach((child, opIndex) => {
       cursorY += spacing;
       const opId = `detail-${stepId}::op-${opIndex}`;
-      const opRuleRef =
-        child.meta && typeof child.meta["rule_ref"] === "string" ? String(child.meta["rule_ref"]) : undefined;
       nodes.push({
         id: opId,
         position: { x: (stepWidth - opWidth) / 2, y: cursorY },
@@ -407,9 +454,9 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       });
       edges.push({ id: `${lastId}->${opId}`, source: lastId, target: opId });
       map.set(opId, { kind: "op", node: child, parent: node, ruleId });
-      if (opRuleRef) {
-        refs.push({ fromId: opId, toRule: opRuleRef });
-      }
+      extractRuleRefs(child.meta).forEach((entry) => {
+        refs.push({ fromId: opId, toRule: entry.ref, label: entry.label });
+      });
       lastId = opId;
     });
 
@@ -540,7 +587,7 @@ function buildMergedGraph(
       const key = `${ref.fromId}::${ref.toRule}`;
       if (refEdgeKeys.has(key)) return;
       refEdgeKeys.add(key);
-      const label = endpointEdgeLabels.get(`${ruleId}::${ref.toRule}`);
+      const label = ref.label ?? endpointEdgeLabels.get(`${ruleId}::${ref.toRule}`);
       refEdges.push({
         id: `${ref.fromId}->${ref.toRule}`,
         source: ref.fromId,
@@ -965,6 +1012,30 @@ export default function App() {
   }, [apiBundles]);
   const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0;
   const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;
+  const selectedMeta = (selectedNode?.meta ?? {}) as Record<string, unknown>;
+  const stepRecordWhen =
+    typeof selectedMeta["record_when"] === "boolean" ? selectedMeta["record_when"] : undefined;
+  const stepAssertsOk =
+    typeof selectedMeta["asserts_ok"] === "boolean" ? selectedMeta["asserts_ok"] : undefined;
+  const stepBranchTaken =
+    typeof selectedMeta["branch_taken"] === "string" ? String(selectedMeta["branch_taken"]) : undefined;
+
+  const renderJsonBlock = (label: string, value: unknown) => {
+    const hasValue = !(value === null || value === undefined);
+    const isWide = label === "input" || label === "output" || label === "error";
+    return (
+      <div className={clsx("inspector-block", isWide && "inspector-block--wide")} key={label}>
+        <div className="inspector-block__header">
+          <div className="inspector-block__title">
+            <span className="inspector-block__line" />
+            <span className="inspector-block__name">{label}</span>
+          </div>
+          <span className="inspector-block__meta">{hasValue ? "json" : "empty"}</span>
+        </div>
+        <pre className="inspector-block__body">{hasValue ? JSON.stringify(value, null, 2) : "なし"}</pre>
+      </div>
+    );
+  };
 
   return (
     <div className="app">
@@ -1216,7 +1287,7 @@ export default function App() {
                   ))}
                 </div>
               </div>
-              <div className="inspector__section inspector__section--opresult">
+              <div className="inspector__section">
                 <h3>処理メモ</h3>
                 <div className="inspector__content">
                   <p className="muted">
@@ -1227,6 +1298,40 @@ export default function App() {
             </>
           ) : (
             <>
+              <div className="inspector__section inspector__section--opresult">
+                <h3>Step結果</h3>
+                <div className="inspector__content">
+                  {!selectedNode ? (
+                    <p className="muted">ノードを選択して詳細を表示してください。</p>
+                  ) : (
+                    <>
+                      <div className="step-badges">
+                        <span
+                          className={clsx(
+                            "chip",
+                            selectedNode.status === "error" && "chip--error"
+                          )}
+                        >
+                          {selectedNode.status ?? "ok"}
+                        </span>
+                        {stepRecordWhen !== undefined && (
+                          <span className="chip">record_when: {String(stepRecordWhen)}</span>
+                        )}
+                        {stepAssertsOk !== undefined && (
+                          <span className="chip">asserts: {String(stepAssertsOk)}</span>
+                        )}
+                        {stepBranchTaken && <span className="chip">branch: {stepBranchTaken}</span>}
+                      </div>
+                      <div className="inspector-grid">
+                        {renderJsonBlock("input", selectedNode.input ?? null)}
+                        {renderJsonBlock("output", selectedNode.output ?? null)}
+                        {selectedNode.error && renderJsonBlock("error", selectedNode.error)}
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
               <div className="inspector__section inspector__section--oplist">
                 <h3>OP一覧</h3>
                 <div className="op-list">
@@ -1261,34 +1366,13 @@ export default function App() {
                       input?: unknown;
                       output?: unknown;
                     }[];
-                    const renderBlock = (label: string, value: unknown) => {
-                      const hasValue = !(value === null || value === undefined);
-                      const isWide = label === "input" || label === "output";
-                      return (
-                        <div
-                          className={clsx("inspector-block", isWide && "inspector-block--wide")}
-                          key={label}
-                        >
-                      <div className="inspector-block__header">
-                        <div className="inspector-block__title">
-                          <span className="inspector-block__line" />
-                          <span className="inspector-block__name">{label}</span>
-                        </div>
-                        <span className="inspector-block__meta">{hasValue ? "json" : "empty"}</span>
-                      </div>
-                      <pre className="inspector-block__body">
-                            {hasValue ? JSON.stringify(value, null, 2) : "なし"}
-                      </pre>
-                    </div>
-                  );
-                };
                     return (
                       <>
                         <div className="inspector-grid">
-                          {renderBlock("input", input)}
-                          {renderBlock("pipe", pipe)}
-                          {renderBlock("args", args)}
-                          {renderBlock("output", output)}
+                          {renderJsonBlock("input", input)}
+                          {renderJsonBlock("pipe", pipe)}
+                          {renderJsonBlock("args", args)}
+                          {renderJsonBlock("output", output)}
                         </div>
                         <div className="pipe-steps">
                           <div className="pipe-steps__header">
