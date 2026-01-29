@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 
 fn write_file(root: &Path, rel: &str, content: &str) -> PathBuf {
     let path = root.join(rel);
@@ -42,7 +42,7 @@ mappings:
     write_file(dir, "child.yaml", child_rule);
     let input_path = write_file(dir, "input.json", r#"{"foo": "bar"}"#);
 
-    let mut cmd = Command::cargo_bin("rulemorph").expect("binary");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
     cmd.arg("transform")
         .arg("-r")
         .arg(rule_path)

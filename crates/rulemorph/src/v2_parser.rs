@@ -34,12 +34,21 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
 
     // Check for namespace prefixes
     if let Some(path) = rest.strip_prefix("input.") {
+        if path.is_empty() {
+            return None;
+        }
         return Some(V2Ref::Input(path.to_string()));
     }
     if let Some(path) = rest.strip_prefix("context.") {
+        if path.is_empty() {
+            return None;
+        }
         return Some(V2Ref::Context(path.to_string()));
     }
     if let Some(path) = rest.strip_prefix("out.") {
+        if path.is_empty() {
+            return None;
+        }
         return Some(V2Ref::Out(path.to_string()));
     }
     if rest == "input" {
@@ -667,6 +676,10 @@ mod v2_ref_parser_tests {
         assert_eq!(parse_v2_ref("input.name"), None);
         // Empty after @
         assert_eq!(parse_v2_ref("@"), None);
+        // Trailing dot for root namespaces should be invalid
+        assert_eq!(parse_v2_ref("@input."), None);
+        assert_eq!(parse_v2_ref("@context."), None);
+        assert_eq!(parse_v2_ref("@out."), None);
         // Invalid identifier
         assert_eq!(parse_v2_ref("@123invalid"), None);
     }
