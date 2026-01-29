@@ -152,7 +152,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
                     label,
                     kind: "network".to_string(),
                     path: rule_path_display(&data_dir, &path),
-                    ops: network_ops(&network),
+                    ops: network_ops(&network, &data_dir, &path),
                 },
             );
             if let Some(body_rule) = network.body_rule.as_ref() {
@@ -185,7 +185,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
                     label,
                     kind: "normal".to_string(),
                     path: rule_path_display(&data_dir, &path),
-                    ops: normal_ops(&rule),
+                    ops: normal_ops(&rule, &data_dir, &path),
                 },
             );
             // branch references
@@ -325,7 +325,6 @@ fn endpoint_ops(rule: &EndpointRuleFile, data_dir: &Path, endpoint_path: &Path) 
             let refs = endpoint
                 .steps
                 .iter()
-                .take(1)
                 .map(|step| {
                     let target = normalize_path(&resolve_rule_path(base_dir, &step.rule));
                     rule_id(data_dir, &target)
@@ -340,7 +339,7 @@ fn endpoint_ops(rule: &EndpointRuleFile, data_dir: &Path, endpoint_path: &Path) 
         .collect()
 }
 
-fn network_ops(rule: &NetworkRuleFile) -> Vec<ApiGraphOp> {
+fn network_ops(rule: &NetworkRuleFile, data_dir: &Path, rule_path: &Path) -> Vec<ApiGraphOp> {
     let mut ops = Vec::new();
     let url = serde_json::to_string(&rule.request.url).unwrap_or_else(|_| "\"?\"".to_string());
     ops.push(ApiGraphOp {
@@ -349,17 +348,20 @@ fn network_ops(rule: &NetworkRuleFile) -> Vec<ApiGraphOp> {
         refs: Vec::new(),
     });
     if let Some(body_rule) = rule.body_rule.as_ref() {
+        let base_dir = rule_path.parent().unwrap_or_else(|| Path::new("."));
+        let target = normalize_path(&resolve_rule_path(base_dir, body_rule));
         ops.push(ApiGraphOp {
             label: "body_rule".to_string(),
             detail: Some(body_rule.to_string()),
-            refs: Vec::new(),
+            refs: vec![rule_id(data_dir, &target)],
         });
     }
     ops
 }
 
-fn normal_ops(rule: &RuleFile) -> Vec<ApiGraphOp> {
+fn normal_ops(rule: &RuleFile, data_dir: &Path, rule_path: &Path) -> Vec<ApiGraphOp> {
     let mut ops = Vec::new();
+    let base_dir = rule_path.parent().unwrap_or_else(|| Path::new("."));
     if !rule.mappings.is_empty() {
         push_mapping_ops(&mut ops, None, &rule.mappings);
     }
@@ -370,10 +372,16 @@ fn normal_ops(rule: &RuleFile) -> Vec<ApiGraphOp> {
                 push_mapping_ops(&mut ops, Some(&prefix), mappings);
             }
             if let Some(branch) = step.branch.as_ref() {
+                let then_path = normalize_path(&resolve_rule_path(base_dir, &branch.then));
+                let mut refs = vec![rule_id(data_dir, &then_path)];
+                if let Some(other) = branch.r#else.as_ref() {
+                    let else_path = normalize_path(&resolve_rule_path(base_dir, other));
+                    refs.push(rule_id(data_dir, &else_path));
+                }
                 ops.push(ApiGraphOp {
                     label: format!("{} · branch", prefix),
                     detail: Some(format!("then: {}", branch.then)),
-                    refs: Vec::new(),
+                    refs,
                 });
             }
         }
@@ -445,5 +453,79 @@ fn resolve_rule_path(base_dir: &Path, rule: &str) -> PathBuf {
         path
     } else {
         base_dir.join(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn endpoint_ops_include_all_step_refs() {
+        let rule = EndpointRuleFile {
+            _rule_type: "endpoint".to_string(),
+            endpoints: vec![EndpointDef {
+                method: "GET".to_string(),
+                path: "/users/{id}".to_string(),
+                steps: vec![
+                    EndpointStep {
+                        rule: "./a.yaml".to_string(),
+                    },
+                    EndpointStep {
+                        rule: "./b.yaml".to_string(),
+                    },
+                ],
+            }],
+        };
+        let data_dir = Path::new("/tmp/rules");
+        let endpoint_path = Path::new("/tmp/rules/api_rules/endpoint.yaml");
+        let ops = endpoint_ops(&rule, data_dir, endpoint_path);
+        assert_eq!(ops.len(), 1);
+        let refs = &ops[0].refs;
+        assert!(refs.contains(&"api_rules/a.yaml".to_string()));
+        assert!(refs.contains(&"api_rules/b.yaml".to_string()));
+    }
+
+    #[test]
+    fn network_ops_include_body_rule_ref() {
+        let rule = NetworkRuleFile {
+            _rule_type: "network".to_string(),
+            request: NetworkRequest {
+                method: "POST".to_string(),
+                url: json!("https://example.com"),
+            },
+            body_rule: Some("./body.yaml".to_string()),
+        };
+        let data_dir = Path::new("/tmp/rules");
+        let rule_path = Path::new("/tmp/rules/api_rules/network.yaml");
+        let ops = network_ops(&rule, data_dir, rule_path);
+        let body_op = ops.iter().find(|op| op.label == "body_rule").expect("body_rule op");
+        assert_eq!(body_op.refs, vec!["api_rules/body.yaml".to_string()]);
+    }
+
+    #[test]
+    fn normal_ops_include_branch_refs() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: ["@input.kind", "a"] }
+      then: ./then.yaml
+      else: ./else.yaml
+"#;
+        let rule = parse_rule_file(yaml).expect("parse rule");
+        let data_dir = Path::new("/tmp/rules");
+        let rule_path = Path::new("/tmp/rules/api_rules/rule.yaml");
+        let ops = normal_ops(&rule, data_dir, rule_path);
+        let branch_op = ops
+            .iter()
+            .find(|op| op.label.contains("branch"))
+            .expect("branch op");
+        assert!(branch_op.refs.contains(&"api_rules/then.yaml".to_string()));
+        assert!(branch_op.refs.contains(&"api_rules/else.yaml".to_string()));
     }
 }

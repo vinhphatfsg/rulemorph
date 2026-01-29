@@ -44,6 +44,42 @@ cargo run -p rulemorph_cli -- ui --api-mode rules
 - `--rules-dir` でユーザーAPIルールのディレクトリを指定できます。
 - UIを無効化する場合は `--no-ui` を付けます（UI/内部API/静的配信を停止）。
 
+## グラフの紐仕様（概要/詳細 共通）
+**参照ファイルがある OP / Step は必ず概要ノードへの紐を持つ**ことを仕様とします。
+また、**概要ノードを展開した場合は、そのノードを source に持つ概要→概要の紐は非表示**にします
+（詳細ノードから概要ノードへの紐で代替表示）。
+
+- 対象（必須で紐を張るもの）
+  - endpoint の steps（全step）
+  - network の body_rule
+  - normal rule の branch（then / else）
+  - trace 詳細では `meta.rule_ref` を持つ step / op
+- ラベル
+  - endpoint: `METHOD PATH`
+  - branch: `branch: then` / `branch: else`
+  - body_rule: `body_rule`
+
+## サンプルAPIルール（network body_rule）
+`./.rulemorph/api_rules/` に実運用想定の network + body_rule を組み込んでいます。
+
+- `endpoint.yaml`: 新規 `GET /api/profile/{id}` を追加
+- `network_fetch.yaml`: `type: network`（POST + body_rule）
+- `network_body.yaml`: body_rule（入力からJSONを組み立てる）
+
+## UI起動と確認（network body_rule を使う）
+デフォルト設定でUIを起動します。
+
+```sh
+cargo run -p rulemorph_cli -- ui
+```
+
+ブラウザで `http://127.0.0.1:8080` を開き、以下を確認します。
+
+- APIグラフ詳細で `branch` / `body_rule` / `endpoint steps` の詳細OPから概要ノードへ紐が表示される
+- トレース詳細で `meta.rule_ref` を持つ step/op から概要ノードへの紐が表示される
+
+> 外部ネットワークが必要な場合があります（`https://httpbin.org/anything` を使用）。
+
 ## サンプルトレース投入（手動）
 UIは data_dir の `traces` 配下からトレースを読み込みます。
 以下のようにJSONを配置すると一覧に表示されます。

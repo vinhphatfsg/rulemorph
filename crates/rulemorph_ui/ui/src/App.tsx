@@ -393,6 +393,8 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
     ops.forEach((child, opIndex) => {
       cursorY += spacing;
       const opId = `detail-${stepId}::op-${opIndex}`;
+      const opRuleRef =
+        child.meta && typeof child.meta["rule_ref"] === "string" ? String(child.meta["rule_ref"]) : undefined;
       nodes.push({
         id: opId,
         position: { x: (stepWidth - opWidth) / 2, y: cursorY },
@@ -405,6 +407,9 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       });
       edges.push({ id: `${lastId}->${opId}`, source: lastId, target: opId });
       map.set(opId, { kind: "op", node: child, parent: node, ruleId });
+      if (opRuleRef) {
+        refs.push({ fromId: opId, toRule: opRuleRef });
+      }
       lastId = opId;
     });
 
@@ -444,10 +449,7 @@ function buildMergedGraph(
   endpointEdgeLabels: Map<string, string>
 ) {
   const expandedSet = new Set(expandedRuleIds);
-  const overviewEdges =
-    expandedRuleIds.length > 0
-      ? overview.edges.filter((edge) => !expandedSet.has(edge.source))
-      : overview.edges;
+  const overviewEdges = overview.edges.filter((edge) => !expandedSet.has(edge.source));
   const sizeById = new Map<string, { width: number; height: number }>();
   overview.nodes.forEach((node) => {
     sizeById.set(node.id, { width: 240, height: 80 });
@@ -463,13 +465,12 @@ function buildMergedGraph(
   });
 
   const overviewNodes = overview.nodes.map((node) => {
-    const isExpanded = expandedRuleIds.includes(node.id);
     const size = sizeById.get(node.id) ?? { width: 240, height: 80 };
     const pinned = pinnedPositions[node.id];
     return {
       ...node,
       type: "default",
-      className: isExpanded
+      className: expandedRuleIds.includes(node.id)
         ? `${node.className ?? ""} trace-node--overview-expanded`.trim()
         : node.className,
       sourcePosition: Position.Right,
@@ -478,15 +479,7 @@ function buildMergedGraph(
       style: { width: size.width, height: size.height }
     };
   });
-  const layoutedOverview = layoutGraphWithSizes(
-    overviewNodes,
-    overviewEdges,
-    graphDefaults.rankdir as "LR" | "TB",
-    sizeById,
-    expandedRuleIds.length > 0 ? 240 : graphDefaults.nodesep,
-    expandedRuleIds.length > 0 ? 140 : graphDefaults.ranksep
-  );
-  const nodes = layoutedOverview.nodes.map((node) => {
+  const nodes = overviewNodes.map((node) => {
     const pinned = pinnedPositions[node.id];
     return pinned ? { ...node, position: { ...pinned } } : { ...node };
   });
@@ -527,14 +520,14 @@ function buildMergedGraph(
     }));
 
     nodes.push(...positionedDetailNodes);
-      edges = [
-        ...edges,
-        ...bundle.edges.map((edge) => ({
-          ...edge,
-          type: edge.type ?? "smoothstep",
-          style: { strokeWidth: 1.2, ...(edge.style ?? {}) }
-        }))
-      ];
+    edges = [
+      ...edges,
+      ...bundle.edges.map((edge) => ({
+        ...edge,
+        type: edge.type ?? "smoothstep",
+        style: { strokeWidth: 1.2, ...(edge.style ?? {}) }
+      }))
+    ];
 
   });
 
@@ -627,10 +620,7 @@ function buildMergedApiGraph(
   edgeLabelMap: Map<string, string>
 ) {
   const expandedSet = new Set(expandedRuleIds);
-  const overviewEdges =
-    expandedRuleIds.length > 0
-      ? overview.edges.filter((edge) => !expandedSet.has(edge.source))
-      : overview.edges;
+  const overviewEdges = overview.edges.filter((edge) => !expandedSet.has(edge.source));
   const sizeById = new Map<string, { width: number; height: number }>();
   overview.nodes.forEach((node) => {
     sizeById.set(node.id, { width: 240, height: 80 });
@@ -646,13 +636,12 @@ function buildMergedApiGraph(
   });
 
   const overviewNodes = overview.nodes.map((node) => {
-    const isExpanded = expandedRuleIds.includes(node.id);
     const size = sizeById.get(node.id) ?? { width: 240, height: 80 };
     const pinned = pinnedPositions[node.id];
     return {
       ...node,
       type: "default",
-      className: isExpanded
+      className: expandedRuleIds.includes(node.id)
         ? `${node.className ?? ""} trace-node--overview-expanded`.trim()
         : node.className,
       sourcePosition: Position.Right,
@@ -662,16 +651,7 @@ function buildMergedApiGraph(
     };
   });
 
-  const layoutedOverview = layoutGraphWithSizes(
-    overviewNodes,
-    overviewEdges,
-    graphDefaults.rankdir as "LR" | "TB",
-    sizeById,
-    expandedRuleIds.length > 0 ? 240 : graphDefaults.nodesep,
-    expandedRuleIds.length > 0 ? 140 : graphDefaults.ranksep
-  );
-
-  const nodes = layoutedOverview.nodes.map((node) => {
+  const nodes = overviewNodes.map((node) => {
     const pinned = pinnedPositions[node.id];
     return pinned ? { ...node, position: { ...pinned } } : { ...node };
   });
@@ -729,7 +709,9 @@ function buildMergedApiGraph(
         label,
         labelBgPadding: label ? [6, 4] : undefined,
         labelBgBorderRadius: label ? 8 : undefined,
-        className: label ? "edge--ref edge--endpoint" : "edge--ref"
+        className: label ? "edge--ref edge--endpoint" : "edge--ref",
+        type: "smoothstep",
+        style: { strokeWidth: 1.4 }
       });
     });
   });
@@ -947,8 +929,11 @@ export default function App() {
         const existing = prevById.get(node.id);
         const isOverview = node.className?.includes("trace-node--overview");
         const pinned = viewMode === "api" ? apiPinnedPositions[node.id] : pinnedPositions[node.id];
-        if (existing && isOverview && pinned) {
+        if (existing && isOverview) {
           return { ...node, position: existing.position };
+        }
+        if (isOverview && pinned) {
+          return { ...node, position: pinned };
         }
         return node;
       });
