@@ -1,0 +1,11 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "name"
+    source: "input.name"
+finalize:
+  sort:
+    by: "score"
+    order: "asc"
