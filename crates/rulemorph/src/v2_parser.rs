@@ -61,6 +61,9 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
         return Some(V2Ref::Out(String::new()));
     }
     if let Some(path) = rest.strip_prefix("item.") {
+        if path.is_empty() {
+            return None;
+        }
         return Some(V2Ref::Item(path.to_string()));
     }
     if let Some(path) = rest.strip_prefix("item") {
@@ -69,6 +72,9 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
         }
     }
     if let Some(path) = rest.strip_prefix("acc.") {
+        if path.is_empty() {
+            return None;
+        }
         return Some(V2Ref::Acc(path.to_string()));
     }
     if let Some(path) = rest.strip_prefix("acc") {
@@ -680,6 +686,8 @@ mod v2_ref_parser_tests {
         assert_eq!(parse_v2_ref("@input."), None);
         assert_eq!(parse_v2_ref("@context."), None);
         assert_eq!(parse_v2_ref("@out."), None);
+        assert_eq!(parse_v2_ref("@item."), None);
+        assert_eq!(parse_v2_ref("@acc."), None);
         // Invalid identifier
         assert_eq!(parse_v2_ref("@123invalid"), None);
     }
