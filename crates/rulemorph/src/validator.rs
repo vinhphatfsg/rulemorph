@@ -148,24 +148,23 @@ fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
         if let Some(branch) = &step.branch {
             let branch_path = format!("{}.branch", base);
+            let when_path = format!("{}.when", branch_path);
+            let mut v2_handled = false;
             if rule.version == 2 {
                 if let Some(raw_value) = expr_to_json_value(&branch.when) {
-                    validate_v2_condition_expr(
-                        &raw_value,
-                        &format!("{}.when", branch_path),
-                        &produced_targets,
-                        ctx,
-                    );
+                    validate_v2_condition_expr(&raw_value, &when_path, &produced_targets, ctx);
+                    v2_handled = true;
                 }
-            } else {
+            }
+            if !v2_handled {
                 validate_expr(
                     &branch.when,
-                    &format!("{}.when", branch_path),
+                    &when_path,
                     &produced_targets,
                     ctx,
                     LocalScope::None,
                 );
-                validate_when_expr(&branch.when, &format!("{}.when", branch_path), ctx);
+                validate_when_expr(&branch.when, &when_path, ctx);
             }
 
             if branch.then.trim().is_empty() {
