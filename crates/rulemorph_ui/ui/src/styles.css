@@ -534,6 +534,76 @@ body {
   border: 1px solid rgba(120, 150, 180, 0.2);
 }
 
+.inspector__section.is-collapsed {
+  padding-bottom: 6px;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.inspector__section-toggle {
+  border: 1px solid rgba(120, 150, 180, 0.18);
+  background: linear-gradient(140deg, rgba(14, 20, 28, 0.82), rgba(10, 14, 18, 0.5));
+  color: inherit;
+  padding: 6px 8px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  cursor: pointer;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.inspector__section-toggle:hover {
+  border-color: rgba(157, 214, 255, 0.4);
+  box-shadow: 0 8px 14px rgba(4, 6, 10, 0.28);
+  transform: translateY(-0.5px);
+}
+
+.inspector__section-toggle:focus-visible {
+  outline: 2px solid rgba(157, 214, 255, 0.7);
+  outline-offset: 2px;
+}
+
+.inspector__section-toggle h3 {
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 0.14em;
+  font-size: 0.7rem;
+}
+
+.inspector__chevron {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0;
+  color: rgba(203, 211, 221, 0.8);
+  background: rgba(10, 14, 20, 0.8);
+  border: 1px solid rgba(120, 150, 180, 0.2);
+  transition: color 0.2s ease, border-color 0.2s ease, transform 0.2s ease;
+}
+
+.inspector__chevron::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.2s ease;
+}
+
+.inspector__section-toggle[aria-expanded="true"] .inspector__chevron {
+  color: var(--blueprint);
+  border-color: rgba(157, 214, 255, 0.55);
+}
+
+.inspector__section-toggle[aria-expanded="true"] .inspector__chevron::before {
+  transform: rotate(45deg);
+}
+
 .inspector__section--oplist {
   flex: 0 0 auto;
   align-content: start;
@@ -548,6 +618,11 @@ body {
   background: linear-gradient(160deg, rgba(12, 18, 24, 0.95), rgba(8, 10, 14, 0.92));
   border-color: rgba(120, 170, 220, 0.35);
   box-shadow: inset 0 0 0 1px rgba(55, 95, 130, 0.15);
+}
+
+.inspector__section.is-collapsed.inspector__section--opresult {
+  flex: 0 0 auto;
+  min-height: 0;
 }
 
 .inspector__content {

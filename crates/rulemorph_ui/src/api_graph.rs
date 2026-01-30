@@ -386,6 +386,34 @@ fn normal_ops(rule: &RuleFile, data_dir: &Path, rule_path: &Path) -> Vec<ApiGrap
             }
         }
     }
+    if let Some(finalize) = rule.finalize.as_ref() {
+        let mut parts = Vec::new();
+        if finalize.filter.is_some() {
+            parts.push("filter");
+        }
+        if finalize.sort.is_some() {
+            parts.push("sort");
+        }
+        if finalize.limit.is_some() {
+            parts.push("limit");
+        }
+        if finalize.offset.is_some() {
+            parts.push("offset");
+        }
+        if finalize.wrap.is_some() {
+            parts.push("wrap");
+        }
+        let detail = if parts.is_empty() {
+            "enabled".to_string()
+        } else {
+            parts.join(", ")
+        };
+        ops.push(ApiGraphOp {
+            label: "finalize".to_string(),
+            detail: Some(detail),
+            refs: Vec::new(),
+        });
+    }
     ops
 }
 
@@ -530,5 +558,30 @@ steps:
             .expect("branch op");
         assert!(branch_op.refs.contains(&"api_rules/then.yaml".to_string()));
         assert!(branch_op.refs.contains(&"api_rules/else.yaml".to_string()));
+    }
+
+    #[test]
+    fn normal_ops_include_finalize() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings: []
+finalize:
+  filter: { eq: ["@input.kind", "a"] }
+  limit: 10
+"#;
+        let rule = parse_rule_file(yaml).expect("parse rule");
+        let data_dir = Path::new("/tmp/rules");
+        let rule_path = Path::new("/tmp/rules/api_rules/rule.yaml");
+        let ops = normal_ops(&rule, data_dir, rule_path);
+        let finalize = ops
+            .iter()
+            .find(|op| op.label == "finalize")
+            .expect("finalize op");
+        let detail = finalize.detail.as_deref().unwrap_or("");
+        assert!(detail.contains("filter"));
+        assert!(detail.contains("limit"));
     }
 }

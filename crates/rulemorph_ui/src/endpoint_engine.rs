@@ -255,6 +255,7 @@ struct NetworkExecution {
     output: JsonValue,
     request_us: u64,
     total_us: u64,
+    body_rule_trace: Option<JsonValue>,
 }
 
 #[derive(Debug)]
@@ -681,6 +682,7 @@ impl EndpointEngine {
         let url = eval_expr_string(&rule.request.url, input, context)?;
         let headers = build_headers(&rule.request.headers)?;
         let body = self.build_network_body(rule, input, context)?;
+        let body_rule_trace = Self::build_body_rule_trace(rule, input, context, body.as_ref());
 
         let total_started = Instant::now();
         let mut attempt = 0;
@@ -704,12 +706,14 @@ impl EndpointEngine {
                             output: selected.clone(),
                             request_us,
                             total_us: total_started.elapsed().as_micros() as u64,
+                            body_rule_trace: body_rule_trace.clone(),
                         });
                     }
                     return Ok(NetworkExecution {
                         output: value,
                         request_us,
                         total_us: total_started.elapsed().as_micros() as u64,
+                        body_rule_trace: body_rule_trace.clone(),
                     });
                 }
                 Err(err) => {
@@ -733,6 +737,7 @@ impl EndpointEngine {
                                 output,
                                 request_us,
                                 total_us: total_started.elapsed().as_micros() as u64,
+                                body_rule_trace: body_rule_trace.clone(),
                             });
                         }
                     }
@@ -773,6 +778,40 @@ impl EndpointEngine {
             return Ok(output);
         }
         Ok(None)
+    }
+
+    fn build_body_rule_trace(
+        rule: &CompiledNetworkRule,
+        input: &JsonValue,
+        context: Option<&JsonValue>,
+        output: Option<&JsonValue>,
+    ) -> Option<JsonValue> {
+        let body_rule = rule.body_rule.as_ref()?;
+        let rule_ref = rule
+            .body_rule_ref
+            .clone()
+            .unwrap_or_else(|| "body_rule".to_string());
+        let name = Path::new(&rule_ref)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("body_rule")
+            .to_string();
+        let nodes =
+            build_rule_nodes_from_rule(&body_rule.rule, input, context, &body_rule.base_dir);
+        let duration_us = sum_node_duration_us(&nodes);
+        let output_value = output.cloned().unwrap_or(JsonValue::Null);
+        Some(build_rule_trace(
+            "normal",
+            name,
+            rule_ref,
+            body_rule.rule.version,
+            json!({}),
+            input.clone(),
+            output_value,
+            nodes,
+            duration_us,
+            "ok",
+        ))
     }
 
     async fn send_network_request(
@@ -1174,6 +1213,7 @@ struct CompiledNetworkRule {
     body: Option<rulemorph::v2_model::V2Expr>,
     body_map: Option<Vec<Mapping>>,
     body_rule: Option<LoadedRule>,
+    body_rule_ref: Option<String>,
     catch: Option<CatchSpec>,
     retry: Option<RetryConfig>,
     base_dir: PathBuf,
@@ -1916,10 +1956,10 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         Some(value) => Some(parse_v2_expr(&value).map_err(|err| anyhow!(err))?),
         None => None,
     };
-    let body_rule = match raw.body_rule {
+    let body_rule = match raw.body_rule.as_ref() {
         Some(path_str) => {
             let resolved =
-                resolve_rule_path(path.parent().unwrap_or_else(|| Path::new(".")), &path_str);
+                resolve_rule_path(path.parent().unwrap_or_else(|| Path::new(".")), path_str);
             let source = std::fs::read_to_string(&resolved)
                 .with_context(|| format!("failed to read {}", resolved.display()))?;
             let rule = parse_rule_file(&source)
@@ -1934,6 +1974,11 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         }
         None => None,
     };
+    let body_rule_ref = raw.body_rule.as_ref().map(|path_str| {
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let resolved = resolve_rule_path(base_dir, path_str);
+        rule_ref_from_path(base_dir, &resolved)
+    });
 
     let retry = compile_retry(raw.retry.as_ref())?;
     Ok(CompiledNetworkRule {
@@ -1947,6 +1992,7 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         body,
         body_map: raw.body_map,
         body_rule,
+        body_rule_ref,
         catch: raw.catch.map(CatchSpec::from),
         retry,
         base_dir: path
@@ -2693,6 +2739,22 @@ fn build_network_nodes_with_timing(
         "status": "ok",
         "duration_us": timing.total_us,
     });
+    if let Some(rule_ref) = rule.body_rule_ref.as_ref() {
+        if let Some(obj) = node.as_object_mut() {
+            obj.insert(
+                "meta".to_string(),
+                json!({
+                    "rule_ref": rule_ref,
+                    "rule_ref_label": "body_rule"
+                }),
+            );
+        }
+    }
+    if let Some(trace) = timing.body_rule_trace.as_ref() {
+        if let Some(obj) = node.as_object_mut() {
+            obj.insert("child_trace".to_string(), trace.clone());
+        }
+    }
     if let Some(obj) = node.as_object_mut() {
         obj.insert("children".to_string(), JsonValue::Array(children));
     }
@@ -3478,6 +3540,14 @@ steps:
 
     #[test]
     fn network_nodes_include_request_duration_us() {
+        let body_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings: []
+"#;
+        let body_rule = parse_rule_file(body_yaml).expect("parse body rule");
         let rule = CompiledNetworkRule {
             request: CompiledNetworkRequest {
                 method: Method::GET,
@@ -3488,7 +3558,11 @@ steps:
             select: None,
             body: None,
             body_map: None,
-            body_rule: None,
+            body_rule: Some(LoadedRule {
+                rule: body_rule,
+                base_dir: PathBuf::from("."),
+            }),
+            body_rule_ref: Some("rules/body.yaml".to_string()),
             catch: None,
             retry: None,
             base_dir: PathBuf::from("."),
@@ -3497,17 +3571,32 @@ steps:
             output: json!({}),
             request_us: 12,
             total_us: 34,
+            body_rule_trace: Some(json!({
+                "rule": { "path": "rules/body.yaml" },
+                "records": []
+            })),
         };
 
         let nodes = build_network_nodes_with_timing(&rule, &timing);
         let duration = nodes[0].get("duration_us").and_then(|value| value.as_u64());
         assert_eq!(duration, Some(34));
+        let meta = nodes[0]
+            .get("meta")
+            .and_then(|value| value.as_object())
+            .expect("meta");
+        assert_eq!(meta.get("rule_ref"), Some(&json!("rules/body.yaml")));
+        assert_eq!(meta.get("rule_ref_label"), Some(&json!("body_rule")));
+        let child_trace = nodes[0]
+            .get("child_trace")
+            .and_then(|value| value.get("rule"))
+            .and_then(|value| value.get("path"));
+        assert_eq!(child_trace, Some(&json!("rules/body.yaml")));
 
         let children = nodes[0]
             .get("children")
             .and_then(|value| value.as_array())
             .expect("children");
-        assert_eq!(children.len(), 1);
+        assert_eq!(children.len(), 2);
         let request = children[0]
             .get("duration_us")
             .and_then(|value| value.as_u64());
