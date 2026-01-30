@@ -86,7 +86,14 @@ enum PrimitiveType {
 fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
     let mut root = SchemaNode { fields: Vec::new() };
 
-    for mapping in &rule.mappings {
+    let step_mappings = rule
+        .steps
+        .iter()
+        .flat_map(|steps| steps.iter())
+        .flat_map(|step| step.mappings.iter())
+        .flat_map(|mappings| mappings.iter());
+
+    for mapping in rule.mappings.iter().chain(step_mappings) {
         let tokens =
             parse_path(&mapping.target).map_err(|_| DtoError::new("target path is invalid"))?;
         if tokens
