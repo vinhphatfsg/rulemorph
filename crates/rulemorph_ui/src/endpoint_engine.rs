@@ -315,136 +315,183 @@ impl EndpointEngine {
         };
 
         let endpoint = endpoint_match.endpoint;
-        let input = build_input(&parts, &endpoint_match.params, body_value)?;
-        let record_input = input.clone();
-        let mut current = if let Some(mappings) = &endpoint.input {
-            apply_mappings_via_rule(mappings, &input, Some(&self.config_json()))?
-                .unwrap_or_else(empty_object)
-        } else {
-            input
-        };
-
         let mut nodes: Vec<JsonValue> = Vec::new();
         let mut record_status = "ok".to_string();
         let mut record_error: Option<JsonValue> = None;
         let mut last_error_message: Option<String> = None;
+        let mut skip_steps = false;
 
-        for (step_index, step) in endpoint.steps.iter().enumerate() {
-            let step_input = current.clone();
-            let step_started = Instant::now();
-            if let Some(condition) = &step.when {
-                let ctx = V2EvalContext::new();
-                let keep = eval_v2_condition(
-                    condition,
-                    &current,
-                    Some(&self.config_json()),
-                    &empty_object(),
-                    "steps.when",
-                    &ctx,
-                )?;
-                if !keep {
-                    let duration_us = step_started.elapsed().as_micros() as u64;
-                    nodes.push(self.build_step_trace(
-                        step_index,
-                        step,
-                        "skipped",
-                        step_input,
-                        Some(current.clone()),
-                        None,
-                        duration_us,
-                        None,
-                    ));
-                    continue;
-                }
-            }
-            let step_context = self.step_context(step.with.as_ref(), None);
-            let step_result = self
-                .execute_rule(
-                    &step.rule,
-                    &current,
-                    Some(&step_context),
-                    &self.endpoint_rule.base_dir,
-                )
-                .await;
-            match step_result {
-                Ok(execution) => {
-                    current = execution.output.clone();
-                    let duration_us = step_started.elapsed().as_micros() as u64;
-                    nodes.push(self.build_step_trace(
-                        step_index,
-                        step,
-                        "ok",
-                        step_input,
-                        Some(execution.output),
-                        None,
-                        duration_us,
-                        execution.child_trace,
-                    ));
+        let (record_input, mut current) =
+            match build_input(&parts, &endpoint_match.params, body_value.clone()) {
+                Ok(input) => {
+                    let record_input = input.clone();
+                    let current = if let Some(mappings) = &endpoint.input {
+                        apply_mappings_via_rule(mappings, &input, Some(&self.config_json()))?
+                            .unwrap_or_else(empty_object)
+                    } else {
+                        input
+                    };
+                    (record_input, current)
                 }
                 Err(err) => {
-                    if let Some(catch) = &step.catch {
+                    skip_steps = true;
+                    let fallback_input = build_input_from_parts(
+                        &parts,
+                        &endpoint_match.params,
+                        body_value.clone(),
+                        empty_object(),
+                    );
+                    if let Some(catch) = &endpoint.catch {
                         if let Some(next) = self
                             .run_catch(
                                 catch,
                                 &err,
-                                &current,
-                                step.with.as_ref(),
+                                &fallback_input,
+                                None,
                                 &self.endpoint_rule.base_dir,
                             )
                             .map_err(|err| anyhow!(err.to_string()))?
                         {
-                            current = next.clone();
-                            let duration_us = step_started.elapsed().as_micros() as u64;
-                            nodes.push(self.build_step_trace(
-                                step_index,
-                                step,
-                                "ok",
-                                step_input,
-                                Some(next),
-                                None,
-                                duration_us,
-                                None,
-                            ));
-                            continue;
+                            (fallback_input, next)
+                        } else {
+                            record_status = "error".to_string();
+                            record_error = Some(self.endpoint_error_to_trace(&err));
+                            last_error_message = Some(err.message.clone());
+                            (fallback_input.clone(), fallback_input)
                         }
+                    } else {
+                        record_status = "error".to_string();
+                        record_error = Some(self.endpoint_error_to_trace(&err));
+                        last_error_message = Some(err.message.clone());
+                        (fallback_input.clone(), fallback_input)
                     }
+                }
+            };
 
-                    if let Some(catch) = &endpoint.catch {
-                        if let Some(next) = self
-                            .run_catch(catch, &err, &current, None, &self.endpoint_rule.base_dir)
-                            .map_err(|err| anyhow!(err.to_string()))?
-                        {
-                            current = next.clone();
-                            let duration_us = step_started.elapsed().as_micros() as u64;
-                            nodes.push(self.build_step_trace(
-                                step_index,
-                                step,
-                                "ok",
-                                step_input,
-                                Some(next),
-                                None,
-                                duration_us,
-                                None,
-                            ));
-                            break;
+        if !skip_steps {
+            for (step_index, step) in endpoint.steps.iter().enumerate() {
+                let step_input = current.clone();
+                let step_started = Instant::now();
+                if let Some(condition) = &step.when {
+                    let ctx = V2EvalContext::new();
+                    let keep = eval_v2_condition(
+                        condition,
+                        &current,
+                        Some(&self.config_json()),
+                        &empty_object(),
+                        "steps.when",
+                        &ctx,
+                    )?;
+                    if !keep {
+                        let duration_us = step_started.elapsed().as_micros() as u64;
+                        nodes.push(self.build_step_trace(
+                            step_index,
+                            step,
+                            "skipped",
+                            step_input,
+                            Some(current.clone()),
+                            None,
+                            duration_us,
+                            None,
+                        ));
+                        continue;
+                    }
+                }
+                let step_context = self.step_context(step.with.as_ref(), None);
+                let step_result = self
+                    .execute_rule(
+                        &step.rule,
+                        &current,
+                        Some(&step_context),
+                        &self.endpoint_rule.base_dir,
+                    )
+                    .await;
+                match step_result {
+                    Ok(execution) => {
+                        current = execution.output.clone();
+                        let duration_us = step_started.elapsed().as_micros() as u64;
+                        nodes.push(self.build_step_trace(
+                            step_index,
+                            step,
+                            "ok",
+                            step_input,
+                            Some(execution.output),
+                            None,
+                            duration_us,
+                            execution.child_trace,
+                        ));
+                    }
+                    Err(err) => {
+                        if let Some(catch) = &step.catch {
+                            if let Some(next) = self
+                                .run_catch(
+                                    catch,
+                                    &err,
+                                    &current,
+                                    step.with.as_ref(),
+                                    &self.endpoint_rule.base_dir,
+                                )
+                                .map_err(|err| anyhow!(err.to_string()))?
+                            {
+                                current = next.clone();
+                                let duration_us = step_started.elapsed().as_micros() as u64;
+                                nodes.push(self.build_step_trace(
+                                    step_index,
+                                    step,
+                                    "ok",
+                                    step_input,
+                                    Some(next),
+                                    None,
+                                    duration_us,
+                                    None,
+                                ));
+                                continue;
+                            }
                         }
-                    }
 
-                    record_status = "error".to_string();
-                    record_error = Some(self.endpoint_error_to_trace(&err));
-                    last_error_message = Some(err.message.clone());
-                    let duration_us = step_started.elapsed().as_micros() as u64;
-                    nodes.push(self.build_step_trace(
-                        step_index,
-                        step,
-                        "error",
-                        step_input,
-                        None,
-                        Some(err),
-                        duration_us,
-                        None,
-                    ));
-                    break;
+                        if let Some(catch) = &endpoint.catch {
+                            if let Some(next) = self
+                                .run_catch(
+                                    catch,
+                                    &err,
+                                    &current,
+                                    None,
+                                    &self.endpoint_rule.base_dir,
+                                )
+                                .map_err(|err| anyhow!(err.to_string()))?
+                            {
+                                current = next.clone();
+                                let duration_us = step_started.elapsed().as_micros() as u64;
+                                nodes.push(self.build_step_trace(
+                                    step_index,
+                                    step,
+                                    "ok",
+                                    step_input,
+                                    Some(next),
+                                    None,
+                                    duration_us,
+                                    None,
+                                ));
+                                break;
+                            }
+                        }
+
+                        record_status = "error".to_string();
+                        record_error = Some(self.endpoint_error_to_trace(&err));
+                        last_error_message = Some(err.message.clone());
+                        let duration_us = step_started.elapsed().as_micros() as u64;
+                        nodes.push(self.build_step_trace(
+                            step_index,
+                            step,
+                            "error",
+                            step_input,
+                            None,
+                            Some(err),
+                            duration_us,
+                            None,
+                        ));
+                        break;
+                    }
                 }
             }
         }
@@ -692,16 +739,50 @@ impl EndpointEngine {
                 .send_network_request(rule, &url, &headers, body.as_ref())
                 .await;
             let request_us = request_started.elapsed().as_micros() as u64;
+            let run_catch =
+                |err: EndpointError, request_us: u64| -> Result<NetworkExecution, EndpointError> {
+                    if let Some(catch) = &rule.catch {
+                        if let Some(output) =
+                            self.run_catch(catch, &err, input, None, &rule.base_dir)?
+                        {
+                            return Ok(NetworkExecution {
+                                output,
+                                request_us,
+                                total_us: total_started.elapsed().as_micros() as u64,
+                                body_rule_trace: body_rule_trace.clone(),
+                            });
+                        }
+                    }
+                    Err(err)
+                };
 
             match result {
                 Ok(value) => {
                     if let Some(select) = &rule.select {
-                        let tokens = parse_path(select).map_err(|_| {
-                            EndpointError::invalid(format!("invalid select path: {}", select))
-                        })?;
-                        let selected = get_path(&value, &tokens).ok_or_else(|| {
-                            EndpointError::invalid(format!("select path not found: {}", select))
-                        })?;
+                        let tokens = match parse_path(select) {
+                            Ok(tokens) => tokens,
+                            Err(_) => {
+                                return run_catch(
+                                    EndpointError::invalid(format!(
+                                        "invalid select path: {}",
+                                        select
+                                    )),
+                                    request_us,
+                                );
+                            }
+                        };
+                        let selected = match get_path(&value, &tokens) {
+                            Some(selected) => selected,
+                            None => {
+                                return run_catch(
+                                    EndpointError::invalid(format!(
+                                        "select path not found: {}",
+                                        select
+                                    )),
+                                    request_us,
+                                );
+                            }
+                        };
                         return Ok(NetworkExecution {
                             output: selected.clone(),
                             request_us,
@@ -729,19 +810,7 @@ impl EndpointEngine {
                             }
                         }
                     }
-                    if let Some(catch) = &rule.catch {
-                        if let Some(output) =
-                            self.run_catch(catch, &err, input, None, &rule.base_dir)?
-                        {
-                            return Ok(NetworkExecution {
-                                output,
-                                request_us,
-                                total_us: total_started.elapsed().as_micros() as u64,
-                                body_rule_trace: body_rule_trace.clone(),
-                            });
-                        }
-                    }
-                    return Err(err);
+                    return run_catch(err, request_us);
                 }
             }
         }
@@ -1406,7 +1475,17 @@ fn build_input(
     parts: &axum::http::request::Parts,
     path_params: &HashMap<String, String>,
     body: Option<JsonValue>,
-) -> Result<JsonValue> {
+) -> Result<JsonValue, EndpointError> {
+    let query = parse_query(parts.uri.query())?;
+    Ok(build_input_from_parts(parts, path_params, body, query))
+}
+
+fn build_input_from_parts(
+    parts: &axum::http::request::Parts,
+    path_params: &HashMap<String, String>,
+    body: Option<JsonValue>,
+    query: JsonValue,
+) -> JsonValue {
     let mut headers: HashMap<String, String> = HashMap::new();
     for (name, value) in parts.headers.iter() {
         let key = name.as_str().to_lowercase();
@@ -1418,8 +1497,6 @@ fn build_input(
             headers.insert(key, value.to_string());
         }
     }
-
-    let query = parse_query(parts.uri.query())?;
 
     let mut input = json!({
         "method": parts.method.as_str(),
@@ -1434,7 +1511,7 @@ fn build_input(
         }
     }
 
-    Ok(input)
+    input
 }
 
 fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, EndpointError> {
@@ -1449,19 +1526,22 @@ fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, Endpoin
     Ok(map)
 }
 
-fn parse_query(query: Option<&str>) -> Result<JsonValue> {
+fn parse_query(query: Option<&str>) -> Result<JsonValue, EndpointError> {
     let mut map: HashMap<String, String> = HashMap::new();
     if let Some(q) = query {
         for (key, value) in url::form_urlencoded::parse(q.as_bytes()) {
             let key = key.into_owned();
             let value = value.into_owned();
             if map.contains_key(&key) {
-                return Err(anyhow!("duplicate query param: {}", key));
+                return Err(EndpointError::invalid(format!(
+                    "duplicate query param: {}",
+                    key
+                )));
             }
             map.insert(key, value);
         }
     }
-    Ok(serde_json::to_value(map)?)
+    serde_json::to_value(map).map_err(|err| EndpointError::invalid(err.to_string()))
 }
 
 fn apply_mappings_via_rule(
@@ -3458,6 +3538,171 @@ mappings:
             .expect("read body");
         let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
         assert_eq!(body, json!({ "params": { "fields": ["name"] } }));
+    }
+
+    #[tokio::test]
+    async fn endpoint_duplicate_query_runs_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    catch:
+      default: ./rules/catch.yaml
+    steps: []
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/test?dup=1&dup=2")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
+    async fn network_select_error_runs_catch() {
+        let app = axum::Router::new().route(
+            "/data",
+            axum::routing::get(|| async { axum::Json(json!({ "data": { "value": 1 } })) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        });
+        let server_handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: ./rules/network.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("network.yaml"),
+            format!(
+                r#"
+version: 2
+type: network
+request:
+  method: GET
+  url: "http://{}/data"
+timeout: 1s
+select: "missing.path"
+catch:
+  default: ./catch.yaml
+"#,
+                addr
+            ),
+        )
+        .expect("write network.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
     }
 
     #[tokio::test]
