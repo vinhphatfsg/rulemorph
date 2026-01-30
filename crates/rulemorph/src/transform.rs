@@ -293,6 +293,9 @@ fn transform_record_with_warnings_inner(
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let output = apply_rule_to_record(rule, record, context, &mut warnings, base_dir)?;
+    if output.is_none() {
+        return Ok((None, warnings));
+    }
     if let Some(finalize) = &rule.finalize {
         let mut records = Vec::new();
         if let Some(value) = output {

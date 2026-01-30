@@ -44,3 +44,25 @@ finalize:
         .expect("expected output");
     assert_eq!(output, json!([]));
 }
+
+#[test]
+fn transform_record_finalize_respects_record_when() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+record_when:
+  eq: [1, 2]
+mappings:
+  - target: "value"
+    source: "input.value"
+finalize:
+  wrap:
+    result: "@out"
+"#;
+    let rule = parse_rule_file(yaml).expect("failed to parse rule");
+    let record = json!({"value": 1});
+    let output = transform_record(&rule, &record, None).expect("transform_record failed");
+    assert!(output.is_none());
+}
