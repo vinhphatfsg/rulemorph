@@ -607,10 +607,22 @@ impl EndpointEngine {
         let rule_ref = rule_ref_from_path(base_dir, &resolved);
         match load_rule_kind(&resolved).map_err(|err| EndpointError::invalid(err.to_string()))? {
             RuleKind::Normal(rule) => {
-                let output =
-                    transform_record_with_base_dir(&rule.rule, input, context, &rule.base_dir)
-                        .map_err(EndpointError::from_transform)?
-                        .unwrap_or_else(empty_object);
+                let output = match transform_record_with_base_dir(
+                    &rule.rule,
+                    input,
+                    context,
+                    &rule.base_dir,
+                )
+                .map_err(EndpointError::from_transform)?
+                {
+                    Some(output) => output,
+                    None => {
+                        return Err(EndpointError::invalid(format!(
+                            "record excluded by rule: {}",
+                            rule_display_name(&resolved)
+                        )));
+                    }
+                };
                 let nodes = build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
                 let duration_us = sum_node_duration_us(&nodes);
                 let child_trace = build_rule_trace(
@@ -3384,6 +3396,65 @@ mappings:
             .expect("read body");
         let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
         assert_eq!(body, json!({ "params": { "fields": ["name"] } }));
+    }
+
+    #[tokio::test]
+    async fn step_rule_record_when_false_returns_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/filter
+    steps:
+      - rule: ./rules/filter.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("filter.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+record_when:
+  eq: [1, 2]
+mappings:
+  - target: "ignored"
+    value: "nope"
+"#,
+        )
+        .expect("write filter rule");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/filter")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("expected error");
+        assert!(err.to_string().contains("record"));
     }
 
     #[test]
