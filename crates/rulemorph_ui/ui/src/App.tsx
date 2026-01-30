@@ -1276,11 +1276,11 @@ export default function App() {
                   </div>
                   <div className="trace-meta">
                     <div>
-                      <span>time</span>
+                      <span>time: </span>
                       <strong>{formatTime(item.timestamp)}</strong>
                     </div>
                     <div>
-                      <span>duration</span>
+                      <span>duration: </span>
                       <strong>
                         {formatDuration(resolveDurationUs(item.duration_us, item.duration_ms), durationUnit)}
                       </strong>
