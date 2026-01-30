@@ -539,10 +539,13 @@ fn validate_v2_mapping_expr(
     // Validate the v2 expression
     validate_v2_expr(&v2_expr, expr_path, &scope, &mut v2_ctx);
 
-    // Collect @out dependencies for cyclic check
-    let deps = collect_out_references(&v2_expr);
-    if !deps.is_empty() {
-        v2_targets_with_deps.push((target.to_string(), deps));
+    // When branch(return=false) is present, @out can be a forward ref, so the
+    // dependency graph is not reliable for cycle detection.
+    if !ctx.allow_any_out_ref {
+        let deps = collect_out_references(&v2_expr);
+        if !deps.is_empty() {
+            v2_targets_with_deps.push((target.to_string(), deps));
+        }
     }
 
     // Transfer errors from v2 context to main context

@@ -164,6 +164,7 @@ fn v2_valid_rules_should_pass_validation() {
         "tv30_literal_escape",
         "tv36_branch_uses_out",
         "tv39_finalize_filter_index",
+        "tv41_branch_return_out_update",
     ];
 
     for case in cases {
