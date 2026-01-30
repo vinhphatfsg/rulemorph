@@ -163,6 +163,7 @@ fn v2_valid_rules_should_pass_validation() {
         "tv29_v2_out_sibling_ok",
         "tv30_literal_escape",
         "tv36_branch_uses_out",
+        "tv39_finalize_filter_index",
     ];
 
     for case in cases {

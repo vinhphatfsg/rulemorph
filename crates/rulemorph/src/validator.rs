@@ -217,7 +217,13 @@ fn validate_finalize(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
     if let Some(filter) = &finalize.filter {
         let base_path = "finalize.filter";
         if let Some(raw_value) = expr_to_json_value(filter) {
-            validate_v2_condition_expr(&raw_value, base_path, &HashSet::new(), ctx);
+            validate_v2_condition_expr_with_scope(
+                &raw_value,
+                base_path,
+                &HashSet::new(),
+                ctx,
+                V2Scope::new().with_item(),
+            );
         } else {
             ctx.push(
                 ErrorCode::InvalidFinalize,
@@ -552,6 +558,22 @@ fn validate_v2_condition_expr(
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
 ) {
+    validate_v2_condition_expr_with_scope(
+        raw_value,
+        base_path,
+        produced_targets,
+        ctx,
+        V2Scope::new(),
+    );
+}
+
+fn validate_v2_condition_expr_with_scope(
+    raw_value: &serde_json::Value,
+    base_path: &str,
+    produced_targets: &HashSet<Vec<PathToken>>,
+    ctx: &mut ValidationCtx<'_>,
+    scope: V2Scope,
+) {
     let condition = match parse_v2_condition(raw_value) {
         Ok(cond) => cond,
         Err(e) => {
@@ -569,7 +591,6 @@ fn validate_v2_condition_expr(
         produced_targets.clone(),
         ctx.allow_any_out_ref,
     );
-    let scope = V2Scope::new();
     validate_v2_condition(&condition, base_path, &scope, &mut v2_ctx);
 
     for err in v2_ctx.errors() {
