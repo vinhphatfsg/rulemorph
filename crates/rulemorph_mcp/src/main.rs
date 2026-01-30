@@ -1,12 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
+use std::path::Path;
 
 use csv::ReaderBuilder;
 use rulemorph::{
     DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError, RuleFile, TransformError,
     TransformErrorKind, TransformWarning, generate_dto, parse_rule_file, transform_stream,
-    transform_with_warnings, validate_rule_file_with_source,
+    transform_stream_with_base_dir, transform_with_warnings, transform_with_warnings_with_base_dir,
+    validate_rule_file_with_source,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -819,6 +821,14 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     }
 
     let (mut rule, yaml) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let base_dir = rules_path.as_deref().and_then(|path| {
+        let parent = Path::new(path).parent()?;
+        if parent.as_os_str().is_empty() {
+            None
+        } else {
+            Some(parent.to_path_buf())
+        }
+    });
 
     let input = match (
         input_path.as_deref(),
@@ -889,14 +899,23 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     }
 
     let (output_value, output_text, warnings) = if ndjson {
-        let (output_text, warnings) = transform_to_ndjson(&rule, &input, context_value.as_ref())?;
+        let (output_text, warnings) =
+            transform_to_ndjson(&rule, &input, context_value.as_ref(), base_dir.as_deref())?;
         (None, output_text, warnings)
     } else {
-        let (output, warnings) = transform_with_warnings(&rule, &input, context_value.as_ref())
-            .map_err(|err| CallError::Tool {
-                message: transform_error_to_text(&err),
-                errors: Some(vec![transform_error_json(&err)]),
-            })?;
+        let (output, warnings) = match base_dir.as_deref() {
+            Some(base_dir) => transform_with_warnings_with_base_dir(
+                &rule,
+                &input,
+                context_value.as_ref(),
+                base_dir,
+            ),
+            None => transform_with_warnings(&rule, &input, context_value.as_ref()),
+        }
+        .map_err(|err| CallError::Tool {
+            message: transform_error_to_text(&err),
+            errors: Some(vec![transform_error_json(&err)]),
+        })?;
         let output_text = serde_json::to_string(&output).map_err(|err| {
             let message = format!("failed to serialize output JSON: {}", err);
             CallError::Tool {
@@ -4558,8 +4577,13 @@ fn transform_to_ndjson(
     rule: &RuleFile,
     input: &str,
     context: Option<&serde_json::Value>,
+    base_dir: Option<&Path>,
 ) -> Result<(String, Vec<TransformWarning>), CallError> {
-    let stream = transform_stream(rule, input, context).map_err(|err| CallError::Tool {
+    let stream = match base_dir {
+        Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir),
+        None => transform_stream(rule, input, context),
+    }
+    .map_err(|err| CallError::Tool {
         message: transform_error_to_text(&err),
         errors: Some(vec![transform_error_json(&err)]),
     })?;
