@@ -646,6 +646,17 @@ fn tv41_branch_finalize_wrap() {
 }
 
 #[test]
+fn tv42_branch_deep_merge() {
+    let base = fixtures_dir().join("tv42_branch_deep_merge");
+    let rule = load_rule(&base.join("rules.yaml"));
+    let input = fs::read_to_string(base.join("input.json"))
+        .unwrap_or_else(|_| panic!("failed to read input.json"));
+    let expected = load_json(&base.join("expected.json"));
+    let output = transform(&rule, &input, None).expect("transform failed");
+    assert_eq!(output, expected);
+}
+
+#[test]
 fn tv26_unknown_op_error() {
     let base = fixtures_dir().join("tv26_v01_unknown_op");
     let rule = load_rule(&base.join("rules.yaml"));

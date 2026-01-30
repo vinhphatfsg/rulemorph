@@ -546,10 +546,21 @@ fn merge_branch_output(
         )
         .with_path(path)
     })?;
-    for (key, value) in other_map {
-        out_map.insert(key.clone(), value.clone());
-    }
+    merge_object_maps(out_map, other_map);
     Ok(())
+}
+
+fn merge_object_maps(out_map: &mut Map<String, JsonValue>, other_map: &Map<String, JsonValue>) {
+    for (key, other_value) in other_map {
+        match (out_map.get_mut(key), other_value) {
+            (Some(JsonValue::Object(out_obj)), JsonValue::Object(other_obj)) => {
+                merge_object_maps(out_obj, other_obj);
+            }
+            _ => {
+                out_map.insert(key.clone(), other_value.clone());
+            }
+        }
+    }
 }
 
 fn load_rule_from_path(
