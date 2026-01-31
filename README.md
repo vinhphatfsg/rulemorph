@@ -1,6 +1,12 @@
-# Rulemorph
+<p align="center">
+  <img src="assets/ogp.png" alt="Rulemorph" width="600">
+</p>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+<p align="center">
+  <a href="https://crates.io/crates/rulemorph"><img src="https://img.shields.io/crates/v/rulemorph.svg" alt="Crates.io"></a>
+  <a href="https://docs.rs/rulemorph"><img src="https://docs.rs/rulemorph/badge.svg" alt="docs.rs"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+</p>
 
 A Rust CLI and library to transform CSV/JSON data into JSON using declarative YAML rules. Ideal for normalizing API responses, converting between data formats, and building consistent data pipelines.
 
