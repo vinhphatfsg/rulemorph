@@ -9,6 +9,7 @@ use crate::v2_validator::{
     V2Scope, V2ValidationCtx, collect_out_references, validate_no_cyclic_dependencies,
     validate_v2_condition, validate_v2_expr,
 };
+use serde_json::Value as JsonValue;
 
 pub fn validate_rule_file(rule: &RuleFile) -> ValidationResult {
     validate_rule_file_with_locator(rule, None)
@@ -247,6 +248,44 @@ fn validate_finalize(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
                 "finalize.sort.order must be asc or desc",
                 format!("{}.order", base_path),
             );
+        }
+    }
+
+    if let Some(wrap) = &finalize.wrap {
+        let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, HashSet::new(), true);
+        validate_finalize_wrap_value(wrap, "finalize.wrap", &mut v2_ctx);
+        for err in v2_ctx.errors() {
+            ctx.errors.push(err.clone());
+        }
+    }
+}
+
+fn validate_finalize_wrap_value(
+    value: &JsonValue,
+    base_path: &str,
+    v2_ctx: &mut V2ValidationCtx<'_>,
+) {
+    match value {
+        JsonValue::Object(map) => {
+            for (key, value) in map {
+                let child_path = format!("{}.{}", base_path, key);
+                validate_finalize_wrap_value(value, &child_path, v2_ctx);
+            }
+        }
+        _ => {
+            let v2_expr = match parse_v2_expr(value) {
+                Ok(expr) => expr,
+                Err(e) => {
+                    v2_ctx.push_error(
+                        ErrorCode::InvalidExprShape,
+                        format!("invalid v2 expression: {:?}", e),
+                        base_path,
+                    );
+                    return;
+                }
+            };
+            let scope = V2Scope::new();
+            validate_v2_expr(&v2_expr, base_path, &scope, v2_ctx);
         }
     }
 }

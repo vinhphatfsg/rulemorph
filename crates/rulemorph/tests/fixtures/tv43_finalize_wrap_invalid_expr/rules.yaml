@@ -1,0 +1,12 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "score"
+    source: "input.score"
+finalize:
+  wrap:
+    data:
+      - "@out"
+      - unknown_op
