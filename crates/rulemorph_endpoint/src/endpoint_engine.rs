@@ -331,12 +331,11 @@ impl EndpointEngine {
             .await
             .map_err(|err| anyhow!(err.to_string()))?;
         let body_value = if body_bytes.is_empty() {
-            None
+            Ok(None)
         } else {
-            Some(
-                serde_json::from_slice::<JsonValue>(&body_bytes)
-                    .map_err(|err| anyhow!(err.to_string()))?,
-            )
+            serde_json::from_slice::<JsonValue>(&body_bytes)
+                .map(Some)
+                .map_err(|err| EndpointError::invalid(err.to_string()))
         };
 
         let endpoint = endpoint_match.endpoint;
@@ -346,52 +345,62 @@ impl EndpointEngine {
         let mut last_error_message: Option<String> = None;
         let mut skip_steps = false;
 
-        let (record_input, mut current) =
-            match build_input(&parts, &endpoint_match.params, body_value.clone()) {
+        let mut handle_input_error = |err: EndpointError,
+                                      fallback_input: Option<JsonValue>,
+                                      body_value: Option<JsonValue>|
+         -> Result<(JsonValue, JsonValue)> {
+            skip_steps = true;
+            let fallback_input = fallback_input.unwrap_or_else(|| {
+                build_input_from_parts(&parts, &endpoint_match.params, body_value, empty_object())
+            });
+            if let Some(catch) = &endpoint.catch {
+                if let Some(next) = self
+                    .run_catch(
+                        catch,
+                        &err,
+                        &fallback_input,
+                        None,
+                        &self.endpoint_rule.base_dir,
+                    )
+                    .map_err(|err| anyhow!(err.to_string()))?
+                {
+                    Ok((fallback_input, next))
+                } else {
+                    record_status = "error".to_string();
+                    record_error = Some(self.endpoint_error_to_trace(&err));
+                    last_error_message = Some(err.message.clone());
+                    Ok((fallback_input.clone(), fallback_input))
+                }
+            } else {
+                record_status = "error".to_string();
+                record_error = Some(self.endpoint_error_to_trace(&err));
+                last_error_message = Some(err.message.clone());
+                Ok((fallback_input.clone(), fallback_input))
+            }
+        };
+
+        let (record_input, mut current) = match body_value {
+            Ok(body_value) => match build_input(&parts, &endpoint_match.params, body_value.clone())
+            {
                 Ok(input) => {
                     let record_input = input.clone();
-                    let current = if let Some(mappings) = &endpoint.input {
-                        apply_mappings_via_rule(mappings, &input, Some(&self.config_json()))?
-                            .unwrap_or_else(empty_object)
-                    } else {
-                        input
-                    };
-                    (record_input, current)
-                }
-                Err(err) => {
-                    skip_steps = true;
-                    let fallback_input = build_input_from_parts(
-                        &parts,
-                        &endpoint_match.params,
-                        body_value.clone(),
-                        empty_object(),
-                    );
-                    if let Some(catch) = &endpoint.catch {
-                        if let Some(next) = self
-                            .run_catch(
-                                catch,
-                                &err,
-                                &fallback_input,
-                                None,
-                                &self.endpoint_rule.base_dir,
-                            )
-                            .map_err(|err| anyhow!(err.to_string()))?
-                        {
-                            (fallback_input, next)
+                    let current_result: Result<JsonValue, EndpointError> =
+                        if let Some(mappings) = &endpoint.input {
+                            apply_mappings_via_rule(mappings, &input, Some(&self.config_json()))
+                                .map_err(EndpointError::from_transform)
+                                .map(|value| value.unwrap_or_else(empty_object))
                         } else {
-                            record_status = "error".to_string();
-                            record_error = Some(self.endpoint_error_to_trace(&err));
-                            last_error_message = Some(err.message.clone());
-                            (fallback_input.clone(), fallback_input)
-                        }
-                    } else {
-                        record_status = "error".to_string();
-                        record_error = Some(self.endpoint_error_to_trace(&err));
-                        last_error_message = Some(err.message.clone());
-                        (fallback_input.clone(), fallback_input)
+                            Ok(input.clone())
+                        };
+                    match current_result {
+                        Ok(current) => Ok((record_input, current)),
+                        Err(err) => handle_input_error(err, Some(input), body_value),
                     }
                 }
-            };
+                Err(err) => handle_input_error(err, None, body_value),
+            },
+            Err(err) => handle_input_error(err, None, None),
+        }?;
 
         if !skip_steps {
             for (step_index, step) in endpoint.steps.iter().enumerate() {
@@ -966,27 +975,33 @@ impl EndpointEngine {
             req = req.json(body);
         }
 
-        let response = tokio::time::timeout(rule.timeout, req.send())
-            .await
-            .map_err(|_| EndpointError::timeout())?
-            .map_err(|err| EndpointError::network(err.to_string()))?;
+        let value = tokio::time::timeout(rule.timeout, async {
+            let response = req
+                .send()
+                .await
+                .map_err(|err| EndpointError::network(err.to_string()))?;
 
-        let status = response.status();
-        let status_u16 = status.as_u16();
-        if status.is_client_error() || status.is_server_error() {
-            return Err(EndpointError::http_status(status_u16));
-        }
+            let status = response.status();
+            let status_u16 = status.as_u16();
+            if status.is_client_error() || status.is_server_error() {
+                return Err(EndpointError::http_status(status_u16));
+            }
 
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|err| EndpointError::network(err.to_string()))?;
-        let value = if bytes.is_empty() {
-            JsonValue::Null
-        } else {
-            serde_json::from_slice::<JsonValue>(&bytes)
-                .map_err(|err| EndpointError::network(err.to_string()))?
-        };
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|err| EndpointError::network(err.to_string()))?;
+            let value = if bytes.is_empty() {
+                JsonValue::Null
+            } else {
+                serde_json::from_slice::<JsonValue>(&bytes)
+                    .map_err(|err| EndpointError::network(err.to_string()))?
+            };
+            Ok(value)
+        })
+        .await
+        .map_err(|_| EndpointError::timeout())??;
+
         Ok(value)
     }
 
@@ -3353,6 +3368,7 @@ enum RuleKind {
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn endpoint_path_matches_and_captures() {
@@ -3768,6 +3784,139 @@ mappings:
     }
 
     #[tokio::test]
+    async fn endpoint_invalid_json_runs_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/test
+    catch:
+      default: ./rules/catch.yaml
+    steps: []
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/test")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{\"bad\":}"))
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
+    async fn endpoint_input_mapping_error_runs_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/test
+    input:
+      - target: "user_id"
+        source: "input.body.user_id"
+        required: true
+    catch:
+      default: ./rules/catch.yaml
+    steps: []
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
     async fn network_select_error_runs_catch() {
         let app = axum::Router::new().route(
             "/data",
@@ -3865,6 +4014,110 @@ mappings:
         assert_eq!(body, json!({ "handled": true }));
 
         let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn network_timeout_on_slow_body_runs_catch() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server_handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let body = b"{\"value\":1}";
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = socket.write_all(headers.as_bytes()).await;
+            let _ = socket.flush().await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = socket.write_all(body).await;
+            let _ = socket.shutdown().await;
+        });
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: ./rules/network.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("network.yaml"),
+            format!(
+                r#"
+version: 2
+type: network
+request:
+  method: GET
+  url: "http://{}/slow"
+timeout: 100ms
+catch:
+  timeout: ./catch.yaml
+"#,
+                addr
+            ),
+        )
+        .expect("write network.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+
         let _ = server_handle.await;
     }
 
