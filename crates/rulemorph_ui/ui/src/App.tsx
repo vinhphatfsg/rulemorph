@@ -181,6 +181,10 @@ function resolveTraceDurationUs(trace?: TracePayload) {
   return resolveDurationUs(record?.duration_us, record?.duration_ms);
 }
 
+function isErrorStatus(status?: string) {
+  return status?.toLowerCase() === "error";
+}
+
 function formatEdgeDurationMs(valueUs: number | undefined) {
   if (valueUs == null) return "-";
   const valueMs = valueUs / 1000;
@@ -271,7 +275,7 @@ function extractRuleRefs(meta?: Record<string, unknown>): RuleRefEntry[] {
 }
 
 function traceNodeHasError(node: TraceNode) {
-  if (node.status === "error" || node.error) return true;
+  if (isErrorStatus(node.status) || node.error) return true;
   return (node.children ?? []).some(traceNodeHasError);
 }
 
@@ -372,15 +376,13 @@ export function buildOverviewGraph(trace: TracePayload): OverviewGraph {
     const records = current.records ?? [];
     records.forEach((record) => {
       const recordHasError =
-        record.status === "error" ||
-        !!record.error ||
-        (record.nodes ?? []).some(traceNodeHasError);
+        isErrorStatus(record.status) || !!record.error || (record.nodes ?? []).some(traceNodeHasError);
       if (recordHasError) {
         hasLocalError = true;
       }
       (record.nodes ?? []).forEach((node) => {
         const nodeHasError = traceNodeHasError(node);
-        if (node.status === "error" || node.error) {
+        if (isErrorStatus(node.status) || node.error) {
           hasLocalError = true;
         }
         const meta = (node.meta ?? {}) as Record<string, unknown>;
@@ -465,7 +467,7 @@ export function buildOverviewGraph(trace: TracePayload): OverviewGraph {
         }
       });
     });
-    if ((current.finalize?.nodes ?? []).some((node) => node.status === "error" || node.error)) {
+    if ((current.finalize?.nodes ?? []).some((node) => isErrorStatus(node.status) || node.error)) {
       hasLocalError = true;
     }
     if (hasLocalError && !hasChildError) {
@@ -606,7 +608,7 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       style: { width: stepWidth, height: 64 }
     });
     map.set(stepNodeId, { kind: "step", node, ruleId });
-    if (!errorMarked && (node.status === "error" || node.error)) {
+    if (!errorMarked && (isErrorStatus(node.status) || node.error)) {
       errorNodeIds.add(stepNodeId);
       errorMarked = true;
     }
@@ -635,7 +637,7 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       });
       edges.push({ id: `${lastId}->${opId}`, source: lastId, target: opId });
       map.set(opId, { kind: "op", node: child, parent: node, ruleId });
-      if (!errorMarked && (child.status === "error" || child.error)) {
+      if (!errorMarked && (isErrorStatus(child.status) || child.error)) {
         errorNodeIds.add(opId);
         errorMarked = true;
       }
@@ -1529,7 +1531,9 @@ export default function App() {
                     onClick={() => setSelectedId(item.trace_id)}
                   >
                     <div>
-                      <span className="chip">{item.status ?? "ok"}</span>
+                      <span className={clsx("chip", isErrorStatus(item.status) && "chip--error")}>
+                        {item.status ?? "ok"}
+                      </span>
                       <h3>{item.rule?.name ?? item.trace_id}</h3>
                       <p className="muted">{item.rule?.path ?? "(no path)"}</p>
                     </div>
@@ -1581,7 +1585,14 @@ export default function App() {
                     }}
                   >
                     <span>#{record.index}</span>
-                    <span className="muted">{record.status ?? "ok"}</span>
+                    <span
+                      className={clsx(
+                        "record-status",
+                        isErrorStatus(record.status) && "record-status--error"
+                      )}
+                    >
+                      {record.status ?? "ok"}
+                    </span>
                     <span>
                       {formatDuration(resolveDurationUs(record.duration_us, record.duration_ms), durationUnit)}
                     </span>
@@ -1704,7 +1715,7 @@ export default function App() {
                           <span
                             className={clsx(
                               "chip",
-                              selectedNode.status === "error" && "chip--error"
+                              isErrorStatus(selectedNode.status) && "chip--error"
                             )}
                           >
                             {selectedNode.status ?? "ok"}

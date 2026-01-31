@@ -576,6 +576,7 @@ impl EndpointEngine {
         });
         json!({
             "trace_id": trace_id,
+            "status": status,
             "timestamp": now.to_rfc3339(),
             "rule": {
                 "type": "endpoint",
@@ -3427,6 +3428,45 @@ mappings:
         let expected = rule_ref_from_path(&engine.endpoint_rule.base_dir, &resolved);
         assert_eq!(path, expected);
         assert!(!Path::new(path).is_absolute());
+    }
+
+    #[test]
+    fn build_trace_emits_top_level_status() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps: []
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.join(".data")),
+        )
+        .expect("load engine");
+
+        let trace = engine.build_trace(
+            &Method::GET,
+            "/api/test",
+            json!({"input": true}),
+            json!({"output": false}),
+            "error".to_string(),
+            Some(json!({"message": "boom"})),
+            Vec::new(),
+            12,
+        );
+        let status = trace.get("status").and_then(|value| value.as_str());
+        assert_eq!(status, Some("error"));
     }
 
     #[test]
