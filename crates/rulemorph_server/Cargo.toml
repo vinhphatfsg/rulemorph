@@ -1,0 +1,30 @@
+[package]
+name = "rulemorph_server"
+version = "0.2.1"
+edition = "2024"
+license = "MIT"
+description = "HTTP server for rulemorph UI and API"
+repository = "https://github.com/vinhphatfsg/rulemorph"
+keywords = ["transform", "server", "api"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "rulemorph-server"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+axum = { version = "0.7", features = ["multipart", "json"] }
+clap = { version = "4.5", features = ["derive"] }
+rulemorph = { path = "../rulemorph" }
+rulemorph_endpoint = { path = "../rulemorph_endpoint" }
+rulemorph_trace = { path = "../rulemorph_trace" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", "net"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+walkdir = "2.5"

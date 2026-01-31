@@ -1,18 +1,18 @@
-# UI起動〜確認ガイド
+# UI起動・確認ガイド
 
-このガイドは、Rulemorph UIサーバの起動からブラウザでの確認までをまとめたものです。
-`--api-mode ui-only`（UI専用）と `--api-mode rules`（ユーザーAPIをYAMLで定義）に対応しています。
-トレース保存は **ファイル保存（file backend）** を前提とした構成です（将来的にDB/オブジェクトへ差し替え可能）。
-
-> UI自身は **/internal/** の組み込みAPIを使います。ユーザー向けAPIは /api/* で提供します（rules モードのみ）。
+Rulemorph UIサーバの起動からブラウザでの動作確認までをまとめたガイドです。
 
 ## 前提
+
 - Rust/Cargo が使えること
 - UIをビルドする場合は Node.js / npm が使えること
+- GitHub Releases の `rulemorph-server` を使う場合はビルド不要（`ui/dist` 同梱）
 
 ## UIビルド（初回のみ）
-UIの静的ファイルは `crates/rulemorph_ui/ui/dist` を参照します。
-ビルド済みでない場合は以下を実行してください。
+
+> Release版 `rulemorph-server` を使う場合はこの手順は不要です。
+
+開発時はUIの静的ファイルを手動でビルドする必要があります。
 
 ```sh
 cd crates/rulemorph_ui/ui
@@ -20,79 +20,67 @@ npm install
 npm run build
 ```
 
-## 起動（ui-only モード）
-組み込みAPIのみを提供するモードです。UI表示に必要なAPIは /internal で提供されます。
-トレース更新は `/internal/stream`（SSE）で自動反映されます。
+ビルド後、`crates/rulemorph_ui/ui/dist` が生成されます。
+
+## 起動方法
+
+### ui-only モード
+
+UIのみを提供するモードです。内部APIは `/internal/*` で提供されます。
 
 ```sh
-cargo run -p rulemorph_cli -- ui --api-mode ui-only
+# 開発時
+cargo run -p rulemorph_server
+
+# Release バイナリ
+rulemorph-server --api-mode ui-only
 ```
 
-- 既定ポート: `8080`
-- 既定データディレクトリ: `./.rulemorph`
+### rules モード（デフォルト）
 
-## 起動（rules モード）
-`endpoint.yaml` / `network` ルールで `/api/*` を処理するモードです（ユーザーAPI）。
-UI表示に必要なAPIは引き続き /internal が使われます。
+UIに加えて、YAMLで定義したカスタムAPIを `/api/*` で提供するモードです。
 
 ```sh
-cargo run -p rulemorph_cli -- ui --api-mode rules
+# 開発時
+cargo run -p rulemorph_server -- --api-mode rules
+
+# Release バイナリ
+rulemorph-server --api-mode rules
 ```
 
-- 既定 `--api-mode` は `rules` です。
-- 既定 `--rules-dir` は `./.rulemorph/api_rules`（カレント配下）です。
-- `--rules-dir` でユーザーAPIルールのディレクトリを指定できます。
-- UIを無効化する場合は `--no-ui` を付けます（UI/内部API/静的配信を停止）。
+### オプション一覧
 
-## グラフの紐仕様（概要/詳細 共通）
-**参照ファイルがある OP / Step は必ず概要ノードへの紐を持つ**ことを仕様とします。
-また、**概要ノードを展開した場合は、そのノードを source に持つ概要→概要の紐は非表示**にします
-（詳細ノードから概要ノードへの紐で代替表示）。
+| オプション | 説明 | デフォルト |
+|-----------|------|-----------|
+| `--api-mode <MODE>` | `ui-only` または `rules` | `rules` |
+| `--port <PORT>` | リッスンポート | `8080` |
+| `--data-dir <PATH>` | データディレクトリ | `./.rulemorph` |
+| `--rules-dir <PATH>` | APIルールディレクトリ | `./.rulemorph/api_rules` |
+| `--no-ui` | UIを無効化（APIのみ提供） | - |
 
-- 対象（必須で紐を張るもの）
-  - endpoint の steps（全step）
-  - network の body_rule
-  - normal rule の branch（then / else）
-  - trace 詳細では `meta.rule_ref` を持つ step / op
-- ラベル
-  - endpoint: `METHOD PATH`
-  - branch: `branch: then` / `branch: else`
-  - body_rule: `body_rule`
+## ブラウザ確認
 
-## サンプルAPIルール（network body_rule）
-`./.rulemorph/api_rules/` に実運用想定の network + body_rule を組み込んでいます。
+サーバ起動後、ブラウザで以下にアクセスします。
 
-- `endpoint.yaml`: 新規 `GET /api/profile/{id}` を追加
-- `network_fetch.yaml`: `type: network`（POST + body_rule）
-- `network_body.yaml`: body_rule（入力からJSONを組み立てる）
-
-## UI起動と確認（network body_rule を使う）
-デフォルト設定でUIを起動します。
-
-```sh
-cargo run -p rulemorph_cli -- ui
+```
+http://127.0.0.1:8080
 ```
 
-ブラウザで `http://127.0.0.1:8080` を開き、以下を確認します。
+- トレース一覧が表示される
+- トレースをクリックすると詳細が確認できる
+- トレース更新は SSE (`/internal/stream`) で自動反映される
 
-- APIグラフ詳細で `branch` / `body_rule` / `endpoint steps` の詳細OPから概要ノードへ紐が表示される
-- トレース詳細で `meta.rule_ref` を持つ step/op から概要ノードへの紐が表示される
+## サンプルトレース投入
 
-> 外部ネットワークが必要な場合があります（`https://httpbin.org/anything` を使用）。
-
-## サンプルトレース投入（手動）
-UIは data_dir の `traces` 配下からトレースを読み込みます。
-以下のようにJSONを配置すると一覧に表示されます。
-
-例（今日のフォルダに `demo-001.json` を置く）:
+UIは `data_dir/traces` 配下のJSONファイルをトレースとして読み込みます。
 
 ```sh
-mkdir -p ./.rulemorph/traces/2026/01/26
-cat <<'JSON' > ./.rulemorph/traces/2026/01/26/demo-001.json
+mkdir -p ./.rulemorph/traces/2025/01/01
+cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001.json
 {
   "id": "demo-001",
   "title": "Demo Trace",
-  "created_at": "2026-01-26T00:00:00Z",
+  "created_at": "2025-01-01T00:00:00Z",
   "summary": {
     "input": {"foo": "bar"},
     "output": {"ok": true}
@@ -104,13 +92,21 @@ JSON
 
 > 日付フォルダは任意ですが、`YYYY/MM/DD` 形式で整理するのがおすすめです。
 
-## ブラウザ確認
-UIサーバ起動後、以下にアクセスします。
+ディレクトリ構成の詳細は [ui-data-dir-usage.md](ui-data-dir-usage.md) を参照してください。
 
-- `http://127.0.0.1:8080`
+## サンプルAPIルール
 
-一覧にトレースが表示され、クリックすると詳細が確認できればOKです。
+rules モードでは `./.rulemorph/api_rules/` 配下のYAMLでカスタムAPIを定義できます。
+
+例：
+- `endpoint.yaml`: エンドポイント定義
+- `network_fetch.yaml`: 外部API呼び出し（`type: network`）
+- `network_body.yaml`: リクエストボディ生成ルール
 
 ## よくあるエラー
-- **画面が真っ白**: `crates/rulemorph_ui/ui/dist` が存在しない可能性があります。`npm run build` を実行してください。
-- **404が返る**: `--api-mode rules` で `endpoint.yaml` が見つからない可能性があります。`--rules-dir` を確認してください。
+
+| 症状 | 原因と対処 |
+|------|-----------|
+| 画面が真っ白 | `ui/dist` が存在しない。`npm run build` を実行 |
+| 404が返る | `endpoint.yaml` が見つからない。`--rules-dir` を確認 |
+| ポートが使用中 | `lsof -nP -iTCP:8080 -sTCP:LISTEN` で確認し、プロセスを終了 |
