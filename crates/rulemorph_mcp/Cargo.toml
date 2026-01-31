@@ -1,6 +1,6 @@
 [package]
 name = "rulemorph_mcp"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license = "MIT"
 description = "MCP server for YAML-based declarative data transformation"

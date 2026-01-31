@@ -1635,7 +1635,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "criterion",
@@ -1648,7 +1648,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1662,7 +1662,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_endpoint"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1681,7 +1681,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_mcp"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "csv",
  "rulemorph",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_server"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
@@ -1716,7 +1716,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_trace"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "notify",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "rulemorph_ui"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "rustc-hash"
