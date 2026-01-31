@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rulemorph_ui::validate_rules_dir;
+use rulemorph_endpoint::validate_rules_dir;
 
 fn write_file(root: &Path, rel: &str, content: &str) -> PathBuf {
     let path = root.join(rel);

@@ -20,8 +20,8 @@ use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api_graph::{ApiGraphResponse, build_api_graph};
-use crate::endpoint_engine::{ApiMode, EndpointEngine};
-use crate::trace_store::{ImportResult, TraceMeta, TraceStore};
+use rulemorph_endpoint::{ApiMode, EndpointEngine};
+use rulemorph_trace::{ImportResult, TraceMeta, TraceStore};
 
 #[derive(Clone)]
 pub struct AppState {

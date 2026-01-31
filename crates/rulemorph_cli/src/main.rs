@@ -2,14 +2,19 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
+#[cfg(feature = "server")]
+use clap::ArgAction;
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
     DtoLanguage, InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
     TransformWarning, generate_dto, parse_rule_file,
     preflight_validate_with_warnings_with_base_dir, transform_stream_with_base_dir,
     transform_with_warnings_with_base_dir, validate_rule_file_with_source,
 };
-use rulemorph_ui::{ApiMode, RulesDirErrors, UiConfig, run as run_ui_server, validate_rules_dir};
+#[cfg(feature = "server")]
+use rulemorph_server::{
+    ApiMode, RulesDirErrors, ServerConfig, run as run_server, validate_rules_dir,
+};
 use serde_json::json;
 
 #[derive(Parser)]
@@ -23,10 +28,12 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Validate(ValidateArgs),
+    #[cfg(feature = "server")]
     ValidateRulesDir(ValidateRulesDirArgs),
     Preflight(PreflightArgs),
     Transform(TransformArgs),
     Generate(GenerateArgs),
+    #[cfg(feature = "server")]
     Ui(UiArgs),
 }
 
@@ -38,6 +45,7 @@ struct ValidateArgs {
     error_format: ErrorFormat,
 }
 
+#[cfg(feature = "server")]
 #[derive(Args)]
 struct ValidateRulesDirArgs {
     #[arg(short = 'r', long)]
@@ -92,6 +100,7 @@ struct GenerateArgs {
     output: Option<PathBuf>,
 }
 
+#[cfg(feature = "server")]
 #[derive(Args)]
 struct UiArgs {
     #[arg(long, default_value_t = 8080)]
@@ -132,6 +141,7 @@ enum DtoLanguageArg {
     Swift,
 }
 
+#[cfg(feature = "server")]
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum UiApiMode {
     #[value(name = "ui-only", alias = "ui_only", alias = "native")]
@@ -143,10 +153,12 @@ fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Commands::Validate(args) => run_validate(args),
+        #[cfg(feature = "server")]
         Commands::ValidateRulesDir(args) => run_validate_rules_dir(args),
         Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
         Commands::Generate(args) => run_generate(args),
+        #[cfg(feature = "server")]
         Commands::Ui(args) => run_ui(args),
     };
     std::process::exit(exit_code);
@@ -167,6 +179,7 @@ fn run_validate(args: ValidateArgs) -> i32 {
     }
 }
 
+#[cfg(feature = "server")]
 fn run_validate_rules_dir(args: ValidateRulesDirArgs) -> i32 {
     match validate_rules_dir(&args.rules_dir) {
         Ok(()) => 0,
@@ -415,9 +428,10 @@ fn run_generate(args: GenerateArgs) -> i32 {
     0
 }
 
+#[cfg(feature = "server")]
 fn run_ui(args: UiArgs) -> i32 {
-    let data_dir = args.data_dir.unwrap_or_else(UiConfig::default_data_dir);
-    let ui_dir = args.ui_dir.unwrap_or_else(UiConfig::default_ui_dir);
+    let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
+    let ui_dir = args.ui_dir.unwrap_or_else(ServerConfig::default_ui_dir);
     let api_mode = match args.api_mode {
         UiApiMode::UiOnly => ApiMode::UiOnly,
         UiApiMode::Rules => ApiMode::Rules,
@@ -428,7 +442,7 @@ fn run_ui(args: UiArgs) -> i32 {
         return 1;
     }
 
-    let config = UiConfig {
+    let config = ServerConfig {
         port: args.port,
         data_dir,
         ui_dir,
@@ -445,12 +459,12 @@ fn run_ui(args: UiArgs) -> i32 {
         }
     };
 
-    if let Err(err) = runtime.block_on(run_ui_server(config)) {
+    if let Err(err) = runtime.block_on(run_server(config)) {
         if let Some(errs) = err.downcast_ref::<RulesDirErrors>() {
             eprintln!("{}", errs);
             return 2;
         }
-        eprintln!("ui server error: {}", err);
+        eprintln!("server error: {}", err);
         return 1;
     }
 
@@ -538,6 +552,7 @@ fn emit_validation_errors(errors: &[RuleError], format: ErrorFormat) {
     }
 }
 
+#[cfg(feature = "server")]
 fn emit_rules_dir_errors(errors: &RulesDirErrors, format: ErrorFormat) {
     match format {
         ErrorFormat::Text => {
@@ -586,7 +601,8 @@ fn validation_error_json(err: &RuleError) -> serde_json::Value {
     value
 }
 
-fn rules_dir_error_json(err: &rulemorph_ui::RulesDirError) -> serde_json::Value {
+#[cfg(feature = "server")]
+fn rules_dir_error_json(err: &rulemorph_server::RulesDirError) -> serde_json::Value {
     let mut value = json!({
         "type": "rules_dir",
         "code": err.code,

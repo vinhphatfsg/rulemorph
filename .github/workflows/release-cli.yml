@@ -31,7 +31,11 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           for TOML in crates/rulemorph/Cargo.toml \
                       crates/rulemorph_cli/Cargo.toml \
-                      crates/rulemorph_mcp/Cargo.toml; do
+                      crates/rulemorph_mcp/Cargo.toml \
+                      crates/rulemorph_endpoint/Cargo.toml \
+                      crates/rulemorph_trace/Cargo.toml \
+                      crates/rulemorph_server/Cargo.toml \
+                      crates/rulemorph_ui/Cargo.toml; do
             sed -i "s/^version = \".*\"/version = \"${VERSION}\"/" "$TOML"
             echo "Updated $TOML to version ${VERSION}"
           done
@@ -80,8 +84,23 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/rulemorph_ui/ui/package-lock.json
+
+      - name: Build UI assets
+        working-directory: crates/rulemorph_ui/ui
+        run: |
+          npm ci
+          npm run build
+
       - name: Build
-        run: cargo build -p rulemorph_cli -p rulemorph_mcp --release --locked --target ${{ matrix.target }}
+        run: |
+          cargo build -p rulemorph_cli --features server,ui --release --locked --target ${{ matrix.target }}
+          cargo build -p rulemorph_mcp -p rulemorph_server --release --locked --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -92,15 +111,28 @@ jobs:
           set -euo pipefail
           BIN_CLI="rulemorph"
           BIN_MCP="rulemorph-mcp"
+          BIN_SERVER="rulemorph-server"
           OUT_DIR="dist"
           STAGING="staging"
+          SERVER_STAGING="server-staging"
           MCPB_DIR="mcpb-staging"
-          mkdir -p "$OUT_DIR" "$STAGING" "$MCPB_DIR"
+          UI_DIR="crates/rulemorph_ui/ui/dist"
+          mkdir -p "$OUT_DIR" "$STAGING" "$SERVER_STAGING" "$MCPB_DIR"
 
           # CLI package (tar.gz)
           cp "target/${TARGET}/release/${BIN_CLI}" "$STAGING/"
           cp "target/${TARGET}/release/${BIN_MCP}" "$STAGING/"
           tar -C "$STAGING" -czf "${OUT_DIR}/${BIN_CLI}-${VERSION}-${TARGET}.tar.gz" "$BIN_CLI" "$BIN_MCP"
+
+          # Server package (tar.gz)
+          if [ ! -d "$UI_DIR" ]; then
+            echo "UI dist not found at $UI_DIR"
+            exit 1
+          fi
+          cp "target/${TARGET}/release/${BIN_SERVER}" "$SERVER_STAGING/"
+          mkdir -p "$SERVER_STAGING/ui"
+          cp -R "$UI_DIR" "$SERVER_STAGING/ui/dist"
+          tar -C "$SERVER_STAGING" -czf "${OUT_DIR}/${BIN_SERVER}-${VERSION}-${TARGET}.tar.gz" "$BIN_SERVER" "ui/dist"
 
           # MCPB package (.mcpb = ZIP)
           VERSION_NUM="${VERSION#v}"
@@ -118,17 +150,28 @@ jobs:
         run: |
           $BinCli = 'rulemorph.exe'
           $BinMcp = 'rulemorph-mcp.exe'
+          $BinServer = 'rulemorph-server.exe'
           $OutDir = 'dist'
           $Staging = 'staging'
+          $ServerStaging = 'server-staging'
           $McpbDir = 'mcpb-staging'
+          $UiDir = 'crates/rulemorph_ui/ui/dist'
           New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
           New-Item -ItemType Directory -Force -Path $Staging | Out-Null
+          New-Item -ItemType Directory -Force -Path $ServerStaging | Out-Null
           New-Item -ItemType Directory -Force -Path $McpbDir | Out-Null
 
           # CLI package (zip)
           Copy-Item "target\$env:TARGET\release\$BinCli" "$Staging\$BinCli"
           Copy-Item "target\$env:TARGET\release\$BinMcp" "$Staging\$BinMcp"
           Compress-Archive -Path "$Staging\$BinCli","$Staging\$BinMcp" -DestinationPath "$OutDir\rulemorph-$env:VERSION-$env:TARGET.zip"
+
+          # Server package (zip)
+          if (!(Test-Path $UiDir)) { throw "UI dist not found at $UiDir" }
+          Copy-Item "target\$env:TARGET\release\$BinServer" "$ServerStaging\$BinServer"
+          New-Item -ItemType Directory -Force -Path "$ServerStaging\\ui" | Out-Null
+          Copy-Item -Recurse $UiDir "$ServerStaging\\ui"
+          Compress-Archive -Path "$ServerStaging\\*" -DestinationPath "$OutDir\\rulemorph-server-$env:VERSION-$env:TARGET.zip"
 
           # MCPB package (.mcpb = ZIP)
           $VersionNum = $env:VERSION.TrimStart('v')
