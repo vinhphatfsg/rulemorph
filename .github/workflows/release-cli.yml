@@ -84,6 +84,19 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: crates/rulemorph_ui/ui/package-lock.json
+
+      - name: Build UI assets
+        working-directory: crates/rulemorph_ui/ui
+        run: |
+          npm ci
+          npm run build
+
       - name: Build
         run: |
           cargo build -p rulemorph_cli --features server,ui --release --locked --target ${{ matrix.target }}
