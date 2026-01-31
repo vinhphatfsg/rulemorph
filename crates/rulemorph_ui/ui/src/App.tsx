@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -15,6 +15,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import clsx from "clsx";
 import dagre from "dagre";
+import { shouldResetInitialCenter } from "./view_mode";
 type TraceListItem = {
   trace_id: string;
   status?: string;
@@ -25,7 +26,7 @@ type TraceListItem = {
   summary?: { record_total?: number; record_success?: number; record_failed?: number };
 };
 
-type TraceNode = {
+export type TraceNode = {
   id: string;
   kind: string;
   label: string;
@@ -43,7 +44,7 @@ type TraceNode = {
   meta?: Record<string, unknown>;
 };
 
-type TraceRecord = {
+export type TraceRecord = {
   index: number;
   status?: string;
   duration_us?: number;
@@ -56,14 +57,14 @@ type TraceRecord = {
 
 type DurationUnit = "us" | "ms";
 
-type EndpointSpec = {
+export type EndpointSpec = {
   method: string;
   path: string;
   steps: { rule: string }[];
   reply?: { status?: number; body?: string };
 };
 
-type EndpointRule = {
+export type EndpointRule = {
   version: number;
   type: "endpoint";
   endpoints: EndpointSpec[];
@@ -84,7 +85,7 @@ function DetailNode({ data }: { data: TraceNodeData }) {
   );
 }
 
-type TracePayload = {
+export type TracePayload = {
   trace_id?: string;
   timestamp?: string;
   rule?: { name?: string; path?: string; type?: string; version?: number };
@@ -127,6 +128,8 @@ const graphDefaults = {
   ranksep: 80
 };
 
+const INITIAL_CENTER_X_RATIO = 0.45;
+const INITIAL_CENTER_PADDING = 0.22;
 
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
@@ -167,11 +170,45 @@ function resolveDurationUs(durationUs?: number, durationMs?: number) {
   return undefined;
 }
 
+function resolveTraceDurationUs(trace?: TracePayload) {
+  if (!trace) return undefined;
+  const summary = (trace as TracePayload & {
+    summary?: { duration_us?: number; duration_ms?: number };
+  }).summary;
+  const fromSummary = resolveDurationUs(summary?.duration_us, summary?.duration_ms);
+  if (fromSummary !== undefined) return fromSummary;
+  const record = trace.records?.[0];
+  return resolveDurationUs(record?.duration_us, record?.duration_ms);
+}
+
+function formatEdgeDurationMs(valueUs: number | undefined) {
+  if (valueUs == null) return "-";
+  const valueMs = valueUs / 1000;
+  const formatted = valueMs >= 100 ? valueMs.toFixed(0) : valueMs >= 10 ? valueMs.toFixed(1) : valueMs.toFixed(2);
+  return `${formatted}ms`;
+}
+
+function buildEdgeLabel(label: string, duration: string): ReactNode {
+  return (
+    <>
+      <tspan x="0" dy="0">
+        {label}
+      </tspan>
+      <tspan x="0" dy="1.2em">
+        {duration}
+      </tspan>
+    </>
+  );
+}
+
 type OverviewGraph = {
   nodes: Node[];
   edges: Edge[];
   traceMap: Map<string, TracePayload>;
   endpointEdgeLabels: Map<string, string>;
+  edgeDurationMap: Map<string, number>;
+  errorRuleIds: Set<string>;
+  ruleTypeById: Map<string, string>;
 };
 
 type DetailEntry = {
@@ -189,6 +226,7 @@ type DetailBundle = {
   lastId?: string;
   bounds: { minX: number; maxX: number; minY: number; maxY: number };
   refs: { fromId: string; toRule: string; label?: string }[];
+  errorNodeIds: Set<string>;
 };
 
 type ApiDetailEntry = {
@@ -232,11 +270,43 @@ function extractRuleRefs(meta?: Record<string, unknown>): RuleRefEntry[] {
   return deduped;
 }
 
-function buildOverviewGraph(trace: TracePayload): OverviewGraph {
+function traceNodeHasError(node: TraceNode) {
+  if (node.status === "error" || node.error) return true;
+  return (node.children ?? []).some(traceNodeHasError);
+}
+
+function buildVirtualTrace(rulePath: string, ruleName: string, parentNode: TraceNode): TracePayload {
+  const durationUs = resolveDurationUs(parentNode.duration_us, parentNode.duration_ms);
+  return {
+    rule: {
+      type: "normal",
+      name: ruleName,
+      path: rulePath,
+      version: 2
+    },
+    records: [
+      {
+        index: 0,
+        status: "error",
+        duration_us: durationUs,
+        input: parentNode.input,
+        output: parentNode.output,
+        nodes: [parentNode],
+        error: parentNode.error
+      }
+    ]
+  };
+}
+
+export function buildOverviewGraph(trace: TracePayload): OverviewGraph {
   const nodes: Node[] = [];
   const edges: Edge[] = [];
   const traceMap = new Map<string, TracePayload>();
   const endpointEdgeLabels = new Map<string, string>();
+  const edgeDurationMap = new Map<string, number>();
+  const errorRuleIds = new Set<string>();
+  const ruleTypeById = new Map<string, string>();
+  const virtualTraceMap = new Map<string, TracePayload>();
   const seen = new Map<string, Node>();
   const edgeKeys = new Set<string>();
   const edgeIndexByKey = new Map<string, number>();
@@ -285,6 +355,7 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
 
   const walk = (current: TracePayload, parentPath?: string) => {
     const currentPath = current.rule?.path ?? parentPath ?? "root";
+    ruleTypeById.set(currentPath, current.rule?.type ?? "normal");
     const isEndpoint = current.rule?.type === "endpoint";
     const endpointRule = (current as TracePayload & { rule_source?: EndpointRule }).rule_source;
     const endpointPaths = endpointRule?.endpoints?.map((endpoint) => ({
@@ -296,9 +367,22 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
     if (parentPath && parentPath !== currentPath) {
       pushEdge(parentPath, currentPath);
     }
+    let hasLocalError = false;
+    let hasChildError = false;
     const records = current.records ?? [];
     records.forEach((record) => {
+      const recordHasError =
+        record.status === "error" ||
+        !!record.error ||
+        (record.nodes ?? []).some(traceNodeHasError);
+      if (recordHasError) {
+        hasLocalError = true;
+      }
       (record.nodes ?? []).forEach((node) => {
+        const nodeHasError = traceNodeHasError(node);
+        if (node.status === "error" || node.error) {
+          hasLocalError = true;
+        }
         const meta = (node.meta ?? {}) as Record<string, unknown>;
         let refs = extractRuleRefs(node.meta);
         if (node.kind === "branch") {
@@ -320,6 +404,9 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
         const childPath = childTrace?.rule?.path ?? primaryRef;
         if (childPath) {
           pushNode(childPath, childTrace?.rule?.name ?? childPath);
+          if (childTrace?.rule?.type) {
+            ruleTypeById.set(childPath, childTrace.rule.type);
+          }
           let label: string | undefined;
           if (isEndpoint) {
             const match = endpointPaths.find((endpoint) => {
@@ -337,22 +424,72 @@ function buildOverviewGraph(trace: TracePayload): OverviewGraph {
           if (label) {
             endpointEdgeLabels.set(`${currentPath}::${childPath}`, label);
           }
+          const edgeKey = `${currentPath}::${childPath}`;
+          if (!edgeDurationMap.has(edgeKey)) {
+            const durationUs =
+              resolveTraceDurationUs(childTrace) ?? resolveDurationUs(node.duration_us, node.duration_ms);
+            if (durationUs !== undefined) {
+              edgeDurationMap.set(edgeKey, durationUs);
+            }
+          }
+          if (nodeHasError && !childTrace) {
+            if (!traceMap.has(childPath) && !virtualTraceMap.has(childPath)) {
+              const virtualTrace = buildVirtualTrace(
+                childPath,
+                childTrace?.rule?.name ?? childPath,
+                node
+              );
+              virtualTraceMap.set(childPath, virtualTrace);
+            }
+            errorRuleIds.add(childPath);
+            hasChildError = true;
+          }
         }
         refs.forEach((entry) => {
           if (!entry.ref || entry.ref === childPath) return;
           pushNode(entry.ref, entry.ref);
           pushEdge(currentPath, entry.ref, entry.label);
+          const edgeKey = `${currentPath}::${entry.ref}`;
+          if (!edgeDurationMap.has(edgeKey)) {
+            const durationUs = resolveDurationUs(node.duration_us, node.duration_ms);
+            if (durationUs !== undefined) {
+              edgeDurationMap.set(edgeKey, durationUs);
+            }
+          }
         });
         if (childTrace) {
-          walk(childTrace, currentPath);
+          const childHasError = walk(childTrace, currentPath);
+          if (childHasError) {
+            hasChildError = true;
+          }
         }
       });
     });
+    if ((current.finalize?.nodes ?? []).some((node) => node.status === "error" || node.error)) {
+      hasLocalError = true;
+    }
+    if (hasLocalError && !hasChildError) {
+      errorRuleIds.add(currentPath);
+    }
+    return hasLocalError || hasChildError;
   };
 
   walk(trace);
+  virtualTraceMap.forEach((virtualTrace, path) => {
+    if (!traceMap.has(path)) {
+      traceMap.set(path, virtualTrace);
+    }
+  });
   const layouted = layoutGraph(nodes, edges, graphDefaults.rankdir as "LR" | "TB");
-  return { nodes: layouted.nodes, edges: layouted.edges, traceMap, endpointEdgeLabels };
+  return {
+    nodes: layouted.nodes,
+    edges: layouted.edges,
+    traceMap,
+    endpointEdgeLabels,
+    edgeDurationMap,
+    errorRuleIds,
+    ruleTypeById
+  };
 }
 
 function buildApiGraph(
@@ -452,6 +589,8 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
   const opWidth = 160;
   let cursorY = 0;
   let previousId: string | null = null;
+  const errorNodeIds = new Set<string>();
+  let errorMarked = false;
 
   recordNodes.forEach((node, index) => {
     const stepId = `${ruleId}::step-${index}`;
@@ -467,6 +606,10 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       style: { width: stepWidth, height: 64 }
     });
     map.set(stepNodeId, { kind: "step", node, ruleId });
+    if (!errorMarked && (node.status === "error" || node.error)) {
+      errorNodeIds.add(stepNodeId);
+      errorMarked = true;
+    }
     extractRuleRefs(node.meta).forEach((entry) => {
       refs.push({ fromId: stepNodeId, toRule: entry.ref, label: entry.label });
     });
@@ -492,6 +635,10 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
       });
       edges.push({ id: `${lastId}->${opId}`, source: lastId, target: opId });
       map.set(opId, { kind: "op", node: child, parent: node, ruleId });
+      if (!errorMarked && (child.status === "error" || child.error)) {
+        errorNodeIds.add(opId);
+        errorMarked = true;
+      }
       extractRuleRefs(child.meta).forEach((entry) => {
         refs.push({ fromId: opId, toRule: entry.ref, label: entry.label });
       });
@@ -514,7 +661,6 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
     },
     { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
   );
-
   return {
     nodes,
     edges,
@@ -522,7 +668,8 @@ function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): Det
     firstId: nodes[0]?.id,
     lastId: nodes[nodes.length - 1]?.id,
     bounds,
-    refs
+    refs,
+    errorNodeIds
   };
 }
 
@@ -552,12 +699,17 @@ function buildMergedGraph(
   const overviewNodes = overview.nodes.map((node) => {
     const size = sizeById.get(node.id) ?? { width: 240, height: 80 };
     const pinned = pinnedPositions[node.id];
+    const typeName = overview.ruleTypeById.get(node.id) ?? "normal";
+    const typeClass = `trace-node--type-${typeName}`;
+    const errorClass = overview.errorRuleIds.has(node.id) ? "trace-node--error-path" : "";
+    const expandedClass = expandedRuleIds.includes(node.id) ? "trace-node--overview-expanded" : "";
+    const className = [node.className, typeClass, expandedClass, errorClass]
+      .filter(Boolean)
+      .join(" ");
     return {
       ...node,
       type: "default",
-      className: expandedRuleIds.includes(node.id)
-        ? `${node.className ?? ""} trace-node--overview-expanded`.trim()
-        : node.className,
+      className,
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
       position: pinned ? { ...pinned } : node.position,
@@ -568,11 +720,25 @@ function buildMergedGraph(
     const pinned = pinnedPositions[node.id];
     return pinned ? { ...node, position: { ...pinned } } : { ...node };
   });
-  let edges = overviewEdges.map((edge) => ({
-    ...edge,
-    type: edge.type ?? "smoothstep",
-    style: { strokeWidth: 1.4, ...(edge.style ?? {}) }
-  }));
+  let edges = overviewEdges.map((edge) => {
+    const edgeKey = `${edge.source}::${edge.target}`;
+    const baseLabel = typeof edge.label === "string" ? edge.label : undefined;
+    const fallbackLabel =
+      overview.traceMap.get(edge.target)?.rule?.name ??
+      overview.traceMap.get(edge.target)?.rule?.path ??
+      edge.target;
+    const labelText = baseLabel ?? fallbackLabel;
+    const durationText = formatEdgeDurationMs(overview.edgeDurationMap.get(edgeKey));
+    const label = buildEdgeLabel(labelText, durationText);
+    return {
+      ...edge,
+      label,
+      labelBgPadding: edge.labelBgPadding ?? [6, 6],
+      labelBgBorderRadius: edge.labelBgBorderRadius ?? 8,
+      type: edge.type ?? "smoothstep",
+      style: { strokeWidth: 1.4, ...(edge.style ?? {}) }
+    };
+  });
 
   expandedRuleIds.forEach((ruleId) => {
     const bundle = bundles.get(ruleId);
@@ -588,21 +754,27 @@ function buildMergedGraph(
     const containerWidth = containerSize?.width ?? detailWidth + padding * 2;
     const innerWidth = Math.max(0, containerWidth - padding * 2);
     const offsetX = padding + (innerWidth - detailWidth) / 2 - minX;
-    const positionedDetailNodes = bundle.nodes.map((node, index) => ({
-      ...node,
-      position: {
-        x: node.position.x + offsetX,
-        y: node.position.y + padding - minY
-      },
-      parentId: ruleId,
-      extent: "parent",
-      className: `${node.className ?? ""} trace-node--reveal`.trim(),
-      style: {
-        ...(node.style ?? {}),
-        zIndex: 10,
-        animationDelay: `${index * 40}ms`
-      }
-    }));
+    const positionedDetailNodes = bundle.nodes.map((node, index) => {
+      const isError = bundle.errorNodeIds.has(node.id);
+      const className = `${node.className ?? ""} trace-node--reveal${
+        isError ? " trace-node--error-path" : ""
+      }`.trim();
+      return {
+        ...node,
+        position: {
+          x: node.position.x + offsetX,
+          y: node.position.y + padding - minY
+        },
+        parentId: ruleId,
+        extent: "parent",
+        className,
+        style: {
+          ...(node.style ?? {}),
+          zIndex: 10,
+          animationDelay: `${index * 40}ms`
+        }
+      };
+    });
 
     nodes.push(...positionedDetailNodes);
     edges = [
@@ -625,16 +797,26 @@ function buildMergedGraph(
       const key = `${ref.fromId}::${ref.toRule}`;
       if (refEdgeKeys.has(key)) return;
       refEdgeKeys.add(key);
-      const label = ref.label ?? endpointEdgeLabels.get(`${ruleId}::${ref.toRule}`);
+      const fallbackLabel =
+        overview.traceMap.get(ref.toRule)?.rule?.name ??
+        overview.traceMap.get(ref.toRule)?.rule?.path ??
+        ref.toRule;
+      const baseLabel =
+        ref.label ?? endpointEdgeLabels.get(`${ruleId}::${ref.toRule}`) ?? fallbackLabel;
+      const entry = bundle.map.get(ref.fromId);
+      const durationUs = entry ? resolveDurationUs(entry.node.duration_us, entry.node.duration_ms) : undefined;
+      const durationText = formatEdgeDurationMs(durationUs);
+      const label = buildEdgeLabel(baseLabel, durationText);
+      const className = "edge--ref edge--endpoint";
       refEdges.push({
         id: `${ref.fromId}->${ref.toRule}`,
         source: ref.fromId,
         target: ref.toRule,
         sourceHandle: "right",
         label,
-        labelBgPadding: label ? [6, 4] : undefined,
-        labelBgBorderRadius: label ? 8 : undefined,
-        className: label ? "edge--ref edge--endpoint" : "edge--ref",
+        labelBgPadding: [6, 6],
+        labelBgBorderRadius: 8,
+        className,
         type: "smoothstep",
         style: { strokeWidth: 1.4 }
       });
@@ -664,6 +846,24 @@ function layoutGraph(nodes: Node[], edges: Edge[], direction: "LR" | "TB") {
   });
 
   return { nodes: layouted, edges };
+}
+
+function getNodesBounds(nodes: Node[]) {
+  const initial = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  const bounds = nodes.reduce((acc, node) => {
+    const width = typeof node.style?.width === "number" ? node.style.width : 240;
+    const height = typeof node.style?.height === "number" ? node.style.height : 80;
+    acc.minX = Math.min(acc.minX, node.position.x);
+    acc.minY = Math.min(acc.minY, node.position.y);
+    acc.maxX = Math.max(acc.maxX, node.position.x + width);
+    acc.maxY = Math.max(acc.maxY, node.position.y + height);
+    return acc;
+  }, initial);
+  return {
+    ...bounds,
+    width: Math.max(1, bounds.maxX - bounds.minX),
+    height: Math.max(1, bounds.maxY - bounds.minY)
+  };
 }
 
 function layoutGraphWithSizes(
@@ -820,6 +1020,7 @@ export default function App() {
   const [selectedNode, setSelectedNode] = useState<TraceNode | null>(null);
   const [selectedOp, setSelectedOp] = useState<TraceNode | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [traceListOpen, setTraceListOpen] = useState(true);
   const [traceInspectorSections, setTraceInspectorSections] = useState(() => ({
     step: true,
     opList: false,
@@ -835,6 +1036,8 @@ export default function App() {
   const [apiExpandedRuleIds, setApiExpandedRuleIds] = useState<string[]>([]);
   const [apiFocusedRuleId, setApiFocusedRuleId] = useState<string | null>(null);
   const [flow, setFlow] = useState<ReactFlowInstance | null>(null);
+  const initialCenterAppliedRef = useRef(false);
+  const prevViewModeRef = useRef<"trace" | "api">(viewMode);
   const [pinnedPositions, setPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [apiPinnedPositions, setApiPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodeTypes = useMemo(() => ({ detail: DetailNode }), []);
@@ -892,8 +1095,16 @@ export default function App() {
   }, [viewMode]);
 
   useEffect(() => {
+    if (shouldResetInitialCenter(prevViewModeRef.current, viewMode)) {
+      initialCenterAppliedRef.current = false;
+    }
+    prevViewModeRef.current = viewMode;
+  }, [viewMode]);
+
+  useEffect(() => {
     if (!selectedId) {
       setTrace(null);
+      initialCenterAppliedRef.current = false;
       return;
     }
     let mounted = true;
@@ -909,6 +1120,7 @@ export default function App() {
         setFocusedRuleId(null);
         setInspectorOpen(false);
         setPinnedPositions({});
+        initialCenterAppliedRef.current = false;
       }
     })();
     return () => {
@@ -920,7 +1132,15 @@ export default function App() {
     () =>
       trace
         ? buildOverviewGraph(trace)
-        : { nodes: [], edges: [], traceMap: new Map(), endpointEdgeLabels: new Map() },
+        : {
+            nodes: [],
+            edges: [],
+            traceMap: new Map(),
+            endpointEdgeLabels: new Map(),
+            edgeDurationMap: new Map(),
+            errorRuleIds: new Set(),
+            ruleTypeById: new Map()
+          },
     [trace]
   );
   const effectiveFocusedRuleId =
@@ -1042,8 +1262,36 @@ export default function App() {
 
   useEffect(() => {
     if (!flow) return;
-    flow.fitView({ padding: 0.22 });
-  }, [flow, trace, viewMode, apiGraph]);
+    if (viewMode === "api") {
+      flow.fitView({ padding: INITIAL_CENTER_PADDING });
+      return;
+    }
+    if (!trace) return;
+    if (nodes.length === 0) return;
+    if (initialCenterAppliedRef.current) return;
+    requestAnimationFrame(() => {
+      const overviewNodes = nodes.filter((node) =>
+        node.className?.includes("trace-node--overview")
+      );
+      if (overviewNodes.length === 0) return;
+      const container = document.querySelector(".trace-canvas");
+      if (!container) return;
+      const { width, height } = container.getBoundingClientRect();
+      if (!width || !height) return;
+      const bounds = getNodesBounds(overviewNodes);
+      const availableWidth = width * (1 - INITIAL_CENTER_PADDING * 2);
+      const availableHeight = height * (1 - INITIAL_CENTER_PADDING * 2);
+      const zoom = Math.min(availableWidth / bounds.width, availableHeight / bounds.height);
+      const centerX = bounds.minX + bounds.width / 2;
+      const centerY = bounds.minY + bounds.height / 2;
+      const desiredCenterX = width * INITIAL_CENTER_X_RATIO;
+      const desiredCenterY = height * 0.5;
+      const x = desiredCenterX - centerX * zoom;
+      const y = desiredCenterY - centerY * zoom;
+      flow.setViewport({ x, y, zoom }, { duration: 0 });
+      initialCenterAppliedRef.current = true;
+    });
+  }, [flow, trace, viewMode, nodes.length]);
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("traceDurationUnit", durationUnit);
@@ -1233,62 +1481,83 @@ export default function App() {
         </div>
 
         {viewMode === "trace" && (
-          <aside className="floating-panel trace-panel">
-            <div className="panel__header">
-              <div>
-                <h2>Trace一覧</h2>
-                <p>最新順</p>
-              </div>
-              <div className="unit-toggle" role="group" aria-label="Duration unit">
-                <button
-                  className={clsx("unit-toggle__button", durationUnit === "us" && "is-active")}
-                  onClick={() => setDurationUnit("us")}
-                >
-                  μs
-                </button>
-                <button
-                  className={clsx("unit-toggle__button", durationUnit === "ms" && "is-active")}
-                  onClick={() => setDurationUnit("ms")}
-                >
-                  ms
-                </button>
-              </div>
-            </div>
-            <div className="trace-list">
-              {traces.length === 0 && (
-                <div className="empty-trace">
-                  <p>traces が見つかりません。</p>
-                  <p className="muted">
-                    data_dir（既定: ./.rulemorph）の traces/ に JSON を配置してください。
-                  </p>
-                </div>
-              )}
-              {traces.map((item) => (
-                <button
-                  key={item.trace_id}
-                  className={clsx("trace-card", selectedId === item.trace_id && "is-active")}
-                  onClick={() => setSelectedId(item.trace_id)}
-                >
+          <aside className={clsx("floating-panel trace-panel", !traceListOpen && "is-collapsed")}>
+            {traceListOpen ? (
+              <>
+                <div className="panel__header trace-panel__header">
                   <div>
-                    <span className="chip">{item.status ?? "ok"}</span>
-                    <h3>{item.rule?.name ?? item.trace_id}</h3>
-                    <p className="muted">{item.rule?.path ?? "(no path)"}</p>
+                    <h2>Trace一覧</h2>
+                    <p>最新順</p>
                   </div>
-                  <div className="trace-meta">
-                    <div>
-                      <span>time: </span>
-                      <strong>{formatTime(item.timestamp)}</strong>
+                  <div className="trace-panel__actions">
+                    <div className="unit-toggle" role="group" aria-label="Duration unit">
+                      <button
+                        className={clsx("unit-toggle__button", durationUnit === "us" && "is-active")}
+                        onClick={() => setDurationUnit("us")}
+                      >
+                        μs
+                      </button>
+                      <button
+                        className={clsx("unit-toggle__button", durationUnit === "ms" && "is-active")}
+                        onClick={() => setDurationUnit("ms")}
+                      >
+                        ms
+                      </button>
                     </div>
-                    <div>
-                      <span>duration: </span>
-                      <strong>
-                        {formatDuration(resolveDurationUs(item.duration_us, item.duration_ms), durationUnit)}
-                      </strong>
-                    </div>
+                    <button
+                      className="icon-button trace-panel__toggle"
+                      aria-expanded={traceListOpen}
+                      onClick={() => setTraceListOpen(false)}
+                    >
+                      ×
+                    </button>
                   </div>
-                </button>
-              ))}
-            </div>
+                </div>
+              <div className="trace-list">
+                {traces.length === 0 && (
+                  <div className="empty-trace">
+                    <p>traces が見つかりません。</p>
+                    <p className="muted">
+                      data_dir（既定: ./.rulemorph）の traces/ に JSON を配置してください。
+                    </p>
+                  </div>
+                )}
+                {traces.map((item) => (
+                  <button
+                    key={item.trace_id}
+                    className={clsx("trace-card", selectedId === item.trace_id && "is-active")}
+                    onClick={() => setSelectedId(item.trace_id)}
+                  >
+                    <div>
+                      <span className="chip">{item.status ?? "ok"}</span>
+                      <h3>{item.rule?.name ?? item.trace_id}</h3>
+                      <p className="muted">{item.rule?.path ?? "(no path)"}</p>
+                    </div>
+                    <div className="trace-meta">
+                      <div>
+                        <span>time: </span>
+                        <strong>{formatTime(item.timestamp)}</strong>
+                      </div>
+                      <div>
+                        <span>duration: </span>
+                        <strong>
+                          {formatDuration(
+                            resolveDurationUs(item.duration_us, item.duration_ms),
+                            durationUnit
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              </>
+            ) : (
+              <button className="trace-panel__chip" onClick={() => setTraceListOpen(true)}>
+                <span>Trace一覧</span>
+                <span className="trace-panel__chip-count">{traces.length}</span>
+              </button>
+            )}
           </aside>
         )}
 

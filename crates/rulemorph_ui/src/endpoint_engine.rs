@@ -251,6 +251,31 @@ struct RuleExecution {
     child_trace: Option<JsonValue>,
 }
 
+struct RuleExecutionError {
+    error: EndpointError,
+    child_trace: Option<JsonValue>,
+}
+
+impl RuleExecutionError {
+    fn new(error: EndpointError) -> Self {
+        Self {
+            error,
+            child_trace: None,
+        }
+    }
+
+    fn with_child_trace(mut self, trace: Option<JsonValue>) -> Self {
+        self.child_trace = trace;
+        self
+    }
+}
+
+impl From<EndpointError> for RuleExecutionError {
+    fn from(error: EndpointError) -> Self {
+        Self::new(error)
+    }
+}
+
 struct NetworkExecution {
     output: JsonValue,
     request_us: u64,
@@ -426,7 +451,7 @@ impl EndpointEngine {
                             if let Some(next) = self
                                 .run_catch(
                                     catch,
-                                    &err,
+                                    &err.error,
                                     &current,
                                     step.with.as_ref(),
                                     &self.endpoint_rule.base_dir,
@@ -453,7 +478,7 @@ impl EndpointEngine {
                             if let Some(next) = self
                                 .run_catch(
                                     catch,
-                                    &err,
+                                    &err.error,
                                     &current,
                                     None,
                                     &self.endpoint_rule.base_dir,
@@ -477,8 +502,8 @@ impl EndpointEngine {
                         }
 
                         record_status = "error".to_string();
-                        record_error = Some(self.endpoint_error_to_trace(&err));
-                        last_error_message = Some(err.message.clone());
+                        record_error = Some(self.endpoint_error_to_trace(&err.error));
+                        last_error_message = Some(err.error.message.clone());
                         let duration_us = step_started.elapsed().as_micros() as u64;
                         nodes.push(self.build_step_trace(
                             step_index,
@@ -486,9 +511,9 @@ impl EndpointEngine {
                             "error",
                             step_input,
                             None,
-                            Some(err),
+                            Some(err.error.clone()),
                             duration_us,
-                            None,
+                            err.child_trace,
                         ));
                         break;
                     }
@@ -609,10 +634,14 @@ impl EndpointEngine {
     }
 
     fn endpoint_error_to_trace(&self, err: &EndpointError) -> JsonValue {
+        let path = err
+            .path
+            .as_ref()
+            .and_then(|path| safe_rule_ref_from_path(&self.endpoint_rule.base_dir, path));
         json!({
             "code": format!("{:?}", err.kind),
             "message": err.message,
-            "path": err.path.as_ref().map(|p| p.display().to_string())
+            "path": path
         })
     }
 
@@ -646,33 +675,66 @@ impl EndpointEngine {
         input: &JsonValue,
         context: Option<&JsonValue>,
         base_dir: &Path,
-    ) -> Result<RuleExecution, EndpointError> {
+    ) -> Result<RuleExecution, RuleExecutionError> {
         let resolved = resolve_rule_path(base_dir, rule_path);
         let rule_source = std::fs::read_to_string(&resolved)
             .ok()
             .and_then(|source| yaml_source_to_json(&source))
             .unwrap_or_else(|| json!({}));
         let rule_ref = rule_ref_from_path(base_dir, &resolved);
-        match load_rule_kind(&resolved).map_err(|err| EndpointError::invalid(err.to_string()))? {
+        match load_rule_kind(&resolved).map_err(|err| {
+            RuleExecutionError::new(
+                EndpointError::invalid(err.to_string()).with_path(resolved.clone()),
+            )
+        })? {
             RuleKind::Normal(rule) => {
-                let output = match transform_record_with_base_dir(
-                    &rule.rule,
-                    input,
-                    context,
-                    &rule.base_dir,
-                )
-                .map_err(EndpointError::from_transform)?
-                {
-                    Some(output) => output,
-                    None => {
-                        return Err(EndpointError::invalid(format!(
-                            "record excluded by rule: {}",
-                            rule_display_name(&resolved)
-                        )));
-                    }
-                };
                 let nodes = build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
                 let duration_us = sum_node_duration_us(&nodes);
+                let output_result =
+                    transform_record_with_base_dir(&rule.rule, input, context, &rule.base_dir);
+                let output = match output_result {
+                    Ok(Some(output)) => output,
+                    Ok(None) => {
+                        let child_trace = build_rule_trace(
+                            "normal",
+                            rule_display_name(&resolved),
+                            rule_ref,
+                            rule.rule.version,
+                            rule_source,
+                            input.clone(),
+                            JsonValue::Null,
+                            nodes,
+                            duration_us,
+                            "error",
+                        );
+                        return Err(RuleExecutionError::new(
+                            EndpointError::invalid(format!(
+                                "record excluded by rule: {}",
+                                rule_display_name(&resolved)
+                            ))
+                            .with_path(resolved.clone()),
+                        )
+                        .with_child_trace(Some(child_trace)));
+                    }
+                    Err(err) => {
+                        let child_trace = build_rule_trace(
+                            "normal",
+                            rule_display_name(&resolved),
+                            rule_ref,
+                            rule.rule.version,
+                            rule_source,
+                            input.clone(),
+                            JsonValue::Null,
+                            nodes,
+                            duration_us,
+                            "error",
+                        );
+                        return Err(RuleExecutionError::new(
+                            EndpointError::from_transform(err).with_path(resolved.clone()),
+                        )
+                        .with_child_trace(Some(child_trace)));
+                    }
+                };
                 let child_trace = build_rule_trace(
                     "normal",
                     rule_display_name(&resolved),
@@ -694,7 +756,7 @@ impl EndpointEngine {
                 let execution = self
                     .execute_network(&rule, input, context)
                     .await
-                    .map_err(|err| err.with_path(resolved.clone()))?;
+                    .map_err(|err| RuleExecutionError::new(err.with_path(resolved.clone())))?;
                 let nodes = build_network_nodes_with_timing(&rule, &execution);
                 let child_trace = build_rule_trace(
                     "network",
@@ -2154,6 +2216,14 @@ fn rule_ref_from_rule(base_dir: &Path, rule: &str) -> String {
     rule_ref_from_path(base_dir, &resolved)
 }
 
+fn safe_rule_ref_from_path(base_dir: &Path, path: &Path) -> Option<String> {
+    if path.strip_prefix(base_dir).is_ok() {
+        Some(rule_ref_from_path(base_dir, path))
+    } else {
+        None
+    }
+}
+
 fn rule_ref_from_path(base_dir: &Path, path: &Path) -> String {
     if let Ok(rel) = path.strip_prefix(base_dir) {
         let rel = rel.to_string_lossy().replace('\\', "/");
@@ -3304,6 +3374,59 @@ mod tests {
         let err = eval_expr_string(&expr, &input, None).expect_err("expected error");
         assert_eq!(err.kind, EndpointErrorKind::Invalid);
         assert!(err.message.contains("expected string"));
+    }
+
+    #[test]
+    fn endpoint_error_trace_uses_rule_ref_for_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: rules/ok.yaml
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint");
+        std::fs::create_dir_all(rules_dir.join("rules")).expect("create rules dir");
+        std::fs::write(
+            rules_dir.join("rules/ok.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "output.ok"
+    value: true
+"#,
+        )
+        .expect("write rule");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://127.0.0.1:8080".to_string(), rules_dir.join(".data")),
+        )
+        .expect("load engine");
+
+        let resolved = rules_dir.join("rules/ok.yaml");
+        let err = EndpointError::invalid("boom").with_path(resolved.clone());
+        let trace = engine.endpoint_error_to_trace(&err);
+        let path = trace
+            .get("path")
+            .and_then(|value| value.as_str())
+            .expect("path");
+
+        let expected = rule_ref_from_path(&engine.endpoint_rule.base_dir, &resolved);
+        assert_eq!(path, expected);
+        assert!(!Path::new(path).is_absolute());
     }
 
     #[test]
