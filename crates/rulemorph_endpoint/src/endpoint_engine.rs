@@ -535,7 +535,41 @@ impl EndpointEngine {
                 last_error_message.unwrap_or_else(|| "endpoint error".to_string())
             ))
         } else {
-            self.build_reply(&endpoint.reply, &current)
+            match self.build_reply(&endpoint.reply, &current) {
+                Ok(response) => Ok(response),
+                Err(err) => {
+                    let reply_error = EndpointError::invalid(err.to_string());
+                    let catch_output = if let Some(catch) = &endpoint.catch {
+                        self.run_catch(
+                            catch,
+                            &reply_error,
+                            &current,
+                            None,
+                            &self.endpoint_rule.base_dir,
+                        )
+                        .map_err(|err| anyhow!(err.to_string()))?
+                    } else {
+                        None
+                    };
+
+                    if let Some(next) = catch_output {
+                        current = next;
+                        match self.build_reply(&endpoint.reply, &current) {
+                            Ok(response) => Ok(response),
+                            Err(err) => {
+                                let reply_error = EndpointError::invalid(err.to_string());
+                                record_status = "error".to_string();
+                                record_error = Some(self.endpoint_error_to_trace(&reply_error));
+                                Err(anyhow!(reply_error.message))
+                            }
+                        }
+                    } else {
+                        record_status = "error".to_string();
+                        record_error = Some(self.endpoint_error_to_trace(&reply_error));
+                        Err(anyhow!(reply_error.message))
+                    }
+                }
+            }
         };
 
         let duration_us = started.elapsed().as_micros() as u64;
@@ -3899,6 +3933,73 @@ mappings:
 
         let request = Request::builder()
             .method("POST")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
+    async fn reply_eval_error_runs_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    catch:
+      default: ./rules/catch.yaml
+    steps: []
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "status"
+    value: 200
+  - target: "body"
+    value:
+      handled: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
             .uri("/api/test")
             .body(axum::body::Body::empty())
             .expect("build request");
