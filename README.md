@@ -108,6 +108,10 @@ rulemorph = "0.2.1"
 
 Transform user data from an external API response to your schema:
 
+<p align="center">
+  <img src="assets/transform-scene.gif" alt="Rulemorph Demo" width="800">
+</p>
+
 **rules.yaml**
 ```yaml
 version: 2
@@ -119,13 +123,9 @@ mappings:
   - target: "id"
     source: "user_id"
   - target: "name"
-    expr:
-      - "@input.full_name"
-      - trim
+    expr: ["@input.full_name", trim]
   - target: "email"
-    expr:
-      - "@input.username"
-      - concat: ["lit:@example.com"]
+    expr: ["@input.username", concat: ["lit:@example.com"]]
 ```
 
 **input.json**
