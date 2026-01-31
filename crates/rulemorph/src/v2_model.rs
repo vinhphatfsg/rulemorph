@@ -4,8 +4,8 @@
 //! which uses `@input.*`, `@context.*`, `@out.*` references and pipe-based
 //! transformations.
 
-use serde_json::Value as JsonValue;
 use crate::model::Expr;
+use serde_json::Value as JsonValue;
 
 // =============================================================================
 // v2 Expression Types
@@ -201,10 +201,13 @@ mod v2_model_tests {
     #[test]
     fn test_v2_step_let_creation() {
         let step = V2Step::Let(V2LetStep {
-            bindings: vec![("x".to_string(), V2Expr::Pipe(V2Pipe {
-                start: V2Start::PipeValue,
-                steps: vec![],
-            }))],
+            bindings: vec![(
+                "x".to_string(),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::PipeValue,
+                    steps: vec![],
+                }),
+            )],
         });
         if let V2Step::Let(let_step) = step {
             assert_eq!(let_step.bindings.len(), 1);
@@ -232,9 +235,7 @@ mod v2_model_tests {
 
     #[test]
     fn test_v2_step_map_creation() {
-        let step = V2Step::Map(V2MapStep {
-            steps: vec![],
-        });
+        let step = V2Step::Map(V2MapStep { steps: vec![] });
         if let V2Step::Map(map_step) = step {
             assert!(map_step.steps.is_empty());
         } else {

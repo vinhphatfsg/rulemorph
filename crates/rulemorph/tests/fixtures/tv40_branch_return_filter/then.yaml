@@ -1,0 +1,5 @@
+version: 2
+input:
+  format: json
+  json: {}
+record_when: false

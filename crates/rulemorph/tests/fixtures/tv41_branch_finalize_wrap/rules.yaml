@@ -1,0 +1,12 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: "score"
+        source: "input.score"
+  - branch:
+      when: { eq: [1, 1] }
+      then: tests/fixtures/tv41_branch_finalize_wrap/then.yaml
+      return: true

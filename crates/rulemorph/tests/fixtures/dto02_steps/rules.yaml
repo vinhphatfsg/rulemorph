@@ -1,0 +1,14 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: "name"
+        source: "input.name"
+        type: string
+        required: true
+      - target: "score"
+        source: "input.score"
+        type: int
+        required: true

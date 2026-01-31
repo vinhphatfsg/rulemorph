@@ -9,8 +9,14 @@ use std::collections::{HashMap, HashSet};
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::{Expr, ExprOp, ExprRef};
 use crate::path::{get_path, parse_path};
-use crate::transform::{eval_op as eval_v1_op, EvalItem as V1EvalItem, EvalLocals as V1EvalLocals, EvalValue as V1EvalValue};
-use crate::v2_model::{V2Comparison, V2ComparisonOp, V2Condition, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Ref, V2Start, V2Step};
+use crate::transform::{
+    EvalItem as V1EvalItem, EvalLocals as V1EvalLocals, EvalValue as V1EvalValue,
+    eval_op as eval_v1_op,
+};
+use crate::v2_model::{
+    V2Comparison, V2ComparisonOp, V2Condition, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep,
+    V2Pipe, V2Ref, V2Start, V2Step,
+};
 
 // =============================================================================
 // EvalValue - Same as v1 transform
@@ -169,21 +175,15 @@ mod v2_eval_context_tests {
     fn test_context_with_pipe_value() {
         let ctx = V2EvalContext::new().with_pipe_value(EvalValue::Value(json!(42)));
         assert!(ctx.get_pipe_value().is_some());
-        assert_eq!(
-            ctx.get_pipe_value(),
-            Some(&EvalValue::Value(json!(42)))
-        );
+        assert_eq!(ctx.get_pipe_value(), Some(&EvalValue::Value(json!(42))));
     }
 
     #[test]
     fn test_context_with_let_binding() {
-        let ctx = V2EvalContext::new()
-            .with_let_binding("x".to_string(), EvalValue::Value(json!(100)));
+        let ctx =
+            V2EvalContext::new().with_let_binding("x".to_string(), EvalValue::Value(json!(100)));
         assert!(ctx.resolve_local("x").is_some());
-        assert_eq!(
-            ctx.resolve_local("x"),
-            Some(&EvalValue::Value(json!(100)))
-        );
+        assert_eq!(ctx.resolve_local("x"), Some(&EvalValue::Value(json!(100))));
         assert!(ctx.resolve_local("y").is_none());
     }
 
@@ -200,8 +200,8 @@ mod v2_eval_context_tests {
 
     #[test]
     fn test_context_scope_chain() {
-        let ctx = V2EvalContext::new()
-            .with_let_binding("x".to_string(), EvalValue::Value(json!(1)));
+        let ctx =
+            V2EvalContext::new().with_let_binding("x".to_string(), EvalValue::Value(json!(1)));
         let inner_ctx = ctx
             .clone()
             .with_let_binding("y".to_string(), EvalValue::Value(json!(2)));
@@ -268,15 +268,9 @@ mod v2_eval_context_tests {
             .with_let_binding("x".to_string(), EvalValue::Value(json!(50)));
 
         // Pipe value should still be accessible
-        assert_eq!(
-            ctx.get_pipe_value(),
-            Some(&EvalValue::Value(json!(100)))
-        );
+        assert_eq!(ctx.get_pipe_value(), Some(&EvalValue::Value(json!(100))));
         // Let binding should also be accessible
-        assert_eq!(
-            ctx.resolve_local("x"),
-            Some(&EvalValue::Value(json!(50)))
-        );
+        assert_eq!(ctx.resolve_local("x"), Some(&EvalValue::Value(json!(50))));
     }
 }
 
@@ -285,10 +279,17 @@ mod v2_eval_context_tests {
 // =============================================================================
 
 /// Helper to get value at path string
-fn get_path_str<'a>(value: &'a JsonValue, path_str: &str, error_path: &str) -> Result<EvalValue, TransformError> {
+fn get_path_str<'a>(
+    value: &'a JsonValue,
+    path_str: &str,
+    error_path: &str,
+) -> Result<EvalValue, TransformError> {
     let tokens = parse_path(path_str).map_err(|_| {
-        TransformError::new(TransformErrorKind::ExprError, format!("invalid path: {}", path_str))
-            .with_path(error_path)
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            format!("invalid path: {}", path_str),
+        )
+        .with_path(error_path)
     })?;
     match get_path(value, &tokens) {
         Some(v) => Ok(EvalValue::Value(v.clone())),
@@ -333,8 +334,11 @@ pub fn eval_v2_ref<'a>(
         }
         V2Ref::Item(ref_path) => {
             let item = ctx.get_item().ok_or_else(|| {
-                TransformError::new(TransformErrorKind::ExprError, "@item is only available in map/filter operations")
-                    .with_path(path)
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "@item is only available in map/filter operations",
+                )
+                .with_path(path)
             })?;
             if ref_path.is_empty() {
                 Ok(EvalValue::Value(item.value.clone()))
@@ -351,8 +355,11 @@ pub fn eval_v2_ref<'a>(
         }
         V2Ref::Acc(ref_path) => {
             let acc = ctx.get_acc().ok_or_else(|| {
-                TransformError::new(TransformErrorKind::ExprError, "@acc is only available in reduce/fold operations")
-                    .with_path(path)
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "@acc is only available in reduce/fold operations",
+                )
+                .with_path(path)
             })?;
             if ref_path.is_empty() {
                 Ok(EvalValue::Value(acc.clone()))
@@ -637,9 +644,7 @@ pub fn eval_v2_start<'a>(
         V2Start::PipeValue => {
             // If pipe value is not available, return Missing instead of error
             // This allows ops like lookup_first that don't use pipe input to work
-            Ok(ctx.get_pipe_value()
-                .cloned()
-                .unwrap_or(EvalValue::Missing))
+            Ok(ctx.get_pipe_value().cloned().unwrap_or(EvalValue::Missing))
         }
         V2Start::Literal(value) => Ok(EvalValue::Value(value.clone())),
         V2Start::V1Expr(_expr) => {
@@ -832,17 +837,49 @@ pub fn eval_v2_pipe<'a>(
 
         match step {
             V2Step::Op(op_step) => {
-                current = eval_v2_op_step(op_step, current, record, context, out, &step_path, &current_ctx)?;
+                current = eval_v2_op_step(
+                    op_step,
+                    current,
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                )?;
             }
             V2Step::Let(let_step) => {
                 // Let step doesn't change pipe value, just adds bindings to context
-                current_ctx = eval_v2_let_step(let_step, current.clone(), record, context, out, &step_path, &current_ctx)?;
+                current_ctx = eval_v2_let_step(
+                    let_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                )?;
             }
             V2Step::If(if_step) => {
-                current = eval_v2_if_step(if_step, current, record, context, out, &step_path, &current_ctx)?;
+                current = eval_v2_if_step(
+                    if_step,
+                    current,
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                )?;
             }
             V2Step::Map(map_step) => {
-                current = eval_v2_map_step(map_step, current, record, context, out, &step_path, &current_ctx)?;
+                current = eval_v2_map_step(
+                    map_step,
+                    current,
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                )?;
             }
             V2Step::Ref(v2_ref) => {
                 // Reference step evaluates the reference and returns its value
@@ -890,12 +927,20 @@ pub fn eval_v2_if_step<'a>(
 
     // Evaluate condition
     let cond_path = format!("{}.cond", path);
-    let cond_result = eval_v2_condition(&if_step.cond, record, context, out, &cond_path, &cond_ctx)?;
+    let cond_result =
+        eval_v2_condition(&if_step.cond, record, context, out, &cond_path, &cond_ctx)?;
 
     if cond_result {
         // Execute then branch
         let then_path = format!("{}.then", path);
-        eval_v2_pipe(&if_step.then_branch, record, context, out, &then_path, &cond_ctx)
+        eval_v2_pipe(
+            &if_step.then_branch,
+            record,
+            context,
+            out,
+            &then_path,
+            &cond_ctx,
+        )
     } else if let Some(ref else_branch) = if_step.else_branch {
         // Execute else branch
         let else_path = format!("{}.else", path);
@@ -937,7 +982,8 @@ pub fn eval_v2_map_step<'a>(
         let item_path = format!("{}[{}]", path, index);
 
         // Create context with item scope
-        let item_ctx = ctx.clone()
+        let item_ctx = ctx
+            .clone()
             .with_pipe_value(EvalValue::Value(item_value.clone()))
             .with_item(EvalItem {
                 value: item_value,
@@ -946,7 +992,7 @@ pub fn eval_v2_map_step<'a>(
 
         // Apply all steps to this item
         let mut current = EvalValue::Value(item_value.clone());
-        let mut step_ctx = item_ctx.clone();  // Declare outside loop to preserve let bindings
+        let mut step_ctx = item_ctx.clone(); // Declare outside loop to preserve let bindings
 
         for (step_idx, step) in map_step.steps.iter().enumerate() {
             let step_path = format!("{}.step[{}]", item_path, step_idx);
@@ -954,19 +1000,33 @@ pub fn eval_v2_map_step<'a>(
 
             match step {
                 V2Step::Op(op_step) => {
-                    current = eval_v2_op_step(op_step, current, record, context, out, &step_path, &step_ctx)?;
+                    current = eval_v2_op_step(
+                        op_step, current, record, context, out, &step_path, &step_ctx,
+                    )?;
                 }
                 V2Step::Let(let_step) => {
                     // Let in map context - evaluate and update context to preserve bindings
-                    step_ctx = eval_v2_let_step(let_step, current.clone(), record, context, out, &step_path, &step_ctx)?;
+                    step_ctx = eval_v2_let_step(
+                        let_step,
+                        current.clone(),
+                        record,
+                        context,
+                        out,
+                        &step_path,
+                        &step_ctx,
+                    )?;
                     // Let doesn't change pipe value
                     current = step_ctx.get_pipe_value().cloned().unwrap_or(current);
                 }
                 V2Step::If(if_step) => {
-                    current = eval_v2_if_step(if_step, current, record, context, out, &step_path, &step_ctx)?;
+                    current = eval_v2_if_step(
+                        if_step, current, record, context, out, &step_path, &step_ctx,
+                    )?;
                 }
                 V2Step::Map(nested_map) => {
-                    current = eval_v2_map_step(nested_map, current, record, context, out, &step_path, &step_ctx)?;
+                    current = eval_v2_map_step(
+                        nested_map, current, record, context, out, &step_path, &step_ctx,
+                    )?;
                 }
                 V2Step::Ref(v2_ref) => {
                     // Reference step evaluates the reference and returns its value
@@ -1043,7 +1103,10 @@ fn eval_v2_comparison<'a>(
     if comparison.args.len() != 2 {
         return Err(TransformError::new(
             TransformErrorKind::ExprError,
-            format!("comparison requires exactly 2 arguments, got {}", comparison.args.len()),
+            format!(
+                "comparison requires exactly 2 arguments, got {}",
+                comparison.args.len()
+            ),
         )
         .with_path(path));
     }
@@ -1057,10 +1120,18 @@ fn eval_v2_comparison<'a>(
     match comparison.op {
         V2ComparisonOp::Eq => Ok(compare_values_eq(&left, &right)),
         V2ComparisonOp::Ne => Ok(!compare_values_eq(&left, &right)),
-        V2ComparisonOp::Gt => compare_values_ord(&left, &right, path).map(|ord| ord == std::cmp::Ordering::Greater),
-        V2ComparisonOp::Gte => compare_values_ord(&left, &right, path).map(|ord| ord != std::cmp::Ordering::Less),
-        V2ComparisonOp::Lt => compare_values_ord(&left, &right, path).map(|ord| ord == std::cmp::Ordering::Less),
-        V2ComparisonOp::Lte => compare_values_ord(&left, &right, path).map(|ord| ord != std::cmp::Ordering::Greater),
+        V2ComparisonOp::Gt => {
+            compare_values_ord(&left, &right, path).map(|ord| ord == std::cmp::Ordering::Greater)
+        }
+        V2ComparisonOp::Gte => {
+            compare_values_ord(&left, &right, path).map(|ord| ord != std::cmp::Ordering::Less)
+        }
+        V2ComparisonOp::Lt => {
+            compare_values_ord(&left, &right, path).map(|ord| ord == std::cmp::Ordering::Less)
+        }
+        V2ComparisonOp::Lte => {
+            compare_values_ord(&left, &right, path).map(|ord| ord != std::cmp::Ordering::Greater)
+        }
         V2ComparisonOp::Match => compare_values_match(&left, &right, path),
     }
 }
@@ -1076,12 +1147,18 @@ fn compare_values_eq(left: &EvalValue, right: &EvalValue) -> bool {
 }
 
 /// Compare two values for ordering
-fn compare_values_ord(left: &EvalValue, right: &EvalValue, path: &str) -> Result<std::cmp::Ordering, TransformError> {
+fn compare_values_ord(
+    left: &EvalValue,
+    right: &EvalValue,
+    path: &str,
+) -> Result<std::cmp::Ordering, TransformError> {
     match (left, right) {
         (EvalValue::Value(l), EvalValue::Value(r)) => {
             // Try numeric comparison first
             if let (Some(l_num), Some(r_num)) = (value_as_f64(l), value_as_f64(r)) {
-                return Ok(l_num.partial_cmp(&r_num).unwrap_or(std::cmp::Ordering::Equal));
+                return Ok(l_num
+                    .partial_cmp(&r_num)
+                    .unwrap_or(std::cmp::Ordering::Equal));
             }
             // Try string comparison
             if let (Some(l_str), Some(r_str)) = (value_as_str(l), value_as_str(r)) {
@@ -1102,23 +1179,31 @@ fn compare_values_ord(left: &EvalValue, right: &EvalValue, path: &str) -> Result
 }
 
 /// Compare with regex match
-fn compare_values_match(left: &EvalValue, right: &EvalValue, path: &str) -> Result<bool, TransformError> {
+fn compare_values_match(
+    left: &EvalValue,
+    right: &EvalValue,
+    path: &str,
+) -> Result<bool, TransformError> {
     let text = match left {
         EvalValue::Value(JsonValue::String(s)) => s.as_str(),
-        _ => return Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "match operator requires string on left side",
-        )
-        .with_path(path)),
+        _ => {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "match operator requires string on left side",
+            )
+            .with_path(path));
+        }
     };
 
     let pattern = match right {
         EvalValue::Value(JsonValue::String(s)) => s.as_str(),
-        _ => return Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "match operator requires regex pattern string on right side",
-        )
-        .with_path(path)),
+        _ => {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "match operator requires regex pattern string on right side",
+            )
+            .with_path(path));
+        }
     };
 
     let re = regex::Regex::new(pattern).map_err(|e| {
@@ -1203,8 +1288,11 @@ fn eval_value_as_number(value: &EvalValue, path: &str) -> Result<f64, TransformE
                     .with_path(path)
             }),
             JsonValue::String(s) => s.parse::<f64>().map_err(|_| {
-                TransformError::new(TransformErrorKind::ExprError, "failed to parse string as number")
-                    .with_path(path)
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    "failed to parse string as number",
+                )
+                .with_path(path)
             }),
             _ => Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -1218,36 +1306,35 @@ fn eval_value_as_number(value: &EvalValue, path: &str) -> Result<f64, TransformE
 fn value_as_bool(value: &JsonValue, path: &str) -> Result<bool, TransformError> {
     match value {
         JsonValue::Bool(flag) => Ok(*flag),
-        _ => Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "value must be a boolean",
-        )
-        .with_path(path)),
+        _ => Err(
+            TransformError::new(TransformErrorKind::ExprError, "value must be a boolean")
+                .with_path(path),
+        ),
     }
 }
 
 fn value_as_string(value: &JsonValue, path: &str) -> Result<String, TransformError> {
     match value {
         JsonValue::String(value) => Ok(value.clone()),
-        _ => Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "value must be a string",
-        )
-        .with_path(path)),
+        _ => Err(
+            TransformError::new(TransformErrorKind::ExprError, "value must be a string")
+                .with_path(path),
+        ),
     }
 }
 
 fn value_to_number(value: &JsonValue, path: &str, message: &str) -> Result<f64, TransformError> {
     match value {
-        JsonValue::Number(n) => n
-            .as_f64()
-            .filter(|f| f.is_finite())
-            .ok_or_else(|| TransformError::new(TransformErrorKind::ExprError, message).with_path(path)),
+        JsonValue::Number(n) => n.as_f64().filter(|f| f.is_finite()).ok_or_else(|| {
+            TransformError::new(TransformErrorKind::ExprError, message).with_path(path)
+        }),
         JsonValue::String(s) => s
             .parse::<f64>()
             .ok()
             .filter(|f| f.is_finite())
-            .ok_or_else(|| TransformError::new(TransformErrorKind::ExprError, message).with_path(path)),
+            .ok_or_else(|| {
+                TransformError::new(TransformErrorKind::ExprError, message).with_path(path)
+            }),
         _ => Err(TransformError::new(TransformErrorKind::ExprError, message).with_path(path)),
     }
 }
@@ -1347,7 +1434,7 @@ fn eval_v2_key_expr_string<'a>(
                 TransformErrorKind::ExprError,
                 "expr arg must not be missing",
             )
-            .with_path(path))
+            .with_path(path));
         }
         EvalValue::Value(value) => value,
     };
@@ -1387,7 +1474,9 @@ impl SortKey {
 
 fn compare_sort_keys(left: &SortKey, right: &SortKey) -> std::cmp::Ordering {
     match (left, right) {
-        (SortKey::Number(l), SortKey::Number(r)) => l.partial_cmp(r).unwrap_or(std::cmp::Ordering::Equal),
+        (SortKey::Number(l), SortKey::Number(r)) => {
+            l.partial_cmp(r).unwrap_or(std::cmp::Ordering::Equal)
+        }
         (SortKey::String(l), SortKey::String(r)) => l.cmp(r),
         (SortKey::Bool(l), SortKey::Bool(r)) => l.cmp(r),
         _ => std::cmp::Ordering::Equal,
@@ -1408,7 +1497,7 @@ fn eval_v2_sort_key<'a>(
                 TransformErrorKind::ExprError,
                 "expr arg must not be missing",
             )
-            .with_path(path))
+            .with_path(path));
         }
         EvalValue::Value(value) => value,
     };
@@ -1456,11 +1545,10 @@ fn eval_v2_array_from_eval_value(
             } else if let JsonValue::Array(items) = value {
                 Ok(items)
             } else {
-                Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "expr arg must be an array",
+                Err(
+                    TransformError::new(TransformErrorKind::ExprError, "expr arg must be an array")
+                        .with_path(path),
                 )
-                .with_path(path))
             }
         }
     }
@@ -1586,7 +1674,6 @@ fn value_to_string(value: &JsonValue, path: &str) -> Result<String, TransformErr
     }
 }
 
-
 fn cast_to_int(value: &JsonValue, path: &str) -> Result<JsonValue, TransformError> {
     match value {
         JsonValue::Number(n) => {
@@ -1666,7 +1753,7 @@ fn eval_type_cast(op: &str, value: &EvalValue, path: &str) -> Result<EvalValue, 
                         TransformErrorKind::ExprError,
                         "unknown cast op",
                     )
-                    .with_path(path))
+                    .with_path(path));
                 }
             };
             Ok(EvalValue::Value(casted))
@@ -1753,7 +1840,9 @@ pub fn eval_v2_op_step<'a>(
             }
             Ok(EvalValue::Value(JsonValue::String(parts.join(""))))
         }
-        "string" | "int" | "float" | "bool" => eval_type_cast(op_step.op.as_str(), &pipe_value, path),
+        "string" | "int" | "float" | "bool" => {
+            eval_type_cast(op_step.op.as_str(), &pipe_value, path)
+        }
 
         // Numeric operations
         "add" | "+" => {
@@ -1866,7 +1955,8 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let value = eval_v2_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
+                let value =
+                    eval_v2_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
                 if let EvalValue::Value(value) = value {
                     results.push(value);
                 }
@@ -1889,7 +1979,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)? {
+                if eval_v2_predicate_expr(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )? {
                     results.push(item.clone());
                 }
             }
@@ -1911,7 +2008,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let value = eval_v2_expr_or_null(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
+                let value = eval_v2_expr_or_null(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )?;
                 match value {
                     JsonValue::Array(items) => results.extend(items),
                     value => results.push(value),
@@ -1935,7 +2039,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
+                let key = eval_v2_key_expr_string(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )?;
                 let entry = results
                     .entry(key)
                     .or_insert_with(|| JsonValue::Array(Vec::new()));
@@ -1961,7 +2072,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
+                let key = eval_v2_key_expr_string(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )?;
                 results.insert(key, item.clone());
             }
             Ok(EvalValue::Value(JsonValue::Object(results)))
@@ -1983,7 +2101,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)? {
+                if eval_v2_predicate_expr(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )? {
                     matched.push(item.clone());
                 } else {
                     unmatched.push(item.clone());
@@ -2011,7 +2136,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
+                let key = eval_v2_key_expr_string(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )?;
                 if seen.insert(key) {
                     results.push(item.clone());
                 }
@@ -2033,7 +2165,14 @@ pub fn eval_v2_op_step<'a>(
             let expr_path = format!("{}.args[0]", path);
             let order = if op_step.args.len() == 2 {
                 let order_path = format!("{}.args[1]", path);
-                let order_value = eval_v2_expr(&op_step.args[1], record, context, out, &order_path, &step_ctx)?;
+                let order_value = eval_v2_expr(
+                    &op_step.args[1],
+                    record,
+                    context,
+                    out,
+                    &order_path,
+                    &step_ctx,
+                )?;
                 let order = match order_value {
                     EvalValue::Missing => return Ok(EvalValue::Missing),
                     EvalValue::Value(value) => value_to_string(&value, &order_path)?,
@@ -2063,7 +2202,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                let key = eval_v2_sort_key(&op_step.args[0], record, context, out, &expr_path, &item_ctx)?;
+                let key = eval_v2_sort_key(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &expr_path,
+                    &item_ctx,
+                )?;
                 let kind = key.kind();
                 if let Some(existing) = key_kind {
                     if existing != kind {
@@ -2095,10 +2241,7 @@ pub fn eval_v2_op_step<'a>(
                 }
             });
 
-            let results = items
-                .into_iter()
-                .map(|item| item.value)
-                .collect::<Vec<_>>();
+            let results = items.into_iter().map(|item| item.value).collect::<Vec<_>>();
             Ok(EvalValue::Value(JsonValue::Array(results)))
         }
         "find" => {
@@ -2116,7 +2259,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)? {
+                if eval_v2_predicate_expr(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )? {
                     return Ok(EvalValue::Value(item.clone()));
                 }
             }
@@ -2137,7 +2287,14 @@ pub fn eval_v2_op_step<'a>(
                     .clone()
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)? {
+                if eval_v2_predicate_expr(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &arg_path,
+                    &item_ctx,
+                )? {
                     return Ok(EvalValue::Value(JsonValue::Number((index as i64).into())));
                 }
             }
@@ -2163,7 +2320,14 @@ pub fn eval_v2_op_step<'a>(
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index })
                     .with_acc(&acc);
-                let value = eval_v2_expr_or_null(&op_step.args[0], record, context, out, &expr_path, &item_ctx)?;
+                let value = eval_v2_expr_or_null(
+                    &op_step.args[0],
+                    record,
+                    context,
+                    out,
+                    &expr_path,
+                    &item_ctx,
+                )?;
                 acc = value;
             }
             Ok(EvalValue::Value(acc))
@@ -2178,7 +2342,14 @@ pub fn eval_v2_op_step<'a>(
             }
             let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
             let init_path = format!("{}.args[0]", path);
-            let initial = match eval_v2_expr(&op_step.args[0], record, context, out, &init_path, &step_ctx)? {
+            let initial = match eval_v2_expr(
+                &op_step.args[0],
+                record,
+                context,
+                out,
+                &init_path,
+                &step_ctx,
+            )? {
                 EvalValue::Missing => return Ok(EvalValue::Missing),
                 EvalValue::Value(value) => value,
             };
@@ -2190,7 +2361,14 @@ pub fn eval_v2_op_step<'a>(
                     .with_pipe_value(EvalValue::Value(item.clone()))
                     .with_item(EvalItem { value: item, index })
                     .with_acc(&acc);
-                let value = eval_v2_expr_or_null(&op_step.args[1], record, context, out, &expr_path, &item_ctx)?;
+                let value = eval_v2_expr_or_null(
+                    &op_step.args[1],
+                    record,
+                    context,
+                    out,
+                    &expr_path,
+                    &item_ctx,
+                )?;
                 acc = value;
             }
             Ok(EvalValue::Value(acc))
@@ -2229,7 +2407,8 @@ pub fn eval_v2_op_step<'a>(
                         value: &row_value,
                         index: row_index,
                     });
-                let value = eval_v2_expr_or_null(expr, record, context, out, &expr_path, &item_ctx)?;
+                let value =
+                    eval_v2_expr_or_null(expr, record, context, out, &expr_path, &item_ctx)?;
                 results.push(value);
             }
             Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -2354,7 +2533,8 @@ pub fn eval_v2_op_step<'a>(
                 }
             }
         }
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt" | "gte" | "match" => {
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt"
+        | "gte" | "match" => {
             if op_step.args.len() != 1 {
                 return Err(TransformError::new(
                     TransformErrorKind::ExprError,
@@ -2367,7 +2547,14 @@ pub fn eval_v2_op_step<'a>(
                 EvalValue::Value(value) => value,
             };
             let right_path = format!("{}.args[0]", path);
-            let right = eval_v2_expr_or_null(&op_step.args[0], record, context, out, &right_path, &step_ctx)?;
+            let right = eval_v2_expr_or_null(
+                &op_step.args[0],
+                record,
+                context,
+                out,
+                &right_path,
+                &step_ctx,
+            )?;
             let left_path = path.to_string();
             let op = match op_step.op.as_str() {
                 "eq" => "==",
@@ -2448,7 +2635,15 @@ pub fn eval_v2_op_step<'a>(
                     steps: vec![],
                 })],
             };
-            eval_v2_op_with_v1_fallback(&normalized_op, pipe_value, record, context, out, path, &step_ctx)
+            eval_v2_op_with_v1_fallback(
+                &normalized_op,
+                pipe_value,
+                record,
+                context,
+                out,
+                path,
+                &step_ctx,
+            )
         }
 
         // Lookup operations - v2 keyword format: lookup_first: {from: ..., match: [...], get: ...}
@@ -2479,40 +2674,142 @@ pub fn eval_v2_op_step<'a>(
             let (from_value, match_key_value, match_value, get_field) = match args.len() {
                 0 | 1 => unreachable!("guarded above"),
                 2 => {
-                    let match_key_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                    let match_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
+                    let match_key_value = eval_v2_expr(
+                        &args[0],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[0]", path),
+                        &step_ctx,
+                    )?;
+                    let match_value = eval_v2_expr(
+                        &args[1],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[1]", path),
+                        &step_ctx,
+                    )?;
                     (pipe_value.clone(), match_key_value, match_value, None)
                 }
                 3 => {
                     if matches!(pipe_value, EvalValue::Missing) {
-                        let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                        let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
+                        let first_value = eval_v2_expr(
+                            &args[0],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[0]", path),
+                            &step_ctx,
+                        )?;
+                        let use_explicit_from =
+                            matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
                         if !use_explicit_from {
                             return Ok(EvalValue::Missing);
                         }
-                        let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                        let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
+                        let match_key_value = eval_v2_expr(
+                            &args[1],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[1]", path),
+                            &step_ctx,
+                        )?;
+                        let match_value = eval_v2_expr(
+                            &args[2],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[2]", path),
+                            &step_ctx,
+                        )?;
                         (first_value, match_key_value, match_value, None)
                     } else {
-                        let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                        let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing);
+                        let first_value = eval_v2_expr(
+                            &args[0],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[0]", path),
+                            &step_ctx,
+                        )?;
+                        let use_explicit_from = matches!(
+                            first_value,
+                            EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing
+                        );
                         if use_explicit_from {
-                            let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                            let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
+                            let match_key_value = eval_v2_expr(
+                                &args[1],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[1]", path),
+                                &step_ctx,
+                            )?;
+                            let match_value = eval_v2_expr(
+                                &args[2],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[2]", path),
+                                &step_ctx,
+                            )?;
                             (first_value, match_key_value, match_value, None)
                         } else {
-                            let match_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                            let get_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
+                            let match_value = eval_v2_expr(
+                                &args[1],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[1]", path),
+                                &step_ctx,
+                            )?;
+                            let get_value = eval_v2_expr(
+                                &args[2],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[2]", path),
+                                &step_ctx,
+                            )?;
                             let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
                             (pipe_value.clone(), first_value, match_value, get_field)
                         }
                     }
                 }
                 _ => {
-                    let from_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                    let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                    let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
-                    let get_value = eval_v2_expr(&args[3], record, context, out, &format!("{}.args[3]", path), &step_ctx)?;
+                    let from_value = eval_v2_expr(
+                        &args[0],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[0]", path),
+                        &step_ctx,
+                    )?;
+                    let match_key_value = eval_v2_expr(
+                        &args[1],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[1]", path),
+                        &step_ctx,
+                    )?;
+                    let match_value = eval_v2_expr(
+                        &args[2],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[2]", path),
+                        &step_ctx,
+                    )?;
+                    let get_value = eval_v2_expr(
+                        &args[3],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[3]", path),
+                        &step_ctx,
+                    )?;
                     let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
                     (from_value, match_key_value, match_value, get_field)
                 }
@@ -2522,11 +2819,13 @@ pub fn eval_v2_op_step<'a>(
             let arr = match &from_value {
                 EvalValue::Value(JsonValue::Array(arr)) => arr,
                 EvalValue::Missing => return Ok(EvalValue::Missing),
-                _ => return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "lookup_first 'from' must be an array",
-                )
-                .with_path(&from_path)),
+                _ => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "lookup_first 'from' must be an array",
+                    )
+                    .with_path(&from_path));
+                }
             };
 
             // Get match key as string
@@ -2577,40 +2876,142 @@ pub fn eval_v2_op_step<'a>(
             let (from_value, match_key_value, match_value, get_field) = match args.len() {
                 0 | 1 => unreachable!("guarded above"),
                 2 => {
-                    let match_key_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                    let match_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
+                    let match_key_value = eval_v2_expr(
+                        &args[0],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[0]", path),
+                        &step_ctx,
+                    )?;
+                    let match_value = eval_v2_expr(
+                        &args[1],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[1]", path),
+                        &step_ctx,
+                    )?;
                     (pipe_value.clone(), match_key_value, match_value, None)
                 }
                 3 => {
                     if matches!(pipe_value, EvalValue::Missing) {
-                        let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                        let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
+                        let first_value = eval_v2_expr(
+                            &args[0],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[0]", path),
+                            &step_ctx,
+                        )?;
+                        let use_explicit_from =
+                            matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
                         if !use_explicit_from {
                             return Ok(EvalValue::Missing);
                         }
-                        let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                        let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
+                        let match_key_value = eval_v2_expr(
+                            &args[1],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[1]", path),
+                            &step_ctx,
+                        )?;
+                        let match_value = eval_v2_expr(
+                            &args[2],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[2]", path),
+                            &step_ctx,
+                        )?;
                         (first_value, match_key_value, match_value, None)
                     } else {
-                        let first_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                        let use_explicit_from = matches!(first_value, EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing);
+                        let first_value = eval_v2_expr(
+                            &args[0],
+                            record,
+                            context,
+                            out,
+                            &format!("{}.args[0]", path),
+                            &step_ctx,
+                        )?;
+                        let use_explicit_from = matches!(
+                            first_value,
+                            EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing
+                        );
                         if use_explicit_from {
-                            let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                            let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
+                            let match_key_value = eval_v2_expr(
+                                &args[1],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[1]", path),
+                                &step_ctx,
+                            )?;
+                            let match_value = eval_v2_expr(
+                                &args[2],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[2]", path),
+                                &step_ctx,
+                            )?;
                             (first_value, match_key_value, match_value, None)
                         } else {
-                            let match_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                            let get_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
+                            let match_value = eval_v2_expr(
+                                &args[1],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[1]", path),
+                                &step_ctx,
+                            )?;
+                            let get_value = eval_v2_expr(
+                                &args[2],
+                                record,
+                                context,
+                                out,
+                                &format!("{}.args[2]", path),
+                                &step_ctx,
+                            )?;
                             let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
                             (pipe_value.clone(), first_value, match_value, get_field)
                         }
                     }
                 }
                 _ => {
-                    let from_value = eval_v2_expr(&args[0], record, context, out, &format!("{}.args[0]", path), &step_ctx)?;
-                    let match_key_value = eval_v2_expr(&args[1], record, context, out, &format!("{}.args[1]", path), &step_ctx)?;
-                    let match_value = eval_v2_expr(&args[2], record, context, out, &format!("{}.args[2]", path), &step_ctx)?;
-                    let get_value = eval_v2_expr(&args[3], record, context, out, &format!("{}.args[3]", path), &step_ctx)?;
+                    let from_value = eval_v2_expr(
+                        &args[0],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[0]", path),
+                        &step_ctx,
+                    )?;
+                    let match_key_value = eval_v2_expr(
+                        &args[1],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[1]", path),
+                        &step_ctx,
+                    )?;
+                    let match_value = eval_v2_expr(
+                        &args[2],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[2]", path),
+                        &step_ctx,
+                    )?;
+                    let get_value = eval_v2_expr(
+                        &args[3],
+                        record,
+                        context,
+                        out,
+                        &format!("{}.args[3]", path),
+                        &step_ctx,
+                    )?;
                     let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
                     (from_value, match_key_value, match_value, get_field)
                 }
@@ -2620,11 +3021,13 @@ pub fn eval_v2_op_step<'a>(
             let arr = match &from_value {
                 EvalValue::Value(JsonValue::Array(arr)) => arr,
                 EvalValue::Missing => return Ok(EvalValue::Missing),
-                _ => return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "lookup 'from' must be an array",
-                )
-                .with_path(&from_path)),
+                _ => {
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "lookup 'from' must be an array",
+                    )
+                    .with_path(&from_path));
+                }
             };
 
             // Get match key as string
@@ -2659,7 +3062,9 @@ pub fn eval_v2_op_step<'a>(
         }
 
         // Default case - fall back to v1 op evaluation
-        _ => eval_v2_op_with_v1_fallback(op_step, pipe_value, record, context, out, path, &step_ctx),
+        _ => {
+            eval_v2_op_with_v1_fallback(op_step, pipe_value, record, context, out, path, &step_ctx)
+        }
     }
 }
 
@@ -2670,7 +3075,7 @@ pub fn eval_v2_op_step<'a>(
 #[cfg(test)]
 mod v2_op_step_eval_tests {
     use super::*;
-    use serde_json::{json, Value as JsonValue};
+    use serde_json::{Value as JsonValue, json};
 
     fn lit(value: JsonValue) -> V2Expr {
         V2Expr::Pipe(V2Pipe {
@@ -3402,12 +3807,13 @@ mod v2_let_step_eval_tests {
     #[test]
     fn test_eval_let_single_binding() {
         let let_step = V2LetStep {
-            bindings: vec![
-                ("x".to_string(), V2Expr::Pipe(V2Pipe {
+            bindings: vec![(
+                "x".to_string(),
+                V2Expr::Pipe(V2Pipe {
                     start: V2Start::Literal(json!(42)),
                     steps: vec![],
-                })),
-            ],
+                }),
+            )],
         };
         let record = json!({});
         let out = json!({});
@@ -3433,14 +3839,20 @@ mod v2_let_step_eval_tests {
     fn test_eval_let_multiple_bindings() {
         let let_step = V2LetStep {
             bindings: vec![
-                ("a".to_string(), V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Literal(json!(1)),
-                    steps: vec![],
-                })),
-                ("b".to_string(), V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Literal(json!(2)),
-                    steps: vec![],
-                })),
+                (
+                    "a".to_string(),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(1)),
+                        steps: vec![],
+                    }),
+                ),
+                (
+                    "b".to_string(),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(2)),
+                        steps: vec![],
+                    }),
+                ),
             ],
         };
         let record = json!({});
@@ -3457,20 +3869,27 @@ mod v2_let_step_eval_tests {
         );
         assert!(result.is_ok());
         let new_ctx = result.unwrap();
-        assert_eq!(new_ctx.resolve_local("a"), Some(&EvalValue::Value(json!(1))));
-        assert_eq!(new_ctx.resolve_local("b"), Some(&EvalValue::Value(json!(2))));
+        assert_eq!(
+            new_ctx.resolve_local("a"),
+            Some(&EvalValue::Value(json!(1)))
+        );
+        assert_eq!(
+            new_ctx.resolve_local("b"),
+            Some(&EvalValue::Value(json!(2)))
+        );
     }
 
     #[test]
     fn test_eval_let_binding_uses_pipe_value() {
         // let: { x: $ } should bind x to current pipe value
         let let_step = V2LetStep {
-            bindings: vec![
-                ("x".to_string(), V2Expr::Pipe(V2Pipe {
+            bindings: vec![(
+                "x".to_string(),
+                V2Expr::Pipe(V2Pipe {
                     start: V2Start::PipeValue,
                     steps: vec![],
-                })),
-            ],
+                }),
+            )],
         };
         let record = json!({});
         let out = json!({});
@@ -3495,12 +3914,13 @@ mod v2_let_step_eval_tests {
     #[test]
     fn test_eval_let_binding_from_input() {
         let let_step = V2LetStep {
-            bindings: vec![
-                ("name".to_string(), V2Expr::Pipe(V2Pipe {
+            bindings: vec![(
+                "name".to_string(),
+                V2Expr::Pipe(V2Pipe {
                     start: V2Start::Ref(V2Ref::Input("user.name".to_string())),
                     steps: vec![],
-                })),
-            ],
+                }),
+            )],
         };
         let record = json!({"user": {"name": "Alice"}});
         let out = json!({});
@@ -3527,14 +3947,20 @@ mod v2_let_step_eval_tests {
         // let: { x: 10, y: @x } - y should be able to reference x
         let let_step = V2LetStep {
             bindings: vec![
-                ("x".to_string(), V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Literal(json!(10)),
-                    steps: vec![],
-                })),
-                ("y".to_string(), V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Ref(V2Ref::Local("x".to_string())),
-                    steps: vec![],
-                })),
+                (
+                    "x".to_string(),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
+                ),
+                (
+                    "y".to_string(),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Local("x".to_string())),
+                        steps: vec![],
+                    }),
+                ),
             ],
         };
         let record = json!({});
@@ -3551,8 +3977,14 @@ mod v2_let_step_eval_tests {
         );
         assert!(result.is_ok());
         let new_ctx = result.unwrap();
-        assert_eq!(new_ctx.resolve_local("x"), Some(&EvalValue::Value(json!(10))));
-        assert_eq!(new_ctx.resolve_local("y"), Some(&EvalValue::Value(json!(10))));
+        assert_eq!(
+            new_ctx.resolve_local("x"),
+            Some(&EvalValue::Value(json!(10)))
+        );
+        assert_eq!(
+            new_ctx.resolve_local("y"),
+            Some(&EvalValue::Value(json!(10)))
+        );
     }
 
     #[test]
@@ -3560,16 +3992,15 @@ mod v2_let_step_eval_tests {
         // [100, { let: { x: $ } }, @x] -> 100
         let pipe = V2Pipe {
             start: V2Start::Literal(json!(100)),
-            steps: vec![
-                V2Step::Let(V2LetStep {
-                    bindings: vec![
-                        ("x".to_string(), V2Expr::Pipe(V2Pipe {
-                            start: V2Start::PipeValue,
-                            steps: vec![],
-                        })),
-                    ],
-                }),
-            ],
+            steps: vec![V2Step::Let(V2LetStep {
+                bindings: vec![(
+                    "x".to_string(),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::PipeValue,
+                        steps: vec![],
+                    }),
+                )],
+            })],
         };
         let record = json!({});
         let out = json!({});
@@ -3586,12 +4017,13 @@ mod v2_let_step_eval_tests {
             start: V2Start::Literal(json!(100)),
             steps: vec![
                 V2Step::Let(V2LetStep {
-                    bindings: vec![
-                        ("factor".to_string(), V2Expr::Pipe(V2Pipe {
+                    bindings: vec![(
+                        "factor".to_string(),
+                        V2Expr::Pipe(V2Pipe {
                             start: V2Start::Literal(json!(2)),
                             steps: vec![],
-                        })),
-                    ],
+                        }),
+                    )],
                 }),
                 V2Step::Op(V2OpStep {
                     op: "multiply".to_string(),
@@ -3869,15 +4301,27 @@ mod v2_if_step_eval_tests {
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(5)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(5)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Lt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(20)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(20)),
+                        steps: vec![],
+                    }),
                 ],
             }),
         ]);
@@ -3894,15 +4338,27 @@ mod v2_if_step_eval_tests {
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(5)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(5)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Lt, // 10 < 5 is false
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(5)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(5)),
+                        steps: vec![],
+                    }),
                 ],
             }),
         ]);
@@ -3919,15 +4375,27 @@ mod v2_if_step_eval_tests {
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Eq,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!("admin")), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!("user")), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("admin")),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("user")),
+                        steps: vec![],
+                    }),
                 ],
             }),
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(100)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(50)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(100)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(50)),
+                        steps: vec![],
+                    }),
                 ],
             }),
         ]);
@@ -3944,15 +4412,27 @@ mod v2_if_step_eval_tests {
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Eq,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(1)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(2)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(1)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(2)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Eq,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(3)), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(4)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(3)),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(4)),
+                        steps: vec![],
+                    }),
                 ],
             }),
         ]);
@@ -4051,8 +4531,14 @@ mod v2_if_step_eval_tests {
             cond: V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::PipeValue,
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             then_branch: V2Pipe {
@@ -4070,7 +4556,15 @@ mod v2_if_step_eval_tests {
         let record = json!({});
         let out = json!({});
         let ctx = V2EvalContext::new();
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(20)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(20)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(40.0)));
     }
 
@@ -4081,8 +4575,14 @@ mod v2_if_step_eval_tests {
             cond: V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::PipeValue,
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             then_branch: V2Pipe {
@@ -4110,7 +4610,15 @@ mod v2_if_step_eval_tests {
         let out = json!({});
         let ctx = V2EvalContext::new();
         // pipe value 5 is less than 10, so else branch is taken
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(5)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(5)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(2.5)));
     }
 
@@ -4121,8 +4629,14 @@ mod v2_if_step_eval_tests {
             cond: V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(10)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::PipeValue,
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(10)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             then_branch: V2Pipe {
@@ -4141,7 +4655,15 @@ mod v2_if_step_eval_tests {
         let out = json!({});
         let ctx = V2EvalContext::new();
         // pipe value 5 is less than 10, no else branch, returns original pipe value
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(5)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(5)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(5)));
     }
 
@@ -4154,8 +4676,14 @@ mod v2_if_step_eval_tests {
                 cond: V2Condition::Comparison(V2Comparison {
                     op: V2ComparisonOp::Gt,
                     args: vec![
-                        V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                        V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(5000)), steps: vec![] }),
+                        V2Expr::Pipe(V2Pipe {
+                            start: V2Start::PipeValue,
+                            steps: vec![],
+                        }),
+                        V2Expr::Pipe(V2Pipe {
+                            start: V2Start::Literal(json!(5000)),
+                            steps: vec![],
+                        }),
                     ],
                 }),
                 then_branch: V2Pipe {
@@ -4185,8 +4713,14 @@ mod v2_if_step_eval_tests {
             cond: V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Eq,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Ref(V2Ref::Input("role".to_string())), steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!("admin")), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Input("role".to_string())),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("admin")),
+                        steps: vec![],
+                    }),
                 ],
             }),
             then_branch: V2Pipe {
@@ -4201,12 +4735,28 @@ mod v2_if_step_eval_tests {
         let record = json!({"role": "admin"});
         let out = json!({});
         let ctx = V2EvalContext::new();
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(0)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(0)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(100)));
 
         // When not admin
         let record2 = json!({"role": "user"});
-        let result2 = eval_v2_if_step(&if_step, EvalValue::Value(json!(0)), &record2, None, &out, "test", &ctx);
+        let result2 = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(0)),
+            &record2,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result2, Ok(EvalValue::Value(v)) if v == json!(50)));
     }
 
@@ -4217,8 +4767,14 @@ mod v2_if_step_eval_tests {
             cond: V2Condition::Comparison(V2Comparison {
                 op: V2ComparisonOp::Gt,
                 args: vec![
-                    V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                    V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(100)), steps: vec![] }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::PipeValue,
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!(100)),
+                        steps: vec![],
+                    }),
                 ],
             }),
             then_branch: V2Pipe {
@@ -4227,8 +4783,14 @@ mod v2_if_step_eval_tests {
                     cond: V2Condition::Comparison(V2Comparison {
                         op: V2ComparisonOp::Gt,
                         args: vec![
-                            V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                            V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(500)), steps: vec![] }),
+                            V2Expr::Pipe(V2Pipe {
+                                start: V2Start::PipeValue,
+                                steps: vec![],
+                            }),
+                            V2Expr::Pipe(V2Pipe {
+                                start: V2Start::Literal(json!(500)),
+                                steps: vec![],
+                            }),
                         ],
                     }),
                     then_branch: V2Pipe {
@@ -4251,18 +4813,41 @@ mod v2_if_step_eval_tests {
         let ctx = V2EvalContext::new();
 
         // 50 -> bronze
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(50)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(50)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!("bronze")));
 
         // 200 -> silver
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(200)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(200)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!("silver")));
 
         // 600 -> gold
-        let result = eval_v2_if_step(&if_step, EvalValue::Value(json!(600)), &record, None, &out, "test", &ctx);
+        let result = eval_v2_if_step(
+            &if_step,
+            EvalValue::Value(json!(600)),
+            &record,
+            None,
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!("gold")));
     }
-
 }
 
 // =============================================================================
@@ -4428,7 +5013,7 @@ mod v2_map_step_eval_tests {
         let pipe = V2Pipe {
             start: V2Start::Ref(V2Ref::Input("items".to_string())),
             steps: vec![V2Step::Map(V2MapStep {
-                steps: vec![],  // Just return the item as-is
+                steps: vec![], // Just return the item as-is
             })],
         };
         let record = json!({"items": [10, 20, 30]});
@@ -4495,8 +5080,14 @@ mod v2_map_step_eval_tests {
                 cond: V2Condition::Comparison(V2Comparison {
                     op: V2ComparisonOp::Gt,
                     args: vec![
-                        V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                        V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(5)), steps: vec![] }),
+                        V2Expr::Pipe(V2Pipe {
+                            start: V2Start::PipeValue,
+                            steps: vec![],
+                        }),
+                        V2Expr::Pipe(V2Pipe {
+                            start: V2Start::Literal(json!(5)),
+                            steps: vec![],
+                        }),
                     ],
                 }),
                 then_branch: V2Pipe {
@@ -4564,14 +5155,16 @@ mod v2_map_step_eval_tests {
         let pipe = V2Pipe {
             start: V2Start::Ref(V2Ref::Input("users".to_string())),
             steps: vec![V2Step::Map(V2MapStep {
-                steps: vec![],  // No-op, just return items
+                steps: vec![], // No-op, just return items
             })],
         };
         let record = json!({"users": [{"name": "Alice"}, {"name": "Bob"}]});
         let out = json!({});
         let ctx = V2EvalContext::new();
         let result = eval_v2_pipe(&pipe, &record, None, &out, "test", &ctx);
-        assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!([{"name": "Alice"}, {"name": "Bob"}])));
+        assert!(
+            matches!(result, Ok(EvalValue::Value(v)) if v == json!([{"name": "Alice"}, {"name": "Bob"}]))
+        );
     }
 }
 
@@ -4616,8 +5209,14 @@ mod v2_pipe_eval_tests {
         let pipe = V2Pipe {
             start: V2Start::Literal(json!("  hello  ")),
             steps: vec![
-                V2Step::Op(V2OpStep { op: "trim".to_string(), args: vec![] }),
-                V2Step::Op(V2OpStep { op: "uppercase".to_string(), args: vec![] }),
+                V2Step::Op(V2OpStep {
+                    op: "trim".to_string(),
+                    args: vec![],
+                }),
+                V2Step::Op(V2OpStep {
+                    op: "uppercase".to_string(),
+                    args: vec![],
+                }),
             ],
         };
         let record = json!({});
@@ -4676,10 +5275,13 @@ mod v2_pipe_eval_tests {
             start: V2Start::Ref(V2Ref::Input("price".to_string())),
             steps: vec![
                 V2Step::Let(V2LetStep {
-                    bindings: vec![("original".to_string(), V2Expr::Pipe(V2Pipe {
-                        start: V2Start::PipeValue,
-                        steps: vec![],
-                    }))],
+                    bindings: vec![(
+                        "original".to_string(),
+                        V2Expr::Pipe(V2Pipe {
+                            start: V2Start::PipeValue,
+                            steps: vec![],
+                        }),
+                    )],
                 }),
                 V2Step::Op(V2OpStep {
                     op: "multiply".to_string(),
@@ -4692,8 +5294,14 @@ mod v2_pipe_eval_tests {
                     cond: V2Condition::Comparison(V2Comparison {
                         op: V2ComparisonOp::Gt,
                         args: vec![
-                            V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                            V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(1000)), steps: vec![] }),
+                            V2Expr::Pipe(V2Pipe {
+                                start: V2Start::PipeValue,
+                                steps: vec![],
+                            }),
+                            V2Expr::Pipe(V2Pipe {
+                                start: V2Start::Literal(json!(1000)),
+                                steps: vec![],
+                            }),
                         ],
                     }),
                     then_branch: V2Pipe {
@@ -4810,8 +5418,14 @@ mod v2_pipe_eval_tests {
                     cond: V2Condition::Comparison(V2Comparison {
                         op: V2ComparisonOp::Gte,
                         args: vec![
-                            V2Expr::Pipe(V2Pipe { start: V2Start::PipeValue, steps: vec![] }),
-                            V2Expr::Pipe(V2Pipe { start: V2Start::Literal(json!(60)), steps: vec![] }),
+                            V2Expr::Pipe(V2Pipe {
+                                start: V2Start::PipeValue,
+                                steps: vec![],
+                            }),
+                            V2Expr::Pipe(V2Pipe {
+                                start: V2Start::Literal(json!(60)),
+                                steps: vec![],
+                            }),
                         ],
                     }),
                     then_branch: V2Pipe {
@@ -4829,7 +5443,9 @@ mod v2_pipe_eval_tests {
         let out = json!({});
         let ctx = V2EvalContext::new();
         let result = eval_v2_pipe(&pipe, &record, None, &out, "test", &ctx);
-        assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(["pass", "fail", "pass", "fail"])));
+        assert!(
+            matches!(result, Ok(EvalValue::Value(v)) if v == json!(["pass", "fail", "pass", "fail"]))
+        );
     }
 }
 
@@ -4938,7 +5554,7 @@ mod v2_lookup_eval_tests {
                     steps: vec![],
                 }),
                 V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Literal(json!(999)),  // Non-existent ID
+                    start: V2Start::Literal(json!(999)), // Non-existent ID
                     steps: vec![],
                 }),
                 V2Expr::Pipe(V2Pipe {
@@ -4996,7 +5612,9 @@ mod v2_lookup_eval_tests {
             "test",
             &ctx,
         );
-        assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!({"id": 1, "name": "Engineering", "budget": 100000})));
+        assert!(
+            matches!(result, Ok(EvalValue::Value(v)) if v == json!({"id": 1, "name": "Engineering", "budget": 100000}))
+        );
     }
 
     #[test]
@@ -5246,12 +5864,10 @@ mod v2_lookup_eval_tests {
     fn test_lookup_first_insufficient_args() {
         let op = V2OpStep {
             op: "lookup_first".to_string(),
-            args: vec![
-                V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Literal(json!([])),
-                    steps: vec![],
-                }),
-            ],
+            args: vec![V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!([])),
+                steps: vec![],
+            })],
         };
         let record = json!({});
         let out = json!({});
@@ -5274,31 +5890,29 @@ mod v2_lookup_eval_tests {
         // Simpler test: just lookup and verify
         let pipe = V2Pipe {
             start: V2Start::Literal(json!(null)),
-            steps: vec![
-                V2Step::Op(V2OpStep {
-                    op: "lookup_first".to_string(),
-                    args: vec![
-                        V2Expr::Pipe(V2Pipe {
-                            start: V2Start::Ref(V2Ref::Context("departments".to_string())),
-                            steps: vec![],
-                        }),
-                        V2Expr::Pipe(V2Pipe {
-                            start: V2Start::Literal(json!("id")),
-                            steps: vec![],
-                        }),
-                        V2Expr::Pipe(V2Pipe {
-                            start: V2Start::Ref(V2Ref::Input("dept_id".to_string())),
-                            steps: vec![],
-                        }),
-                        V2Expr::Pipe(V2Pipe {
-                            start: V2Start::Literal(json!("budget")),
-                            steps: vec![],
-                        }),
-                    ],
-                }),
-            ],
+            steps: vec![V2Step::Op(V2OpStep {
+                op: "lookup_first".to_string(),
+                args: vec![
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Context("departments".to_string())),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("id")),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Ref(V2Ref::Input("dept_id".to_string())),
+                        steps: vec![],
+                    }),
+                    V2Expr::Pipe(V2Pipe {
+                        start: V2Start::Literal(json!("budget")),
+                        steps: vec![],
+                    }),
+                ],
+            })],
         };
-        let record = json!({"dept_id": 2});  // Sales dept
+        let record = json!({"dept_id": 2}); // Sales dept
         let context = json!({"departments": make_departments()});
         let out = json!({});
         let ctx = V2EvalContext::new();
@@ -5345,7 +5959,15 @@ mod v2_lookup_eval_tests {
                 }),
             ],
         };
-        let result = eval_v2_op_step(&op, EvalValue::Value(json!(null)), &record, Some(&context), &out, "test", &ctx);
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!(null)),
+            &record,
+            Some(&context),
+            &out,
+            "test",
+            &ctx,
+        );
         assert!(matches!(result, Ok(EvalValue::Value(ref v)) if *v == json!(50000)));
 
         // Now multiply it
@@ -5362,7 +5984,11 @@ mod v2_lookup_eval_tests {
         match result2 {
             Ok(EvalValue::Value(v)) => {
                 let num = v.as_f64().expect("should be number");
-                assert!((num - 55000.0).abs() < 0.001, "expected 55000.0, got {}", num);
+                assert!(
+                    (num - 55000.0).abs() < 0.001,
+                    "expected 55000.0, got {}",
+                    num
+                );
             }
             other => panic!("expected Ok(EvalValue::Value), got {:?}", other),
         }

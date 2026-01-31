@@ -1,4 +1,4 @@
-use rulemorph::{parse_rule_file, transform, TransformErrorKind};
+use rulemorph::{TransformErrorKind, parse_rule_file, transform};
 
 #[test]
 fn v1_pipe_ref_outside_pipe_errors() {

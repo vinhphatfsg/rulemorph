@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use serde_json::Value as JsonValue;
 
 use crate::model::{Expr, RuleFile};
-use crate::path::{parse_path, PathToken};
+use crate::path::{PathToken, parse_path};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DtoLanguage {
@@ -86,10 +86,20 @@ enum PrimitiveType {
 fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
     let mut root = SchemaNode { fields: Vec::new() };
 
-    for mapping in &rule.mappings {
-        let tokens = parse_path(&mapping.target)
-            .map_err(|_| DtoError::new("target path is invalid"))?;
-        if tokens.iter().any(|token| matches!(token, PathToken::Index(_))) {
+    let step_mappings = rule
+        .steps
+        .iter()
+        .flat_map(|steps| steps.iter())
+        .flat_map(|step| step.mappings.iter())
+        .flat_map(|mappings| mappings.iter());
+
+    for mapping in rule.mappings.iter().chain(step_mappings) {
+        let tokens =
+            parse_path(&mapping.target).map_err(|_| DtoError::new("target path is invalid"))?;
+        if tokens
+            .iter()
+            .any(|token| matches!(token, PathToken::Index(_)))
+        {
             return Err(DtoError::new("target path must not include indexes"));
         }
 
@@ -153,7 +163,7 @@ fn insert_field(
     if let Some(field) = node.fields.iter_mut().find(|field| field.key == *key) {
         match &mut field.field_type {
             FieldType::Object(child) => {
-                return insert_field(child, &keys[1..], field_type, optional)
+                return insert_field(child, &keys[1..], field_type, optional);
             }
             _ => return Err(DtoError::new("target conflicts with non-object")),
         }
@@ -272,11 +282,7 @@ fn collect_types<'a>(
     out.push(TypeDef { name, node, path });
 }
 
-fn field_identifier(
-    lang: DtoLanguage,
-    key: &str,
-    used: &mut HashMap<String, usize>,
-) -> String {
+fn field_identifier(lang: DtoLanguage, key: &str, used: &mut HashMap<String, usize>) -> String {
     let base = match lang {
         DtoLanguage::Rust | DtoLanguage::Python => snake_case(&words_from_key(key)),
         DtoLanguage::TypeScript | DtoLanguage::Java | DtoLanguage::Kotlin | DtoLanguage::Swift => {
@@ -403,8 +409,7 @@ fn is_reserved(lang: DtoLanguage, ident: &str) -> bool {
 fn is_reserved_rust(value: &str) -> bool {
     matches!(
         value,
-        "as"
-            | "break"
+        "as" | "break"
             | "const"
             | "continue"
             | "crate"
@@ -632,8 +637,7 @@ fn is_reserved_java(value: &str) -> bool {
 fn is_reserved_kotlin(value: &str) -> bool {
     matches!(
         value,
-        "as"
-            | "break"
+        "as" | "break"
             | "class"
             | "continue"
             | "do"
@@ -920,7 +924,10 @@ fn render_python(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
                     ));
                 }
             } else if field.optional {
-                out.push_str(&format!("    {}: {} = None\n", field.ident, field.field_type));
+                out.push_str(&format!(
+                    "    {}: {} = None\n",
+                    field.ident, field.field_type
+                ));
             } else {
                 out.push_str(&format!("    {}: {}\n", field.ident, field.field_type));
             }
@@ -1018,11 +1025,7 @@ fn go_type_for_field(
         }
     };
 
-    if optional {
-        format!("*{}", base)
-    } else {
-        base
-    }
+    if optional { format!("*{}", base) } else { base }
 }
 
 fn render_java(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
@@ -1170,11 +1173,7 @@ fn kotlin_type_for_field(
         }
     };
 
-    if optional {
-        format!("{}?", base)
-    } else {
-        base
-    }
+    if optional { format!("{}?", base) } else { base }
 }
 
 fn render_swift(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
@@ -1245,11 +1244,7 @@ fn swift_type_for_field(
         }
     };
 
-    if optional {
-        format!("{}?", base)
-    } else {
-        base
-    }
+    if optional { format!("{}?", base) } else { base }
 }
 
 fn schema_has_optional(node: &SchemaNode) -> bool {

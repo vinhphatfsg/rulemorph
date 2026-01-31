@@ -1,0 +1,13 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: "score"
+        source: "input.score"
+  - asserts:
+      - when: { gt: ["@out.score", 0] }
+        error:
+          code: "INVALID_SCORE"
+          message: "score must be > 0"

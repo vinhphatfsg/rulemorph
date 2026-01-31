@@ -12,22 +12,16 @@ fn fixtures_dir() -> PathBuf {
 }
 
 fn read_json(path: &PathBuf) -> serde_json::Value {
-    let data = fs::read_to_string(path)
-        .unwrap_or_else(|_| panic!("failed to read {}", path.display()));
-    serde_json::from_str(&data)
-        .unwrap_or_else(|_| panic!("invalid json: {}", path.display()))
+    let data =
+        fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
+    serde_json::from_str(&data).unwrap_or_else(|_| panic!("invalid json: {}", path.display()))
 }
 
 #[test]
 fn validate_success_returns_zero() {
     let rules = fixtures_dir().join("t01_csv_basic").join("rules.yaml");
     let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("validate")
-        .arg("-r")
-        .arg(rules)
-        .output()
-        .unwrap();
+    let output = cmd.arg("validate").arg("-r").arg(rules).output().unwrap();
     assert_eq!(output.status.code(), Some(0));
 }
 
@@ -48,8 +42,8 @@ fn validate_json_errors() {
     assert_eq!(output.status.code(), Some(2));
 
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value: serde_json::Value =
+        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
     assert_eq!(value[0]["type"], "validation");
     assert_eq!(value[0]["code"], "MissingMappingValue");
 }
@@ -90,8 +84,8 @@ fn preflight_json_errors() {
     assert_eq!(output.status.code(), Some(3));
 
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value: serde_json::Value =
+        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
     assert_eq!(value[0]["type"], "transform");
     assert_eq!(value[0]["kind"], "TypeCastFailed");
 }
@@ -118,8 +112,8 @@ fn transform_outputs_json() {
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = String::from_utf8(output.stdout).unwrap();
-    let actual: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
+    let actual: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
     assert_eq!(actual, expected);
 }
 
@@ -197,8 +191,8 @@ fn transform_emits_warnings_json() {
 
     assert_eq!(output.status.code(), Some(0));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value = serde_json::from_str(&stderr)
-        .unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value: serde_json::Value =
+        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
     assert_eq!(value[0]["type"], "warning");
     assert_eq!(value[0]["kind"], "ExprError");
 }

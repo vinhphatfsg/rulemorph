@@ -1,0 +1,10 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "name"
+    source: "input.name"
+finalize:
+  filter:
+    eq: ["@item.index", 1]

@@ -1,0 +1,12 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when:
+        op: concat
+        args:
+          - "a"
+          - "b"
+      then: ./then.yaml

@@ -1,0 +1,3 @@
+[
+  { "code": "InvalidWhenType", "path": "steps[0].branch.when" }
+]

@@ -3,5 +3,9 @@
 **/*.swp
 .DS_Store
 /docs/plans
+/docs/roadmap
 AGENTS.md
 CLAUDE.md
+**/node_modules/
+.rulemorph/
+**/dist/

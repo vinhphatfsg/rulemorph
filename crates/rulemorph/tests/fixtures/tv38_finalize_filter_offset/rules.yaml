@@ -1,0 +1,15 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "score"
+    source: "input.score"
+finalize:
+  filter:
+    gte: ["@item.score", 10]
+  sort:
+    by: "score"
+    order: "asc"
+  offset: 1
+  limit: 1

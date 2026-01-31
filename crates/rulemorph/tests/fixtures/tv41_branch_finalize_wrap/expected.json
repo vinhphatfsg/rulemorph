@@ -1,0 +1,14 @@
+[
+  {
+    "data": [
+      {"score": 10}
+    ],
+    "meta": {"total": 1}
+  },
+  {
+    "data": [
+      {"score": 20}
+    ],
+    "meta": {"total": 1}
+  }
+]

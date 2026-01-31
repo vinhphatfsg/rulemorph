@@ -2,13 +2,20 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
+#[cfg(feature = "server")]
+use clap::ArgAction;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use serde_json::json;
 use rulemorph::{
-    generate_dto, parse_rule_file, preflight_validate_with_warnings, transform_stream,
-    transform_with_warnings, validate_rule_file_with_source, DtoLanguage, InputFormat, RuleError,
-    RuleFile, TransformError, TransformErrorKind, TransformWarning,
+    DtoLanguage, InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
+    TransformWarning, generate_dto, parse_rule_file,
+    preflight_validate_with_warnings_with_base_dir, transform_stream_with_base_dir,
+    transform_with_warnings_with_base_dir, validate_rule_file_with_source,
 };
+#[cfg(feature = "server")]
+use rulemorph_server::{
+    ApiMode, RulesDirErrors, ServerConfig, run as run_server, validate_rules_dir,
+};
+use serde_json::json;
 
 #[derive(Parser)]
 #[command(name = "rulemorph")]
@@ -21,15 +28,28 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Validate(ValidateArgs),
+    #[cfg(feature = "server")]
+    ValidateRulesDir(ValidateRulesDirArgs),
     Preflight(PreflightArgs),
     Transform(TransformArgs),
     Generate(GenerateArgs),
+    #[cfg(feature = "server")]
+    Ui(UiArgs),
 }
 
 #[derive(Args)]
 struct ValidateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(short = 'e', long, default_value = "text")]
+    error_format: ErrorFormat,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct ValidateRulesDirArgs {
+    #[arg(short = 'r', long)]
+    rules_dir: PathBuf,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
 }
@@ -80,6 +100,23 @@ struct GenerateArgs {
     output: Option<PathBuf>,
 }
 
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct UiArgs {
+    #[arg(long, default_value_t = 8080)]
+    port: u16,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    ui_dir: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = UiApiMode::Rules)]
+    api_mode: UiApiMode,
+    #[arg(long)]
+    rules_dir: Option<PathBuf>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    no_ui: bool,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ErrorFormat {
     Text,
@@ -104,13 +141,25 @@ enum DtoLanguageArg {
     Swift,
 }
 
+#[cfg(feature = "server")]
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum UiApiMode {
+    #[value(name = "ui-only", alias = "ui_only", alias = "native")]
+    UiOnly,
+    Rules,
+}
+
 fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Commands::Validate(args) => run_validate(args),
+        #[cfg(feature = "server")]
+        Commands::ValidateRulesDir(args) => run_validate_rules_dir(args),
         Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
         Commands::Generate(args) => run_generate(args),
+        #[cfg(feature = "server")]
+        Commands::Ui(args) => run_ui(args),
     };
     std::process::exit(exit_code);
 }
@@ -125,6 +174,17 @@ fn run_validate(args: ValidateArgs) -> i32 {
         Ok(()) => 0,
         Err(errors) => {
             emit_validation_errors(&errors, args.error_format);
+            2
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+fn run_validate_rules_dir(args: ValidateRulesDirArgs) -> i32 {
+    match validate_rules_dir(&args.rules_dir) {
+        Ok(()) => 0,
+        Err(errs) => {
+            emit_rules_dir_errors(&errs, args.error_format);
             2
         }
     }
@@ -148,7 +208,13 @@ fn run_preflight(args: PreflightArgs) -> i32 {
         Err(code) => return code,
     };
 
-    let warnings = match preflight_validate_with_warnings(&rule, &input, context_value.as_ref()) {
+    let base_dir = rule_base_dir(&args.rules);
+    let warnings = match preflight_validate_with_warnings_with_base_dir(
+        &rule,
+        &input,
+        context_value.as_ref(),
+        &base_dir,
+    ) {
         Ok(warnings) => warnings,
         Err(err) => {
             emit_transform_error(&err, args.error_format);
@@ -193,11 +259,17 @@ fn run_transform(args: TransformArgs) -> i32 {
             context_value.as_ref(),
             args.output,
             args.error_format,
+            &args.rules,
         );
     }
 
-    let (output, warnings) = match transform_with_warnings(&rule, &input, context_value.as_ref())
-    {
+    let base_dir = rule_base_dir(&args.rules);
+    let (output, warnings) = match transform_with_warnings_with_base_dir(
+        &rule,
+        &input,
+        context_value.as_ref(),
+        &base_dir,
+    ) {
         Ok(result) => result,
         Err(err) => {
             emit_transform_error(&err, args.error_format);
@@ -241,8 +313,10 @@ fn run_transform_ndjson(
     context: Option<&serde_json::Value>,
     output: Option<PathBuf>,
     error_format: ErrorFormat,
+    rules_path: &PathBuf,
 ) -> i32 {
-    let stream = match transform_stream(rule, input, context) {
+    let base_dir = rule_base_dir(rules_path);
+    let stream = match transform_stream_with_base_dir(rule, input, context, &base_dir) {
         Ok(stream) => stream,
         Err(err) => {
             emit_transform_error(&err, error_format);
@@ -354,6 +428,49 @@ fn run_generate(args: GenerateArgs) -> i32 {
     0
 }
 
+#[cfg(feature = "server")]
+fn run_ui(args: UiArgs) -> i32 {
+    let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
+    let ui_dir = args.ui_dir.unwrap_or_else(ServerConfig::default_ui_dir);
+    let api_mode = match args.api_mode {
+        UiApiMode::UiOnly => ApiMode::UiOnly,
+        UiApiMode::Rules => ApiMode::Rules,
+    };
+    let ui_enabled = !args.no_ui;
+    if !ui_enabled && api_mode == ApiMode::UiOnly {
+        eprintln!("ui-only mode cannot be used with --no-ui");
+        return 1;
+    }
+
+    let config = ServerConfig {
+        port: args.port,
+        data_dir,
+        ui_dir,
+        rules_dir: args.rules_dir,
+        api_mode,
+        ui_enabled,
+    };
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to start runtime: {}", err);
+            return 1;
+        }
+    };
+
+    if let Err(err) = runtime.block_on(run_server(config)) {
+        if let Some(errs) = err.downcast_ref::<RulesDirErrors>() {
+            eprintln!("{}", errs);
+            return 2;
+        }
+        eprintln!("server error: {}", err);
+        return 1;
+    }
+
+    0
+}
+
 fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     let yaml = match fs::read_to_string(path) {
         Ok(data) => data,
@@ -372,6 +489,12 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     };
 
     Ok((rule, yaml))
+}
+
+fn rule_base_dir(path: &PathBuf) -> PathBuf {
+    path.parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .to_path_buf()
 }
 
 fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {
@@ -429,6 +552,23 @@ fn emit_validation_errors(errors: &[RuleError], format: ErrorFormat) {
     }
 }
 
+#[cfg(feature = "server")]
+fn emit_rules_dir_errors(errors: &RulesDirErrors, format: ErrorFormat) {
+    match format {
+        ErrorFormat::Text => {
+            eprintln!("{}", errors);
+        }
+        ErrorFormat::Json => {
+            let values: Vec<_> = errors
+                .errors
+                .iter()
+                .map(|err| rules_dir_error_json(err))
+                .collect();
+            eprintln!("{}", serde_json::to_string(&values).unwrap_or_default());
+        }
+    }
+}
+
 fn emit_validation_text(err: &RuleError) {
     let mut parts = Vec::new();
     parts.push(format!("E {}", err.code.as_str()));
@@ -461,6 +601,26 @@ fn validation_error_json(err: &RuleError) -> serde_json::Value {
     value
 }
 
+#[cfg(feature = "server")]
+fn rules_dir_error_json(err: &rulemorph_server::RulesDirError) -> serde_json::Value {
+    let mut value = json!({
+        "type": "rules_dir",
+        "code": err.code,
+        "message": err.message,
+        "file": err.file.to_string_lossy(),
+    });
+    if let Some(path) = &err.path {
+        value["path"] = json!(path);
+    }
+    if let Some(line) = err.line {
+        value["line"] = json!(line);
+    }
+    if let Some(column) = err.column {
+        value["column"] = json!(column);
+    }
+    value
+}
+
 fn emit_transform_error(err: &TransformError, format: ErrorFormat) {
     match format {
         ErrorFormat::Text => {
@@ -481,7 +641,10 @@ fn emit_transform_error(err: &TransformError, format: ErrorFormat) {
             if let Some(path) = &err.path {
                 value["path"] = json!(path);
             }
-            eprintln!("{}", serde_json::to_string(&vec![value]).unwrap_or_default());
+            eprintln!(
+                "{}",
+                serde_json::to_string(&vec![value]).unwrap_or_default()
+            );
         }
     }
 }
@@ -534,5 +697,6 @@ fn transform_kind_to_str(kind: &TransformErrorKind) -> &'static str {
         TransformErrorKind::MissingRequired => "MissingRequired",
         TransformErrorKind::TypeCastFailed => "TypeCastFailed",
         TransformErrorKind::ExprError => "ExprError",
+        TransformErrorKind::AssertionFailed => "AssertionFailed",
     }
 }

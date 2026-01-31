@@ -2,9 +2,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-use serde_json::{json, Value};
-use tempfile::tempdir;
 use rulemorph::parse_rule_file;
+use serde_json::{Value, json};
+use tempfile::tempdir;
 
 struct McpServer {
     child: Child,
@@ -39,9 +39,7 @@ impl McpServer {
         stdin.flush().expect("flush request");
 
         let mut line = String::new();
-        self.stdout
-            .read_line(&mut line)
-            .expect("read response");
+        self.stdout.read_line(&mut line).expect("read response");
         assert!(!line.trim().is_empty(), "empty response");
         serde_json::from_str(&line).expect("parse response")
     }
@@ -82,9 +80,7 @@ fn initialize_and_list_tools() {
     });
     let response = server.send(&request);
 
-    let tools = response["result"]["tools"]
-        .as_array()
-        .expect("tools array");
+    let tools = response["result"]["tools"].as_array().expect("tools array");
     let expected = [
         "transform",
         "validate_rules",
@@ -144,6 +140,83 @@ mappings:
     let output: Value = serde_json::from_str(output_text).expect("output json");
 
     assert_eq!(output, json!([{ "id": 1 }]));
+    assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
+
+    server.shutdown();
+}
+
+#[test]
+fn transform_rules_path_resolves_branch_relative_paths() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dir = tempdir().expect("temp dir");
+    let rules_path = dir.path().join("rules.yaml");
+    let then_path = dir.path().join("branch_child.yaml");
+    let else_path = dir.path().join("branch_else.yaml");
+    let input_path = dir.path().join("input.json");
+
+    fs::write(
+        &rules_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: ["@input.kind", "child"] }
+      then: ./branch_child.yaml
+      else: ./branch_else.yaml
+      return: true
+"#,
+    )
+    .expect("write rules");
+    fs::write(
+        &then_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "result"
+    value: "child"
+"#,
+    )
+    .expect("write then rules");
+    fs::write(
+        &else_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "result"
+    value: "else"
+"#,
+    )
+    .expect("write else rules");
+    fs::write(&input_path, r#"[{"kind": "child"}, {"kind": "other"}]"#).expect("write input");
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 25,
+        "method": "tools/call",
+        "params": {
+            "name": "transform",
+            "arguments": {
+                "rules_path": rules_path.to_string_lossy(),
+                "input_path": input_path.to_string_lossy()
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let output: Value = serde_json::from_str(output_text).expect("output json");
+
+    assert_eq!(output, json!([{ "result": "child" }, { "result": "else" }]));
     assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
 
     server.shutdown();
@@ -250,6 +323,88 @@ mappings:
 
     let output_file = fs::read_to_string(&output_path).expect("read output file");
     assert_eq!(output_file, output_text);
+
+    server.shutdown();
+}
+
+#[test]
+fn ndjson_rules_path_resolves_branch_relative_paths() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dir = tempdir().expect("temp dir");
+    let rules_path = dir.path().join("rules.yaml");
+    let then_path = dir.path().join("branch_child.yaml");
+    let else_path = dir.path().join("branch_else.yaml");
+    let input_path = dir.path().join("input.json");
+
+    fs::write(
+        &rules_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: ["@input.kind", "child"] }
+      then: ./branch_child.yaml
+      else: ./branch_else.yaml
+      return: true
+"#,
+    )
+    .expect("write rules");
+    fs::write(
+        &then_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "result"
+    value: "child"
+"#,
+    )
+    .expect("write then rules");
+    fs::write(
+        &else_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "result"
+    value: "else"
+"#,
+    )
+    .expect("write else rules");
+    fs::write(&input_path, r#"[{"kind": "child"}, {"kind": "other"}]"#).expect("write input");
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 26,
+        "method": "tools/call",
+        "params": {
+            "name": "transform",
+            "arguments": {
+                "rules_path": rules_path.to_string_lossy(),
+                "input_path": input_path.to_string_lossy(),
+                "ndjson": true
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let lines: Vec<&str> = output_text.trim_end_matches('\n').split('\n').collect();
+
+    assert_eq!(lines.len(), 2);
+    let first: Value = serde_json::from_str(lines[0]).expect("line 1 json");
+    let second: Value = serde_json::from_str(lines[1]).expect("line 2 json");
+    assert_eq!(first, json!({"result": "child"}));
+    assert_eq!(second, json!({"result": "else"}));
+    assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
 
     server.shutdown();
 }
@@ -430,7 +585,9 @@ fn list_ops_success() {
     assert!(response["result"]["meta"]["ops"]["categories"]["json_ops"].is_array());
     assert!(response["result"]["meta"]["ops"]["categories"]["array_ops"].is_array());
     assert!(response["result"]["meta"]["ops"]["category_docs"]["json_ops"]["examples"].is_array());
-    assert!(response["result"]["meta"]["ops"]["category_docs"]["string_ops"]["examples"].is_array());
+    assert!(
+        response["result"]["meta"]["ops"]["category_docs"]["string_ops"]["examples"].is_array()
+    );
 
     server.shutdown();
 }
@@ -932,7 +1089,11 @@ fn resources_list_and_read() {
     let resources = list_response["result"]["resources"]
         .as_array()
         .expect("resources array");
-    assert!(resources.iter().any(|item| item["uri"] == "rulemorph://docs/rules_spec_en"));
+    assert!(
+        resources
+            .iter()
+            .any(|item| item["uri"] == "rulemorph://docs/rules_spec_en")
+    );
 
     let read_request = json!({
         "jsonrpc": "2.0",
@@ -965,7 +1126,11 @@ fn prompts_list_and_get() {
     let prompts = list_response["result"]["prompts"]
         .as_array()
         .expect("prompts array");
-    assert!(prompts.iter().any(|item| item["name"] == "rule_from_input_base"));
+    assert!(
+        prompts
+            .iter()
+            .any(|item| item["name"] == "rule_from_input_base")
+    );
 
     let get_request = json!({
         "jsonrpc": "2.0",

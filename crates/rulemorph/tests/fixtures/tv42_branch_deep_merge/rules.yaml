@@ -1,0 +1,12 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - mappings:
+      - target: "user.id"
+        source: "input.id"
+  - branch:
+      when: { eq: [1, 1] }
+      then: tests/fixtures/tv42_branch_deep_merge/then.yaml
+      return: false

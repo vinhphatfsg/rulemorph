@@ -30,6 +30,12 @@ pub enum ErrorCode {
     CyclicDependency,
     EmptyPipe,
     InvalidPipeStep,
+
+    // v2 rule structure errors
+    MissingMappings,
+    StepsMappingExclusive,
+    InvalidStep,
+    InvalidFinalize,
 }
 
 impl ErrorCode {
@@ -60,6 +66,10 @@ impl ErrorCode {
             ErrorCode::CyclicDependency => "CyclicDependency",
             ErrorCode::EmptyPipe => "EmptyPipe",
             ErrorCode::InvalidPipeStep => "InvalidPipeStep",
+            ErrorCode::MissingMappings => "MissingMappings",
+            ErrorCode::StepsMappingExclusive => "StepsMappingExclusive",
+            ErrorCode::InvalidStep => "InvalidStep",
+            ErrorCode::InvalidFinalize => "InvalidFinalize",
         }
     }
 }
@@ -110,6 +120,7 @@ pub enum TransformErrorKind {
     MissingRequired,
     TypeCastFailed,
     ExprError,
+    AssertionFailed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

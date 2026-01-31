@@ -1,5 +1,5 @@
-use serde_json::json;
 use rulemorph::{parse_rule_file, transform_with_warnings};
+use serde_json::json;
 
 #[test]
 fn record_when_non_bool_warns_and_skips() {
@@ -15,8 +15,7 @@ mappings:
 "#;
     let rule = parse_rule_file(yaml).expect("failed to parse rules");
     let input = r#"[{ "name": "aaa" }]"#;
-    let (output, warnings) =
-        transform_with_warnings(&rule, input, None).expect("transform failed");
+    let (output, warnings) = transform_with_warnings(&rule, input, None).expect("transform failed");
 
     assert_eq!(output, json!([]));
     assert_eq!(warnings.len(), 1);

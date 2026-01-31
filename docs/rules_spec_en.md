@@ -129,7 +129,12 @@ References are `@`-prefixed namespaces + dot paths:
 - `@context.*`: injected external context
 - `@out.*`: output values produced earlier in the same record
 - `@item.*`: current element in a `map` step (`@item.index` is the 0-based index)
+- `@item`: current element (whole value) in a `map` step
+- `@acc.*`: accumulator in `reduce`/`fold` steps
+- `@acc`: accumulator (whole value) in `reduce`/`fold` steps
 - `@<var>`: let-bound variable (e.g., `@total`)
+
+Whole-scope references are `@item`/`@acc` (no trailing dot). A trailing dot like `@item.` or `@acc.` is invalid.
 
 `source` can omit the namespace **only for a single key** (defaults to `input.*`).
 If you need dot paths or array indexes, you must use `input.*` explicitly.

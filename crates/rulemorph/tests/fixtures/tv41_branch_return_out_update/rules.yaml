@@ -1,0 +1,15 @@
+version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: ["@input.kind", "a"] }
+      then: tests/fixtures/tv41_branch_return_out_update/then.yaml
+      else: tests/fixtures/tv41_branch_return_out_update/else.yaml
+      return: false
+  - mappings:
+      - target: "count"
+        expr:
+          - "@out.count"
+          - add: [1]

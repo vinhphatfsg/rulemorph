@@ -1,0 +1,10 @@
+[
+  {
+    "payload": {"id": 1, "name": "alpha"},
+    "ctx": {"region": "apac", "feature": {"flag": true}}
+  },
+  {
+    "payload": {"id": 2, "name": "beta"},
+    "ctx": {"region": "apac", "feature": {"flag": true}}
+  }
+]

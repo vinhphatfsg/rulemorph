@@ -1,0 +1,7 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "count"
+    value: 10

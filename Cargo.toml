@@ -3,5 +3,9 @@ members = [
     "crates/rulemorph",
     "crates/rulemorph_cli",
     "crates/rulemorph_mcp",
+    "crates/rulemorph_endpoint",
+    "crates/rulemorph_server",
+    "crates/rulemorph_trace",
+    "crates/rulemorph_ui",
 ]
 resolver = "2"
