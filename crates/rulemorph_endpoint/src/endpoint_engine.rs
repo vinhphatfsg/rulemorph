@@ -351,7 +351,8 @@ impl EndpointEngine {
          -> Result<(JsonValue, JsonValue)> {
             skip_steps = true;
             let fallback_input = fallback_input.unwrap_or_else(|| {
-                build_input_from_parts(&parts, &endpoint_match.params, body_value, empty_object())
+                let query = parse_query(parts.uri.query()).unwrap_or_else(|_| empty_object());
+                build_input_from_parts(&parts, &endpoint_match.params, body_value, query)
             });
             if let Some(catch) = &endpoint.catch {
                 if let Some(next) = self
@@ -3880,6 +3881,71 @@ mappings:
             .expect("read body");
         let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
         assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
+    async fn endpoint_invalid_json_keeps_query_in_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/test
+    catch:
+      default: ./rules/catch.yaml
+    steps: []
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "query"
+    expr: "@input.query"
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/test?token=abc")
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from("{\"bad\":}"))
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "query": { "token": "abc" } }));
     }
 
     #[tokio::test]
