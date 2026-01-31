@@ -99,8 +99,9 @@ jobs:
 
       - name: Build
         run: |
-          cargo build -p rulemorph_cli --features server,ui --release --locked --target ${{ matrix.target }}
-          cargo build -p rulemorph_mcp -p rulemorph_server --release --locked --target ${{ matrix.target }}
+          cargo build -p rulemorph_cli --release --locked --target ${{ matrix.target }}
+          cargo build -p rulemorph_mcp --release --locked --target ${{ matrix.target }}
+          cargo build -p rulemorph_server --features embedded-ui --release --locked --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -125,14 +126,8 @@ jobs:
           tar -C "$STAGING" -czf "${OUT_DIR}/${BIN_CLI}-${VERSION}-${TARGET}.tar.gz" "$BIN_CLI" "$BIN_MCP"
 
           # Server package (tar.gz)
-          if [ ! -d "$UI_DIR" ]; then
-            echo "UI dist not found at $UI_DIR"
-            exit 1
-          fi
           cp "target/${TARGET}/release/${BIN_SERVER}" "$SERVER_STAGING/"
-          mkdir -p "$SERVER_STAGING/ui"
-          cp -R "$UI_DIR" "$SERVER_STAGING/ui/dist"
-          tar -C "$SERVER_STAGING" -czf "${OUT_DIR}/${BIN_SERVER}-${VERSION}-${TARGET}.tar.gz" "$BIN_SERVER" "ui/dist"
+          tar -C "$SERVER_STAGING" -czf "${OUT_DIR}/${BIN_SERVER}-${VERSION}-${TARGET}.tar.gz" "$BIN_SERVER"
 
           # MCPB package (.mcpb = ZIP)
           VERSION_NUM="${VERSION#v}"
@@ -167,11 +162,8 @@ jobs:
           Compress-Archive -Path "$Staging\$BinCli","$Staging\$BinMcp" -DestinationPath "$OutDir\rulemorph-$env:VERSION-$env:TARGET.zip"
 
           # Server package (zip)
-          if (!(Test-Path $UiDir)) { throw "UI dist not found at $UiDir" }
           Copy-Item "target\$env:TARGET\release\$BinServer" "$ServerStaging\$BinServer"
-          New-Item -ItemType Directory -Force -Path "$ServerStaging\\ui" | Out-Null
-          Copy-Item -Recurse $UiDir "$ServerStaging\\ui"
-          Compress-Archive -Path "$ServerStaging\\*" -DestinationPath "$OutDir\\rulemorph-server-$env:VERSION-$env:TARGET.zip"
+          Compress-Archive -Path "$ServerStaging\\$BinServer" -DestinationPath "$OutDir\\rulemorph-server-$env:VERSION-$env:TARGET.zip"
 
           # MCPB package (.mcpb = ZIP)
           $VersionNum = $env:VERSION.TrimStart('v')
@@ -304,6 +296,16 @@ jobs:
             echo "SHA256 for ${TARGET}: ${SHA}"
           done
 
+          for TARGET in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            FILENAME="rulemorph-server-${VERSION}-${TARGET}.tar.gz"
+            URL="${REPO_URL}/releases/download/${VERSION}/${FILENAME}"
+            download_with_retry "$URL" "$FILENAME"
+            SHA=$(sha256sum "$FILENAME" | cut -d' ' -f1)
+            TARGET_VAR=$(echo "$TARGET" | tr '-' '_')
+            echo "SERVER_SHA256_${TARGET_VAR}=${SHA}" >> $GITHUB_ENV
+            echo "Server SHA256 for ${TARGET}: ${SHA}"
+          done
+
       - name: Trigger Homebrew formula update
         uses: peter-evans/repository-dispatch@v3
         with:
@@ -315,5 +317,8 @@ jobs:
               "version": "${{ github.ref_name }}",
               "sha256_arm": "${{ env.SHA256_aarch64_apple_darwin }}",
               "sha256_intel": "${{ env.SHA256_x86_64_apple_darwin }}",
-              "sha256_linux": "${{ env.SHA256_x86_64_unknown_linux_gnu }}"
+              "sha256_linux": "${{ env.SHA256_x86_64_unknown_linux_gnu }}",
+              "server_sha256_arm": "${{ env.SERVER_SHA256_aarch64_apple_darwin }}",
+              "server_sha256_intel": "${{ env.SERVER_SHA256_x86_64_apple_darwin }}",
+              "server_sha256_linux": "${{ env.SERVER_SHA256_x86_64_unknown_linux_gnu }}"
             }

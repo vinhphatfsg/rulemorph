@@ -431,7 +431,7 @@ fn run_generate(args: GenerateArgs) -> i32 {
 #[cfg(feature = "server")]
 fn run_ui(args: UiArgs) -> i32 {
     let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
-    let ui_dir = args.ui_dir.unwrap_or_else(ServerConfig::default_ui_dir);
+    let ui_dir = args.ui_dir;
     let api_mode = match args.api_mode {
         UiApiMode::UiOnly => ApiMode::UiOnly,
         UiApiMode::Rules => ApiMode::Rules,

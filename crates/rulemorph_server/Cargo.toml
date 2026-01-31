@@ -16,6 +16,8 @@ path = "src/main.rs"
 anyhow = "1.0"
 axum = { version = "0.7", features = ["multipart", "json"] }
 clap = { version = "4.5", features = ["derive"] }
+include_dir = { version = "0.7", optional = true }
+mime_guess = { version = "2.0", optional = true }
 rulemorph = { path = "../rulemorph" }
 rulemorph_endpoint = { path = "../rulemorph_endpoint" }
 rulemorph_trace = { path = "../rulemorph_trace" }
@@ -28,3 +30,6 @@ tower-http = { version = "0.5", features = ["fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 walkdir = "2.5"
+
+[features]
+embedded-ui = ["dep:include_dir", "dep:mime_guess"]

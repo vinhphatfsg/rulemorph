@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
     let config = ServerConfig {
         port: cli.port,
         data_dir: cli.data_dir.unwrap_or_else(ServerConfig::default_data_dir),
-        ui_dir: cli.ui_dir.unwrap_or_else(ServerConfig::default_ui_dir),
+        ui_dir: cli.ui_dir,
         rules_dir: cli.rules_dir,
         api_mode: cli.api_mode.into(),
         ui_enabled: !cli.no_ui,

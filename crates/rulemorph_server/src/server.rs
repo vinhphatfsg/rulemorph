@@ -23,10 +23,25 @@ use crate::api_graph::{ApiGraphResponse, build_api_graph};
 use rulemorph_endpoint::{ApiMode, EndpointEngine};
 use rulemorph_trace::{ImportResult, TraceMeta, TraceStore};
 
+#[cfg(feature = "embedded-ui")]
+use axum::{extract::OriginalUri, http::HeaderMap};
+#[cfg(feature = "embedded-ui")]
+use include_dir::{Dir, include_dir};
+
+#[cfg(feature = "embedded-ui")]
+static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../rulemorph_ui/ui/dist");
+
+#[derive(Clone)]
+pub(crate) enum UiSource {
+    Filesystem(PathBuf),
+    #[cfg(feature = "embedded-ui")]
+    Embedded,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<TraceStore>,
-    pub ui_dir: PathBuf,
+    pub ui_source: Option<UiSource>,
     pub api_mode: ApiMode,
     pub api_engine: Option<Arc<EndpointEngine>>,
     pub trace_events: broadcast::Sender<()>,
@@ -48,13 +63,64 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             .route("/internal/api-graph", get(get_api_graph))
             .route("/internal/import", post(import_bundle_path));
 
-        let static_service = ServeDir::new(state.ui_dir.clone())
-            .fallback(ServeFile::new(state.ui_dir.join("index.html")));
+        let ui_source = match state.ui_source.clone() {
+            Some(source) => source,
+            None => {
+                return app.merge(internal).with_state(state);
+            }
+        };
 
-        app = app.merge(internal).fallback_service(static_service);
+        app = app.merge(internal);
+        app = match ui_source {
+            UiSource::Filesystem(dir) => {
+                let static_service =
+                    ServeDir::new(dir.clone()).fallback(ServeFile::new(dir.join("index.html")));
+                app.fallback_service(static_service)
+            }
+            #[cfg(feature = "embedded-ui")]
+            UiSource::Embedded => app.fallback(serve_embedded_ui),
+        };
     }
 
     app.with_state(state)
+}
+
+#[cfg(feature = "embedded-ui")]
+async fn serve_embedded_ui(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
+    let mut path = uri.path().trim_start_matches('/').to_string();
+    if path.is_empty() {
+        path = "index.html".to_string();
+    }
+
+    if let Some(file) = UI_DIR.get_file(&path) {
+        return embedded_response(file.path().to_str(), file.contents());
+    }
+
+    if let Some(index) = UI_DIR.get_file("index.html") {
+        return embedded_response(Some("index.html"), index.contents());
+    }
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "embedded ui missing index.html",
+    )
+        .into_response()
+}
+
+#[cfg(feature = "embedded-ui")]
+fn embedded_response(path: Option<&str>, contents: &'static [u8]) -> axum::response::Response {
+    let mut headers = HeaderMap::new();
+    let mime = match path {
+        Some(path) => mime_guess::from_path(path).first_or_octet_stream(),
+        None => mime_guess::mime::APPLICATION_OCTET_STREAM,
+    };
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        mime.as_ref()
+            .parse()
+            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
+    );
+    (headers, contents).into_response()
 }
 
 async fn handle_rules_api(

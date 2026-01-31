@@ -11,13 +11,13 @@ use rulemorph_endpoint::{EndpointEngine, EngineConfig};
 use rulemorph_trace::{TraceStore, start_trace_watcher};
 use tokio::sync::broadcast;
 
-use server::{AppState, build_router};
+use server::{AppState, UiSource, build_router};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
     pub port: u16,
     pub data_dir: PathBuf,
-    pub ui_dir: PathBuf,
+    pub ui_dir: Option<PathBuf>,
     pub rules_dir: Option<PathBuf>,
     pub api_mode: ApiMode,
     pub ui_enabled: bool,
@@ -63,6 +63,7 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         ApiMode::Rules => {
             let rules_dir = config
                 .rules_dir
+                .clone()
                 .unwrap_or_else(ServerConfig::default_rules_dir);
             if let Err(errs) = validate_rules_dir(&rules_dir) {
                 return Err(errs.into());
@@ -74,9 +75,15 @@ pub async fn run(config: ServerConfig) -> Result<()> {
             )?)
         }
     };
+    let ui_source = if config.ui_enabled {
+        Some(resolve_ui_source(&config)?)
+    } else {
+        None
+    };
+
     let state = AppState {
         store: Arc::new(store),
-        ui_dir: config.ui_dir.clone(),
+        ui_source,
         api_mode: config.api_mode,
         api_engine: api_engine.map(Arc::new),
         trace_events,
@@ -91,4 +98,31 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         .context("failed to bind port")?;
     axum::serve(listener, app).await.context("server error")?;
     Ok(())
+}
+
+fn resolve_ui_source(config: &ServerConfig) -> Result<UiSource> {
+    if let Some(ui_dir) = config.ui_dir.clone() {
+        if !ui_dir.exists() {
+            anyhow::bail!("ui directory not found: {}", ui_dir.display());
+        }
+        return Ok(UiSource::Filesystem(ui_dir));
+    }
+
+    let default_dir = ServerConfig::default_ui_dir();
+    if default_dir.exists() {
+        return Ok(UiSource::Filesystem(default_dir));
+    }
+
+    #[cfg(feature = "embedded-ui")]
+    {
+        return Ok(UiSource::Embedded);
+    }
+
+    #[cfg(not(feature = "embedded-ui"))]
+    {
+        anyhow::bail!(
+            "ui directory not found at {} and embedded UI is disabled",
+            default_dir.display()
+        );
+    }
 }

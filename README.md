@@ -21,7 +21,7 @@ Choose the section that matches your use case.
 
 ### CLI (most users)
 
-The command-line tool for transforming data and generating DTOs.
+The command-line tool for transforming data and generating DTOs. This does not include the UI/API server (use `rulemorph-server` if needed).
 
 Homebrew (recommended):
 
@@ -45,7 +45,13 @@ cargo build -p rulemorph_cli --release
 
 ### UI / API Server
 
-A web-based interface for visually editing rules and testing transformations. Also serves custom REST APIs defined by YAML rules.
+A web UI and server that exposes `/api/*` defined by YAML rules. The UI is embedded in the binary, and you can override it with `--ui-dir`.
+
+Homebrew (recommended):
+
+```sh
+brew install vinhphatfsg/tap/rulemorph-server
+```
 
 Prebuilt binaries (GitHub Releases):
 
@@ -57,7 +63,13 @@ From source:
 cargo run -p rulemorph_server -- --help
 ```
 
-See [UI Server Guide](docs/guide/ui-run-and-verify-en.md) for full startup steps.
+Example with a rules directory:
+
+```sh
+rulemorph-server --rules-dir ./api_rules --api-mode rules
+```
+
+For full startup steps, see [UI Server Guide](docs/guide/ui-run-and-verify-en.md).
 
 ### MCP Server
 
