@@ -833,12 +833,38 @@ impl EndpointEngine {
             return Err(EndpointError::invalid("GET with body is not allowed"));
         }
 
-        let url = eval_expr_string(&rule.request.url, input, context)?;
-        let headers = build_headers(&rule.request.headers)?;
-        let body = self.build_network_body(rule, input, context)?;
+        let total_started = Instant::now();
+        let run_catch = |err: EndpointError,
+                         request_us: u64,
+                         body_rule_trace: Option<JsonValue>|
+         -> Result<NetworkExecution, EndpointError> {
+            if let Some(catch) = &rule.catch {
+                if let Some(output) = self.run_catch(catch, &err, input, None, &rule.base_dir)? {
+                    return Ok(NetworkExecution {
+                        output,
+                        request_us,
+                        total_us: total_started.elapsed().as_micros() as u64,
+                        body_rule_trace,
+                    });
+                }
+            }
+            Err(err)
+        };
+
+        let url = match eval_expr_string(&rule.request.url, input, context) {
+            Ok(url) => url,
+            Err(err) => return run_catch(err, 0, None),
+        };
+        let headers = match build_headers(&rule.request.headers) {
+            Ok(headers) => headers,
+            Err(err) => return run_catch(err, 0, None),
+        };
+        let body = match self.build_network_body(rule, input, context) {
+            Ok(body) => body,
+            Err(err) => return run_catch(err, 0, None),
+        };
         let body_rule_trace = Self::build_body_rule_trace(rule, input, context, body.as_ref());
 
-        let total_started = Instant::now();
         let mut attempt = 0;
         loop {
             let request_started = Instant::now();
@@ -846,21 +872,9 @@ impl EndpointEngine {
                 .send_network_request(rule, &url, &headers, body.as_ref())
                 .await;
             let request_us = request_started.elapsed().as_micros() as u64;
-            let run_catch =
+            let run_catch_with_body =
                 |err: EndpointError, request_us: u64| -> Result<NetworkExecution, EndpointError> {
-                    if let Some(catch) = &rule.catch {
-                        if let Some(output) =
-                            self.run_catch(catch, &err, input, None, &rule.base_dir)?
-                        {
-                            return Ok(NetworkExecution {
-                                output,
-                                request_us,
-                                total_us: total_started.elapsed().as_micros() as u64,
-                                body_rule_trace: body_rule_trace.clone(),
-                            });
-                        }
-                    }
-                    Err(err)
+                    run_catch(err, request_us, body_rule_trace.clone())
                 };
 
             match result {
@@ -869,7 +883,7 @@ impl EndpointEngine {
                         let tokens = match parse_path(select) {
                             Ok(tokens) => tokens,
                             Err(_) => {
-                                return run_catch(
+                                return run_catch_with_body(
                                     EndpointError::invalid(format!(
                                         "invalid select path: {}",
                                         select
@@ -881,7 +895,7 @@ impl EndpointEngine {
                         let selected = match get_path(&value, &tokens) {
                             Some(selected) => selected,
                             None => {
-                                return run_catch(
+                                return run_catch_with_body(
                                     EndpointError::invalid(format!(
                                         "select path not found: {}",
                                         select
@@ -917,7 +931,7 @@ impl EndpointEngine {
                             }
                         }
                     }
-                    return run_catch(err, request_us);
+                    return run_catch_with_body(err, request_us);
                 }
             }
         }
@@ -4066,6 +4080,166 @@ mappings:
 
         let request = Request::builder()
             .method("GET")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
+    async fn network_url_eval_error_runs_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: ./rules/network.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("network.yaml"),
+            r#"
+version: 2
+type: network
+request:
+  method: GET
+  url: "@input.url"
+timeout: 1s
+catch:
+  default: ./catch.yaml
+"#,
+        )
+        .expect("write network.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let response = engine
+            .handle_request(request)
+            .await
+            .expect("handle request");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "handled": true }));
+    }
+
+    #[tokio::test]
+    async fn network_body_build_error_runs_catch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/test
+    steps:
+      - rule: ./rules/network.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("network.yaml"),
+            r#"
+version: 2
+type: network
+request:
+  method: POST
+  url: "https://example.com"
+timeout: 1s
+body_map:
+  - target: "required"
+    source: "input.missing"
+    required: true
+catch:
+  default: ./catch.yaml
+"#,
+        )
+        .expect("write network.yaml");
+
+        std::fs::write(
+            rules_subdir.join("catch.yaml"),
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "handled"
+    value: true
+"#,
+        )
+        .expect("write catch.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("POST")
             .uri("/api/test")
             .body(axum::body::Body::empty())
             .expect("build request");
