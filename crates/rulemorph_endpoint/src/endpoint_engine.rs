@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
-use chrono::{Datelike, Utc};
+use chrono::Utc;
 use reqwest::Client;
 use rulemorph::PathToken;
 use rulemorph::v2_eval::{
@@ -24,6 +24,7 @@ use rulemorph::{
     parse_rule_file, transform_record, transform_record_with_base_dir,
     validate_rule_file_with_source,
 };
+use rulemorph_trace::write_trace_bundle;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tracing::warn;
@@ -628,6 +629,7 @@ impl EndpointEngine {
                 "path": rule_path,
                 "version": 2
             },
+            "input_format": "json",
             "rule_source": rule_source,
             "records": [record],
             "summary": {
@@ -691,26 +693,7 @@ impl EndpointEngine {
     }
 
     async fn write_trace(&self, trace: &JsonValue) -> Result<()> {
-        let now = Utc::now();
-        let trace_id = trace
-            .get("trace_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("trace");
-        let trace_dir = self
-            .config
-            .data_dir
-            .join("traces")
-            .join(format!("{:04}", now.year()))
-            .join(format!("{:02}", now.month()))
-            .join(format!("{:02}", now.day()));
-        tokio::fs::create_dir_all(&trace_dir)
-            .await
-            .map_err(|err| anyhow!(err.to_string()))?;
-        let path = trace_dir.join(format!("{}.json", trace_id));
-        let payload = serde_json::to_string_pretty(trace)?;
-        tokio::fs::write(&path, payload)
-            .await
-            .map_err(|err| anyhow!(err.to_string()))?;
+        write_trace_bundle(&self.config.data_dir, trace, None).await?;
         Ok(())
     }
 
@@ -733,13 +716,18 @@ impl EndpointEngine {
             )
         })? {
             RuleKind::Normal(rule) => {
-                let nodes = build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
-                let duration_us = sum_node_duration_us(&nodes);
+                let rule_trace =
+                    build_rule_nodes_from_rule(&rule.rule, input, context, &rule.base_dir);
+                let duration_us = rule_trace.duration_us;
                 let output_result =
                     transform_record_with_base_dir(&rule.rule, input, context, &rule.base_dir);
                 let output = match output_result {
                     Ok(Some(output)) => output,
                     Ok(None) => {
+                        let record_output = rule_trace
+                            .pre_finalize_output
+                            .clone()
+                            .unwrap_or(JsonValue::Null);
                         let child_trace = build_rule_trace(
                             "normal",
                             rule_display_name(&resolved),
@@ -747,8 +735,9 @@ impl EndpointEngine {
                             rule.rule.version,
                             rule_source,
                             input.clone(),
-                            JsonValue::Null,
-                            nodes,
+                            record_output,
+                            rule_trace.nodes,
+                            rule_trace.finalize,
                             duration_us,
                             "error",
                         );
@@ -762,6 +751,10 @@ impl EndpointEngine {
                         .with_child_trace(Some(child_trace)));
                     }
                     Err(err) => {
+                        let record_output = rule_trace
+                            .pre_finalize_output
+                            .clone()
+                            .unwrap_or(JsonValue::Null);
                         let child_trace = build_rule_trace(
                             "normal",
                             rule_display_name(&resolved),
@@ -769,8 +762,9 @@ impl EndpointEngine {
                             rule.rule.version,
                             rule_source,
                             input.clone(),
-                            JsonValue::Null,
-                            nodes,
+                            record_output,
+                            rule_trace.nodes,
+                            rule_trace.finalize,
                             duration_us,
                             "error",
                         );
@@ -780,6 +774,10 @@ impl EndpointEngine {
                         .with_child_trace(Some(child_trace)));
                     }
                 };
+                let record_output = rule_trace
+                    .pre_finalize_output
+                    .clone()
+                    .unwrap_or_else(|| output.clone());
                 let child_trace = build_rule_trace(
                     "normal",
                     rule_display_name(&resolved),
@@ -787,8 +785,9 @@ impl EndpointEngine {
                     rule.rule.version,
                     rule_source,
                     input.clone(),
-                    output.clone(),
-                    nodes,
+                    record_output,
+                    rule_trace.nodes,
+                    rule_trace.finalize,
                     duration_us,
                     "ok",
                 );
@@ -812,6 +811,7 @@ impl EndpointEngine {
                     input.clone(),
                     execution.output.clone(),
                     nodes,
+                    None,
                     execution.total_us,
                     "ok",
                 );
@@ -986,10 +986,14 @@ impl EndpointEngine {
             .and_then(|value| value.to_str())
             .unwrap_or("body_rule")
             .to_string();
-        let nodes =
+        let rule_trace =
             build_rule_nodes_from_rule(&body_rule.rule, input, context, &body_rule.base_dir);
-        let duration_us = sum_node_duration_us(&nodes);
-        let output_value = output.cloned().unwrap_or(JsonValue::Null);
+        let duration_us = rule_trace.duration_us;
+        let output_value = rule_trace
+            .pre_finalize_output
+            .clone()
+            .or_else(|| output.cloned())
+            .unwrap_or(JsonValue::Null);
         Some(build_rule_trace(
             "normal",
             name,
@@ -998,7 +1002,8 @@ impl EndpointEngine {
             json!({}),
             input.clone(),
             output_value,
-            nodes,
+            rule_trace.nodes,
+            rule_trace.finalize,
             duration_us,
             "ok",
         ))
@@ -2319,6 +2324,7 @@ fn build_rule_trace(
     input: JsonValue,
     output: JsonValue,
     nodes: Vec<JsonValue>,
+    finalize: Option<JsonValue>,
     duration_us: u64,
     status: &str,
 ) -> JsonValue {
@@ -2332,7 +2338,7 @@ fn build_rule_trace(
         "output": output,
         "nodes": nodes,
     });
-    json!({
+    let mut trace = json!({
         "trace_id": trace_id,
         "timestamp": now.to_rfc3339(),
         "rule": {
@@ -2341,6 +2347,7 @@ fn build_rule_trace(
             "path": path,
             "version": version
         },
+        "input_format": "json",
         "rule_source": rule_source,
         "records": [record],
         "summary": {
@@ -2349,7 +2356,20 @@ fn build_rule_trace(
             "record_failed": if status == "ok" { 0 } else { 1 },
             "duration_us": duration_us
         }
-    })
+    });
+    if let Some(finalize) = finalize {
+        if let Some(obj) = trace.as_object_mut() {
+            obj.insert("finalize".to_string(), finalize);
+        }
+    }
+    trace
+}
+
+struct RuleTraceNodes {
+    nodes: Vec<JsonValue>,
+    finalize: Option<JsonValue>,
+    pre_finalize_output: Option<JsonValue>,
+    duration_us: u64,
 }
 
 fn build_rule_nodes_from_rule(
@@ -2357,8 +2377,10 @@ fn build_rule_nodes_from_rule(
     record: &JsonValue,
     context: Option<&JsonValue>,
     base_dir: &Path,
-) -> Vec<JsonValue> {
+) -> RuleTraceNodes {
     let mut nodes = Vec::new();
+    let mut finalize_trace: Option<JsonValue> = None;
+    let mut pre_finalize_output: Option<JsonValue> = None;
     if let Some(steps) = &rule.steps {
         let mut step_outputs = Vec::with_capacity(steps.len());
         for index in 0..steps.len() {
@@ -2576,13 +2598,13 @@ fn build_rule_nodes_from_rule(
                                 .ok()
                                 .and_then(|source| yaml_source_to_json(&source))
                                 .unwrap_or_else(|| json!({}));
-                            let child_nodes = build_rule_nodes_from_rule(
+                            let child_rule_trace = build_rule_nodes_from_rule(
                                 &loaded.rule,
                                 &step_input,
                                 context,
                                 &loaded.base_dir,
                             );
-                            let child_duration_us = sum_node_duration_us(&child_nodes);
+                            let child_duration_us = child_rule_trace.duration_us;
                             let child_output = transform_record_with_base_dir(
                                 &loaded.rule,
                                 &step_input,
@@ -2592,6 +2614,10 @@ fn build_rule_nodes_from_rule(
                             .ok()
                             .and_then(|value| value)
                             .unwrap_or_else(empty_object);
+                            let trace_output = child_rule_trace
+                                .pre_finalize_output
+                                .clone()
+                                .unwrap_or_else(|| child_output.clone());
                             child_trace = Some(build_rule_trace(
                                 "normal",
                                 rule_display_name(&resolved),
@@ -2599,8 +2625,9 @@ fn build_rule_nodes_from_rule(
                                 loaded.rule.version,
                                 rule_source,
                                 step_input.clone(),
-                                child_output,
-                                child_nodes,
+                                trace_output,
+                                child_rule_trace.nodes,
+                                child_rule_trace.finalize,
                                 child_duration_us,
                                 "ok",
                             ));
@@ -2695,6 +2722,7 @@ fn build_rule_nodes_from_rule(
             .ok()
             .and_then(|value| value);
         let base_duration_us = base_started.elapsed().as_micros() as u64;
+        pre_finalize_output = pre_finalize.clone();
         let finalize_input = match pre_finalize {
             Some(value) => JsonValue::Array(vec![value]),
             None => JsonValue::Array(Vec::new()),
@@ -2770,29 +2798,29 @@ fn build_rule_nodes_from_rule(
             }));
         }
 
-        let mut node = json!({
-            "id": "step-finalize",
-            "kind": "finalize",
-            "label": "finalize",
+        let mut finalize = json!({
             "status": finalize_status,
             "input": finalize_input,
             "output": finalize_output,
             "duration_us": finalize_duration_us,
+            "nodes": children,
         });
         if let Some(err) = finalize_error {
-            if let Some(obj) = node.as_object_mut() {
+            if let Some(obj) = finalize.as_object_mut() {
                 obj.insert("error".to_string(), err);
             }
         }
-        if !children.is_empty() {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("children".to_string(), JsonValue::Array(children));
-            }
-        }
-        nodes.push(node);
+        finalize_trace = Some(finalize);
     }
 
-    nodes
+    let duration_us = sum_node_duration_us(&nodes);
+
+    RuleTraceNodes {
+        nodes,
+        finalize: finalize_trace,
+        pre_finalize_output,
+        duration_us,
+    }
 }
 
 fn sum_node_duration_us(nodes: &[JsonValue]) -> u64 {
@@ -4535,8 +4563,10 @@ steps:
 "#;
         let rule = parse_rule_file(yaml).expect("parse rule");
         let record = json!({});
-        let nodes = build_rule_nodes_from_rule(&rule, &record, None, Path::new("."));
-        let duration = nodes[0].get("duration_us").and_then(|value| value.as_u64());
+        let trace = build_rule_nodes_from_rule(&rule, &record, None, Path::new("."));
+        let duration = trace.nodes[0]
+            .get("duration_us")
+            .and_then(|value| value.as_u64());
         assert!(duration.is_some());
     }
 

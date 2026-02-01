@@ -8,6 +8,8 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 use walkdir::WalkDir;
 
+use crate::trace_schema::{RuleMeta, TraceChunkRef, TraceManifest, TraceSummary};
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceMeta {
     pub trace_id: String,
@@ -17,21 +19,6 @@ pub struct TraceMeta {
     pub rule: Option<RuleMeta>,
     pub summary: Option<TraceSummary>,
     pub path: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleMeta {
-    pub name: Option<String>,
-    pub path: Option<String>,
-    pub r#type: Option<String>,
-    pub version: Option<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TraceSummary {
-    pub record_total: Option<u64>,
-    pub record_success: Option<u64>,
-    pub record_failed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,7 +68,18 @@ impl TraceStore {
             .with_context(|| format!("failed to read trace: {}", path.display()))?;
         let value: Value = serde_json::from_str(&raw)
             .with_context(|| format!("invalid trace json: {}", path.display()))?;
-        Ok(Some(value))
+        if is_manifest(&value) {
+            let manifest: TraceManifest = serde_json::from_value(value.clone())
+                .with_context(|| format!("invalid trace manifest: {}", path.display()))?;
+            let trace_dir = path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+            let full = build_trace_from_manifest_async(manifest, trace_dir).await?;
+            Ok(Some(full))
+        } else {
+            Ok(Some(value))
+        }
     }
 
     pub async fn seed_sample(&self) -> Result<()> {
@@ -193,6 +191,16 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
     let value: Value = serde_json::from_str(&raw)
         .with_context(|| format!("invalid trace json: {}", path.display()))?;
 
+    if is_manifest(&value) {
+        let manifest: TraceManifest = serde_json::from_value(value)
+            .with_context(|| format!("invalid trace manifest: {}", path.display()))?;
+        return parse_manifest_meta(&manifest, path);
+    }
+
+    if !looks_like_legacy_trace(&value) {
+        return Err(anyhow::anyhow!("not a trace file"));
+    }
+
     let trace_id = value
         .get("trace_id")
         .and_then(|v| v.as_str())
@@ -257,6 +265,8 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
         record_total: summary.get("record_total").and_then(|v| v.as_u64()),
         record_success: summary.get("record_success").and_then(|v| v.as_u64()),
         record_failed: summary.get("record_failed").and_then(|v| v.as_u64()),
+        duration_ms: summary.get("duration_ms").and_then(|v| v.as_u64()),
+        duration_us: summary.get("duration_us").and_then(|v| v.as_u64()),
     });
 
     Ok(TraceMeta {
@@ -268,6 +278,169 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
         summary,
         path: path.display().to_string(),
     })
+}
+
+fn is_manifest(value: &Value) -> bool {
+    value.get("trace_schema_version").is_some()
+}
+
+fn looks_like_legacy_trace(value: &Value) -> bool {
+    value.get("trace_id").is_some() || value.get("records").is_some() || value.get("rule").is_some()
+}
+
+fn parse_manifest_meta(manifest: &TraceManifest, path: &Path) -> Result<TraceMeta> {
+    let duration_us = manifest
+        .summary
+        .as_ref()
+        .and_then(|summary| summary.duration_us)
+        .or_else(|| {
+            manifest
+                .summary
+                .as_ref()
+                .and_then(|summary| summary.duration_ms)
+                .map(|value| value.saturating_mul(1000))
+        });
+
+    Ok(TraceMeta {
+        trace_id: manifest.trace_id.clone(),
+        status: manifest.status.clone().unwrap_or_else(|| "ok".to_string()),
+        timestamp: manifest.timestamp.clone(),
+        duration_us,
+        rule: manifest.rule.clone(),
+        summary: manifest.summary.clone(),
+        path: path.display().to_string(),
+    })
+}
+
+fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Result<Value> {
+    let mut trace = serde_json::to_value(manifest)?;
+    let mut records = Vec::new();
+
+    let detail = match &manifest.detail {
+        Some(detail) => detail,
+        None => {
+            if let Some(obj) = trace.as_object_mut() {
+                obj.insert("records".to_string(), Value::Array(Vec::new()));
+            }
+            return Ok(trace);
+        }
+    };
+
+    if detail.status != "full" {
+        if let Some(obj) = trace.as_object_mut() {
+            obj.insert("records".to_string(), Value::Array(Vec::new()));
+        }
+        return Ok(trace);
+    }
+
+    for chunk in &detail.records {
+        let lines = read_ndjson_chunk(base_dir, chunk)?;
+        records.extend(lines);
+    }
+
+    if !detail.nodes.is_empty() && detail.layout == "records_nodes_split" {
+        let mut nodes_by_record: HashMap<u64, Vec<Value>> = HashMap::new();
+        for chunk in &detail.nodes {
+            let lines = read_ndjson_chunk(base_dir, chunk)?;
+            for value in lines {
+                let (record_index, node) = parse_node_chunk_entry(value);
+                nodes_by_record.entry(record_index).or_default().push(node);
+            }
+        }
+        for record in &mut records {
+            if record.get("nodes").is_some() {
+                continue;
+            }
+            let record_index = record.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            if let Some(nodes) = nodes_by_record.remove(&record_index) {
+                if let Some(obj) = record.as_object_mut() {
+                    obj.insert("nodes".to_string(), Value::Array(nodes));
+                }
+            }
+        }
+    }
+
+    let finalize = match &detail.finalize {
+        Some(chunk) => read_json_chunk(base_dir, chunk)?,
+        None => None,
+    };
+
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("records".to_string(), Value::Array(records));
+        if let Some(finalize_value) = finalize {
+            obj.insert("finalize".to_string(), finalize_value);
+        }
+    }
+
+    Ok(trace)
+}
+
+async fn build_trace_from_manifest_async(
+    manifest: TraceManifest,
+    base_dir: PathBuf,
+) -> Result<Value> {
+    tokio::task::spawn_blocking(move || build_trace_from_manifest(&manifest, &base_dir))
+        .await
+        .map_err(|err| anyhow::anyhow!("trace load task failed: {}", err))?
+}
+
+fn parse_node_chunk_entry(value: Value) -> (u64, Value) {
+    let record_index = value
+        .get("record_index")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    if let Some(node) = value.get("node") {
+        return (record_index, node.clone());
+    }
+
+    let mut node = value;
+    if let Some(obj) = node.as_object_mut() {
+        obj.remove("record_index");
+    }
+    (record_index, node)
+}
+
+fn read_ndjson_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Vec<Value>> {
+    if chunk.format != "ndjson" {
+        return Err(anyhow::anyhow!(
+            "unsupported chunk format: {}",
+            chunk.format
+        ));
+    }
+    let raw = read_chunk_bytes(base_dir, chunk)?;
+    let text = String::from_utf8(raw)?;
+    let mut values = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: Value = serde_json::from_str(line)?;
+        values.push(value);
+    }
+    Ok(values)
+}
+
+fn read_json_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Option<Value>> {
+    if chunk.format != "json" {
+        return Err(anyhow::anyhow!(
+            "unsupported chunk format: {}",
+            chunk.format
+        ));
+    }
+    let raw = read_chunk_bytes(base_dir, chunk)?;
+    let value: Value = serde_json::from_slice(&raw)?;
+    Ok(Some(value))
+}
+
+fn read_chunk_bytes(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Vec<u8>> {
+    let path = base_dir.join(&chunk.path);
+    let raw = std::fs::read(&path)
+        .with_context(|| format!("failed to read trace chunk: {}", path.display()))?;
+    match chunk.compression.as_str() {
+        "zstd" => Ok(zstd::stream::decode_all(raw.as_slice())?),
+        "none" => Ok(raw),
+        other => Err(anyhow::anyhow!("unsupported compression: {}", other)),
+    }
 }
 
 // copy_dir_recursive was intentionally omitted to avoid counting existing files.
