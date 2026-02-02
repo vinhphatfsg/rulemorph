@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -5,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use chrono::{Datelike, Utc};
 use serde_json::{Value as JsonValue, json};
+use tracing::warn;
 
+use crate::trace_id::{sanitize_trace_id, trace_id_is_placeholder};
 use crate::trace_schema::{RuleMeta, TraceChunkRef, TraceDetailRef, TraceManifest, TraceSummary};
 
 const DEFAULT_MAX_RECORDS_PER_CHUNK: usize = 200;
@@ -74,11 +77,39 @@ fn write_trace_bundle_sync(
     trace: &JsonValue,
     options: &TraceWriteOptions,
 ) -> Result<PathBuf> {
-    let trace_id = trace
+    let raw_trace_id = trace
         .get("trace_id")
         .and_then(|value| value.as_str())
-        .unwrap_or("trace")
-        .to_string();
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos();
+            let fallback = format!("trace-{nanos}");
+            warn!("trace_id missing; using generated id {}", fallback);
+            fallback
+        });
+    let mut trace_id = sanitize_trace_id(&raw_trace_id);
+    let trace_id_is_placeholder = trace_id_is_placeholder(&trace_id);
+    if trace_id.is_empty() || trace_id_is_placeholder {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        trace_id = format!("trace-{nanos}");
+        if trace_id_is_placeholder {
+            warn!("trace_id is insufficient; using generated id {}", trace_id);
+        } else {
+            warn!(
+                "trace_id sanitized to empty; using generated id {}",
+                trace_id
+            );
+        }
+    } else if trace_id != raw_trace_id {
+        warn!("trace_id sanitized from {} to {}", raw_trace_id, trace_id);
+    }
     let timestamp = trace
         .get("timestamp")
         .and_then(|value| value.as_str())
@@ -90,13 +121,12 @@ fn write_trace_bundle_sync(
         (now.year(), now.month(), now.day())
     });
 
-    let trace_dir = data_dir
+    let trace_dir_base = data_dir
         .join("traces")
         .join(format!("{year:04}"))
         .join(format!("{month:02}"))
-        .join(format!("{day:02}"))
-        .join(&trace_id);
-    fs::create_dir_all(&trace_dir)?;
+        .join(format!("{day:02}"));
+    let (trace_id, trace_dir) = ensure_unique_trace_dir(&trace_dir_base, trace_id, &raw_trace_id)?;
 
     let records = trace
         .get("records")
@@ -133,7 +163,7 @@ fn write_trace_bundle_sync(
                 detail_layout = "records_nodes_split".to_string();
                 split_records_and_nodes(&records)
             } else {
-                (records.clone(), Vec::new())
+                (normalize_inline_records(&records), Vec::new())
             };
 
             let (chunks, files) = write_record_chunks(&trace_dir, &records_for_chunks, options)?;
@@ -165,13 +195,31 @@ fn write_trace_bundle_sync(
         .saturating_add(finalize_chunk.as_ref().and_then(|c| c.bytes).unwrap_or(0));
     if detail_status == "full" && detail_bytes > options.max_bytes_per_trace as u64 {
         for path in &record_files {
-            let _ = fs::remove_file(path);
+            if let Err(err) = fs::remove_file(path) {
+                warn!(
+                    "failed to remove record chunk file {}: {}",
+                    path.display(),
+                    err
+                );
+            }
         }
         for path in &node_files {
-            let _ = fs::remove_file(path);
+            if let Err(err) = fs::remove_file(path) {
+                warn!(
+                    "failed to remove node chunk file {}: {}",
+                    path.display(),
+                    err
+                );
+            }
         }
         if let Some(path) = finalize_file.as_ref() {
-            let _ = fs::remove_file(path);
+            if let Err(err) = fs::remove_file(path) {
+                warn!(
+                    "failed to remove finalize chunk file {}: {}",
+                    path.display(),
+                    err
+                );
+            }
         }
         record_chunks.clear();
         record_files.clear();
@@ -245,6 +293,37 @@ fn write_trace_bundle_sync(
     }
 
     Ok(manifest_path)
+}
+
+fn normalize_inline_records(records: &[JsonValue]) -> Vec<JsonValue> {
+    records
+        .iter()
+        .map(|record| {
+            let mut record_clone = record.clone();
+            if let Some(obj) = record_clone.as_object_mut() {
+                if let Some(nodes_value) = obj.get("nodes").cloned() {
+                    let normalized = normalize_nodes_value(&nodes_value);
+                    obj.insert("nodes".to_string(), JsonValue::Array(normalized));
+                }
+            }
+            record_clone
+        })
+        .collect()
+}
+
+fn normalize_nodes_value(nodes_value: &JsonValue) -> Vec<JsonValue> {
+    match nodes_value {
+        JsonValue::Array(nodes) => nodes.iter().map(normalize_node_value).collect(),
+        JsonValue::Object(_) => vec![normalize_node_value(nodes_value)],
+        other => vec![json!({ "value": other })],
+    }
+}
+
+fn normalize_node_value(value: &JsonValue) -> JsonValue {
+    match value {
+        JsonValue::Object(map) => JsonValue::Object(map.clone()),
+        other => json!({ "value": other }),
+    }
 }
 
 fn parse_date_parts(timestamp: &str) -> Option<(i32, u32, u32)> {
@@ -401,31 +480,75 @@ fn trace_duration_us(trace: &JsonValue, records: &[JsonValue]) -> Option<u64> {
     if found { Some(total) } else { None }
 }
 
+fn parse_record_index(value: &JsonValue) -> Option<u64> {
+    match value {
+        JsonValue::Number(num) => num.as_u64(),
+        JsonValue::String(text) => text.parse::<u64>().ok(),
+        _ => None,
+    }
+}
+
 fn split_records_and_nodes(records: &[JsonValue]) -> (Vec<JsonValue>, Vec<JsonValue>) {
     let mut records_out = Vec::with_capacity(records.len());
     let mut nodes_out = Vec::new();
+    let mut seen_indices: HashSet<u64> = HashSet::new();
 
     for (index, record) in records.iter().enumerate() {
-        let record_index = record
+        let mut record_index = record
             .get("index")
-            .and_then(|value| value.as_u64())
+            .and_then(parse_record_index)
             .unwrap_or(index as u64);
-        if let Some(nodes) = record.get("nodes").and_then(|value| value.as_array()) {
-            for node in nodes {
-                nodes_out.push(json!({
-                    "record_index": record_index,
-                    "node": node
-                }));
+        if seen_indices.contains(&record_index) {
+            record_index = index as u64;
+        }
+        if seen_indices.contains(&record_index) {
+            let start = record_index;
+            loop {
+                record_index = record_index.wrapping_add(1);
+                if !seen_indices.contains(&record_index) {
+                    break;
+                }
+                if record_index == start {
+                    warn!(
+                        "record_index space exhausted while deduplicating; using {}",
+                        record_index
+                    );
+                    break;
+                }
+            }
+        }
+        seen_indices.insert(record_index);
+        if let Some(nodes_value) = record.get("nodes") {
+            match nodes_value {
+                JsonValue::Array(nodes) => {
+                    for node in nodes {
+                        let mut entry = match node {
+                            JsonValue::Object(map) => JsonValue::Object(map.clone()),
+                            other => json!({ "value": other }),
+                        };
+                        if let Some(obj) = entry.as_object_mut() {
+                            obj.insert("record_index".to_string(), JsonValue::from(record_index));
+                        }
+                        nodes_out.push(entry);
+                    }
+                }
+                other => {
+                    let mut entry = match other {
+                        JsonValue::Object(map) => JsonValue::Object(map.clone()),
+                        value => json!({ "value": value }),
+                    };
+                    if let Some(obj) = entry.as_object_mut() {
+                        obj.insert("record_index".to_string(), JsonValue::from(record_index));
+                    }
+                    nodes_out.push(entry);
+                }
             }
         }
 
         let mut record_clone = record.clone();
         if let Some(obj) = record_clone.as_object_mut() {
-            if obj
-                .get("nodes")
-                .and_then(|value| value.as_array())
-                .is_some()
-            {
+            obj.insert("index".to_string(), JsonValue::from(record_index));
+            if obj.contains_key("nodes") {
                 obj.remove("nodes");
             }
         }
@@ -433,6 +556,49 @@ fn split_records_and_nodes(records: &[JsonValue]) -> (Vec<JsonValue>, Vec<JsonVa
     }
 
     (records_out, nodes_out)
+}
+
+fn ensure_unique_trace_dir(
+    base_dir: &Path,
+    trace_id: String,
+    raw_trace_id: &str,
+) -> Result<(String, PathBuf)> {
+    fs::create_dir_all(base_dir)?;
+    let base_id = trace_id;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut counter = 0usize;
+    loop {
+        let candidate = if counter == 0 {
+            base_id.clone()
+        } else {
+            let suffix = if counter == 1 {
+                format!("dup-{nanos}")
+            } else {
+                format!("dup-{nanos}-{}", counter - 1)
+            };
+            format!("{base_id}-{suffix}")
+        };
+        let trace_dir = base_dir.join(&candidate);
+        match fs::create_dir(&trace_dir) {
+            Ok(()) => {
+                if counter > 0 {
+                    warn!(
+                        "trace_id collision for {}; using {} instead",
+                        raw_trace_id, candidate
+                    );
+                }
+                return Ok((candidate, trace_dir));
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                counter = counter.saturating_add(1);
+                continue;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    }
 }
 
 fn write_record_chunks(
@@ -464,17 +630,18 @@ fn write_record_chunks(
         let payload = format!("{}\n", lines.join("\n"));
         let raw_bytes = payload.as_bytes();
 
-        match options.compression {
+        let bytes = match options.compression {
             TraceCompression::Zstd => {
                 let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
+                let bytes = compressed.len() as u64;
                 write_atomic(&path, compressed.as_slice())?;
+                bytes
             }
             TraceCompression::None => {
                 write_atomic(&path, raw_bytes)?;
+                raw_bytes.len() as u64
             }
-        }
-
-        let bytes = fs::metadata(&path).ok().map(|meta| meta.len());
+        };
         chunks.push(TraceChunkRef {
             path: filename,
             format: "ndjson".to_string(),
@@ -486,7 +653,7 @@ fn write_record_chunks(
             record_end: Some(end as u64),
             node_start: None,
             node_end: None,
-            bytes,
+            bytes: Some(bytes),
         });
         files.push(path);
         lines.clear();
@@ -550,17 +717,18 @@ fn write_node_chunks(
         let payload = format!("{}\n", lines.join("\n"));
         let raw_bytes = payload.as_bytes();
 
-        match options.compression {
+        let bytes = match options.compression {
             TraceCompression::Zstd => {
                 let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
+                let bytes = compressed.len() as u64;
                 write_atomic(&path, compressed.as_slice())?;
+                bytes
             }
             TraceCompression::None => {
                 write_atomic(&path, raw_bytes)?;
+                raw_bytes.len() as u64
             }
-        }
-
-        let bytes = fs::metadata(&path).ok().map(|meta| meta.len());
+        };
         chunks.push(TraceChunkRef {
             path: filename,
             format: "ndjson".to_string(),
@@ -572,7 +740,7 @@ fn write_node_chunks(
             record_end: None,
             node_start: Some(start as u64),
             node_end: Some(end as u64),
-            bytes,
+            bytes: Some(bytes),
         });
         files.push(path);
         lines.clear();
@@ -631,16 +799,18 @@ fn write_finalize_chunk(
     let path = trace_dir.join(&filename);
     let payload = serde_json::to_vec(finalize)?;
     let raw_bytes = payload.as_slice();
-    match options.compression {
+    let bytes = match options.compression {
         TraceCompression::Zstd => {
             let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
+            let bytes = compressed.len() as u64;
             write_atomic(&path, compressed.as_slice())?;
+            bytes
         }
         TraceCompression::None => {
             write_atomic(&path, raw_bytes)?;
+            raw_bytes.len() as u64
         }
-    }
-    let bytes = fs::metadata(&path).ok().map(|meta| meta.len());
+    };
     let chunk = TraceChunkRef {
         path: filename,
         format: "json".to_string(),
@@ -652,7 +822,7 @@ fn write_finalize_chunk(
         record_end: None,
         node_start: None,
         node_end: None,
-        bytes,
+        bytes: Some(bytes),
     };
     Ok((Some(chunk), Some(path)))
 }

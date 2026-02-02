@@ -1,3 +1,4 @@
+mod trace_id;
 mod trace_schema;
 mod trace_store;
 mod trace_watch;
