@@ -9,4 +9,7 @@ pub use trace_schema::{
 };
 pub use trace_store::{ImportResult, TraceMeta, TraceStore};
 pub use trace_watch::start_trace_watcher;
-pub use trace_writer::{TraceCompression, TraceDetailLevel, TraceWriteOptions, write_trace_bundle};
+pub use trace_writer::{
+    TraceCompression, TraceDetailLevel, TraceWriteOptions, TraceWriter, TraceWriterConfig,
+    write_trace_bundle,
+};

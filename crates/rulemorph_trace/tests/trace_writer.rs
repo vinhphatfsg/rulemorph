@@ -2910,3 +2910,117 @@ async fn trace_store_collision_adds_counter_when_candidate_exists() -> anyhow::R
 
     Ok(())
 }
+
+#[tokio::test]
+async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-mask",
+        "records": [
+            {
+                "index": 0,
+                "input": {
+                    "password": "secret",
+                    "nested": { "token": "abc" },
+                    "ok": 1
+                },
+                "output": { "secret": "value" }
+            }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store.get("trace-mask").await?.expect("trace should load");
+
+    let record = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .and_then(|records| records.first())
+        .and_then(|value| value.as_object())
+        .expect("record object");
+    let input = record
+        .get("input")
+        .and_then(|value| value.as_object())
+        .expect("input object");
+    let nested = input
+        .get("nested")
+        .and_then(|value| value.as_object())
+        .expect("nested object");
+    let output = record
+        .get("output")
+        .and_then(|value| value.as_object())
+        .expect("output object");
+
+    assert_eq!(
+        input.get("password").and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+    assert_eq!(
+        nested.get("token").and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+    assert_eq!(
+        output.get("secret").and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_externalizes_large_payloads() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-blob",
+        "records": [
+            { "index": 0, "input": { "data": "x".repeat(200) } }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        max_payload_bytes: 32,
+        payload_preview_bytes: 8,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store.get("trace-blob").await?.expect("trace should load");
+    let record = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .and_then(|records| records.first())
+        .and_then(|value| value.as_object())
+        .expect("record object");
+    let input = record
+        .get("input")
+        .and_then(|value| value.as_object())
+        .expect("input object");
+
+    let blob_ref = input
+        .get("blob_ref")
+        .and_then(|value| value.as_str())
+        .expect("blob_ref");
+    let size_bytes = input
+        .get("size_bytes")
+        .and_then(|value| value.as_u64())
+        .expect("size_bytes");
+    assert!(size_bytes > 32);
+
+    let trace_dir = manifest_path.parent().expect("trace dir");
+    let blob_path = trace_dir.join(blob_ref);
+    assert!(blob_path.exists(), "blob file should exist");
+
+    Ok(())
+}

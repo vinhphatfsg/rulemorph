@@ -24,7 +24,7 @@ use rulemorph::{
     parse_rule_file, transform_record, transform_record_with_base_dir,
     validate_rule_file_with_source,
 };
-use rulemorph_trace::write_trace_bundle;
+use rulemorph_trace::TraceWriter;
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tracing::warn;
@@ -245,6 +245,7 @@ pub struct EndpointEngine {
     raw_rule_source: JsonValue,
     config: EngineConfig,
     client: Client,
+    trace_writer: TraceWriter,
 }
 
 struct RuleExecution {
@@ -311,11 +312,13 @@ impl EndpointEngine {
             .no_proxy()
             .build()
             .map_err(|err| anyhow!(err.to_string()))?;
+        let trace_writer = TraceWriter::new(config.data_dir.clone());
         Ok(Self {
             endpoint_rule: compiled,
             raw_rule_source,
             config,
             client,
+            trace_writer,
         })
     }
 
@@ -585,7 +588,7 @@ impl EndpointEngine {
             nodes,
             duration_us,
         );
-        if let Err(err) = self.write_trace(&trace).await {
+        if let Err(err) = self.write_trace(trace).await {
             warn!("failed to write trace: {}", err);
         }
 
@@ -692,8 +695,15 @@ impl EndpointEngine {
         })
     }
 
-    async fn write_trace(&self, trace: &JsonValue) -> Result<()> {
-        write_trace_bundle(&self.config.data_dir, trace, None).await?;
+    async fn write_trace(&self, trace: JsonValue) -> Result<()> {
+        let trace_id = trace
+            .get("trace_id")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+        if !self.trace_writer.enqueue(trace) {
+            warn!("trace queue full; dropped trace {}", trace_id);
+        }
         Ok(())
     }
 

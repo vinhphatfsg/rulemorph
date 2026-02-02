@@ -1,21 +1,28 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use chrono::{Datelike, Utc};
 use serde_json::{Value as JsonValue, json};
+use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::trace_id::{sanitize_trace_id, trace_id_is_placeholder};
-use crate::trace_schema::{RuleMeta, TraceChunkRef, TraceDetailRef, TraceManifest, TraceSummary};
+use crate::trace_schema::{
+    RuleMeta, TraceChunkRef, TraceDetailRef, TraceManifest, TraceMasking, TraceSummary,
+};
 
 const DEFAULT_MAX_RECORDS_PER_CHUNK: usize = 200;
 const DEFAULT_MAX_NODES_PER_CHUNK: usize = 2000;
 const DEFAULT_MAX_CHUNK_BYTES: usize = 4 * 1024 * 1024; // 4MB
 const DEFAULT_MAX_TRACE_BYTES: usize = 10 * 1024 * 1024; // 10MB (compressed)
+const DEFAULT_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
+const DEFAULT_PAYLOAD_PREVIEW_BYTES: usize = 1024;
 const DEFAULT_SAMPLING_RATE: f64 = 1.0;
+const DEFAULT_TRACE_QUEUE_CAPACITY: usize = 256;
 const TRACE_SCHEMA_VERSION: u8 = 1;
 
 #[derive(Debug, Clone)]
@@ -26,6 +33,11 @@ pub struct TraceWriteOptions {
     pub compression: TraceCompression,
     pub detail_level: TraceDetailLevel,
     pub max_bytes_per_trace: usize,
+    pub max_payload_bytes: usize,
+    pub payload_preview_bytes: usize,
+    pub masking_enabled: bool,
+    pub masking_rules: Vec<String>,
+    pub detail_reason: Option<String>,
     pub split_nodes: bool,
     pub sampling_rate: f64,
     pub sampling_slow_threshold_us: Option<u64>,
@@ -40,6 +52,15 @@ impl Default for TraceWriteOptions {
             compression: TraceCompression::Zstd,
             detail_level: TraceDetailLevel::Full,
             max_bytes_per_trace: DEFAULT_MAX_TRACE_BYTES,
+            max_payload_bytes: DEFAULT_MAX_PAYLOAD_BYTES,
+            payload_preview_bytes: DEFAULT_PAYLOAD_PREVIEW_BYTES,
+            masking_enabled: true,
+            masking_rules: vec![
+                "password".to_string(),
+                "token".to_string(),
+                "secret".to_string(),
+            ],
+            detail_reason: None,
             split_nodes: true,
             sampling_rate: DEFAULT_SAMPLING_RATE,
             sampling_slow_threshold_us: None,
@@ -60,6 +81,166 @@ pub enum TraceCompression {
     None,
 }
 
+#[derive(Debug, Clone)]
+pub struct TraceWriterConfig {
+    pub queue_capacity: usize,
+    pub write_options: TraceWriteOptions,
+}
+
+impl Default for TraceWriterConfig {
+    fn default() -> Self {
+        Self {
+            queue_capacity: DEFAULT_TRACE_QUEUE_CAPACITY,
+            write_options: TraceWriteOptions::default(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TraceWriter {
+    queue: Arc<TraceQueue>,
+    default_options: TraceWriteOptions,
+}
+
+impl TraceWriter {
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self::with_config(data_dir, TraceWriterConfig::default())
+    }
+
+    pub fn with_config(data_dir: PathBuf, config: TraceWriterConfig) -> Self {
+        let queue = Arc::new(TraceQueue::new(data_dir, config.queue_capacity));
+        let worker_queue = queue.clone();
+        std::thread::spawn(move || trace_writer_loop(worker_queue));
+        Self {
+            queue,
+            default_options: config.write_options,
+        }
+    }
+
+    pub fn enqueue(&self, trace: JsonValue) -> bool {
+        self.enqueue_with_options(trace, None)
+    }
+
+    pub fn enqueue_with_options(
+        &self,
+        trace: JsonValue,
+        options: Option<TraceWriteOptions>,
+    ) -> bool {
+        let options = options.unwrap_or_else(|| self.default_options.clone());
+        let priority = trace_priority(&trace, &options);
+        let mut request = TraceWriteRequest {
+            trace,
+            options,
+            priority,
+            downgraded: false,
+        };
+        let mut guard = self.queue.items.lock().expect("trace queue lock");
+        if guard.len() >= self.queue.capacity {
+            if request.options.detail_level == TraceDetailLevel::Full {
+                request.options.detail_level = TraceDetailLevel::Basic;
+                if request.options.detail_reason.is_none() {
+                    request.options.detail_reason = Some("queue_full".to_string());
+                }
+                request.downgraded = true;
+            }
+            if !evict_for_priority(&mut guard, priority) {
+                warn!(
+                    "trace queue full; dropping trace {}",
+                    trace_id_for_log(&request.trace)
+                );
+                return false;
+            }
+        }
+        push_request(&mut guard, request);
+        self.queue.cvar.notify_one();
+        true
+    }
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum TracePriority {
+    High,
+    Normal,
+}
+
+struct TraceWriteRequest {
+    trace: JsonValue,
+    options: TraceWriteOptions,
+    priority: TracePriority,
+    downgraded: bool,
+}
+
+struct TraceQueue {
+    data_dir: PathBuf,
+    capacity: usize,
+    items: Mutex<VecDeque<TraceWriteRequest>>,
+    cvar: Condvar,
+}
+
+impl TraceQueue {
+    fn new(data_dir: PathBuf, capacity: usize) -> Self {
+        Self {
+            data_dir,
+            capacity: capacity.max(1),
+            items: Mutex::new(VecDeque::new()),
+            cvar: Condvar::new(),
+        }
+    }
+}
+
+fn trace_writer_loop(queue: Arc<TraceQueue>) {
+    loop {
+        let request = {
+            let mut guard = queue.items.lock().expect("trace queue lock");
+            while guard.is_empty() {
+                guard = queue.cvar.wait(guard).expect("trace queue wait");
+            }
+            guard.pop_front()
+        };
+        let Some(request) = request else {
+            continue;
+        };
+        if request.downgraded {
+            warn!(
+                "trace queue full; downgraded trace {} to basic",
+                trace_id_for_log(&request.trace)
+            );
+        }
+        if let Err(err) = write_trace_bundle_sync(&queue.data_dir, &request.trace, &request.options)
+        {
+            warn!("failed to write trace bundle: {}", err);
+        }
+    }
+}
+
+fn push_request(queue: &mut VecDeque<TraceWriteRequest>, request: TraceWriteRequest) {
+    match request.priority {
+        TracePriority::High => queue.push_front(request),
+        TracePriority::Normal => queue.push_back(request),
+    }
+}
+
+fn evict_for_priority(queue: &mut VecDeque<TraceWriteRequest>, priority: TracePriority) -> bool {
+    let position = queue
+        .iter()
+        .position(|item| item.priority == TracePriority::Normal);
+    match (priority, position) {
+        (TracePriority::High, Some(index)) | (TracePriority::Normal, Some(index)) => {
+            queue.remove(index);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn trace_id_for_log(trace: &JsonValue) -> String {
+    trace
+        .get("trace_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
 pub async fn write_trace_bundle(
     data_dir: &Path,
     trace: &JsonValue,
@@ -77,6 +258,7 @@ fn write_trace_bundle_sync(
     trace: &JsonValue,
     options: &TraceWriteOptions,
 ) -> Result<PathBuf> {
+    let mut trace = trace.clone();
     let raw_trace_id = trace
         .get("trace_id")
         .and_then(|value| value.as_str())
@@ -128,7 +310,7 @@ fn write_trace_bundle_sync(
         .join(format!("{day:02}"));
     let (trace_id, trace_dir) = ensure_unique_trace_dir(&trace_dir_base, trace_id, &raw_trace_id)?;
 
-    let records = trace
+    let records_raw = trace
         .get("records")
         .and_then(|value| value.as_array())
         .cloned()
@@ -144,8 +326,12 @@ fn write_trace_bundle_sync(
 
     let mut detail_level = options.detail_level;
     let mut detail_reason = Vec::new();
+    if let Some(reason) = options.detail_reason.as_ref() {
+        detail_reason.push(reason.clone());
+    }
 
-    if detail_level == TraceDetailLevel::Full && !should_keep_full_detail(trace, &records, options)
+    if detail_level == TraceDetailLevel::Full
+        && !should_keep_full_detail(&trace, &records_raw, options)
     {
         detail_level = TraceDetailLevel::Basic;
         detail_reason.push("sampled_out".to_string());
@@ -156,6 +342,28 @@ fn write_trace_bundle_sync(
         TraceDetailLevel::Basic => "basic".to_string(),
         TraceDetailLevel::Off => "dropped".to_string(),
     };
+
+    let masking = if options.masking_enabled {
+        let rules = normalize_masking_rules(&options.masking_rules);
+        apply_masking(&mut trace, &rules);
+        Some(TraceMasking {
+            enabled: true,
+            rules,
+        })
+    } else {
+        None
+    };
+
+    let mut blob_files: Vec<PathBuf> = Vec::new();
+    if detail_level == TraceDetailLevel::Full {
+        blob_files = externalize_trace_payloads(&mut trace, &trace_dir, options)?;
+    }
+
+    let records = trace
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
 
     match detail_level {
         TraceDetailLevel::Full => {
@@ -176,7 +384,7 @@ fn write_trace_bundle_sync(
                 node_files = files;
             }
 
-            let (chunk, file) = write_finalize_chunk(&trace_dir, trace, options)?;
+            let (chunk, file) = write_finalize_chunk(&trace_dir, &trace, options)?;
             finalize_chunk = chunk;
             finalize_file = file;
         }
@@ -221,10 +429,16 @@ fn write_trace_bundle_sync(
                 );
             }
         }
+        for path in &blob_files {
+            if let Err(err) = fs::remove_file(path) {
+                warn!("failed to remove blob file {}: {}", path.display(), err);
+            }
+        }
         record_chunks.clear();
         record_files.clear();
         node_chunks.clear();
         node_files.clear();
+        blob_files.clear();
         finalize_chunk = None;
         finalize_file = None;
         detail_status = "basic".to_string();
@@ -262,7 +476,7 @@ fn write_trace_bundle_sync(
         input_format,
         summary,
         detail: Some(detail),
-        masking: None,
+        masking,
         rule_source,
     };
 
@@ -362,6 +576,271 @@ fn parse_summary(value: &JsonValue) -> TraceSummary {
     }
 }
 
+fn normalize_masking_rules(rules: &[String]) -> Vec<String> {
+    if rules.is_empty() {
+        return Vec::new();
+    }
+    rules
+        .iter()
+        .map(|rule| rule.trim().to_ascii_lowercase())
+        .filter(|rule| !rule.is_empty())
+        .collect()
+}
+
+fn apply_masking(value: &mut JsonValue, rules: &[String]) {
+    match value {
+        JsonValue::Object(map) => {
+            for (key, entry) in map.iter_mut() {
+                if should_mask_key(key, rules) {
+                    *entry = JsonValue::String("[masked]".to_string());
+                } else {
+                    apply_masking(entry, rules);
+                }
+            }
+        }
+        JsonValue::Array(items) => {
+            for item in items {
+                apply_masking(item, rules);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn should_mask_key(key: &str, rules: &[String]) -> bool {
+    if rules.is_empty() {
+        return false;
+    }
+    let key_lower = key.to_ascii_lowercase();
+    rules.iter().any(|rule| key_lower.contains(rule))
+}
+
+fn externalize_trace_payloads(
+    trace: &mut JsonValue,
+    trace_dir: &Path,
+    options: &TraceWriteOptions,
+) -> Result<Vec<PathBuf>> {
+    if options.max_payload_bytes == 0 {
+        return Ok(Vec::new());
+    }
+    let mut seen = HashSet::new();
+    let mut blob_files = Vec::new();
+    externalize_trace_payloads_inner(trace, trace_dir, options, &mut seen, &mut blob_files)?;
+    Ok(blob_files)
+}
+
+fn externalize_trace_payloads_inner(
+    trace: &mut JsonValue,
+    trace_dir: &Path,
+    options: &TraceWriteOptions,
+    seen: &mut HashSet<String>,
+    blob_files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let Some(obj) = trace.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(records) = obj
+        .get_mut("records")
+        .and_then(|value| value.as_array_mut())
+    {
+        for record in records {
+            externalize_record_payloads(record, trace_dir, options, seen, blob_files)?;
+        }
+    }
+    if let Some(finalize) = obj.get_mut("finalize") {
+        externalize_finalize_payloads(finalize, trace_dir, options, seen, blob_files)?;
+    }
+    Ok(())
+}
+
+fn externalize_record_payloads(
+    record: &mut JsonValue,
+    trace_dir: &Path,
+    options: &TraceWriteOptions,
+    seen: &mut HashSet<String>,
+    blob_files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let Some(obj) = record.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(input) = obj.get_mut("input") {
+        maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(output) = obj.get_mut("output") {
+        maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(nodes) = obj.get_mut("nodes").and_then(|value| value.as_array_mut()) {
+        for node in nodes {
+            externalize_node_payloads(node, trace_dir, options, seen, blob_files)?;
+        }
+    }
+    if let Some(child_trace) = obj.get_mut("child_trace") {
+        externalize_trace_payloads_inner(child_trace, trace_dir, options, seen, blob_files)?;
+    }
+    Ok(())
+}
+
+fn externalize_node_payloads(
+    node: &mut JsonValue,
+    trace_dir: &Path,
+    options: &TraceWriteOptions,
+    seen: &mut HashSet<String>,
+    blob_files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let Some(obj) = node.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(input) = obj.get_mut("input") {
+        maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(output) = obj.get_mut("output") {
+        maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(args) = obj.get_mut("args") {
+        maybe_externalize_payload(args, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(pipe_value) = obj.get_mut("pipe_value") {
+        maybe_externalize_payload(pipe_value, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(pipe_steps) = obj
+        .get_mut("pipe_steps")
+        .and_then(|value| value.as_array_mut())
+    {
+        for step in pipe_steps {
+            if let Some(step_obj) = step.as_object_mut() {
+                if let Some(input) = step_obj.get_mut("input") {
+                    maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+                }
+                if let Some(output) = step_obj.get_mut("output") {
+                    maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+                }
+            }
+        }
+    }
+    if let Some(children) = obj
+        .get_mut("children")
+        .and_then(|value| value.as_array_mut())
+    {
+        for child in children {
+            externalize_node_payloads(child, trace_dir, options, seen, blob_files)?;
+        }
+    }
+    if let Some(child_trace) = obj.get_mut("child_trace") {
+        externalize_trace_payloads_inner(child_trace, trace_dir, options, seen, blob_files)?;
+    }
+    Ok(())
+}
+
+fn externalize_finalize_payloads(
+    finalize: &mut JsonValue,
+    trace_dir: &Path,
+    options: &TraceWriteOptions,
+    seen: &mut HashSet<String>,
+    blob_files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    let Some(obj) = finalize.as_object_mut() else {
+        return Ok(());
+    };
+    if let Some(input) = obj.get_mut("input") {
+        maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(output) = obj.get_mut("output") {
+        maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+    }
+    if let Some(nodes) = obj.get_mut("nodes").and_then(|value| value.as_array_mut()) {
+        for node in nodes {
+            externalize_node_payloads(node, trace_dir, options, seen, blob_files)?;
+        }
+    }
+    Ok(())
+}
+
+fn maybe_externalize_payload(
+    value: &mut JsonValue,
+    trace_dir: &Path,
+    options: &TraceWriteOptions,
+    seen: &mut HashSet<String>,
+    blob_files: &mut Vec<PathBuf>,
+) -> Result<()> {
+    if value.is_null() || is_externalized_payload(value) {
+        return Ok(());
+    }
+    let raw = serde_json::to_vec(value)?;
+    if raw.len() <= options.max_payload_bytes {
+        return Ok(());
+    }
+    let preview_limit = options.payload_preview_bytes.min(options.max_payload_bytes);
+    let preview = build_payload_preview(&raw, preview_limit);
+    let (blob_ref, blob_path) = write_blob(trace_dir, &raw, options, seen)?;
+    if !blob_files.contains(&blob_path) {
+        blob_files.push(blob_path);
+    }
+    *value = json!({
+        "preview": preview,
+        "size_bytes": raw.len() as u64,
+        "blob_ref": blob_ref
+    });
+    Ok(())
+}
+
+fn is_externalized_payload(value: &JsonValue) -> bool {
+    value.get("blob_ref").is_some()
+        && value.get("size_bytes").is_some()
+        && value.get("preview").is_some()
+}
+
+fn build_payload_preview(raw: &[u8], limit: usize) -> String {
+    if limit == 0 || raw.is_empty() {
+        return String::new();
+    }
+    if raw.len() <= limit {
+        return String::from_utf8_lossy(raw).into_owned();
+    }
+    let mut preview = String::from_utf8_lossy(&raw[..limit]).into_owned();
+    preview.push_str("...");
+    preview
+}
+
+fn write_blob(
+    trace_dir: &Path,
+    raw: &[u8],
+    options: &TraceWriteOptions,
+    seen: &mut HashSet<String>,
+) -> Result<(String, PathBuf)> {
+    let hash = Sha256::digest(raw);
+    let hash_hex = hex_encode(&hash);
+    let extension = match options.compression {
+        TraceCompression::Zstd => ".zst",
+        TraceCompression::None => "",
+    };
+    let filename = format!("sha256-{hash_hex}.json{extension}");
+    let rel_path = PathBuf::from("blobs").join(filename);
+    let rel_string = rel_path.to_string_lossy().to_string();
+    let full_path = trace_dir.join(&rel_path);
+    if !seen.insert(rel_string.clone()) {
+        return Ok((rel_string, full_path));
+    }
+    if let Some(parent) = full_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if !full_path.exists() {
+        let payload = match options.compression {
+            TraceCompression::Zstd => zstd::stream::encode_all(raw, 3)?,
+            TraceCompression::None => raw.to_vec(),
+        };
+        write_atomic(&full_path, payload.as_slice())?;
+    }
+    Ok((rel_string, full_path))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push_str(&format!("{:02x}", byte));
+    }
+    output
+}
+
 fn should_keep_full_detail(
     trace: &JsonValue,
     records: &[JsonValue],
@@ -384,6 +863,19 @@ fn should_keep_full_detail(
         .unwrap_or("trace");
     let bucket = sampling_bucket(key);
     bucket < rate
+}
+
+fn trace_priority(trace: &JsonValue, options: &TraceWriteOptions) -> TracePriority {
+    let records = trace
+        .get("records")
+        .and_then(|value| value.as_array())
+        .map(|value| value.as_slice())
+        .unwrap_or(&[]);
+    if trace_is_error(trace, records) || trace_is_slow(trace, records, options) {
+        TracePriority::High
+    } else {
+        TracePriority::Normal
+    }
 }
 
 fn normalize_sampling_rate(rate: f64) -> f64 {
