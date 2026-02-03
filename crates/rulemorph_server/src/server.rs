@@ -21,7 +21,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api_graph::{ApiGraphResponse, build_api_graph};
 use rulemorph_endpoint::{ApiMode, EndpointEngine};
-use rulemorph_trace::{ImportResult, TraceMeta, TraceStore};
+use rulemorph_trace::{ImportResult, TraceManifest, TraceMeta, TraceNodeChunkEntry, TraceStore};
 
 #[cfg(feature = "embedded-ui")]
 use axum::{extract::OriginalUri, http::HeaderMap};
@@ -32,7 +32,7 @@ use include_dir::{Dir, include_dir};
 static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../rulemorph_ui/ui/dist");
 
 #[derive(Clone)]
-pub(crate) enum UiSource {
+pub enum UiSource {
     Filesystem(PathBuf),
     #[cfg(feature = "embedded-ui")]
     Embedded,
@@ -59,6 +59,16 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
         let internal = Router::new()
             .route("/internal/traces", get(list_traces))
             .route("/internal/traces/:id", get(get_trace))
+            .route("/internal/traces/:id/manifest", get(get_trace_manifest))
+            .route(
+                "/internal/traces/:id/records/:chunk",
+                get(get_trace_records_chunk),
+            )
+            .route(
+                "/internal/traces/:id/nodes/:chunk",
+                get(get_trace_nodes_chunk),
+            )
+            .route("/internal/traces/:id/finalize", get(get_trace_finalize))
             .route("/internal/stream", get(stream_traces))
             .route("/internal/api-graph", get(get_api_graph))
             .route("/internal/import", post(import_bundle_path));
@@ -150,6 +160,32 @@ struct TraceListResponse {
     traces: Vec<TraceMeta>,
 }
 
+#[derive(Serialize)]
+struct TraceManifestResponse {
+    manifest: TraceManifest,
+}
+
+#[derive(Serialize)]
+struct TraceRecordsResponse {
+    records: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct TraceNodesResponse {
+    nodes: Vec<TraceNodeChunkEntry>,
+}
+
+#[derive(Serialize)]
+struct TraceFinalizeResponse {
+    finalize: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct TraceChunkPath {
+    id: String,
+    chunk: usize,
+}
+
 async fn list_traces(
     state: State<AppState>,
 ) -> std::result::Result<Json<TraceListResponse>, ApiError> {
@@ -175,6 +211,70 @@ async fn get_trace(
     match trace {
         Some(value) => Ok(Json(json!({ "trace": value }))),
         None => Err(ApiError::not_found("trace not found")),
+    }
+}
+
+async fn get_trace_manifest(
+    state: State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> std::result::Result<Json<TraceManifestResponse>, ApiError> {
+    let state = state.0;
+    let manifest = state
+        .store
+        .get_manifest(&id)
+        .await
+        .map_err(ApiError::internal)?;
+    match manifest {
+        Some(manifest) => Ok(Json(TraceManifestResponse { manifest })),
+        None => Err(ApiError::not_found("trace manifest not found")),
+    }
+}
+
+async fn get_trace_records_chunk(
+    state: State<AppState>,
+    AxumPath(path): AxumPath<TraceChunkPath>,
+) -> std::result::Result<Json<TraceRecordsResponse>, ApiError> {
+    let state = state.0;
+    let records = state
+        .store
+        .get_records_chunk(&path.id, path.chunk)
+        .await
+        .map_err(ApiError::internal)?;
+    match records {
+        Some(records) => Ok(Json(TraceRecordsResponse { records })),
+        None => Err(ApiError::not_found("trace records chunk not found")),
+    }
+}
+
+async fn get_trace_nodes_chunk(
+    state: State<AppState>,
+    AxumPath(path): AxumPath<TraceChunkPath>,
+) -> std::result::Result<Json<TraceNodesResponse>, ApiError> {
+    let state = state.0;
+    let nodes = state
+        .store
+        .get_nodes_chunk(&path.id, path.chunk)
+        .await
+        .map_err(ApiError::internal)?;
+    match nodes {
+        Some(nodes) => Ok(Json(TraceNodesResponse { nodes })),
+        None => Err(ApiError::not_found("trace nodes chunk not found")),
+    }
+}
+
+async fn get_trace_finalize(
+    state: State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> std::result::Result<Json<TraceFinalizeResponse>, ApiError> {
+    let state = state.0;
+    let finalize = state
+        .store
+        .get_finalize_chunk(&id)
+        .await
+        .map_err(ApiError::internal)?;
+    match finalize {
+        Some(finalize) => Ok(Json(TraceFinalizeResponse { finalize })),
+        None => Err(ApiError::not_found("trace finalize not found")),
     }
 }
 

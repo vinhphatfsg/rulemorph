@@ -16,6 +16,14 @@ import "reactflow/dist/style.css";
 import clsx from "clsx";
 import dagre from "dagre";
 import { shouldResetInitialCenter } from "./view_mode";
+type TraceSummary = {
+  record_total?: number;
+  record_success?: number;
+  record_failed?: number;
+  duration_us?: number;
+  duration_ms?: number;
+};
+
 type TraceListItem = {
   trace_id: string;
   status?: string;
@@ -23,7 +31,7 @@ type TraceListItem = {
   duration_us?: number;
   duration_ms?: number;
   rule?: { name?: string; path?: string; type?: string; version?: number };
-  summary?: { record_total?: number; record_success?: number; record_failed?: number };
+  summary?: TraceSummary;
 };
 
 export type TraceNode = {
@@ -70,6 +78,45 @@ export type EndpointRule = {
   endpoints: EndpointSpec[];
 };
 
+type TraceChunkRef = {
+  path: string;
+  format: string;
+  compression: string;
+  record_start?: number;
+  record_end?: number;
+  node_start?: number;
+  node_end?: number;
+  bytes?: number;
+};
+
+type TraceDetailRef = {
+  layout: string;
+  status: string;
+  reason?: string[];
+  records?: TraceChunkRef[];
+  nodes?: TraceChunkRef[];
+  finalize?: TraceChunkRef;
+};
+
+type TraceManifest = {
+  trace_schema_version: number;
+  trace_id: string;
+  timestamp?: string;
+  status?: string;
+  rule?: { name?: string; path?: string; type?: string; version?: number };
+  input_format?: string;
+  summary?: TraceSummary;
+  max_chunk_bytes_uncompressed?: number;
+  detail?: TraceDetailRef;
+  masking?: { enabled: boolean; rules?: string[] };
+  rule_source?: EndpointRule;
+};
+
+type TraceNodeChunkEntry = {
+  record_index: number;
+  node: TraceNode;
+};
+
 type TraceNodeData = {
   label: string;
 };
@@ -88,10 +135,14 @@ function DetailNode({ data }: { data: TraceNodeData }) {
 export type TracePayload = {
   trace_id?: string;
   timestamp?: string;
+  status?: string;
   rule?: { name?: string; path?: string; type?: string; version?: number };
   rule_source?: EndpointRule;
+  detail?: TraceDetailRef;
   records?: TraceRecord[];
   finalize?: { nodes?: TraceNode[]; input?: unknown; output?: unknown; status?: string };
+  summary?: TraceSummary;
+  input_format?: string;
 };
 
 type ApiGraphOp = {
@@ -141,6 +192,100 @@ async function fetchJson<T>(path: string): Promise<T | null> {
   }
 }
 
+function parseNumericIndex(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+function normalizeRecordIndex(value: unknown, fallback: number) {
+  const parsed = parseNumericIndex(value);
+  return parsed ?? fallback;
+}
+
+function normalizeRecord(record: TraceRecord, fallbackIndex: number): TraceRecord {
+  return { ...record, index: normalizeRecordIndex(record.index, fallbackIndex) };
+}
+
+function mergeNodesIntoRecords(
+  records: TraceRecord[],
+  nodesByRecord: Map<number, TraceNode[]>
+) {
+  return records.map((record, position) => {
+    const recordIndex = normalizeRecordIndex(record.index, position);
+    const nodes = nodesByRecord.get(recordIndex);
+    if (!nodes || nodes.length === 0) {
+      return { ...record, index: recordIndex };
+    }
+    const existing = Array.isArray(record.nodes)
+      ? record.nodes
+      : record.nodes
+        ? [record.nodes]
+        : [];
+    return {
+      ...record,
+      index: recordIndex,
+      nodes: [...existing, ...nodes]
+    };
+  });
+}
+
+async function loadRecordChunks(traceId: string, detail: TraceDetailRef): Promise<TraceRecord[]> {
+  const chunks = detail.records ?? [];
+  const records: TraceRecord[] = [];
+  for (let i = 0; i < chunks.length; i += 1) {
+    const payload = await fetchJson<{ records: TraceRecord[] }>(
+      `${API_BASE}/traces/${traceId}/records/${i}`
+    );
+    if (!payload) {
+      throw new Error(`record chunk ${i} load failed`);
+    }
+    const offset = records.length;
+    const normalized = payload.records.map((record, index) =>
+      normalizeRecord(record, offset + index)
+    );
+    records.push(...normalized);
+  }
+  return records;
+}
+
+async function loadNodeChunks(
+  traceId: string,
+  detail: TraceDetailRef
+): Promise<Map<number, TraceNode[]>> {
+  const chunks = detail.nodes ?? [];
+  const nodesByRecord = new Map<number, TraceNode[]>();
+  for (let i = 0; i < chunks.length; i += 1) {
+    const payload = await fetchJson<{ nodes: TraceNodeChunkEntry[] }>(
+      `${API_BASE}/traces/${traceId}/nodes/${i}`
+    );
+    if (!payload) {
+      throw new Error(`node chunk ${i} load failed`);
+    }
+    payload.nodes.forEach((entry) => {
+      const recordIndex = parseNumericIndex(entry.record_index);
+      if (recordIndex == null) return;
+      const list = nodesByRecord.get(recordIndex) ?? [];
+      list.push(entry.node);
+      nodesByRecord.set(recordIndex, list);
+    });
+  }
+  return nodesByRecord;
+}
+
+async function loadFinalize(traceId: string) {
+  const payload = await fetchJson<{ finalize: TracePayload["finalize"] }>(
+    `${API_BASE}/traces/${traceId}/finalize`
+  );
+  if (!payload) {
+    throw new Error("finalize chunk load failed");
+  }
+  return payload.finalize ?? null;
+}
+
 function formatTime(value?: string) {
   if (!value) return "-";
   const date = new Date(value);
@@ -172,10 +317,7 @@ function resolveDurationUs(durationUs?: number, durationMs?: number) {
 
 function resolveTraceDurationUs(trace?: TracePayload) {
   if (!trace) return undefined;
-  const summary = (trace as TracePayload & {
-    summary?: { duration_us?: number; duration_ms?: number };
-  }).summary;
-  const fromSummary = resolveDurationUs(summary?.duration_us, summary?.duration_ms);
+  const fromSummary = resolveDurationUs(trace.summary?.duration_us, trace.summary?.duration_ms);
   if (fromSummary !== undefined) return fromSummary;
   const record = trace.records?.[0];
   return resolveDurationUs(record?.duration_us, record?.duration_ms);
@@ -1016,6 +1158,9 @@ export default function App() {
   const [traces, setTraces] = useState<TraceListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TracePayload | null>(null);
+  const [traceManifest, setTraceManifest] = useState<TraceManifest | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [expandedRuleIds, setExpandedRuleIds] = useState<string[]>([]);
   const [focusedRuleId, setFocusedRuleId] = useState<string | null>(null);
   const [recordIndex, setRecordIndex] = useState(0);
@@ -1106,23 +1251,82 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) {
       setTrace(null);
+      setTraceManifest(null);
+      setDetailLoading(false);
+      setDetailError(null);
       initialCenterAppliedRef.current = false;
       return;
     }
     let mounted = true;
+    setTrace(null);
+    setTraceManifest(null);
+    setDetailLoading(false);
+    setDetailError(null);
+    setRecordIndex(0);
+    setSelectedNode(null);
+    setSelectedOp(null);
+    setExpandedRuleIds([]);
+    setFocusedRuleId(null);
+    setInspectorOpen(false);
+    setPinnedPositions({});
+    initialCenterAppliedRef.current = false;
     (async () => {
-      const result = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
-      const data = result?.trace ?? null;
-      if (mounted) {
-        setTrace(data);
-        setRecordIndex(0);
-        setSelectedNode(null);
-        setSelectedOp(null);
-        setExpandedRuleIds([]);
-        setFocusedRuleId(null);
-        setInspectorOpen(false);
-        setPinnedPositions({});
-        initialCenterAppliedRef.current = false;
+      const manifestResult = await fetchJson<{ manifest: TraceManifest }>(
+        `${API_BASE}/traces/${selectedId}/manifest`
+      );
+      if (!mounted) return;
+      if (!manifestResult?.manifest) {
+        const result = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
+        if (!mounted) return;
+        setTrace(result?.trace ?? null);
+        return;
+      }
+      const manifest = manifestResult.manifest;
+      setTraceManifest(manifest);
+      const baseTrace: TracePayload = {
+        trace_id: manifest.trace_id,
+        timestamp: manifest.timestamp,
+        status: manifest.status,
+        rule: manifest.rule,
+        rule_source: manifest.rule_source,
+        records: [],
+        finalize: undefined,
+        summary: manifest.summary,
+        input_format: manifest.input_format
+      };
+      setTrace(baseTrace);
+      const detail = manifest.detail;
+      if (!detail || detail.status !== "full") {
+        return;
+      }
+      setDetailLoading(true);
+      try {
+        const records = await loadRecordChunks(selectedId, detail);
+        if (!mounted) return;
+        let nextTrace: TracePayload = { ...baseTrace, records };
+        setTrace(nextTrace);
+        if (detail.layout === "records_nodes_split" && (detail.nodes?.length ?? 0) > 0) {
+          const nodesByRecord = await loadNodeChunks(selectedId, detail);
+          if (!mounted) return;
+          const mergedRecords = mergeNodesIntoRecords(records, nodesByRecord);
+          nextTrace = { ...nextTrace, records: mergedRecords };
+          setTrace(nextTrace);
+        }
+        if (detail.finalize) {
+          const finalize = await loadFinalize(selectedId);
+          if (!mounted) return;
+          if (finalize) {
+            setTrace((prev) => (prev ? { ...prev, finalize } : { ...nextTrace, finalize }));
+          }
+        }
+      } catch (err) {
+        if (mounted) {
+          setDetailError("trace detail load failed");
+        }
+      } finally {
+        if (mounted) {
+          setDetailLoading(false);
+        }
       }
     })();
     return () => {
@@ -1316,7 +1520,10 @@ export default function App() {
     });
     return map;
   }, [apiBundles]);
-  const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0;
+  const detailStatus = traceManifest?.detail?.status ?? trace?.detail?.status;
+  const detailReason = traceManifest?.detail?.reason ?? trace?.detail?.reason ?? [];
+  const detailAvailable = detailStatus ? detailStatus === "full" : true;
+  const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0 && detailAvailable;
   const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;
   const selectedMeta = (selectedNode?.meta ?? {}) as Record<string, unknown>;
   const stepRecordWhen =
@@ -1332,6 +1539,17 @@ export default function App() {
   const traceOpResultOpen = traceInspectorSections.opResult;
   const apiOpListOpen = apiInspectorSections.opList;
   const apiMemoOpen = apiInspectorSections.memo;
+  const detailLabel = detailStatus
+    ? detailStatus === "full"
+      ? detailLoading
+        ? "loading"
+        : hasDetail
+          ? "detail"
+          : "overview"
+      : detailStatus
+    : hasDetail
+      ? "detail"
+      : "overview";
 
   const renderJsonBlock = (label: string, value: unknown) => {
     const hasValue = !(value === null || value === undefined);
@@ -1382,7 +1600,7 @@ export default function App() {
           </div>
           {viewMode === "trace" ? (
             <>
-              <span className="meta-pill">{hasDetail ? "detail" : "overview"}</span>
+              <span className="meta-pill">{detailLabel}</span>
               <span className="meta-pill">{traces.length} traces</span>
               <span className="meta-pill">record #{currentRecord?.index ?? 0}</span>
             </>
@@ -1516,6 +1734,23 @@ export default function App() {
                   </div>
                 </div>
               <div className="trace-list">
+                {(detailStatus && detailStatus !== "full") || detailError ? (
+                  <div className="trace-panel__note">
+                    {detailError ? (
+                      <>
+                        <p>detail の読み込みに失敗しました。</p>
+                        <p className="muted">manifest または chunk の取得に失敗しています。</p>
+                      </>
+                    ) : (
+                      <>
+                        <p>detail は {detailStatus} です。</p>
+                        {detailReason.length > 0 && (
+                          <p className="muted">reason: {detailReason.join(", ")}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : null}
                 {traces.length === 0 && (
                   <div className="empty-trace">
                     <p>traces が見つかりません。</p>

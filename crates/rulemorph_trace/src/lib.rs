@@ -11,7 +11,7 @@ pub use trace_schema::{
     TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceDetailRef, TraceManifest,
     TraceMasking, TraceSummary,
 };
-pub use trace_store::{ImportResult, TraceMeta, TraceStore};
+pub use trace_store::{ImportResult, TraceMeta, TraceNodeChunkEntry, TraceStore};
 pub use trace_watch::start_trace_watcher;
 pub use trace_writer::{
     TraceCompression, TraceDetailLevel, TraceWriteOptions, TraceWriter, TraceWriterConfig,

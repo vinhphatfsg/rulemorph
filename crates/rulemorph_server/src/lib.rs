@@ -11,7 +11,7 @@ use rulemorph_endpoint::{EndpointEngine, EngineConfig};
 use rulemorph_trace::{TraceStore, start_trace_watcher};
 use tokio::sync::broadcast;
 
-use server::{AppState, UiSource, build_router};
+pub use server::{AppState, UiSource, build_router};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {

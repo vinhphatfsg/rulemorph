@@ -369,6 +369,23 @@ body {
   padding-right: 4px;
 }
 
+.trace-panel__note {
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(24, 30, 38, 0.7);
+  border: 1px solid rgba(120, 140, 160, 0.2);
+  color: var(--paper);
+  font-size: 0.78rem;
+}
+
+.trace-panel__note p {
+  margin: 0;
+}
+
+.trace-panel__note p + p {
+  margin-top: 6px;
+}
+
 .trace-card {
   width: 100%;
   text-align: left;

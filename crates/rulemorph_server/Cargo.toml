@@ -33,3 +33,8 @@ walkdir = "2.5"
 
 [features]
 embedded-ui = ["dep:include_dir", "dep:mime_guess"]
+
+[dev-dependencies]
+http-body-util = "0.1"
+tempfile = "3.10"
+tower = { version = "0.5", features = ["util"] }
