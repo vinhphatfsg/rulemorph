@@ -206,8 +206,51 @@ function normalizeRecordIndex(value: unknown, fallback: number) {
   return parsed ?? fallback;
 }
 
+function normalizeInlineNodeValue(value: unknown, fallbackId: string): TraceNode {
+  const node =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : { value };
+  if (typeof node.id !== "string" || node.id.length === 0) {
+    node.id = fallbackId;
+  }
+  if (typeof node.kind !== "string" || node.kind.length === 0) {
+    node.kind = "value";
+  }
+  if (typeof node.label !== "string" || node.label.length === 0) {
+    node.label =
+      typeof node.value === "string" ? node.value : node.kind ?? "value";
+  }
+  return node as TraceNode;
+}
+
+function normalizeInlineNodes(value: unknown, prefix: string): TraceNode[] {
+  if (Array.isArray(value)) {
+    return value.map((node, index) =>
+      normalizeInlineNodeValue(node, `${prefix}-${index}`)
+    );
+  }
+  if (value === null || value === undefined) {
+    return [];
+  }
+  return [normalizeInlineNodeValue(value, `${prefix}-0`)];
+}
+
 function normalizeRecord(record: TraceRecord, fallbackIndex: number): TraceRecord {
-  return { ...record, index: normalizeRecordIndex(record.index, fallbackIndex) };
+  const index = normalizeRecordIndex(record.index, fallbackIndex);
+  const nodes =
+    record.nodes === undefined
+      ? undefined
+      : normalizeInlineNodes(record.nodes as unknown, `record-${index}`);
+  return { ...record, index, nodes };
+}
+
+function normalizeTracePayload(trace: TracePayload | null): TracePayload | null {
+  if (!trace?.records) return trace;
+  return {
+    ...trace,
+    records: trace.records.map((record, index) => normalizeRecord(record, index))
+  };
 }
 
 function mergeNodesIntoRecords(
@@ -220,11 +263,7 @@ function mergeNodesIntoRecords(
     if (!nodes || nodes.length === 0) {
       return { ...record, index: recordIndex };
     }
-    const existing = Array.isArray(record.nodes)
-      ? record.nodes
-      : record.nodes
-        ? [record.nodes]
-        : [];
+    const existing = normalizeInlineNodes(record.nodes as unknown, `record-${recordIndex}`);
     return {
       ...record,
       index: recordIndex,
@@ -1278,7 +1317,7 @@ export default function App() {
       if (!manifestResult?.manifest) {
         const result = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
         if (!mounted) return;
-        setTrace(result?.trace ?? null);
+        setTrace(normalizeTracePayload(result?.trace ?? null));
         return;
       }
       const manifest = manifestResult.manifest;
@@ -1320,9 +1359,16 @@ export default function App() {
           }
         }
       } catch (err) {
-        if (mounted) {
-          setDetailError("trace detail load failed");
+        if (!mounted) return;
+        const fallback = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
+        if (!mounted) return;
+        if (fallback?.trace) {
+          setTraceManifest(null);
+          setTrace(normalizeTracePayload(fallback.trace));
+          setDetailError(null);
+          return;
         }
+        setDetailError("trace detail load failed");
       } finally {
         if (mounted) {
           setDetailLoading(false);
@@ -1520,8 +1566,12 @@ export default function App() {
     });
     return map;
   }, [apiBundles]);
-  const detailStatus = traceManifest?.detail?.status ?? trace?.detail?.status;
-  const detailReason = traceManifest?.detail?.reason ?? trace?.detail?.reason ?? [];
+  const detailStatus = traceManifest
+    ? traceManifest.detail?.status ?? "basic"
+    : trace?.detail?.status;
+  const detailReason = traceManifest
+    ? traceManifest.detail?.reason ?? []
+    : trace?.detail?.reason ?? [];
   const detailAvailable = detailStatus ? detailStatus === "full" : true;
   const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0 && detailAvailable;
   const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;

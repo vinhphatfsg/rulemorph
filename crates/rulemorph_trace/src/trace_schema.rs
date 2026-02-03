@@ -46,6 +46,8 @@ pub struct TraceChunkRef {
     pub node_end: Option<u64>,
     #[serde(default)]
     pub bytes: Option<u64>,
+    #[serde(default)]
+    pub bytes_uncompressed: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

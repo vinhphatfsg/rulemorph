@@ -2236,6 +2236,7 @@ fn write_record_chunks(
             node_start: None,
             node_end: None,
             bytes: Some(bytes),
+            bytes_uncompressed: Some(raw_bytes.len() as u64),
         });
         files.push(path);
         lines.clear();
@@ -2342,6 +2343,7 @@ fn write_node_chunks(
             node_start: Some(start as u64),
             node_end: Some(end as u64),
             bytes: Some(bytes),
+            bytes_uncompressed: Some(raw_bytes.len() as u64),
         });
         files.push(path);
         lines.clear();
@@ -2503,6 +2505,7 @@ fn write_finalize_chunk(
         node_start: None,
         node_end: None,
         bytes: Some(bytes),
+        bytes_uncompressed: Some(raw_bytes.len() as u64),
     };
     Ok(FinalizeWriteResult {
         chunk: Some(chunk),

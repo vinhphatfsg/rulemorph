@@ -18,7 +18,8 @@ use crate::trace_schema::{
     RuleMeta, TRACE_CHUNK_BYTES_COMPRESSED_HARD_MAX, TRACE_CHUNK_BYTES_COMPRESSED_OVERHEAD_MAX,
     TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES,
     TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
-    TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest, TraceSummary,
+    TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceDetailRef, TraceManifest,
+    TraceSummary,
 };
 
 const HARD_MAX_CHUNK_BYTES_COMPRESSED: u64 = TRACE_CHUNK_BYTES_COMPRESSED_HARD_MAX as u64;
@@ -309,6 +310,7 @@ impl TraceStore {
         let mut manifest: TraceManifest = serde_json::from_value(value)
             .with_context(|| format!("invalid trace manifest: {}", path.display()))?;
         manifest.trace_id = meta.trace_id;
+        apply_manifest_budget(&mut manifest);
         let base_dir = path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -820,13 +822,15 @@ fn fallback_trace_id_for_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkBudget, Result, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest,
-        TraceStore, apply_legacy_limits_with_thresholds, build_trace_from_manifest_with_budget,
+        ChunkBudget, Result, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
+        TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
+        TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest, TraceStore,
+        apply_legacy_limits_with_thresholds, build_trace_from_manifest_with_budget,
         fallback_trace_id_for_path, path_hash_for_trace_id, resolve_chunk_path,
     };
     use crate::TraceDetailRef;
     use crate::trace_id::sanitize_trace_id;
-    use serde_json::json;
+    use serde_json::{Value, json};
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
@@ -885,6 +889,250 @@ mod tests {
         let resolved = resolve_chunk_path(&base, "records-0001.ndjson").expect("resolve");
         let base = base.canonicalize().expect("canonicalize base");
         assert!(resolved.starts_with(&base));
+    }
+
+    #[tokio::test]
+    async fn manifest_downgrades_when_chunk_budget_exceeded() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("traces/2026/02/03/trace-over-budget");
+        fs::create_dir_all(&trace_dir)?;
+
+        let mut records = Vec::new();
+        for index in 0..(TRACE_CHUNK_COUNT_HARD_MAX + 1) {
+            records.push(json!({
+                "path": format!("records-{index:04}.ndjson"),
+                "format": "ndjson",
+                "compression": "none",
+                "record_start": 0,
+                "record_end": 0
+            }));
+        }
+
+        fs::write(
+            trace_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-over-budget",
+                "status": "ok",
+                "detail": {
+                    "layout": "records_inline",
+                    "status": "full",
+                    "reason": [],
+                    "records": records,
+                    "nodes": []
+                }
+            }))?,
+        )?;
+
+        let store = TraceStore::new(temp.path().to_path_buf()).await?;
+        let manifest = store
+            .get_manifest("trace-over-budget")
+            .await?
+            .expect("manifest");
+        let detail = manifest.detail.expect("detail");
+        assert_eq!(detail.status, "basic");
+        assert!(
+            detail
+                .reason
+                .iter()
+                .any(|reason| reason == "budget_exceeded")
+        );
+        assert!(detail.records.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manifest_downgrades_when_total_bytes_exceeded() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("traces/2026/02/03/trace-bytes-budget");
+        fs::create_dir_all(&trace_dir)?;
+
+        fs::write(
+            trace_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-bytes-budget",
+                "status": "ok",
+                "detail": {
+                    "layout": "records_inline",
+                    "status": "full",
+                    "reason": [],
+                    "records": [
+                        {
+                            "path": "records-0001.ndjson",
+                            "format": "ndjson",
+                            "compression": "none",
+                            "record_start": 0,
+                            "record_end": 0,
+                            "bytes": TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX as u64 + 1
+                        }
+                    ],
+                    "nodes": []
+                }
+            }))?,
+        )?;
+
+        let store = TraceStore::new(temp.path().to_path_buf()).await?;
+        let manifest = store
+            .get_manifest("trace-bytes-budget")
+            .await?
+            .expect("manifest");
+        let detail = manifest.detail.expect("detail");
+        assert_eq!(detail.status, "basic");
+        assert!(
+            detail
+                .reason
+                .iter()
+                .any(|reason| reason == "budget_exceeded")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manifest_downgrades_when_unknown_uncompressed_bytes_exceed_budget() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("traces/2026/02/03/trace-unknown-bytes");
+        fs::create_dir_all(&trace_dir)?;
+
+        let unknown_chunks = TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX
+            / TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX
+            + 1;
+        let records: Vec<Value> = (0..unknown_chunks)
+            .map(|index| {
+                json!({
+                    "path": format!("records-{index:04}.ndjson.zst"),
+                    "format": "ndjson",
+                    "compression": "zstd",
+                    "record_start": index as u64,
+                    "record_end": index as u64,
+                    "bytes": 1024
+                })
+            })
+            .collect();
+
+        fs::write(
+            trace_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-unknown-bytes",
+                "status": "ok",
+                "max_chunk_bytes_uncompressed": TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX as u64,
+                "detail": {
+                    "layout": "records_inline",
+                    "status": "full",
+                    "reason": [],
+                    "records": records,
+                    "nodes": []
+                }
+            }))?,
+        )?;
+
+        let store = TraceStore::new(temp.path().to_path_buf()).await?;
+        let manifest = store
+            .get_manifest("trace-unknown-bytes")
+            .await?
+            .expect("manifest");
+        let detail = manifest.detail.expect("detail");
+        assert_eq!(detail.status, "basic");
+        assert!(
+            detail
+                .reason
+                .iter()
+                .any(|reason| reason == "budget_exceeded")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manifest_downgrades_when_record_total_exceeded() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("traces/2026/02/03/trace-record-budget");
+        fs::create_dir_all(&trace_dir)?;
+
+        fs::write(
+            trace_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-record-budget",
+                "status": "ok",
+                "summary": {
+                    "record_total": TRACE_RECORD_COUNT_HARD_MAX as u64 + 1
+                },
+                "detail": {
+                    "layout": "records_inline",
+                    "status": "full",
+                    "reason": [],
+                    "records": [],
+                    "nodes": []
+                }
+            }))?,
+        )?;
+
+        let store = TraceStore::new(temp.path().to_path_buf()).await?;
+        let manifest = store
+            .get_manifest("trace-record-budget")
+            .await?
+            .expect("manifest");
+        let detail = manifest.detail.expect("detail");
+        assert_eq!(detail.status, "basic");
+        assert!(
+            detail
+                .reason
+                .iter()
+                .any(|reason| reason == "budget_exceeded")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn manifest_downgrades_when_node_total_exceeded() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("traces/2026/02/03/trace-node-budget");
+        fs::create_dir_all(&trace_dir)?;
+
+        fs::write(
+            trace_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-node-budget",
+                "status": "ok",
+                "detail": {
+                    "layout": "records_nodes_split",
+                    "status": "full",
+                    "reason": [],
+                    "records": [],
+                    "nodes": [
+                        {
+                            "path": "nodes-0001.ndjson",
+                            "format": "ndjson",
+                            "compression": "none",
+                            "node_start": 0,
+                            "node_end": TRACE_NODE_COUNT_HARD_MAX as u64
+                        }
+                    ]
+                }
+            }))?,
+        )?;
+
+        let store = TraceStore::new(temp.path().to_path_buf()).await?;
+        let manifest = store
+            .get_manifest("trace-node-budget")
+            .await?
+            .expect("manifest");
+        let detail = manifest.detail.expect("detail");
+        assert_eq!(detail.status, "basic");
+        assert!(
+            detail
+                .reason
+                .iter()
+                .any(|reason| reason == "budget_exceeded")
+        );
+
+        Ok(())
     }
 
     #[test]
@@ -1050,6 +1298,7 @@ mod tests {
                         node_start: None,
                         node_end: None,
                         bytes: None,
+                        bytes_uncompressed: None,
                     },
                     TraceChunkRef {
                         path: "records-0002.ndjson".to_string(),
@@ -1060,6 +1309,7 @@ mod tests {
                         node_start: None,
                         node_end: None,
                         bytes: None,
+                        bytes_uncompressed: None,
                     },
                 ],
                 nodes: Vec::new(),
@@ -1389,6 +1639,147 @@ fn resolve_max_chunk_bytes(manifest: &TraceManifest) -> usize {
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX);
     requested.clamp(1, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX)
+}
+
+fn estimate_chunk_item_count(
+    chunks: &[TraceChunkRef],
+    start: impl Fn(&TraceChunkRef) -> Option<u64>,
+    end: impl Fn(&TraceChunkRef) -> Option<u64>,
+) -> Option<u64> {
+    let mut total = 0u64;
+    for chunk in chunks {
+        let start = start(chunk)?;
+        let end = end(chunk)?;
+        if end < start {
+            return None;
+        }
+        total = total.checked_add(end - start + 1)?;
+    }
+    Some(total)
+}
+
+fn estimate_uncompressed_bytes(
+    detail: &TraceDetailRef,
+    max_chunk_bytes: Option<u64>,
+) -> Option<u64> {
+    let mut total = 0u64;
+    let mut add_chunk = |chunk: &TraceChunkRef| -> Option<()> {
+        let bytes = match chunk.bytes_uncompressed {
+            Some(bytes) => bytes,
+            None if chunk.compression == "none" => chunk
+                .bytes
+                .or(max_chunk_bytes)
+                .unwrap_or(TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX as u64),
+            None => {
+                if let Some(max_chunk_bytes) = max_chunk_bytes {
+                    max_chunk_bytes
+                } else {
+                    chunk.bytes?
+                }
+            }
+        };
+        total = total.checked_add(bytes)?;
+        Some(())
+    };
+    for chunk in detail.records.iter().chain(detail.nodes.iter()) {
+        add_chunk(chunk)?;
+    }
+    if let Some(chunk) = detail.finalize.as_ref() {
+        add_chunk(chunk)?;
+    }
+    Some(total)
+}
+
+fn apply_manifest_budget(manifest: &mut TraceManifest) {
+    let summary_record_total = manifest
+        .summary
+        .as_ref()
+        .and_then(|summary| summary.record_total);
+    let Some(detail) = manifest.detail.as_mut() else {
+        return;
+    };
+    if detail.status != "full" {
+        return;
+    }
+
+    let mut budget_exceeded = false;
+
+    let chunk_count =
+        detail.records.len() + detail.nodes.len() + usize::from(detail.finalize.is_some());
+    if chunk_count > TRACE_CHUNK_COUNT_HARD_MAX {
+        budget_exceeded = true;
+    }
+
+    let max_chunk_bytes = manifest
+        .max_chunk_bytes_uncompressed
+        .and_then(|value| usize::try_from(value).ok())
+        .map(|value| value.clamp(1, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX) as u64);
+
+    match estimate_uncompressed_bytes(detail, max_chunk_bytes) {
+        Some(estimated_bytes) => {
+            if estimated_bytes > TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX as u64 {
+                budget_exceeded = true;
+            }
+        }
+        None => {
+            budget_exceeded = true;
+        }
+    }
+
+    let record_total = if detail.records.is_empty() {
+        summary_record_total
+    } else {
+        match estimate_chunk_item_count(
+            &detail.records,
+            |chunk| chunk.record_start,
+            |chunk| chunk.record_end,
+        ) {
+            Some(record_total) => Some(record_total),
+            None => summary_record_total,
+        }
+    };
+    if let Some(record_total) = record_total {
+        if record_total as usize > TRACE_RECORD_COUNT_HARD_MAX {
+            budget_exceeded = true;
+        }
+    } else if !detail.records.is_empty() {
+        budget_exceeded = true;
+    }
+
+    let node_total = if detail.nodes.is_empty() {
+        if detail.layout == "records_inline" {
+            record_total
+        } else {
+            None
+        }
+    } else {
+        estimate_chunk_item_count(
+            &detail.nodes,
+            |chunk| chunk.node_start,
+            |chunk| chunk.node_end,
+        )
+    };
+    if let Some(node_total) = node_total {
+        if node_total as usize > TRACE_NODE_COUNT_HARD_MAX {
+            budget_exceeded = true;
+        }
+    } else if !detail.nodes.is_empty() {
+        budget_exceeded = true;
+    }
+
+    if budget_exceeded {
+        detail.status = "basic".to_string();
+        if !detail
+            .reason
+            .iter()
+            .any(|reason| reason == "budget_exceeded")
+        {
+            detail.reason.push("budget_exceeded".to_string());
+        }
+        detail.records.clear();
+        detail.nodes.clear();
+        detail.finalize = None;
+    }
 }
 
 fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Result<Value> {

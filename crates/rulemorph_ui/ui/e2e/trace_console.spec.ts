@@ -101,6 +101,95 @@ function writeDemoTrace(dataDir: string) {
   );
 }
 
+function writeInlineNodesTrace(dataDir: string) {
+  const traceDir = path.join(dataDir, "traces", "2026", "02", "03", "inline-001");
+  mkdirSync(traceDir, { recursive: true });
+  writeFileSync(
+    path.join(traceDir, "records-0001.ndjson"),
+    "{\"index\":0,\"status\":\"ok\",\"duration_us\":500,\"nodes\":{\"id\":\"inline-0\",\"kind\":\"mappings\",\"label\":\"inline node\",\"status\":\"ok\",\"input\":{\"foo\":1},\"output\":{\"bar\":2}}}\n"
+  );
+  writeFileSync(
+    path.join(traceDir, "trace.json"),
+    JSON.stringify(
+      {
+        trace_schema_version: 1,
+        trace_id: "inline-001",
+        timestamp: "2026-02-03T00:05:00Z",
+        status: "ok",
+        rule: {
+          type: "normal",
+          name: "inline",
+          path: "rules/inline.yaml",
+          version: 2
+        },
+        input_format: "json",
+        summary: {
+          record_total: 1,
+          record_success: 1,
+          record_failed: 0,
+          duration_us: 500
+        },
+        max_chunk_bytes_uncompressed: 1048576,
+        detail: {
+          layout: "records_inline",
+          status: "full",
+          reason: [],
+          records: [
+            {
+              path: "records-0001.ndjson",
+              format: "ndjson",
+              compression: "none",
+              record_start: 0,
+              record_end: 0
+            }
+          ],
+          nodes: []
+        }
+      },
+      null,
+      2
+    )
+  );
+}
+
+function writeLegacyInlineNodesTrace(dataDir: string) {
+  const traceDir = path.join(dataDir, "traces", "2026", "02", "03", "legacy-inline-001");
+  mkdirSync(traceDir, { recursive: true });
+  writeFileSync(
+    path.join(traceDir, "trace.json"),
+    JSON.stringify(
+      {
+        trace_id: "legacy-inline-001",
+        timestamp: "2026-02-03T00:08:00Z",
+        status: "ok",
+        rule: {
+          type: "normal",
+          name: "legacy inline",
+          path: "rules/legacy-inline.yaml",
+          version: 2
+        },
+        records: [
+          {
+            index: 0,
+            status: "ok",
+            duration_us: 450,
+            nodes: {
+              id: "legacy-inline-0",
+              kind: "mappings",
+              label: "legacy inline",
+              status: "ok",
+              input: { foo: 1 },
+              output: { bar: 2 }
+            }
+          }
+        ]
+      },
+      null,
+      2
+    )
+  );
+}
+
 function writeBasicTrace(dataDir: string) {
   const traceDir = path.join(dataDir, "traces", "2026", "02", "03", "basic-001");
   mkdirSync(traceDir, { recursive: true });
@@ -279,7 +368,45 @@ test("Trace Console shows basic detail fallback message", async ({ page }) => {
   }
 });
 
-test("Trace Console shows error when detail chunks fail to load", async ({ page }) => {
+test("Trace Console normalizes inline nodes", async ({ page }) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-"));
+  writeInlineNodesTrace(dataDir);
+  const port = await getAvailablePort();
+  const server = await startServer(dataDir, port);
+
+  try {
+    await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+    await page.getByRole("button", { name: /inline/ }).first().click();
+    await page.getByTestId("rf__node-rules/inline.yaml").click();
+    await page.getByRole("heading", { name: "Records" }).waitFor();
+    await page.getByTestId("rf__node-detail-rules/inline.yaml::step-0").click();
+    await expect(page.getByText("mappings · inline node")).toBeVisible();
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("Trace Console normalizes legacy inline nodes", async ({ page }) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-"));
+  writeLegacyInlineNodesTrace(dataDir);
+  const port = await getAvailablePort();
+  const server = await startServer(dataDir, port);
+
+  try {
+    await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+    await page.getByRole("button", { name: /legacy inline/ }).first().click();
+    await page.getByTestId("rf__node-rules/legacy-inline.yaml").click();
+    await page.getByRole("heading", { name: "Records" }).waitFor();
+    await page.getByTestId("rf__node-detail-rules/legacy-inline.yaml::step-0").click();
+    await expect(page.getByText("mappings · legacy inline")).toBeVisible();
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("Trace Console downgrades when detail chunks fail to load", async ({ page }) => {
   const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-"));
   writeBrokenTrace(dataDir);
   const port = await getAvailablePort();
@@ -289,10 +416,8 @@ test("Trace Console shows error when detail chunks fail to load", async ({ page 
     await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
     await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
     await page.getByRole("button", { name: /broken/ }).first().click();
-    await page.getByText("detail の読み込みに失敗しました。").waitFor();
-    await expect(
-      page.getByText("manifest または chunk の取得に失敗しています。")
-    ).toBeVisible();
+    await page.getByText("detail は basic です。").waitFor();
+    await expect(page.getByText(/reason: chunk_error/)).toBeVisible();
   } finally {
     server.kill("SIGTERM");
   }
