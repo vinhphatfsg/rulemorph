@@ -4,7 +4,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rulemorph_trace::{
-    TraceCompression, TraceManifest, TraceStore, TraceWriteOptions, write_trace_bundle,
+    TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TraceCompression, TraceDetailLevel,
+    TraceManifest, TraceStore, TraceWriteOptions, write_trace_bundle,
 };
 use serde_json::json;
 
@@ -17,6 +18,22 @@ fn unique_temp_dir() -> std::path::PathBuf {
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
     std::env::temp_dir().join(format!("rulemorph-trace-test-{pid}-{nanos}-{counter}"))
+}
+
+fn sampling_bucket(value: &str) -> f64 {
+    fn fnv1a64(bytes: &[u8]) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+        let mut hash = FNV_OFFSET;
+        for byte in bytes {
+            hash ^= *byte as u64;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        hash
+    }
+
+    let hash = fnv1a64(value.as_bytes());
+    (hash as f64) / (u64::MAX as f64)
 }
 
 #[tokio::test]
@@ -65,6 +82,171 @@ async fn write_trace_bundle_downgrades_on_budget_exceeded() -> anyhow::Result<()
             "unexpected detail file: {name}"
         );
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_clamps_max_chunk_bytes_uncompressed() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-clamp",
+        "records": [
+            { "index": 0, "status": "ok", "value": 1 }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        max_chunk_bytes_uncompressed: 64 * 1024 * 1024,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    assert_eq!(
+        manifest.max_chunk_bytes_uncompressed,
+        Some(16 * 1024 * 1024)
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_downgrades_on_oversized_record_line() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-oversize-line",
+        "records": [
+            { "index": 0, "payload": "x".repeat(1024) }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        max_chunk_bytes_uncompressed: 64,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let detail = manifest.detail.expect("detail should exist");
+
+    assert_eq!(detail.status, "basic");
+    assert!(
+        detail
+            .reason
+            .iter()
+            .any(|reason| reason == "chunk_too_large")
+    );
+    assert!(detail.records.is_empty());
+    assert!(detail.nodes.is_empty());
+    assert!(detail.finalize.is_none());
+
+    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    for entry in fs::read_dir(trace_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            !name.starts_with("records-")
+                && !name.starts_with("nodes-")
+                && !name.starts_with("finalize.json")
+                && !name.contains(".tmp-"),
+            "unexpected detail file: {name}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_downgrades_on_chunk_count_exceeded() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let record_count = TRACE_CHUNK_COUNT_HARD_MAX + 1;
+    let records: Vec<_> = (0..record_count)
+        .map(|index| json!({ "index": index, "value": index }))
+        .collect();
+    let trace = json!({
+        "trace_id": "trace-chunk-count",
+        "records": records
+    });
+
+    let options = TraceWriteOptions {
+        max_records_per_chunk: 1,
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let detail = manifest.detail.expect("detail should exist");
+
+    assert_eq!(detail.status, "basic");
+    assert!(
+        detail
+            .reason
+            .iter()
+            .any(|reason| reason == "budget_exceeded")
+    );
+    assert!(detail.records.is_empty());
+    assert!(detail.nodes.is_empty());
+    assert!(detail.finalize.is_none());
+
+    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    for entry in fs::read_dir(trace_dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            !name.starts_with("records-")
+                && !name.starts_with("nodes-")
+                && !name.starts_with("finalize.json")
+                && !name.contains(".tmp-"),
+            "unexpected detail file: {name}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_drops_rule_source_when_manifest_too_large() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-large-manifest",
+        "records": [],
+        "rule_source": {
+            "raw": "x".repeat(TRACE_JSON_MAX_BYTES as usize)
+        }
+    });
+
+    let options = TraceWriteOptions {
+        max_bytes_per_trace: TRACE_JSON_MAX_BYTES as usize + 1024,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    assert!(manifest_payload.len() as u64 <= TRACE_JSON_MAX_BYTES);
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let detail = manifest.detail.expect("detail should exist");
+    assert!(
+        detail
+            .reason
+            .iter()
+            .any(|reason| reason == "rule_source_dropped")
+    );
+    assert!(manifest.rule_source.is_none());
 
     Ok(())
 }
@@ -156,6 +338,89 @@ async fn write_trace_bundle_sampling_keeps_error() -> anyhow::Result<()> {
     assert!(!detail.records.is_empty());
 
     Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_sampling_keeps_slow_trace() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-sample-slow",
+        "status": "ok",
+        "records": [
+            { "index": 0, "status": "ok", "value": 1 }
+        ],
+        "summary": {
+            "record_total": 1,
+            "record_success": 1,
+            "record_failed": 0,
+            "duration_us": 250
+        }
+    });
+
+    let options = TraceWriteOptions {
+        sampling_rate: 0.0,
+        sampling_slow_threshold_us: Some(100),
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let detail = manifest.detail.expect("detail should exist");
+
+    assert_eq!(detail.status, "full");
+    assert!(!detail.reason.iter().any(|reason| reason == "sampled_out"));
+    assert!(!detail.records.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_sampling_uses_generated_trace_id_for_placeholder() -> anyhow::Result<()>
+{
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let rate = 0.5;
+    let placeholder_keep = sampling_bucket("trace") < rate;
+
+    for _ in 0..10 {
+        let trace = json!({
+            "trace_id": "trace",
+            "status": "ok",
+            "records": [
+                { "index": 0, "status": "ok", "value": 1 }
+            ],
+            "summary": {
+                "record_total": 1,
+                "record_success": 1,
+                "record_failed": 0,
+                "duration_us": 10
+            }
+        });
+
+        let options = TraceWriteOptions {
+            sampling_rate: rate,
+            compression: TraceCompression::None,
+            ..Default::default()
+        };
+
+        let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+        let manifest_payload = fs::read_to_string(&manifest_path)?;
+        let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+        let detail = manifest.detail.expect("detail should exist");
+        let keep = sampling_bucket(&manifest.trace_id) < rate;
+        if keep != placeholder_keep {
+            let expected = if keep { "full" } else { "basic" };
+            assert_eq!(detail.status, expected);
+            return Ok(());
+        }
+    }
+
+    panic!("failed to find sampling bucket differing from placeholder");
 }
 
 #[tokio::test]
@@ -513,18 +778,44 @@ async fn write_trace_bundle_skips_malformed_ndjson_line() -> anyhow::Result<()> 
         .get("trace-nodes-malformed-ndjson")
         .await?
         .expect("trace should load");
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail should exist");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let reasons = detail
+        .get("reason")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reasons
+            .iter()
+            .any(|value| value.as_str() == Some("chunk_error"))
+    );
+    let detail_records = detail
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_records.is_empty());
+    let detail_nodes = detail
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_nodes.is_empty());
+    assert!(detail.get("finalize").is_none());
     let records = loaded
         .get("records")
         .and_then(|value| value.as_array())
-        .expect("records should exist");
-    let nodes_first = records[0]
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .expect("first nodes should be array");
-    assert_eq!(
-        nodes_first[0].get("id").and_then(|value| value.as_str()),
-        Some("n1")
-    );
+        .cloned()
+        .unwrap_or_default();
+    assert!(records.is_empty());
+    assert!(loaded.get("finalize").is_none());
 
     Ok(())
 }
@@ -646,6 +937,24 @@ async fn write_trace_bundle_skips_invalid_utf8_chunk() -> anyhow::Result<()> {
         .get("trace-invalid-utf8-chunk")
         .await?
         .expect("trace should load");
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let reasons = detail
+        .get("reason")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reasons
+            .iter()
+            .any(|value| value.as_str() == Some("chunk_error"))
+    );
     let records = loaded
         .get("records")
         .and_then(|value| value.as_array())
@@ -701,6 +1010,24 @@ async fn write_trace_bundle_skips_unsupported_compression_chunk() -> anyhow::Res
         .get("trace-unsupported-compression")
         .await?
         .expect("trace should load");
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let reasons = detail
+        .get("reason")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reasons
+            .iter()
+            .any(|value| value.as_str() == Some("chunk_error"))
+    );
     let records = loaded
         .get("records")
         .and_then(|value| value.as_array())
@@ -756,6 +1083,24 @@ async fn write_trace_bundle_skips_unsupported_format_chunk() -> anyhow::Result<(
         .get("trace-unsupported-format")
         .await?
         .expect("trace should load");
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let reasons = detail
+        .get("reason")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reasons
+            .iter()
+            .any(|value| value.as_str() == Some("chunk_error"))
+    );
     let records = loaded
         .get("records")
         .and_then(|value| value.as_array())
@@ -811,6 +1156,24 @@ async fn write_trace_bundle_skips_zstd_decode_failure() -> anyhow::Result<()> {
         .get("trace-zstd-decode-failure")
         .await?
         .expect("trace should load");
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let reasons = detail
+        .get("reason")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        reasons
+            .iter()
+            .any(|value| value.as_str() == Some("chunk_error"))
+    );
     let records = loaded
         .get("records")
         .and_then(|value| value.as_array())
@@ -872,6 +1235,44 @@ async fn write_trace_bundle_roundtrips_finalize_zstd() -> anyhow::Result<()> {
         .await?
         .expect("trace should load");
     assert_eq!(loaded.get("finalize"), Some(&json!({ "output": "done" })));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_downgrades_on_oversized_finalize() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-finalize-oversized",
+        "records": [],
+        "finalize": { "output": "x".repeat(200) }
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        max_chunk_bytes_uncompressed: 64,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let detail = manifest.detail.expect("detail should exist");
+    assert_eq!(detail.status, "basic");
+    assert!(
+        detail
+            .reason
+            .iter()
+            .any(|reason| reason == "chunk_too_large")
+    );
+    assert!(detail.records.is_empty());
+    assert!(detail.nodes.is_empty());
+    assert!(detail.finalize.is_none());
+
+    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    assert!(!trace_dir.join("finalize.json").exists());
 
     Ok(())
 }
@@ -2922,6 +3323,7 @@ async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
             {
                 "index": 0,
                 "input": {
+                    "authorization": "Bearer abc",
                     "password": "secret",
                     "nested": { "token": "abc" },
                     "ok": 1
@@ -2960,6 +3362,10 @@ async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
         .expect("output object");
 
     assert_eq!(
+        input.get("authorization").and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+    assert_eq!(
         input.get("password").and_then(|value| value.as_str()),
         Some("[masked]")
     );
@@ -2970,6 +3376,406 @@ async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
     assert_eq!(
         output.get("secret").and_then(|value| value.as_str()),
         Some("[masked]")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_masks_rule_source_when_basic() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-mask-basic-rule-source",
+        "status": "ok",
+        "summary": {
+            "record_total": 1,
+            "record_success": 1,
+            "record_failed": 0
+        },
+        "rule_source": {
+            "token": "secret",
+            "headers": {
+                "Authorization": "Bearer 123"
+            }
+        },
+        "records": [
+            { "index": 0, "input": { "token": "secret" } }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        detail_level: TraceDetailLevel::Basic,
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-mask-basic-rule-source")
+        .await?
+        .expect("trace should load");
+
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let detail_records = detail
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_records.is_empty());
+    let detail_nodes = detail
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_nodes.is_empty());
+    assert!(detail.get("finalize").is_none());
+
+    let records = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(records.is_empty());
+
+    let rule_source = loaded
+        .get("rule_source")
+        .and_then(|value| value.as_object())
+        .expect("rule_source object");
+    assert_eq!(
+        rule_source.get("token").and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+    let headers = rule_source
+        .get("headers")
+        .and_then(|value| value.as_object())
+        .expect("headers object");
+    assert_eq!(
+        headers
+            .get("Authorization")
+            .and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_masks_rule_source_when_off() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-mask-off-rule-source",
+        "status": "ok",
+        "summary": {
+            "record_total": 1,
+            "record_success": 1,
+            "record_failed": 0
+        },
+        "rule_source": {
+            "token": "secret"
+        },
+        "records": [
+            { "index": 0, "input": { "token": "secret" } }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        detail_level: TraceDetailLevel::Off,
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-mask-off-rule-source")
+        .await?
+        .expect("trace should load");
+
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("dropped")
+    );
+    let detail_records = detail
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_records.is_empty());
+    let detail_nodes = detail
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_nodes.is_empty());
+    assert!(detail.get("finalize").is_none());
+
+    let records = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(records.is_empty());
+
+    let rule_source = loaded
+        .get("rule_source")
+        .and_then(|value| value.as_object())
+        .expect("rule_source object");
+    assert_eq!(
+        rule_source.get("token").and_then(|value| value.as_str()),
+        Some("[masked]")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_basic_without_masking_strips_detail() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-basic-no-mask",
+        "status": "ok",
+        "summary": {
+            "record_total": 1,
+            "record_success": 1,
+            "record_failed": 0
+        },
+        "rule_source": {
+            "token": "secret"
+        },
+        "records": [
+            { "index": 0, "input": { "token": "secret" } }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        detail_level: TraceDetailLevel::Basic,
+        masking_enabled: false,
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-basic-no-mask")
+        .await?
+        .expect("trace should load");
+
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("basic")
+    );
+    let detail_records = detail
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_records.is_empty());
+    let detail_nodes = detail
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_nodes.is_empty());
+    assert!(detail.get("finalize").is_none());
+
+    let records = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(records.is_empty());
+
+    let rule_source = loaded
+        .get("rule_source")
+        .and_then(|value| value.as_object())
+        .expect("rule_source object");
+    assert_eq!(
+        rule_source.get("token").and_then(|value| value.as_str()),
+        Some("secret")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_off_without_masking_strips_detail() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-off-no-mask",
+        "status": "ok",
+        "summary": {
+            "record_total": 1,
+            "record_success": 1,
+            "record_failed": 0
+        },
+        "rule_source": {
+            "token": "secret"
+        },
+        "records": [
+            { "index": 0, "input": { "token": "secret" } }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        detail_level: TraceDetailLevel::Off,
+        masking_enabled: false,
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-off-no-mask")
+        .await?
+        .expect("trace should load");
+
+    let detail = loaded
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object");
+    assert_eq!(
+        detail.get("status").and_then(|value| value.as_str()),
+        Some("dropped")
+    );
+    let detail_records = detail
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_records.is_empty());
+    let detail_nodes = detail
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(detail_nodes.is_empty());
+    assert!(detail.get("finalize").is_none());
+
+    let records = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    assert!(records.is_empty());
+
+    let rule_source = loaded
+        .get("rule_source")
+        .and_then(|value| value.as_object())
+        .expect("rule_source object");
+    assert_eq!(
+        rule_source.get("token").and_then(|value| value.as_str()),
+        Some("secret")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_masks_url_query_params() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-mask-url",
+        "records": [
+            {
+                "index": 0,
+                "input": {
+                    "url": "https://example.com/path?token=abc&ok=1#frag"
+                }
+            }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-mask-url")
+        .await?
+        .expect("trace should load");
+
+    let record = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .and_then(|records| records.first())
+        .and_then(|value| value.as_object())
+        .expect("record object");
+    let input = record
+        .get("input")
+        .and_then(|value| value.as_object())
+        .expect("input object");
+
+    assert_eq!(
+        input.get("url").and_then(|value| value.as_str()),
+        Some("https://example.com/path?token=[masked]&ok=1#frag")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_drops_oversized_rule_source() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-rule-source-drop",
+        "rule_source": {
+            "text": "x".repeat(2048)
+        },
+        "records": [
+            { "index": 0, "status": "ok" }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        max_bytes_per_trace: 64,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+
+    assert!(manifest.rule_source.is_none());
+    let detail = manifest.detail.expect("detail should exist");
+    assert!(
+        detail
+            .reason
+            .iter()
+            .any(|reason| reason == "rule_source_dropped")
     );
 
     Ok(())
@@ -3021,6 +3827,151 @@ async fn write_trace_bundle_externalizes_large_payloads() -> anyhow::Result<()> 
     let trace_dir = manifest_path.parent().expect("trace dir");
     let blob_path = trace_dir.join(blob_ref);
     assert!(blob_path.exists(), "blob file should exist");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_counts_blob_bytes_in_budget() -> anyhow::Result<()> {
+    let trace = json!({
+        "trace_id": "trace-blob-budget",
+        "records": [
+            { "index": 0, "input": { "data": "x".repeat(5000) } }
+        ]
+    });
+
+    let options_full = TraceWriteOptions {
+        compression: TraceCompression::None,
+        max_payload_bytes: 32,
+        payload_preview_bytes: 16,
+        max_bytes_per_trace: 10_000_000,
+        ..Default::default()
+    };
+
+    let temp_dir_full = unique_temp_dir();
+    fs::create_dir_all(&temp_dir_full)?;
+    let manifest_path_full = write_trace_bundle(&temp_dir_full, &trace, Some(options_full)).await?;
+    let manifest_payload_full = fs::read_to_string(&manifest_path_full)?;
+    let manifest_full: TraceManifest = serde_json::from_str(&manifest_payload_full)?;
+    let detail_full = manifest_full.detail.expect("detail should exist");
+    assert_eq!(detail_full.status, "full");
+
+    let chunk_total: u64 = detail_full
+        .records
+        .iter()
+        .filter_map(|chunk| chunk.bytes)
+        .sum::<u64>()
+        .saturating_add(
+            detail_full
+                .nodes
+                .iter()
+                .filter_map(|chunk| chunk.bytes)
+                .sum::<u64>(),
+        )
+        .saturating_add(
+            detail_full
+                .finalize
+                .as_ref()
+                .and_then(|c| c.bytes)
+                .unwrap_or(0),
+        );
+
+    let trace_dir_full = manifest_path_full.parent().expect("trace dir");
+    let blobs_dir = trace_dir_full.join("blobs");
+    let mut blob_total = 0u64;
+    if blobs_dir.exists() {
+        for entry in fs::read_dir(&blobs_dir)? {
+            let entry = entry?;
+            blob_total = blob_total.saturating_add(entry.metadata()?.len());
+        }
+    }
+    assert!(blob_total > 0, "expected blob files to be written");
+
+    let options_budget = TraceWriteOptions {
+        compression: TraceCompression::None,
+        max_payload_bytes: 32,
+        payload_preview_bytes: 16,
+        max_bytes_per_trace: (chunk_total as usize) + 1,
+        ..Default::default()
+    };
+
+    let temp_dir_budget = unique_temp_dir();
+    fs::create_dir_all(&temp_dir_budget)?;
+    let manifest_path_budget =
+        write_trace_bundle(&temp_dir_budget, &trace, Some(options_budget)).await?;
+    let manifest_payload_budget = fs::read_to_string(&manifest_path_budget)?;
+    let manifest_budget: TraceManifest = serde_json::from_str(&manifest_payload_budget)?;
+    let detail_budget = manifest_budget.detail.expect("detail should exist");
+    assert_eq!(detail_budget.status, "basic");
+    assert!(
+        detail_budget
+            .reason
+            .iter()
+            .any(|reason| reason == "budget_exceeded")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn write_trace_bundle_masks_preview_for_externalized_payloads() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-blob-mask-preview",
+        "records": [
+            {
+                "index": 0,
+                "input": {
+                    "token": "secret",
+                    "pad": "x".repeat(500)
+                }
+            }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        max_payload_bytes: 32,
+        payload_preview_bytes: 200,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-blob-mask-preview")
+        .await?
+        .expect("trace should load");
+    let record = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .and_then(|records| records.first())
+        .and_then(|value| value.as_object())
+        .expect("record object");
+    let input = record
+        .get("input")
+        .and_then(|value| value.as_object())
+        .expect("input object");
+    let preview = input
+        .get("preview")
+        .and_then(|value| value.as_str())
+        .expect("preview should exist");
+    assert!(!preview.contains("secret"));
+
+    let blob_ref = input
+        .get("blob_ref")
+        .and_then(|value| value.as_str())
+        .expect("blob_ref should exist");
+    let blob_path = manifest_path.parent().expect("trace dir").join(blob_ref);
+    let blob_payload = fs::read_to_string(blob_path)?;
+    let blob_json: serde_json::Value = serde_json::from_str(&blob_payload)?;
+    let token = blob_json
+        .get("token")
+        .and_then(|value| value.as_str())
+        .expect("token should exist");
+    assert_eq!(token, "[masked]");
 
     Ok(())
 }

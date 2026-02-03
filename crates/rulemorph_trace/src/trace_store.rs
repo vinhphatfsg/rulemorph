@@ -1,5 +1,9 @@
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::cmp::Reverse;
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fmt;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -10,7 +14,18 @@ use tracing::warn;
 use walkdir::WalkDir;
 
 use crate::trace_id::{sanitize_trace_id, trace_id_is_insufficient, trace_id_is_placeholder};
-use crate::trace_schema::{RuleMeta, TraceChunkRef, TraceManifest, TraceSummary};
+use crate::trace_schema::{
+    RuleMeta, TRACE_CHUNK_BYTES_COMPRESSED_HARD_MAX, TRACE_CHUNK_BYTES_COMPRESSED_OVERHEAD_MAX,
+    TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES,
+    TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
+    TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest, TraceSummary,
+};
+
+const HARD_MAX_CHUNK_BYTES_COMPRESSED: u64 = TRACE_CHUNK_BYTES_COMPRESSED_HARD_MAX as u64;
+const IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+// Zstd frames produced with default settings expect at least an 8MB window.
+const ZSTD_WINDOW_BYTES_MIN: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceMeta {
@@ -28,6 +43,11 @@ pub struct ImportResult {
     pub imported: usize,
     pub trace_ids: Vec<String>,
     pub rules_imported: usize,
+}
+
+struct ImportWorkResult {
+    imported_paths: Vec<PathBuf>,
+    rules_imported: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -66,11 +86,15 @@ impl TraceStore {
             None => return Ok(None),
         };
         let path = PathBuf::from(&meta.path);
-        let raw = tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("failed to read trace: {}", path.display()))?;
-        let value: Value = serde_json::from_str(&raw)
-            .with_context(|| format!("invalid trace json: {}", path.display()))?;
+        let raw = read_trace_json_with_limit_async(&path).await?;
+        let parse_result = tokio::task::spawn_blocking({
+            let raw = raw.clone();
+            move || serde_json::from_str::<Value>(&raw)
+        })
+        .await
+        .map_err(|err| anyhow::anyhow!("trace json parse task failed: {}", err))?;
+        let value: Value =
+            parse_result.with_context(|| format!("invalid trace json: {}", path.display()))?;
         if is_manifest(&value) {
             let manifest: TraceManifest = serde_json::from_value(value.clone())
                 .with_context(|| format!("invalid trace manifest: {}", path.display()))?;
@@ -89,6 +113,7 @@ impl TraceStore {
                 if let Some(obj) = legacy.as_object_mut() {
                     obj.insert("trace_id".to_string(), Value::String(meta.trace_id));
                 }
+                apply_legacy_limits(&mut legacy);
             }
             Ok(Some(legacy))
         }
@@ -105,56 +130,203 @@ impl TraceStore {
     }
 
     pub async fn import_bundle(&self, bundle_path: &Path) -> Result<ImportResult> {
-        let traces_src = bundle_path.join("traces");
-        let rules_src = bundle_path.join("rules");
+        self.import_bundle_inner(bundle_path, IMPORT_MAX_TOTAL_BYTES)
+            .await
+    }
 
-        let mut imported = 0usize;
-        let mut trace_ids = Vec::new();
-        if traces_src.exists() {
-            let dest = traces_dir(&self.data_dir);
-            for entry in WalkDir::new(&traces_src).into_iter().filter_map(|e| e.ok()) {
-                if entry.file_type().is_dir() {
-                    continue;
-                }
-                let rel = entry.path().strip_prefix(&traces_src).unwrap();
-                let target = dest.join(rel);
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::copy(entry.path(), &target)?;
-                if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(meta) = parse_trace_meta(entry.path()) {
-                        imported += 1;
-                        trace_ids.push(meta.trace_id);
+    #[cfg(test)]
+    pub async fn import_bundle_with_limit(
+        &self,
+        bundle_path: &Path,
+        max_total_bytes: u64,
+    ) -> Result<ImportResult> {
+        self.import_bundle_inner(bundle_path, max_total_bytes).await
+    }
+
+    async fn import_bundle_inner(
+        &self,
+        bundle_path: &Path,
+        max_total_bytes: u64,
+    ) -> Result<ImportResult> {
+        let bundle_path = bundle_path
+            .canonicalize()
+            .with_context(|| format!("failed to resolve bundle path: {}", bundle_path.display()))?;
+        if !bundle_path.is_dir() {
+            return Err(anyhow::anyhow!(
+                "bundle path is not a directory: {}",
+                bundle_path.display()
+            ));
+        }
+
+        let data_dir = self.data_dir.clone();
+        let result = tokio::task::spawn_blocking(move || -> Result<ImportWorkResult> {
+            let traces_src = bundle_path.join("traces");
+            let rules_src = bundle_path.join("rules");
+
+            let mut copied_paths = Vec::new();
+            let mut created_dirs = BTreeSet::new();
+
+            let work = (|| -> Result<ImportWorkResult> {
+                let mut imported_paths = Vec::new();
+                let mut total_bytes: u64 = 0;
+                if traces_src.exists() {
+                    let dest = traces_dir(&data_dir);
+                    let dest_canon = ensure_import_base_dir(&dest)?;
+                    let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
+                    for entry in WalkDir::new(&traces_src)
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
+                        if entry.file_type().is_symlink() {
+                            return Err(anyhow::anyhow!(
+                                "bundle contains symlink: {}",
+                                entry.path().display()
+                            ));
+                        }
+                        if entry.file_type().is_file() {
+                            let rel = entry.path().strip_prefix(&traces_src).unwrap();
+                            let target = dest.join(rel);
+                            let file_bytes = entry.metadata().map(|meta| meta.len())?;
+                            if file_bytes > IMPORT_MAX_FILE_BYTES {
+                                return Err(anyhow::anyhow!(
+                                    "bundle file exceeds max bytes: {} > {} ({})",
+                                    file_bytes,
+                                    IMPORT_MAX_FILE_BYTES,
+                                    entry.path().display()
+                                ));
+                            }
+                            total_bytes = total_bytes.saturating_add(file_bytes);
+                            if total_bytes > max_total_bytes {
+                                return Err(anyhow::anyhow!(
+                                    "bundle exceeds max total bytes: {} > {}",
+                                    total_bytes,
+                                    max_total_bytes
+                                ));
+                            }
+                            entries.push((entry.path().to_path_buf(), target));
+                        }
+                    }
+                    for (_, target) in &entries {
+                        if target.exists() {
+                            return Err(anyhow::anyhow!(
+                                "bundle would overwrite existing file: {}",
+                                target.display()
+                            ));
+                        }
+                    }
+                    for (source, target) in entries {
+                        ensure_import_target_parent(
+                            &dest,
+                            &dest_canon,
+                            &target,
+                            &mut created_dirs,
+                        )?;
+                        copy_file_create_new(&source, &target, &dest_canon)?;
+                        copied_paths.push(target.clone());
+                        if is_trace_meta_candidate(&target) {
+                            if parse_trace_meta(&target).is_ok() {
+                                imported_paths.push(target);
+                            }
+                        }
                     }
                 }
-            }
-        }
 
-        let mut rules_imported = 0usize;
-        if rules_src.exists() {
-            let dest = rules_dir(&self.data_dir);
-            for entry in WalkDir::new(&rules_src).into_iter().filter_map(|e| e.ok()) {
-                let rel = entry.path().strip_prefix(&rules_src).unwrap();
-                let target = dest.join(rel);
-                if entry.file_type().is_dir() {
-                    std::fs::create_dir_all(&target)?;
-                    continue;
+                let mut rules_imported = 0usize;
+                if rules_src.exists() {
+                    let dest = rules_dir(&data_dir);
+                    let dest_canon = ensure_import_base_dir(&dest)?;
+                    let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
+                    for entry in WalkDir::new(&rules_src)
+                        .follow_links(false)
+                        .into_iter()
+                        .filter_map(|e| e.ok())
+                    {
+                        if entry.file_type().is_symlink() {
+                            return Err(anyhow::anyhow!(
+                                "bundle contains symlink: {}",
+                                entry.path().display()
+                            ));
+                        }
+                        if entry.file_type().is_file() {
+                            let rel = entry.path().strip_prefix(&rules_src).unwrap();
+                            let target = dest.join(rel);
+                            let file_bytes = entry.metadata().map(|meta| meta.len())?;
+                            if file_bytes > IMPORT_MAX_FILE_BYTES {
+                                return Err(anyhow::anyhow!(
+                                    "bundle file exceeds max bytes: {} > {} ({})",
+                                    file_bytes,
+                                    IMPORT_MAX_FILE_BYTES,
+                                    entry.path().display()
+                                ));
+                            }
+                            total_bytes = total_bytes.saturating_add(file_bytes);
+                            if total_bytes > max_total_bytes {
+                                return Err(anyhow::anyhow!(
+                                    "bundle exceeds max total bytes: {} > {}",
+                                    total_bytes,
+                                    max_total_bytes
+                                ));
+                            }
+                            entries.push((entry.path().to_path_buf(), target));
+                        }
+                    }
+                    for (_, target) in &entries {
+                        if target.exists() {
+                            return Err(anyhow::anyhow!(
+                                "bundle would overwrite existing file: {}",
+                                target.display()
+                            ));
+                        }
+                    }
+                    for (source, target) in entries {
+                        ensure_import_target_parent(
+                            &dest,
+                            &dest_canon,
+                            &target,
+                            &mut created_dirs,
+                        )?;
+                        copy_file_create_new(&source, &target, &dest_canon)?;
+                        copied_paths.push(target);
+                        rules_imported += 1;
+                    }
                 }
-                if let Some(parent) = target.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                std::fs::copy(entry.path(), &target)?;
-                rules_imported += 1;
+
+                Ok(ImportWorkResult {
+                    imported_paths,
+                    rules_imported,
+                })
+            })();
+
+            if let Err(err) = work {
+                rollback_import(&copied_paths, &created_dirs);
+                return Err(err);
             }
-        }
+
+            work
+        })
+        .await??;
 
         self.refresh_index().await?;
 
+        let index = self.index.read().await;
+        let mut trace_ids = Vec::new();
+        for path in result.imported_paths {
+            let path_string = path.display().to_string();
+            if let Some(meta) = index.values().find(|meta| meta.path == path_string) {
+                trace_ids.push(meta.trace_id.clone());
+            } else {
+                warn!(
+                    "imported trace metadata not found in index: {}",
+                    path.display()
+                );
+            }
+        }
+
         Ok(ImportResult {
-            imported,
+            imported: trace_ids.len(),
             trace_ids,
-            rules_imported,
+            rules_imported: result.rules_imported,
         })
     }
 
@@ -166,15 +338,25 @@ impl TraceStore {
             if !dir.exists() {
                 return Ok(HashMap::new());
             }
-            for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+            for entry in WalkDir::new(&dir)
+                .into_iter()
+                .filter_entry(|entry| {
+                    !(entry.file_type().is_dir() && entry.file_name().to_string_lossy() == "blobs")
+                })
+                .filter_map(|e| e.ok())
+            {
                 if !entry.file_type().is_file() {
                     continue;
                 }
-                if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
+                let path = entry.path();
+                if !is_trace_meta_candidate(path) {
                     continue;
                 }
-                if let Ok(meta) = parse_trace_meta(entry.path()) {
-                    metas.push(meta);
+                match parse_trace_meta(path) {
+                    Ok(meta) => metas.push(meta),
+                    Err(err) => {
+                        warn!("failed to parse trace metadata {}: {}", path.display(), err);
+                    }
                 }
             }
             let original_ids: HashSet<String> =
@@ -237,6 +419,162 @@ fn rules_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("rules")
 }
 
+fn ensure_import_base_dir(base_dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(base_dir)
+        .with_context(|| format!("failed to create import base dir: {}", base_dir.display()))?;
+    let meta = std::fs::symlink_metadata(base_dir)
+        .with_context(|| format!("failed to stat import base dir: {}", base_dir.display()))?;
+    if meta.file_type().is_symlink() {
+        return Err(anyhow::anyhow!(
+            "bundle destination base is symlink: {}",
+            base_dir.display()
+        ));
+    }
+    if !meta.is_dir() {
+        return Err(anyhow::anyhow!(
+            "bundle destination base is not a directory: {}",
+            base_dir.display()
+        ));
+    }
+    base_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize import base dir: {}",
+            base_dir.display()
+        )
+    })
+}
+
+fn ensure_relative_dir_safe(
+    base_dir: &Path,
+    target_dir: &Path,
+    created_dirs: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    let relative = target_dir.strip_prefix(base_dir).with_context(|| {
+        format!(
+            "bundle destination escapes base dir: {}",
+            target_dir.display()
+        )
+    })?;
+    let mut current = base_dir.to_path_buf();
+    for component in relative.components() {
+        current.push(component.as_os_str());
+        match std::fs::create_dir(&current) {
+            Ok(()) => {
+                created_dirs.insert(current.clone());
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+                let meta = std::fs::symlink_metadata(&current).with_context(|| {
+                    format!("failed to stat bundle destination: {}", current.display())
+                })?;
+                if meta.file_type().is_symlink() {
+                    return Err(anyhow::anyhow!(
+                        "bundle destination contains symlink: {}",
+                        current.display()
+                    ));
+                }
+                if !meta.is_dir() {
+                    return Err(anyhow::anyhow!(
+                        "bundle destination is not a directory: {}",
+                        current.display()
+                    ));
+                }
+            }
+            Err(err) => {
+                return Err(anyhow::anyhow!(
+                    "failed to create bundle destination dir {}: {}",
+                    current.display(),
+                    err
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_import_target_parent(
+    base_dir: &Path,
+    base_canon: &Path,
+    target: &Path,
+    created_dirs: &mut BTreeSet<PathBuf>,
+) -> Result<()> {
+    if !target.starts_with(base_dir) {
+        return Err(anyhow::anyhow!(
+            "bundle destination escapes base dir: {}",
+            target.display()
+        ));
+    }
+    let parent = target
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("bundle destination has no parent: {}", target.display()))?;
+    ensure_relative_dir_safe(base_dir, parent, created_dirs)?;
+    let parent_canon = parent.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize bundle destination parent: {}",
+            parent.display()
+        )
+    })?;
+    if !parent_canon.starts_with(base_canon) {
+        return Err(anyhow::anyhow!(
+            "bundle destination escapes base dir: {}",
+            target.display()
+        ));
+    }
+    Ok(())
+}
+
+fn copy_file_create_new(source: &Path, target: &Path, base_canon: &Path) -> Result<()> {
+    let mut source_file = std::fs::File::open(source)
+        .with_context(|| format!("failed to open bundle source: {}", source.display()))?;
+    let mut target_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .with_context(|| format!("failed to create bundle target: {}", target.display()))?;
+    let target_canon = target
+        .canonicalize()
+        .with_context(|| format!("failed to canonicalize bundle target: {}", target.display()))?;
+    if !target_canon.starts_with(base_canon) {
+        drop(target_file);
+        let _ = std::fs::remove_file(target);
+        return Err(anyhow::anyhow!(
+            "bundle target escapes base dir: {}",
+            target.display()
+        ));
+    }
+    std::io::copy(&mut source_file, &mut target_file).with_context(|| {
+        format!(
+            "failed to copy bundle file {} -> {}",
+            source.display(),
+            target.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn rollback_import(copied_paths: &[PathBuf], created_dirs: &BTreeSet<PathBuf>) {
+    for path in copied_paths.iter().rev() {
+        if let Err(err) = std::fs::remove_file(path) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!(
+                    "failed to rollback imported file {}: {}",
+                    path.display(),
+                    err
+                );
+            }
+        }
+    }
+
+    let mut dirs: Vec<&PathBuf> = created_dirs.iter().collect();
+    dirs.sort_by_key(|path| Reverse(path.components().count()));
+    for dir in dirs {
+        if let Err(err) = std::fs::remove_dir(dir) {
+            if err.kind() != std::io::ErrorKind::NotFound {
+                warn!("failed to rollback import dir {}: {}", dir.display(), err);
+            }
+        }
+    }
+}
+
 fn fnv1a_hash(bytes: &[u8]) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
@@ -294,9 +632,17 @@ fn fallback_trace_id_for_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{fallback_trace_id_for_path, path_hash_for_trace_id};
+    use super::{
+        ChunkBudget, Result, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest,
+        TraceStore, apply_legacy_limits_with_thresholds, build_trace_from_manifest_with_budget,
+        fallback_trace_id_for_path, path_hash_for_trace_id, resolve_chunk_path,
+    };
+    use crate::TraceDetailRef;
     use crate::trace_id::sanitize_trace_id;
+    use serde_json::json;
+    use std::fs;
     use std::path::Path;
+    use tempfile::tempdir;
 
     #[test]
     fn fallback_trace_id_uses_hash_when_stem_missing() {
@@ -320,11 +666,318 @@ mod tests {
             path_hash_for_trace_id(path_b)
         );
     }
+
+    #[test]
+    fn resolve_chunk_path_rejects_parent_dirs() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path().join("trace");
+        std::fs::create_dir_all(&base).expect("create base dir");
+
+        let err = resolve_chunk_path(&base, "../escape.json").expect_err("should reject");
+        assert!(err.to_string().contains("relative"));
+    }
+
+    #[test]
+    fn resolve_chunk_path_rejects_absolute_paths() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path().join("trace");
+        std::fs::create_dir_all(&base).expect("create base dir");
+
+        let err = resolve_chunk_path(&base, "/tmp/escape.json").expect_err("should reject");
+        assert!(err.to_string().contains("relative"));
+    }
+
+    #[test]
+    fn resolve_chunk_path_accepts_relative_paths() {
+        let temp = tempdir().expect("tempdir");
+        let base = temp.path().join("trace");
+        std::fs::create_dir_all(&base).expect("create base dir");
+        let path = base.join("records-0001.ndjson");
+        std::fs::write(&path, b"{}").expect("write chunk");
+
+        let resolved = resolve_chunk_path(&base, "records-0001.ndjson").expect("resolve");
+        let base = base.canonicalize().expect("canonicalize base");
+        assert!(resolved.starts_with(&base));
+    }
+
+    #[test]
+    fn legacy_trace_downgrades_on_record_limit() -> Result<()> {
+        let mut legacy = json!({
+            "trace_id": "legacy-over-limit",
+            "records": [
+                { "index": 0, "status": "ok" },
+                { "index": 1, "status": "ok" }
+            ]
+        });
+
+        apply_legacy_limits_with_thresholds(&mut legacy, 1, 10);
+
+        let detail = legacy
+            .get("detail")
+            .and_then(|value| value.as_object())
+            .expect("detail object");
+        assert_eq!(
+            detail.get("status").and_then(|value| value.as_str()),
+            Some("basic")
+        );
+        let reasons = detail
+            .get("reason")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            reasons
+                .iter()
+                .any(|value| value.as_str() == Some("budget_exceeded"))
+        );
+        let records = legacy
+            .get("records")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(records.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn trace_store_downgrades_detail_on_oversized_chunk() -> Result<()> {
+        let temp = tempdir()?;
+        let data_dir = temp.path();
+        let trace_dir = data_dir.join("traces/2026/01/07/trace-oversized");
+        fs::create_dir_all(&trace_dir)?;
+
+        let oversized = TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX + 1024;
+        let payload = format!(
+            "{{\"index\":0,\"payload\":\"{}\"}}\n",
+            "x".repeat(oversized)
+        );
+        let compressed = zstd::stream::encode_all(payload.as_bytes(), 3)?;
+        fs::write(trace_dir.join("records-0001.ndjson.zst"), compressed)?;
+
+        fs::write(
+            trace_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-oversized",
+                "status": "ok",
+                "detail": {
+                    "layout": "records_inline",
+                    "status": "full",
+                    "records": [
+                        {
+                            "path": "records-0001.ndjson.zst",
+                            "format": "ndjson",
+                            "compression": "zstd"
+                        }
+                    ],
+                    "nodes": []
+                }
+            }))?,
+        )?;
+
+        let store = TraceStore::new(data_dir.to_path_buf()).await?;
+        let trace = store
+            .get("trace-oversized")
+            .await?
+            .expect("trace should exist");
+        let detail = trace
+            .get("detail")
+            .and_then(|value| value.as_object())
+            .expect("detail object");
+        assert_eq!(
+            detail.get("status").and_then(|value| value.as_str()),
+            Some("basic")
+        );
+        let reasons = detail
+            .get("reason")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            reasons
+                .iter()
+                .any(|value| value.as_str() == Some("chunk_error"))
+        );
+        assert!(
+            reasons
+                .iter()
+                .any(|value| value.as_str() == Some("chunk_too_large"))
+        );
+        let detail_records = detail
+            .get("records")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(detail_records.is_empty());
+        let detail_nodes = detail
+            .get("nodes")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(detail_nodes.is_empty());
+        assert!(detail.get("finalize").is_none());
+        let records = trace
+            .get("records")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(records.is_empty());
+        assert!(trace.get("finalize").is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn trace_store_downgrades_on_total_bytes_budget() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("trace-budget");
+        fs::create_dir_all(&trace_dir)?;
+
+        let payload = format!("{{\"index\":0,\"payload\":\"{}\"}}\n", "x".repeat(64));
+        let payload_len = payload.as_bytes().len();
+        fs::write(trace_dir.join("records-0001.ndjson"), payload.as_bytes())?;
+        fs::write(trace_dir.join("records-0002.ndjson"), payload.as_bytes())?;
+
+        let max_chunk_bytes = payload_len + 8;
+        let manifest = TraceManifest {
+            trace_schema_version: 1,
+            trace_id: "trace-budget".to_string(),
+            timestamp: None,
+            status: Some("ok".to_string()),
+            rule: None,
+            input_format: None,
+            summary: None,
+            max_chunk_bytes_uncompressed: Some(max_chunk_bytes as u64),
+            detail: Some(TraceDetailRef {
+                layout: "records_inline".to_string(),
+                status: "full".to_string(),
+                reason: Vec::new(),
+                records: vec![
+                    TraceChunkRef {
+                        path: "records-0001.ndjson".to_string(),
+                        format: "ndjson".to_string(),
+                        compression: "none".to_string(),
+                        record_start: None,
+                        record_end: None,
+                        node_start: None,
+                        node_end: None,
+                        bytes: None,
+                    },
+                    TraceChunkRef {
+                        path: "records-0002.ndjson".to_string(),
+                        format: "ndjson".to_string(),
+                        compression: "none".to_string(),
+                        record_start: None,
+                        record_end: None,
+                        node_start: None,
+                        node_end: None,
+                        bytes: None,
+                    },
+                ],
+                nodes: Vec::new(),
+                finalize: None,
+            }),
+            masking: None,
+            rule_source: None,
+        };
+
+        let budget = ChunkBudget {
+            remaining_bytes: payload_len + 1,
+            remaining_chunks: 10,
+        };
+        let trace = build_trace_from_manifest_with_budget(&manifest, &trace_dir, budget)?;
+        let detail = trace
+            .get("detail")
+            .and_then(|value| value.as_object())
+            .expect("detail object");
+        assert_eq!(
+            detail.get("status").and_then(|value| value.as_str()),
+            Some("basic")
+        );
+        let reasons = detail
+            .get("reason")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            reasons
+                .iter()
+                .any(|value| value.as_str() == Some("budget_exceeded"))
+        );
+        let detail_records = detail
+            .get("records")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(detail_records.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn import_bundle_rejects_total_bytes_limit() -> Result<()> {
+        let temp = tempdir()?;
+        let data_dir = temp.path().join("data");
+        let bundle_dir = temp.path().join("bundle");
+        let bundle_traces = bundle_dir.join("traces/2026/01/10/trace-total-limit");
+        fs::create_dir_all(&bundle_traces)?;
+
+        let trace_payload = serde_json::to_vec(&json!({
+            "trace_schema_version": 1,
+            "trace_id": "trace-total-limit",
+            "status": "ok",
+            "timestamp": "2026-01-10T00:00:00Z"
+        }))?;
+        fs::write(bundle_traces.join("trace.json"), &trace_payload)?;
+        let records_payload = vec![b'x'; 64];
+        fs::write(bundle_traces.join("records-0001.ndjson"), &records_payload)?;
+
+        let max_total_bytes =
+            (trace_payload.len().saturating_add(records_payload.len()) as u64).saturating_sub(1);
+        let store = TraceStore::new(data_dir).await?;
+        let err = store
+            .import_bundle_inner(&bundle_dir, max_total_bytes)
+            .await
+            .expect_err("total bytes should be rejected");
+        assert!(err.to_string().contains("max total bytes"));
+
+        Ok(())
+    }
+}
+
+async fn read_trace_json_with_limit_async(path: &Path) -> Result<String> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .with_context(|| format!("failed to read trace metadata: {}", path.display()))?;
+    if metadata.len() > TRACE_JSON_MAX_BYTES {
+        return Err(anyhow::anyhow!(
+            "trace json exceeds max bytes: {} > {}",
+            metadata.len(),
+            TRACE_JSON_MAX_BYTES
+        ));
+    }
+    tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("failed to read trace: {}", path.display()))
+}
+
+fn read_trace_json_with_limit(path: &Path) -> Result<String> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to read trace metadata: {}", path.display()))?;
+    if metadata.len() > TRACE_JSON_MAX_BYTES {
+        return Err(anyhow::anyhow!(
+            "trace json exceeds max bytes: {} > {}",
+            metadata.len(),
+            TRACE_JSON_MAX_BYTES
+        ));
+    }
+    std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read trace: {}", path.display()))
 }
 
 fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read trace: {}", path.display()))?;
+    let raw = read_trace_json_with_limit(path)?;
     let value: Value = serde_json::from_str(&raw)
         .with_context(|| format!("invalid trace json: {}", path.display()))?;
 
@@ -448,6 +1101,53 @@ fn looks_like_legacy_trace(value: &Value) -> bool {
     value.get("trace_id").is_some() || value.get("records").is_some() || value.get("rule").is_some()
 }
 
+fn apply_legacy_limits(legacy: &mut Value) {
+    apply_legacy_limits_with_thresholds(
+        legacy,
+        TRACE_RECORD_COUNT_HARD_MAX,
+        TRACE_NODE_COUNT_HARD_MAX,
+    );
+}
+
+fn apply_legacy_limits_with_thresholds(legacy: &mut Value, record_limit: usize, node_limit: usize) {
+    let (record_count, node_count) = legacy_counts(legacy);
+    if record_count <= record_limit && node_count <= node_limit {
+        return;
+    }
+    if let Some(obj) = legacy.as_object_mut() {
+        obj.insert("records".to_string(), Value::Array(Vec::new()));
+        obj.remove("finalize");
+        obj.remove("nodes");
+        obj.insert(
+            "detail".to_string(),
+            json!({
+                "layout": "records_inline",
+                "status": "basic",
+                "reason": ["budget_exceeded"],
+                "records": [],
+                "nodes": []
+            }),
+        );
+    }
+}
+
+fn legacy_counts(legacy: &Value) -> (usize, usize) {
+    let mut record_count = 0usize;
+    let mut node_count = 0usize;
+    if let Some(records) = legacy.get("records").and_then(|value| value.as_array()) {
+        record_count = records.len();
+        for record in records {
+            if let Some(nodes) = record.get("nodes").and_then(|value| value.as_array()) {
+                node_count = node_count.saturating_add(nodes.len());
+            }
+        }
+    }
+    if let Some(nodes) = legacy.get("nodes").and_then(|value| value.as_array()) {
+        node_count = node_count.saturating_add(nodes.len());
+    }
+    (record_count, node_count)
+}
+
 fn parse_manifest_meta(manifest: &TraceManifest, path: &Path) -> Result<TraceMeta> {
     let duration_us = manifest
         .summary
@@ -497,8 +1197,21 @@ fn parse_manifest_meta(manifest: &TraceManifest, path: &Path) -> Result<TraceMet
 }
 
 fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Result<Value> {
+    build_trace_from_manifest_with_budget(manifest, base_dir, ChunkBudget::new())
+}
+
+fn build_trace_from_manifest_with_budget(
+    manifest: &TraceManifest,
+    base_dir: &Path,
+    mut budget: ChunkBudget,
+) -> Result<Value> {
     let mut trace = serde_json::to_value(manifest)?;
     let mut records = Vec::new();
+    let requested_chunk_bytes = manifest
+        .max_chunk_bytes_uncompressed
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX);
+    let max_chunk_bytes = requested_chunk_bytes.clamp(1, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX);
 
     let detail = match &manifest.detail {
         Some(detail) => detail,
@@ -513,22 +1226,82 @@ fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Resul
     if detail.status != "full" {
         if let Some(obj) = trace.as_object_mut() {
             obj.insert("records".to_string(), Value::Array(Vec::new()));
+            obj.remove("finalize");
+            if let Some(detail_obj) = obj
+                .get_mut("detail")
+                .and_then(|value| value.as_object_mut())
+            {
+                detail_obj.insert("records".to_string(), Value::Array(Vec::new()));
+                detail_obj.insert("nodes".to_string(), Value::Array(Vec::new()));
+                detail_obj.remove("finalize");
+            }
         }
         return Ok(trace);
     }
 
+    let mut detail_status = detail.status.clone();
+    let mut detail_reason = detail.reason.clone();
+    let mut chunk_error = false;
+    let mut budget_exceeded = false;
+    let mut size_exceeded = false;
+    let mut remaining_records = TRACE_RECORD_COUNT_HARD_MAX;
+    let mut remaining_nodes = TRACE_NODE_COUNT_HARD_MAX;
+
     for chunk in &detail.records {
-        let lines = read_ndjson_chunk(base_dir, chunk)?;
-        records.extend(lines);
+        if !budget.consume_chunk() {
+            budget_exceeded = true;
+            chunk_error = true;
+            break;
+        }
+        let lines = read_ndjson_chunk(base_dir, chunk, max_chunk_bytes, remaining_records)?;
+        if lines.had_error {
+            chunk_error = true;
+        }
+        if lines.size_exceeded {
+            size_exceeded = true;
+            chunk_error = true;
+            break;
+        }
+        if lines.limit_exceeded {
+            budget_exceeded = true;
+            chunk_error = true;
+            break;
+        }
+        if !budget.consume_bytes(lines.bytes) {
+            budget_exceeded = true;
+            chunk_error = true;
+        }
+        if !budget_exceeded {
+            remaining_records = remaining_records.saturating_sub(lines.value.len());
+            records.extend(lines.value);
+        }
+        if budget_exceeded {
+            break;
+        }
     }
 
-    for record in &mut records {
-        if let Some(obj) = record.as_object_mut() {
-            if let Some(nodes_value) = obj.get("nodes").cloned() {
-                let normalized = normalize_inline_nodes_value(&nodes_value);
-                obj.insert("nodes".to_string(), Value::Array(normalized));
+    if !chunk_error {
+        for record in &mut records {
+            if let Some(obj) = record.as_object_mut() {
+                if let Some(nodes_value) = obj.get("nodes").cloned() {
+                    let normalized = normalize_inline_nodes_value(&nodes_value);
+                    obj.insert("nodes".to_string(), Value::Array(normalized));
+                }
             }
         }
+    }
+
+    let inline_nodes = if !chunk_error {
+        count_inline_nodes(&records, TRACE_NODE_COUNT_HARD_MAX)
+    } else {
+        0
+    };
+    if inline_nodes > TRACE_NODE_COUNT_HARD_MAX {
+        budget_exceeded = true;
+        chunk_error = true;
+    }
+    if detail.layout == "records_nodes_split" && !chunk_error {
+        remaining_nodes = remaining_nodes.saturating_sub(inline_nodes);
     }
 
     if !detail.nodes.is_empty() && detail.layout != "records_nodes_split" {
@@ -537,12 +1310,37 @@ fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Resul
             detail.layout
         );
     }
-    if !detail.nodes.is_empty() && detail.layout == "records_nodes_split" {
+    if !detail.nodes.is_empty() && detail.layout == "records_nodes_split" && !chunk_error {
         let mut nodes_by_record: HashMap<u64, Vec<Value>> = HashMap::new();
         for chunk in &detail.nodes {
             let mut last_record_index: Option<u64> = None;
-            let lines = read_ndjson_chunk(base_dir, chunk)?;
-            for value in lines {
+            if !budget.consume_chunk() {
+                budget_exceeded = true;
+                chunk_error = true;
+                break;
+            }
+            let lines = read_ndjson_chunk(base_dir, chunk, max_chunk_bytes, remaining_nodes)?;
+            if lines.had_error {
+                chunk_error = true;
+            }
+            if lines.size_exceeded {
+                size_exceeded = true;
+                chunk_error = true;
+                break;
+            }
+            if lines.limit_exceeded {
+                budget_exceeded = true;
+                chunk_error = true;
+                break;
+            }
+            if !budget.consume_bytes(lines.bytes) {
+                budget_exceeded = true;
+                chunk_error = true;
+            }
+            if !budget_exceeded {
+                remaining_nodes = remaining_nodes.saturating_sub(lines.value.len());
+            }
+            for value in lines.value {
                 let entry = parse_node_chunk_entry(value);
                 if entry.record_index.is_none() && entry.record_index_present {
                     warn!("node chunk entry has invalid record_index; skipping");
@@ -562,6 +1360,9 @@ fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Resul
                     .entry(record_index)
                     .or_default()
                     .push(entry.node);
+            }
+            if budget_exceeded {
+                break;
             }
         }
         let mut seen_record_indices: HashMap<u64, usize> = HashMap::new();
@@ -650,15 +1451,80 @@ fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Resul
         }
     }
 
-    let finalize = match &detail.finalize {
-        Some(chunk) => read_json_chunk(base_dir, chunk)?,
-        None => None,
+    let finalize = if !chunk_error {
+        match &detail.finalize {
+            Some(chunk) => {
+                if !budget.consume_chunk() {
+                    budget_exceeded = true;
+                    chunk_error = true;
+                    None
+                } else {
+                    let result = read_json_chunk(base_dir, chunk, max_chunk_bytes)?;
+                    if result.had_error {
+                        chunk_error = true;
+                    }
+                    if result.size_exceeded {
+                        size_exceeded = true;
+                        chunk_error = true;
+                        None
+                    } else {
+                        if !budget.consume_bytes(result.bytes) {
+                            budget_exceeded = true;
+                            chunk_error = true;
+                            None
+                        } else {
+                            result.value
+                        }
+                    }
+                }
+            }
+            None => None,
+        }
+    } else {
+        None
     };
 
     if let Some(obj) = trace.as_object_mut() {
         obj.insert("records".to_string(), Value::Array(records));
         if let Some(finalize_value) = finalize {
             obj.insert("finalize".to_string(), finalize_value);
+        }
+        if chunk_error {
+            if detail_status == "full" {
+                detail_status = "basic".to_string();
+            }
+            if size_exceeded
+                && !detail_reason
+                    .iter()
+                    .any(|reason| reason == "chunk_too_large")
+            {
+                detail_reason.push("chunk_too_large".to_string());
+            }
+            if budget_exceeded
+                && !detail_reason
+                    .iter()
+                    .any(|reason| reason == "budget_exceeded")
+            {
+                detail_reason.push("budget_exceeded".to_string());
+            }
+            if !detail_reason.iter().any(|reason| reason == "chunk_error") {
+                detail_reason.push("chunk_error".to_string());
+            }
+            obj.insert("records".to_string(), Value::Array(Vec::new()));
+            obj.remove("finalize");
+            if let Some(detail_obj) = obj
+                .get_mut("detail")
+                .and_then(|value| value.as_object_mut())
+            {
+                detail_obj.insert("status".to_string(), Value::String(detail_status));
+                detail_obj.insert(
+                    "reason".to_string(),
+                    Value::Array(detail_reason.into_iter().map(Value::String).collect()),
+                );
+                detail_obj.insert("records".to_string(), Value::Array(Vec::new()));
+                detail_obj.insert("nodes".to_string(), Value::Array(Vec::new()));
+                detail_obj.remove("finalize");
+            }
         }
     }
 
@@ -736,6 +1602,19 @@ fn normalize_inline_node(value: &Value) -> Value {
     }
 }
 
+fn count_inline_nodes(records: &[Value], max_nodes: usize) -> usize {
+    let mut total = 0usize;
+    for record in records {
+        if let Some(nodes) = record.get("nodes").and_then(|value| value.as_array()) {
+            total = total.saturating_add(nodes.len());
+            if total > max_nodes {
+                break;
+            }
+        }
+    }
+    total
+}
+
 fn parse_record_index(value: &Value) -> Option<u64> {
     match value {
         Value::Number(number) => number.as_u64(),
@@ -744,32 +1623,108 @@ fn parse_record_index(value: &Value) -> Option<u64> {
     }
 }
 
-fn read_ndjson_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Vec<Value>> {
+struct ChunkReadResult<T> {
+    value: T,
+    had_error: bool,
+    size_exceeded: bool,
+    limit_exceeded: bool,
+    bytes: usize,
+}
+
+struct ChunkBudget {
+    remaining_bytes: usize,
+    remaining_chunks: usize,
+}
+
+impl ChunkBudget {
+    fn new() -> Self {
+        Self {
+            remaining_bytes: TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX,
+            remaining_chunks: TRACE_CHUNK_COUNT_HARD_MAX,
+        }
+    }
+
+    fn consume_chunk(&mut self) -> bool {
+        if self.remaining_chunks == 0 {
+            return false;
+        }
+        self.remaining_chunks = self.remaining_chunks.saturating_sub(1);
+        true
+    }
+
+    fn consume_bytes(&mut self, bytes: usize) -> bool {
+        if bytes > self.remaining_bytes {
+            return false;
+        }
+        self.remaining_bytes = self.remaining_bytes.saturating_sub(bytes);
+        true
+    }
+}
+
+fn read_ndjson_chunk(
+    base_dir: &Path,
+    chunk: &TraceChunkRef,
+    max_bytes: usize,
+    max_items: usize,
+) -> Result<ChunkReadResult<Vec<Value>>> {
+    if max_items == 0 {
+        warn!(
+            "trace chunk exceeds max item count; skipping chunk {}",
+            chunk.path
+        );
+        return Ok(ChunkReadResult {
+            value: Vec::new(),
+            had_error: true,
+            size_exceeded: false,
+            limit_exceeded: true,
+            bytes: 0,
+        });
+    }
     if chunk.format != "ndjson" {
         warn!(
             "unsupported chunk format {}; skipping chunk {}",
             chunk.format, chunk.path
         );
-        return Ok(Vec::new());
+        return Ok(ChunkReadResult {
+            value: Vec::new(),
+            had_error: true,
+            size_exceeded: false,
+            limit_exceeded: false,
+            bytes: 0,
+        });
     }
     if !is_supported_compression(&chunk.compression) {
         warn!(
             "unsupported chunk compression {}; skipping chunk {}",
             chunk.compression, chunk.path
         );
-        return Ok(Vec::new());
+        return Ok(ChunkReadResult {
+            value: Vec::new(),
+            had_error: true,
+            size_exceeded: false,
+            limit_exceeded: false,
+            bytes: 0,
+        });
     }
     let chunk_path = base_dir.join(&chunk.path);
-    let raw = match read_chunk_bytes(base_dir, chunk) {
+    let raw = match read_chunk_bytes(base_dir, chunk, max_bytes) {
         Ok(raw) => raw,
         Err(err) => {
+            let size_exceeded = err.downcast_ref::<ChunkSizeExceeded>().is_some();
             warn!(
                 "failed to read/decode ndjson chunk {}; skipping chunk: {}",
                 chunk.path, err
             );
-            return Ok(Vec::new());
+            return Ok(ChunkReadResult {
+                value: Vec::new(),
+                had_error: true,
+                size_exceeded,
+                limit_exceeded: false,
+                bytes: 0,
+            });
         }
     };
+    let raw_len = raw.len();
     let text = match String::from_utf8(raw) {
         Ok(text) => text,
         Err(err) => {
@@ -777,14 +1732,33 @@ fn read_ndjson_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Vec<Value
                 "failed to decode ndjson chunk as utf-8 {}; skipping chunk {}",
                 err, chunk.path
             );
-            return Ok(Vec::new());
+            return Ok(ChunkReadResult {
+                value: Vec::new(),
+                had_error: true,
+                size_exceeded: false,
+                limit_exceeded: false,
+                bytes: 0,
+            });
         }
     };
     let mut values = Vec::new();
+    let mut had_error = false;
+    let mut limit_exceeded = false;
     for (line_number, line) in text.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
+        }
+        if values.len() >= max_items {
+            warn!(
+                "ndjson chunk exceeds max item count {}; stopping at {} for {}",
+                max_items,
+                values.len(),
+                chunk_path.display()
+            );
+            had_error = true;
+            limit_exceeded = true;
+            break;
         }
         match serde_json::from_str::<Value>(trimmed) {
             Ok(value) => values.push(value),
@@ -795,37 +1769,68 @@ fn read_ndjson_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Vec<Value
                     chunk_path.display(),
                     err
                 );
+                had_error = true;
             }
         }
     }
-    Ok(values)
+    Ok(ChunkReadResult {
+        value: values,
+        had_error,
+        size_exceeded: false,
+        limit_exceeded,
+        bytes: raw_len,
+    })
 }
 
-fn read_json_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Option<Value>> {
+fn read_json_chunk(
+    base_dir: &Path,
+    chunk: &TraceChunkRef,
+    max_bytes: usize,
+) -> Result<ChunkReadResult<Option<Value>>> {
     if chunk.format != "json" {
         warn!(
             "unsupported chunk format {}; skipping chunk {}",
             chunk.format, chunk.path
         );
-        return Ok(None);
+        return Ok(ChunkReadResult {
+            value: None,
+            had_error: true,
+            size_exceeded: false,
+            limit_exceeded: false,
+            bytes: 0,
+        });
     }
     if !is_supported_compression(&chunk.compression) {
         warn!(
             "unsupported chunk compression {}; skipping chunk {}",
             chunk.compression, chunk.path
         );
-        return Ok(None);
+        return Ok(ChunkReadResult {
+            value: None,
+            had_error: true,
+            size_exceeded: false,
+            limit_exceeded: false,
+            bytes: 0,
+        });
     }
-    let raw = match read_chunk_bytes(base_dir, chunk) {
+    let raw = match read_chunk_bytes(base_dir, chunk, max_bytes) {
         Ok(raw) => raw,
         Err(err) => {
+            let size_exceeded = err.downcast_ref::<ChunkSizeExceeded>().is_some();
             warn!(
                 "failed to read/decode json chunk {}; skipping chunk: {}",
                 chunk.path, err
             );
-            return Ok(None);
+            return Ok(ChunkReadResult {
+                value: None,
+                had_error: true,
+                size_exceeded,
+                limit_exceeded: false,
+                bytes: 0,
+            });
         }
     };
+    let raw_len = raw.len();
     let value = match serde_json::from_slice(&raw) {
         Ok(value) => value,
         Err(err) => {
@@ -833,25 +1838,162 @@ fn read_json_chunk(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Option<Valu
                 "failed to parse json chunk {}; skipping chunk: {}",
                 chunk.path, err
             );
-            return Ok(None);
+            return Ok(ChunkReadResult {
+                value: None,
+                had_error: true,
+                size_exceeded: false,
+                limit_exceeded: false,
+                bytes: 0,
+            });
         }
     };
-    Ok(Some(value))
+    Ok(ChunkReadResult {
+        value: Some(value),
+        had_error: false,
+        size_exceeded: false,
+        limit_exceeded: false,
+        bytes: raw_len,
+    })
 }
 
 fn is_supported_compression(compression: &str) -> bool {
     matches!(compression, "zstd" | "none")
 }
 
-fn read_chunk_bytes(base_dir: &Path, chunk: &TraceChunkRef) -> Result<Vec<u8>> {
-    let path = base_dir.join(&chunk.path);
+fn is_trace_meta_candidate(path: &Path) -> bool {
+    if path.extension().and_then(|s| s.to_str()) != Some("json") {
+        return false;
+    }
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == "finalize.json")
+    {
+        return false;
+    }
+    if path
+        .components()
+        .any(|component| component.as_os_str() == "blobs")
+    {
+        return false;
+    }
+    true
+}
+
+#[derive(Debug)]
+struct ChunkSizeExceeded {
+    actual: u64,
+    max: u64,
+}
+
+impl fmt::Display for ChunkSizeExceeded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "trace chunk exceeds max bytes: {} > {}",
+            self.actual, self.max
+        )
+    }
+}
+
+impl std::error::Error for ChunkSizeExceeded {}
+
+fn resolve_chunk_path(base_dir: &Path, chunk_path: &str) -> Result<PathBuf> {
+    let rel = Path::new(chunk_path);
+    if rel.as_os_str().is_empty() {
+        return Err(anyhow::anyhow!("trace chunk path is empty"));
+    }
+    if rel.is_absolute()
+        || rel.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(anyhow::anyhow!(
+            "trace chunk path must be relative without parent components: {}",
+            chunk_path
+        ));
+    }
+
+    let base_dir = base_dir.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize trace base dir: {}",
+            base_dir.display()
+        )
+    })?;
+    let path = base_dir.join(rel);
+    let resolved = path.canonicalize().with_context(|| {
+        format!(
+            "failed to canonicalize trace chunk path: {}",
+            path.display()
+        )
+    })?;
+    if !resolved.starts_with(&base_dir) {
+        return Err(anyhow::anyhow!(
+            "trace chunk path escapes base dir: {}",
+            chunk_path
+        ));
+    }
+    Ok(resolved)
+}
+
+fn read_chunk_bytes(base_dir: &Path, chunk: &TraceChunkRef, max_bytes: usize) -> Result<Vec<u8>> {
+    let path = resolve_chunk_path(base_dir, &chunk.path)?;
+    let compressed_bytes = std::fs::metadata(&path)
+        .with_context(|| format!("failed to read trace chunk metadata: {}", path.display()))?
+        .len();
+    let max_compressed_bytes = std::cmp::min(
+        HARD_MAX_CHUNK_BYTES_COMPRESSED,
+        (max_bytes as u64).saturating_add(TRACE_CHUNK_BYTES_COMPRESSED_OVERHEAD_MAX as u64),
+    );
+    if compressed_bytes > max_compressed_bytes {
+        return Err(anyhow::Error::new(ChunkSizeExceeded {
+            actual: compressed_bytes,
+            max: max_compressed_bytes,
+        }));
+    }
     let raw = std::fs::read(&path)
         .with_context(|| format!("failed to read trace chunk: {}", path.display()))?;
     match chunk.compression.as_str() {
-        "zstd" => Ok(zstd::stream::decode_all(raw.as_slice())?),
-        "none" => Ok(raw),
+        "zstd" => decode_zstd_limited(&raw, max_bytes),
+        "none" => {
+            if raw.len() > max_bytes {
+                return Err(anyhow::Error::new(ChunkSizeExceeded {
+                    actual: raw.len() as u64,
+                    max: max_bytes as u64,
+                }));
+            }
+            Ok(raw)
+        }
         other => Err(anyhow::anyhow!("unsupported compression: {}", other)),
     }
+}
+
+fn decode_zstd_limited(raw: &[u8], max_bytes: usize) -> Result<Vec<u8>> {
+    let mut decoder = zstd::stream::read::Decoder::new(raw)?;
+    decoder.window_log_max(zstd_window_log_max(max_bytes))?;
+    let mut limited = decoder.take((max_bytes as u64).saturating_add(1));
+    let mut output = Vec::new();
+    limited.read_to_end(&mut output)?;
+    if output.len() > max_bytes {
+        return Err(anyhow::Error::new(ChunkSizeExceeded {
+            actual: output.len() as u64,
+            max: max_bytes as u64,
+        }));
+    }
+    Ok(output)
+}
+
+fn zstd_window_log_max(max_bytes: usize) -> u32 {
+    let max_bytes = max_bytes
+        .max(ZSTD_WINDOW_BYTES_MIN)
+        .min(TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX)
+        .max(1) as u64;
+    let pow2 = max_bytes.next_power_of_two();
+    let log = 63u32.saturating_sub(pow2.leading_zeros());
+    log.clamp(20, 31)
 }
 
 // copy_dir_recursive was intentionally omitted to avoid counting existing files.

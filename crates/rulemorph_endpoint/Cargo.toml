@@ -12,6 +12,7 @@ categories = ["command-line-utilities"]
 anyhow = "1.0"
 axum = { version = "0.7" }
 chrono = "0.4"
+http-body-util = "0.1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
 rulemorph = { path = "../rulemorph" }
 rulemorph_trace = { path = "../rulemorph_trace" }
@@ -24,4 +25,5 @@ url = "2.5"
 uuid = { version = "1.8", features = ["v4"] }
 
 [dev-dependencies]
+futures-util = "0.3"
 tempfile = "3.10"

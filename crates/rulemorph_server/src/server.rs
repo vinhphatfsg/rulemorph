@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
@@ -188,13 +188,32 @@ async fn import_bundle_path(
     Json(payload): Json<ImportPathRequest>,
 ) -> std::result::Result<Json<ImportResult>, ApiError> {
     let state = state.0;
-    let bundle_path = PathBuf::from(payload.bundle_path);
+    let bundle_path = validate_bundle_path(&PathBuf::from(payload.bundle_path))?;
     let result = state
         .store
         .import_bundle(&bundle_path)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(result))
+}
+
+fn validate_bundle_path(bundle_path: &Path) -> std::result::Result<PathBuf, ApiError> {
+    let bundle_path = bundle_path
+        .canonicalize()
+        .map_err(|err| ApiError::bad_request(format!("invalid bundle_path: {}", err)))?;
+    if !bundle_path.is_dir() {
+        return Err(ApiError::bad_request("bundle_path must be a directory"));
+    }
+    let temp_dir = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    if !bundle_path.starts_with(&temp_dir) {
+        return Err(ApiError::bad_request(format!(
+            "bundle_path must be under {}",
+            temp_dir.display()
+        )));
+    }
+    Ok(bundle_path)
 }
 
 async fn stream_traces(
@@ -227,6 +246,13 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: err.to_string(),
+        }
+    }
+
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
         }
     }
 

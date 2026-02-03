@@ -1,6 +1,9 @@
 use std::collections::{HashSet, VecDeque};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::OnceLock;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,7 +15,9 @@ use tracing::warn;
 
 use crate::trace_id::{sanitize_trace_id, trace_id_is_placeholder};
 use crate::trace_schema::{
-    RuleMeta, TraceChunkRef, TraceDetailRef, TraceManifest, TraceMasking, TraceSummary,
+    RuleMeta, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
+    TRACE_JSON_MAX_BYTES, TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX, TraceChunkRef,
+    TraceDetailRef, TraceManifest, TraceMasking, TraceSummary,
 };
 
 const DEFAULT_MAX_RECORDS_PER_CHUNK: usize = 200;
@@ -23,7 +28,28 @@ const DEFAULT_MAX_PAYLOAD_BYTES: usize = 64 * 1024;
 const DEFAULT_PAYLOAD_PREVIEW_BYTES: usize = 1024;
 const DEFAULT_SAMPLING_RATE: f64 = 1.0;
 const DEFAULT_TRACE_QUEUE_CAPACITY: usize = 256;
+const DEFAULT_TRACE_QUEUE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const TRACE_SCHEMA_VERSION: u8 = 1;
+
+fn clamp_max_chunk_bytes_uncompressed(value: usize) -> usize {
+    value.clamp(1, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX)
+}
+
+fn append_detail_reason(existing: Option<String>, reason: &str) -> Option<String> {
+    match existing {
+        None => Some(reason.to_string()),
+        Some(current) => {
+            let already_present = current
+                .split(|ch| ch == ',' || ch == ';')
+                .any(|item| item.trim() == reason);
+            if already_present {
+                Some(current)
+            } else {
+                Some(format!("{current},{reason}"))
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TraceWriteOptions {
@@ -59,6 +85,11 @@ impl Default for TraceWriteOptions {
                 "password".to_string(),
                 "token".to_string(),
                 "secret".to_string(),
+                "authorization".to_string(),
+                "cookie".to_string(),
+                "api_key".to_string(),
+                "api-key".to_string(),
+                "apikey".to_string(),
             ],
             detail_reason: None,
             split_nodes: true,
@@ -84,14 +115,18 @@ pub enum TraceCompression {
 #[derive(Debug, Clone)]
 pub struct TraceWriterConfig {
     pub queue_capacity: usize,
+    pub queue_max_bytes: usize,
     pub write_options: TraceWriteOptions,
+    pub spawn_worker: bool,
 }
 
 impl Default for TraceWriterConfig {
     fn default() -> Self {
         Self {
             queue_capacity: DEFAULT_TRACE_QUEUE_CAPACITY,
+            queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
             write_options: TraceWriteOptions::default(),
+            spawn_worker: true,
         }
     }
 }
@@ -108,9 +143,15 @@ impl TraceWriter {
     }
 
     pub fn with_config(data_dir: PathBuf, config: TraceWriterConfig) -> Self {
-        let queue = Arc::new(TraceQueue::new(data_dir, config.queue_capacity));
-        let worker_queue = queue.clone();
-        std::thread::spawn(move || trace_writer_loop(worker_queue));
+        let queue = Arc::new(TraceQueue::new(
+            data_dir,
+            config.queue_capacity,
+            config.queue_max_bytes,
+        ));
+        if config.spawn_worker {
+            let worker_queue = queue.clone();
+            std::thread::spawn(move || trace_writer_loop(worker_queue));
+        }
         Self {
             queue,
             default_options: config.write_options,
@@ -133,17 +174,68 @@ impl TraceWriter {
             options,
             priority,
             downgraded: false,
+            approx_bytes: 0,
         };
+        if request.options.detail_level != TraceDetailLevel::Full {
+            strip_trace_detail(&mut request.trace);
+        }
+        if request.options.masking_enabled {
+            let masking_rules = normalize_masking_rules(&request.options.masking_rules);
+            apply_masking(&mut request.trace, &masking_rules);
+        }
+        request.approx_bytes = estimate_trace_bytes(&request.trace);
         let mut guard = self.queue.items.lock().expect("trace queue lock");
-        if guard.len() >= self.queue.capacity {
-            if request.options.detail_level == TraceDetailLevel::Full {
-                request.options.detail_level = TraceDetailLevel::Basic;
-                if request.options.detail_reason.is_none() {
-                    request.options.detail_reason = Some("queue_full".to_string());
+        let mut current_bytes = queue_bytes(&guard);
+        let mut queue_full = guard.len() >= self.queue.capacity
+            || current_bytes.saturating_add(request.approx_bytes) > self.queue.max_bytes;
+
+        if queue_full && priority == TracePriority::High {
+            while guard.len() >= self.queue.capacity
+                || current_bytes.saturating_add(request.approx_bytes) > self.queue.max_bytes
+            {
+                if !evict_normal(&mut guard) {
+                    break;
                 }
-                request.downgraded = true;
+                current_bytes = queue_bytes(&guard);
             }
-            if !evict_for_priority(&mut guard, priority) {
+            queue_full = guard.len() >= self.queue.capacity
+                || current_bytes.saturating_add(request.approx_bytes) > self.queue.max_bytes;
+        }
+
+        if queue_full && request.options.detail_level == TraceDetailLevel::Full {
+            request.options.detail_level = TraceDetailLevel::Basic;
+            request.options.detail_reason =
+                append_detail_reason(request.options.detail_reason.take(), "queue_full");
+            request.downgraded = true;
+            strip_trace_detail(&mut request.trace);
+            request.approx_bytes = estimate_trace_bytes(&request.trace);
+            queue_full = guard.len() >= self.queue.capacity
+                || current_bytes.saturating_add(request.approx_bytes) > self.queue.max_bytes;
+
+            if queue_full && priority == TracePriority::High {
+                while guard.len() >= self.queue.capacity
+                    || current_bytes.saturating_add(request.approx_bytes) > self.queue.max_bytes
+                {
+                    if !evict_normal(&mut guard) {
+                        break;
+                    }
+                    current_bytes = queue_bytes(&guard);
+                }
+                queue_full = guard.len() >= self.queue.capacity
+                    || current_bytes.saturating_add(request.approx_bytes) > self.queue.max_bytes;
+            }
+        }
+
+        if queue_full {
+            let can_enqueue = match priority {
+                TracePriority::High => {
+                    guard.len() < self.queue.capacity
+                        && current_bytes.saturating_add(request.approx_bytes)
+                            <= self.queue.max_bytes
+                }
+                TracePriority::Normal => false,
+            };
+            if !can_enqueue {
                 warn!(
                     "trace queue full; dropping trace {}",
                     trace_id_for_log(&request.trace)
@@ -168,20 +260,23 @@ struct TraceWriteRequest {
     options: TraceWriteOptions,
     priority: TracePriority,
     downgraded: bool,
+    approx_bytes: usize,
 }
 
 struct TraceQueue {
     data_dir: PathBuf,
     capacity: usize,
+    max_bytes: usize,
     items: Mutex<VecDeque<TraceWriteRequest>>,
     cvar: Condvar,
 }
 
 impl TraceQueue {
-    fn new(data_dir: PathBuf, capacity: usize) -> Self {
+    fn new(data_dir: PathBuf, capacity: usize, max_bytes: usize) -> Self {
         Self {
             data_dir,
             capacity: capacity.max(1),
+            max_bytes: max_bytes.max(1),
             items: Mutex::new(VecDeque::new()),
             cvar: Condvar::new(),
         }
@@ -220,17 +315,15 @@ fn push_request(queue: &mut VecDeque<TraceWriteRequest>, request: TraceWriteRequ
     }
 }
 
-fn evict_for_priority(queue: &mut VecDeque<TraceWriteRequest>, priority: TracePriority) -> bool {
+fn evict_normal(queue: &mut VecDeque<TraceWriteRequest>) -> bool {
     let position = queue
         .iter()
         .position(|item| item.priority == TracePriority::Normal);
-    match (priority, position) {
-        (TracePriority::High, Some(index)) | (TracePriority::Normal, Some(index)) => {
-            queue.remove(index);
-            true
-        }
-        _ => false,
+    if let Some(index) = position {
+        queue.remove(index);
+        return true;
     }
+    false
 }
 
 fn trace_id_for_log(trace: &JsonValue) -> String {
@@ -239,6 +332,502 @@ fn trace_id_for_log(trace: &JsonValue) -> String {
         .and_then(|value| value.as_str())
         .unwrap_or("unknown")
         .to_string()
+}
+
+fn estimate_trace_bytes(trace: &JsonValue) -> usize {
+    struct CountingWriter {
+        size: usize,
+    }
+
+    impl Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.size = self.size.saturating_add(buf.len());
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = CountingWriter { size: 0 };
+    if serde_json::to_writer(&mut writer, trace).is_ok() {
+        writer.size
+    } else {
+        0
+    }
+}
+
+fn queue_bytes(queue: &VecDeque<TraceWriteRequest>) -> usize {
+    queue
+        .iter()
+        .map(|request| request.approx_bytes)
+        .sum::<usize>()
+}
+
+fn strip_trace_detail(trace: &mut JsonValue) {
+    let Some(obj) = trace.as_object_mut() else {
+        return;
+    };
+    obj.remove("records");
+    obj.remove("finalize");
+    obj.remove("nodes");
+}
+
+#[cfg(test)]
+mod queue_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn make_trace(trace_id: &str, status: &str) -> JsonValue {
+        json!({
+            "trace_id": trace_id,
+            "status": status,
+            "records": [
+                { "index": 0, "status": status }
+            ],
+            "summary": {
+                "record_total": 1,
+                "record_success": if status == "ok" { 1 } else { 0 },
+                "record_failed": if status == "ok" { 0 } else { 1 }
+            }
+        })
+    }
+
+    #[test]
+    fn queue_full_normal_drops_new_trace() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-normal-drop");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: 1,
+                queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        assert!(writer.enqueue(make_trace("trace-a", "ok")));
+        assert!(!writer.enqueue(make_trace("trace-b", "ok")));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert_eq!(trace_id_for_log(&guard[0].trace), "trace-a");
+        assert_eq!(guard[0].priority, TracePriority::Normal);
+    }
+
+    #[test]
+    fn queue_full_high_evicts_normal_and_keeps_full() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-high-evict");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: 1,
+                queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        assert!(writer.enqueue(make_trace("trace-normal", "ok")));
+
+        let options = TraceWriteOptions {
+            detail_level: TraceDetailLevel::Full,
+            ..Default::default()
+        };
+        assert!(writer.enqueue_with_options(make_trace("trace-error", "error"), Some(options)));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert_eq!(trace_id_for_log(&guard[0].trace), "trace-error");
+        assert_eq!(guard[0].priority, TracePriority::High);
+        assert_eq!(guard[0].options.detail_level, TraceDetailLevel::Full);
+        assert!(!guard[0].downgraded);
+    }
+
+    #[test]
+    fn queue_max_bytes_downgrades_and_strips_trace() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-max-bytes");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: 10,
+                queue_max_bytes: 512,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-big",
+            "status": "ok",
+            "records": [
+                { "index": 0, "payload": "x".repeat(1024) }
+            ],
+            "summary": {
+                "record_total": 1,
+                "record_success": 1,
+                "record_failed": 0
+            }
+        });
+
+        assert!(writer.enqueue(trace));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0].options.detail_level, TraceDetailLevel::Basic);
+        assert!(guard[0].downgraded);
+        assert!(guard[0].trace.get("records").is_none());
+    }
+
+    #[test]
+    fn queue_full_downgrade_sets_reason() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-reason");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: 2,
+                queue_max_bytes: 256,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-queue-reason",
+            "status": "ok",
+            "records": [
+                { "index": 0, "status": "ok", "payload": "x".repeat(2048) }
+            ],
+            "summary": {
+                "record_total": 1,
+                "record_success": 1,
+                "record_failed": 0
+            }
+        });
+
+        assert!(writer.enqueue(trace));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert_eq!(
+            guard[0].options.detail_reason.as_deref(),
+            Some("queue_full")
+        );
+        assert_eq!(guard[0].options.detail_level, TraceDetailLevel::Basic);
+    }
+
+    #[test]
+    fn queue_full_downgrade_appends_reason() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-reason-append");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: 2,
+                queue_max_bytes: 256,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-queue-reason-append",
+            "status": "ok",
+            "records": [
+                { "index": 0, "status": "ok", "payload": "x".repeat(2048) }
+            ],
+            "summary": {
+                "record_total": 1,
+                "record_success": 1,
+                "record_failed": 0
+            }
+        });
+
+        let options = TraceWriteOptions {
+            detail_reason: Some("sampled_out".to_string()),
+            ..TraceWriteOptions::default()
+        };
+
+        assert!(writer.enqueue_with_options(trace, Some(options)));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        let reason = guard[0]
+            .options
+            .detail_reason
+            .as_deref()
+            .expect("detail reason");
+        assert!(reason.contains("sampled_out"));
+        assert!(reason.contains("queue_full"));
+        assert_eq!(guard[0].options.detail_level, TraceDetailLevel::Basic);
+    }
+
+    #[test]
+    fn queue_max_bytes_high_priority_downgrades_when_needed() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-high-max-bytes");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: 10,
+                queue_max_bytes: 512,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-error-big",
+            "status": "error",
+            "records": [
+                { "index": 0, "payload": "x".repeat(1024) }
+            ],
+            "summary": {
+                "record_total": 1,
+                "record_success": 0,
+                "record_failed": 1
+            }
+        });
+
+        let options = TraceWriteOptions {
+            detail_level: TraceDetailLevel::Full,
+            ..Default::default()
+        };
+        assert!(writer.enqueue_with_options(trace, Some(options)));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0].priority, TracePriority::High);
+        assert_eq!(guard[0].options.detail_level, TraceDetailLevel::Basic);
+        assert!(guard[0].downgraded);
+        assert!(guard[0].trace.get("records").is_none());
+    }
+
+    #[test]
+    fn enqueue_basic_strips_and_masks_rule_source() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-basic-mask");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: DEFAULT_TRACE_QUEUE_CAPACITY,
+                queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-basic-mask",
+            "status": "ok",
+            "records": [
+                { "index": 0, "input": { "token": "secret" } }
+            ],
+            "rule_source": {
+                "token": "secret",
+                "headers": {
+                    "Authorization": "Bearer 123"
+                }
+            }
+        });
+
+        let options = TraceWriteOptions {
+            detail_level: TraceDetailLevel::Basic,
+            ..Default::default()
+        };
+
+        assert!(writer.enqueue_with_options(trace, Some(options)));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert_eq!(guard[0].options.detail_level, TraceDetailLevel::Basic);
+        assert!(guard[0].trace.get("records").is_none());
+        let rule_source = guard[0]
+            .trace
+            .get("rule_source")
+            .and_then(|value| value.as_object())
+            .expect("rule_source should exist");
+        assert_eq!(
+            rule_source.get("token").and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+        let headers = rule_source
+            .get("headers")
+            .and_then(|value| value.as_object())
+            .expect("headers should exist");
+        assert_eq!(
+            headers
+                .get("Authorization")
+                .and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+    }
+
+    #[test]
+    fn enqueue_basic_masks_summary_fields() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-basic-summary-mask");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: DEFAULT_TRACE_QUEUE_CAPACITY,
+                queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-basic-summary-mask",
+            "status": "ok",
+            "records": [
+                { "index": 0, "input": { "token": "secret" } }
+            ],
+            "summary": {
+                "input": { "password": "secret", "ok": 1 },
+                "output": { "token": "secret" }
+            }
+        });
+
+        let options = TraceWriteOptions {
+            detail_level: TraceDetailLevel::Basic,
+            ..Default::default()
+        };
+
+        assert!(writer.enqueue_with_options(trace, Some(options)));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert!(guard[0].trace.get("records").is_none());
+        let summary = guard[0]
+            .trace
+            .get("summary")
+            .and_then(|value| value.as_object())
+            .expect("summary should exist");
+        let summary_input = summary
+            .get("input")
+            .and_then(|value| value.as_object())
+            .expect("summary input");
+        let summary_output = summary
+            .get("output")
+            .and_then(|value| value.as_object())
+            .expect("summary output");
+        assert_eq!(
+            summary_input
+                .get("password")
+                .and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+        assert_eq!(
+            summary_output.get("token").and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+    }
+
+    #[test]
+    fn enqueue_off_masks_summary_fields() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-queue-off-summary-mask");
+        let writer = TraceWriter::with_config(
+            temp_dir,
+            TraceWriterConfig {
+                queue_capacity: DEFAULT_TRACE_QUEUE_CAPACITY,
+                queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
+                write_options: TraceWriteOptions::default(),
+                spawn_worker: false,
+            },
+        );
+
+        let trace = json!({
+            "trace_id": "trace-off-summary-mask",
+            "status": "ok",
+            "records": [
+                { "index": 0, "input": { "token": "secret" } }
+            ],
+            "summary": {
+                "input": { "password": "secret", "ok": 1 },
+                "output": { "token": "secret" }
+            },
+            "rule_source": {
+                "token": "secret"
+            }
+        });
+
+        let options = TraceWriteOptions {
+            detail_level: TraceDetailLevel::Off,
+            ..Default::default()
+        };
+
+        assert!(writer.enqueue_with_options(trace, Some(options)));
+
+        let guard = writer.queue.items.lock().expect("queue lock");
+        assert_eq!(guard.len(), 1);
+        assert!(guard[0].trace.get("records").is_none());
+        let summary = guard[0]
+            .trace
+            .get("summary")
+            .and_then(|value| value.as_object())
+            .expect("summary should exist");
+        let summary_input = summary
+            .get("input")
+            .and_then(|value| value.as_object())
+            .expect("summary input");
+        let summary_output = summary
+            .get("output")
+            .and_then(|value| value.as_object())
+            .expect("summary output");
+        assert_eq!(
+            summary_input
+                .get("password")
+                .and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+        assert_eq!(
+            summary_output.get("token").and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+        let rule_source = guard[0]
+            .trace
+            .get("rule_source")
+            .and_then(|value| value.as_object())
+            .expect("rule_source should exist");
+        assert_eq!(
+            rule_source.get("token").and_then(|value| value.as_str()),
+            Some("[masked]")
+        );
+    }
+}
+
+#[cfg(test)]
+mod write_failure_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn write_trace_bundle_cleans_up_on_manifest_write_failure() {
+        let temp_dir = std::env::temp_dir().join("rulemorph-trace-write-failure-cleanup");
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("create temp dir");
+
+        let trace = json!({
+            "trace_id": "trace-fail-cleanup",
+            "records": [
+                { "index": 0, "status": "ok", "output": { "value": 1 } }
+            ]
+        });
+
+        let _guard = fail_write_for_trace_id("trace-fail-cleanup", Some("trace.json"));
+        let result = write_trace_bundle_sync(&temp_dir, &trace, &TraceWriteOptions::default());
+        assert!(result.is_err());
+
+        let now = Utc::now();
+        let trace_dir = temp_dir
+            .join("traces")
+            .join(format!("{:04}", now.year()))
+            .join(format!("{:02}", now.month()))
+            .join(format!("{:02}", now.day()))
+            .join("trace-fail-cleanup");
+        assert!(
+            !trace_dir.exists(),
+            "trace dir should be removed after failure"
+        );
+    }
 }
 
 pub async fn write_trace_bundle(
@@ -259,6 +848,9 @@ fn write_trace_bundle_sync(
     options: &TraceWriteOptions,
 ) -> Result<PathBuf> {
     let mut trace = trace.clone();
+    let mut options = options.clone();
+    options.max_chunk_bytes_uncompressed =
+        clamp_max_chunk_bytes_uncompressed(options.max_chunk_bytes_uncompressed);
     let raw_trace_id = trace
         .get("trace_id")
         .and_then(|value| value.as_str())
@@ -309,6 +901,10 @@ fn write_trace_bundle_sync(
         .join(format!("{month:02}"))
         .join(format!("{day:02}"));
     let (trace_id, trace_dir) = ensure_unique_trace_dir(&trace_dir_base, trace_id, &raw_trace_id)?;
+    if let Some(obj) = trace.as_object_mut() {
+        obj.insert("trace_id".to_string(), JsonValue::String(trace_id.clone()));
+    }
+    let mut trace_dir_guard = TraceDirGuard::new(trace_dir.clone());
 
     let records_raw = trace
         .get("records")
@@ -327,11 +923,19 @@ fn write_trace_bundle_sync(
     let mut detail_level = options.detail_level;
     let mut detail_reason = Vec::new();
     if let Some(reason) = options.detail_reason.as_ref() {
-        detail_reason.push(reason.clone());
+        for item in reason.split(|ch| ch == ',' || ch == ';') {
+            let trimmed = item.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if !detail_reason.iter().any(|existing| existing == trimmed) {
+                detail_reason.push(trimmed.to_string());
+            }
+        }
     }
 
     if detail_level == TraceDetailLevel::Full
-        && !should_keep_full_detail(&trace, &records_raw, options)
+        && !should_keep_full_detail(&trace, &records_raw, &options)
     {
         detail_level = TraceDetailLevel::Basic;
         detail_reason.push("sampled_out".to_string());
@@ -343,50 +947,125 @@ fn write_trace_bundle_sync(
         TraceDetailLevel::Off => "dropped".to_string(),
     };
 
+    let masking_rules = if options.masking_enabled {
+        normalize_masking_rules(&options.masking_rules)
+    } else {
+        Vec::new()
+    };
     let masking = if options.masking_enabled {
-        let rules = normalize_masking_rules(&options.masking_rules);
-        apply_masking(&mut trace, &rules);
         Some(TraceMasking {
             enabled: true,
-            rules,
+            rules: masking_rules.clone(),
         })
     } else {
         None
     };
-
-    let mut blob_files: Vec<PathBuf> = Vec::new();
-    if detail_level == TraceDetailLevel::Full {
-        blob_files = externalize_trace_payloads(&mut trace, &trace_dir, options)?;
+    if detail_level != TraceDetailLevel::Full {
+        strip_trace_detail(&mut trace);
+    }
+    if options.masking_enabled {
+        apply_masking(&mut trace, &masking_rules);
     }
 
-    let records = trace
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
+    let mut blob_files: Vec<PathBuf> = Vec::new();
+    let mut budget_remaining = options.max_bytes_per_trace as u64;
+    let mut chunk_budget_remaining = TRACE_CHUNK_COUNT_HARD_MAX;
+    let mut budget_exceeded = false;
+    let mut chunk_too_large = false;
+    if detail_level == TraceDetailLevel::Full {
+        budget_exceeded = externalize_trace_payloads(
+            &mut trace,
+            &trace_dir,
+            &options,
+            &mut budget_remaining,
+            &mut blob_files,
+        )?;
+    }
 
     match detail_level {
         TraceDetailLevel::Full => {
-            let (records_for_chunks, nodes_for_chunks) = if options.split_nodes {
-                detail_layout = "records_nodes_split".to_string();
-                split_records_and_nodes(&records)
-            } else {
-                (normalize_inline_records(&records), Vec::new())
-            };
+            if !budget_exceeded {
+                let records = trace
+                    .get("records")
+                    .and_then(|value| value.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let (records_for_chunks, nodes_for_chunks) = if options.split_nodes {
+                    detail_layout = "records_nodes_split".to_string();
+                    split_records_and_nodes(&records)
+                } else {
+                    (normalize_inline_records(&records), Vec::new())
+                };
 
-            let (chunks, files) = write_record_chunks(&trace_dir, &records_for_chunks, options)?;
-            record_chunks = chunks;
-            record_files = files;
+                let total_records = records_for_chunks.len();
+                let total_nodes = if options.split_nodes {
+                    nodes_for_chunks.len()
+                } else {
+                    count_inline_nodes(&records_for_chunks, TRACE_NODE_COUNT_HARD_MAX)
+                };
+                if total_records > TRACE_RECORD_COUNT_HARD_MAX
+                    || total_nodes > TRACE_NODE_COUNT_HARD_MAX
+                {
+                    budget_exceeded = true;
+                }
 
-            if options.split_nodes {
-                let (chunks, files) = write_node_chunks(&trace_dir, &nodes_for_chunks, options)?;
-                node_chunks = chunks;
-                node_files = files;
+                if !budget_exceeded {
+                    let max_record_line = max_ndjson_line_bytes(&records_for_chunks, "record")?;
+                    let max_node_line = max_ndjson_line_bytes(&nodes_for_chunks, "node")?;
+                    let max_line = max_record_line.max(max_node_line);
+                    if max_line > options.max_chunk_bytes_uncompressed {
+                        detail_status = "basic".to_string();
+                        detail_layout = "records_inline".to_string();
+                        if !detail_reason
+                            .iter()
+                            .any(|reason| reason == "chunk_too_large")
+                        {
+                            detail_reason.push("chunk_too_large".to_string());
+                        }
+                        chunk_too_large = true;
+                    } else {
+                        let record_result = write_record_chunks(
+                            &trace_dir,
+                            &records_for_chunks,
+                            &options,
+                            &mut budget_remaining,
+                            &mut chunk_budget_remaining,
+                        )?;
+                        record_chunks = record_result.chunks;
+                        record_files = record_result.files;
+                        budget_exceeded = record_result.budget_exceeded;
+
+                        if !budget_exceeded && options.split_nodes {
+                            let node_result = write_node_chunks(
+                                &trace_dir,
+                                &nodes_for_chunks,
+                                &options,
+                                &mut budget_remaining,
+                                &mut chunk_budget_remaining,
+                            )?;
+                            node_chunks = node_result.chunks;
+                            node_files = node_result.files;
+                            budget_exceeded = node_result.budget_exceeded;
+                        }
+
+                        if !budget_exceeded {
+                            let finalize_result = write_finalize_chunk(
+                                &trace_dir,
+                                &trace,
+                                &options,
+                                &mut budget_remaining,
+                                &mut chunk_budget_remaining,
+                            )?;
+                            finalize_chunk = finalize_result.chunk;
+                            finalize_file = finalize_result.file;
+                            budget_exceeded = finalize_result.budget_exceeded;
+                            if finalize_result.size_exceeded {
+                                chunk_too_large = true;
+                            }
+                        }
+                    }
+                }
             }
-
-            let (chunk, file) = write_finalize_chunk(&trace_dir, &trace, options)?;
-            finalize_chunk = chunk;
-            finalize_file = file;
         }
         TraceDetailLevel::Basic => {
             if detail_reason.is_empty() {
@@ -398,49 +1077,48 @@ fn write_trace_bundle_sync(
         }
     }
 
+    if budget_exceeded || chunk_too_large {
+        cleanup_detail_files(
+            &mut record_files,
+            &mut node_files,
+            &mut finalize_file,
+            &mut blob_files,
+        );
+        record_chunks.clear();
+        node_chunks.clear();
+        finalize_chunk = None;
+        detail_status = "basic".to_string();
+        detail_layout = "records_inline".to_string();
+        if budget_exceeded
+            && !detail_reason
+                .iter()
+                .any(|reason| reason == "budget_exceeded")
+        {
+            detail_reason.push("budget_exceeded".to_string());
+        }
+        if chunk_too_large
+            && !detail_reason
+                .iter()
+                .any(|reason| reason == "chunk_too_large")
+        {
+            detail_reason.push("chunk_too_large".to_string());
+        }
+    }
+
     let detail_bytes = total_chunk_bytes(&record_chunks)
         .saturating_add(total_chunk_bytes(&node_chunks))
-        .saturating_add(finalize_chunk.as_ref().and_then(|c| c.bytes).unwrap_or(0));
+        .saturating_add(finalize_chunk.as_ref().and_then(|c| c.bytes).unwrap_or(0))
+        .saturating_add(blob_total_bytes(&blob_files));
     if detail_status == "full" && detail_bytes > options.max_bytes_per_trace as u64 {
-        for path in &record_files {
-            if let Err(err) = fs::remove_file(path) {
-                warn!(
-                    "failed to remove record chunk file {}: {}",
-                    path.display(),
-                    err
-                );
-            }
-        }
-        for path in &node_files {
-            if let Err(err) = fs::remove_file(path) {
-                warn!(
-                    "failed to remove node chunk file {}: {}",
-                    path.display(),
-                    err
-                );
-            }
-        }
-        if let Some(path) = finalize_file.as_ref() {
-            if let Err(err) = fs::remove_file(path) {
-                warn!(
-                    "failed to remove finalize chunk file {}: {}",
-                    path.display(),
-                    err
-                );
-            }
-        }
-        for path in &blob_files {
-            if let Err(err) = fs::remove_file(path) {
-                warn!("failed to remove blob file {}: {}", path.display(), err);
-            }
-        }
+        cleanup_detail_files(
+            &mut record_files,
+            &mut node_files,
+            &mut finalize_file,
+            &mut blob_files,
+        );
         record_chunks.clear();
-        record_files.clear();
         node_chunks.clear();
-        node_files.clear();
-        blob_files.clear();
         finalize_chunk = None;
-        finalize_file = None;
         detail_status = "basic".to_string();
         detail_layout = "records_inline".to_string();
         detail_reason.push("budget_exceeded".to_string());
@@ -456,9 +1134,23 @@ fn write_trace_bundle_sync(
         .get("input_format")
         .and_then(|value| value.as_str())
         .map(|value| value.to_string());
-    let rule_source = trace.get("rule_source").cloned();
+    let mut rule_source = trace.get("rule_source").cloned();
+    if let Some(rule_source_value) = rule_source.as_ref() {
+        let rule_source_bytes = serde_json::to_vec(rule_source_value)
+            .map(|payload| payload.len() as u64)
+            .unwrap_or(0);
+        if rule_source_bytes > options.max_bytes_per_trace as u64 {
+            rule_source = None;
+            if !detail_reason
+                .iter()
+                .any(|reason| reason == "rule_source_dropped")
+            {
+                detail_reason.push("rule_source_dropped".to_string());
+            }
+        }
+    }
 
-    let detail = TraceDetailRef {
+    let mut detail = TraceDetailRef {
         layout: detail_layout,
         status: detail_status.clone(),
         reason: detail_reason,
@@ -467,7 +1159,7 @@ fn write_trace_bundle_sync(
         finalize: finalize_chunk,
     };
 
-    let manifest = TraceManifest {
+    let mut manifest = TraceManifest {
         trace_schema_version: TRACE_SCHEMA_VERSION,
         trace_id: trace_id.clone(),
         timestamp: Some(timestamp),
@@ -475,14 +1167,11 @@ fn write_trace_bundle_sync(
         rule,
         input_format,
         summary,
-        detail: Some(detail),
+        max_chunk_bytes_uncompressed: Some(options.max_chunk_bytes_uncompressed as u64),
+        detail: Some(detail.clone()),
         masking,
         rule_source,
     };
-
-    let manifest_path = trace_dir.join("trace.json");
-    let manifest_payload = serde_json::to_string_pretty(&manifest)?;
-    write_atomic(&manifest_path, manifest_payload.as_bytes())?;
 
     // Ensure any temporary files were created (record files already written).
     if detail_status == "full" {
@@ -506,7 +1195,104 @@ fn write_trace_bundle_sync(
         }
     }
 
+    let manifest_path = trace_dir.join("trace.json");
+    let mut manifest_payload = serde_json::to_string_pretty(&manifest)?;
+    if manifest_payload.len() as u64 > TRACE_JSON_MAX_BYTES {
+        if manifest.rule_source.is_some() {
+            manifest.rule_source = None;
+            if !detail
+                .reason
+                .iter()
+                .any(|reason| reason == "rule_source_dropped")
+            {
+                detail.reason.push("rule_source_dropped".to_string());
+            }
+            manifest.detail = Some(detail.clone());
+            manifest_payload = serde_json::to_string_pretty(&manifest)?;
+        }
+        if manifest_payload.len() as u64 > TRACE_JSON_MAX_BYTES {
+            return Err(anyhow::anyhow!(
+                "trace json exceeds max bytes: {} > {}",
+                manifest_payload.len(),
+                TRACE_JSON_MAX_BYTES
+            ));
+        }
+    }
+    write_atomic(&manifest_path, manifest_payload.as_bytes())?;
+    trace_dir_guard.commit();
+
     Ok(manifest_path)
+}
+
+struct TraceDirGuard {
+    path: PathBuf,
+    committed: bool,
+}
+
+impl TraceDirGuard {
+    fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            committed: false,
+        }
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for TraceDirGuard {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn cleanup_detail_files(
+    record_files: &mut Vec<PathBuf>,
+    node_files: &mut Vec<PathBuf>,
+    finalize_file: &mut Option<PathBuf>,
+    blob_files: &mut Vec<PathBuf>,
+) {
+    for path in record_files.iter() {
+        if let Err(err) = fs::remove_file(path) {
+            warn!(
+                "failed to remove record chunk file {}: {}",
+                path.display(),
+                err
+            );
+        }
+    }
+    for path in node_files.iter() {
+        if let Err(err) = fs::remove_file(path) {
+            warn!(
+                "failed to remove node chunk file {}: {}",
+                path.display(),
+                err
+            );
+        }
+    }
+    if let Some(path) = finalize_file.as_ref() {
+        if let Err(err) = fs::remove_file(path) {
+            warn!(
+                "failed to remove finalize chunk file {}: {}",
+                path.display(),
+                err
+            );
+        }
+    }
+    for path in blob_files.iter() {
+        if let Err(err) = fs::remove_file(path) {
+            warn!("failed to remove blob file {}: {}", path.display(), err);
+        }
+    }
+    record_files.clear();
+    node_files.clear();
+    *finalize_file = None;
+    blob_files.clear();
 }
 
 fn normalize_inline_records(records: &[JsonValue]) -> Vec<JsonValue> {
@@ -587,6 +1373,50 @@ fn normalize_masking_rules(rules: &[String]) -> Vec<String> {
         .collect()
 }
 
+fn mask_url_query(value: &str, rules: &[String]) -> Option<String> {
+    if rules.is_empty() || !value.contains('?') {
+        return None;
+    }
+    let (base, rest) = value.split_once('?')?;
+    let (query, fragment) = match rest.split_once('#') {
+        Some((query, fragment)) => (query, Some(fragment)),
+        None => (rest, None),
+    };
+    let mut masked = false;
+    let mut parts = Vec::new();
+    for pair in query.split('&') {
+        if pair.is_empty() {
+            parts.push(String::new());
+            continue;
+        }
+        if let Some((key, _value)) = pair.split_once('=') {
+            if should_mask_key(key, rules) {
+                masked = true;
+                parts.push(format!("{key}=[masked]"));
+            } else {
+                parts.push(pair.to_string());
+            }
+        } else if should_mask_key(pair, rules) {
+            masked = true;
+            parts.push(format!("{pair}=[masked]"));
+        } else {
+            parts.push(pair.to_string());
+        }
+    }
+    if !masked {
+        return None;
+    }
+    let mut masked_value = String::with_capacity(value.len());
+    masked_value.push_str(base);
+    masked_value.push('?');
+    masked_value.push_str(&parts.join("&"));
+    if let Some(fragment) = fragment {
+        masked_value.push('#');
+        masked_value.push_str(fragment);
+    }
+    Some(masked_value)
+}
+
 fn apply_masking(value: &mut JsonValue, rules: &[String]) {
     match value {
         JsonValue::Object(map) => {
@@ -601,6 +1431,11 @@ fn apply_masking(value: &mut JsonValue, rules: &[String]) {
         JsonValue::Array(items) => {
             for item in items {
                 apply_masking(item, rules);
+            }
+        }
+        JsonValue::String(value) => {
+            if let Some(masked) = mask_url_query(value, rules) {
+                *value = masked;
             }
         }
         _ => {}
@@ -619,14 +1454,21 @@ fn externalize_trace_payloads(
     trace: &mut JsonValue,
     trace_dir: &Path,
     options: &TraceWriteOptions,
-) -> Result<Vec<PathBuf>> {
+    budget_remaining: &mut u64,
+    blob_files: &mut Vec<PathBuf>,
+) -> Result<bool> {
     if options.max_payload_bytes == 0 {
-        return Ok(Vec::new());
+        return Ok(false);
     }
     let mut seen = HashSet::new();
-    let mut blob_files = Vec::new();
-    externalize_trace_payloads_inner(trace, trace_dir, options, &mut seen, &mut blob_files)?;
-    Ok(blob_files)
+    externalize_trace_payloads_inner(
+        trace,
+        trace_dir,
+        options,
+        &mut seen,
+        budget_remaining,
+        blob_files,
+    )
 }
 
 fn externalize_trace_payloads_inner(
@@ -634,23 +1476,42 @@ fn externalize_trace_payloads_inner(
     trace_dir: &Path,
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
+    budget_remaining: &mut u64,
     blob_files: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(obj) = trace.as_object_mut() else {
-        return Ok(());
+        return Ok(false);
     };
     if let Some(records) = obj
         .get_mut("records")
         .and_then(|value| value.as_array_mut())
     {
         for record in records {
-            externalize_record_payloads(record, trace_dir, options, seen, blob_files)?;
+            if externalize_record_payloads(
+                record,
+                trace_dir,
+                options,
+                seen,
+                budget_remaining,
+                blob_files,
+            )? {
+                return Ok(true);
+            }
         }
     }
     if let Some(finalize) = obj.get_mut("finalize") {
-        externalize_finalize_payloads(finalize, trace_dir, options, seen, blob_files)?;
+        if externalize_finalize_payloads(
+            finalize,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn externalize_record_payloads(
@@ -658,26 +1519,80 @@ fn externalize_record_payloads(
     trace_dir: &Path,
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
+    budget_remaining: &mut u64,
     blob_files: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(obj) = record.as_object_mut() else {
-        return Ok(());
+        return Ok(false);
     };
     if let Some(input) = obj.get_mut("input") {
-        maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            input,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
     if let Some(output) = obj.get_mut("output") {
-        maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            output,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
-    if let Some(nodes) = obj.get_mut("nodes").and_then(|value| value.as_array_mut()) {
-        for node in nodes {
-            externalize_node_payloads(node, trace_dir, options, seen, blob_files)?;
+    if let Some(nodes_value) = obj.get_mut("nodes") {
+        match nodes_value {
+            JsonValue::Array(nodes) => {
+                for node in nodes {
+                    if externalize_node_payloads(
+                        node,
+                        trace_dir,
+                        options,
+                        seen,
+                        budget_remaining,
+                        blob_files,
+                    )? {
+                        return Ok(true);
+                    }
+                }
+            }
+            JsonValue::Object(_) => {
+                if externalize_node_payloads(
+                    nodes_value,
+                    trace_dir,
+                    options,
+                    seen,
+                    budget_remaining,
+                    blob_files,
+                )? {
+                    return Ok(true);
+                }
+            }
+            _ => {}
         }
     }
     if let Some(child_trace) = obj.get_mut("child_trace") {
-        externalize_trace_payloads_inner(child_trace, trace_dir, options, seen, blob_files)?;
+        if externalize_trace_payloads_inner(
+            child_trace,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn externalize_node_payloads(
@@ -685,22 +1600,53 @@ fn externalize_node_payloads(
     trace_dir: &Path,
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
+    budget_remaining: &mut u64,
     blob_files: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(obj) = node.as_object_mut() else {
-        return Ok(());
+        return Ok(false);
     };
     if let Some(input) = obj.get_mut("input") {
-        maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            input,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
     if let Some(output) = obj.get_mut("output") {
-        maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            output,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
     if let Some(args) = obj.get_mut("args") {
-        maybe_externalize_payload(args, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(args, trace_dir, options, seen, budget_remaining, blob_files)?
+        {
+            return Ok(true);
+        }
     }
     if let Some(pipe_value) = obj.get_mut("pipe_value") {
-        maybe_externalize_payload(pipe_value, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            pipe_value,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
     if let Some(pipe_steps) = obj
         .get_mut("pipe_steps")
@@ -709,10 +1655,28 @@ fn externalize_node_payloads(
         for step in pipe_steps {
             if let Some(step_obj) = step.as_object_mut() {
                 if let Some(input) = step_obj.get_mut("input") {
-                    maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+                    if maybe_externalize_payload(
+                        input,
+                        trace_dir,
+                        options,
+                        seen,
+                        budget_remaining,
+                        blob_files,
+                    )? {
+                        return Ok(true);
+                    }
                 }
                 if let Some(output) = step_obj.get_mut("output") {
-                    maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+                    if maybe_externalize_payload(
+                        output,
+                        trace_dir,
+                        options,
+                        seen,
+                        budget_remaining,
+                        blob_files,
+                    )? {
+                        return Ok(true);
+                    }
                 }
             }
         }
@@ -722,13 +1686,31 @@ fn externalize_node_payloads(
         .and_then(|value| value.as_array_mut())
     {
         for child in children {
-            externalize_node_payloads(child, trace_dir, options, seen, blob_files)?;
+            if externalize_node_payloads(
+                child,
+                trace_dir,
+                options,
+                seen,
+                budget_remaining,
+                blob_files,
+            )? {
+                return Ok(true);
+            }
         }
     }
     if let Some(child_trace) = obj.get_mut("child_trace") {
-        externalize_trace_payloads_inner(child_trace, trace_dir, options, seen, blob_files)?;
+        if externalize_trace_payloads_inner(
+            child_trace,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn externalize_finalize_payloads(
@@ -736,23 +1718,51 @@ fn externalize_finalize_payloads(
     trace_dir: &Path,
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
+    budget_remaining: &mut u64,
     blob_files: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<bool> {
     let Some(obj) = finalize.as_object_mut() else {
-        return Ok(());
+        return Ok(false);
     };
     if let Some(input) = obj.get_mut("input") {
-        maybe_externalize_payload(input, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            input,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
     if let Some(output) = obj.get_mut("output") {
-        maybe_externalize_payload(output, trace_dir, options, seen, blob_files)?;
+        if maybe_externalize_payload(
+            output,
+            trace_dir,
+            options,
+            seen,
+            budget_remaining,
+            blob_files,
+        )? {
+            return Ok(true);
+        }
     }
     if let Some(nodes) = obj.get_mut("nodes").and_then(|value| value.as_array_mut()) {
         for node in nodes {
-            externalize_node_payloads(node, trace_dir, options, seen, blob_files)?;
+            if externalize_node_payloads(
+                node,
+                trace_dir,
+                options,
+                seen,
+                budget_remaining,
+                blob_files,
+            )? {
+                return Ok(true);
+            }
         }
     }
-    Ok(())
+    Ok(false)
 }
 
 fn maybe_externalize_payload(
@@ -760,27 +1770,35 @@ fn maybe_externalize_payload(
     trace_dir: &Path,
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
+    budget_remaining: &mut u64,
     blob_files: &mut Vec<PathBuf>,
-) -> Result<()> {
+) -> Result<bool> {
     if value.is_null() || is_externalized_payload(value) {
-        return Ok(());
+        return Ok(false);
     }
     let raw = serde_json::to_vec(value)?;
     if raw.len() <= options.max_payload_bytes {
-        return Ok(());
+        return Ok(false);
     }
     let preview_limit = options.payload_preview_bytes.min(options.max_payload_bytes);
     let preview = build_payload_preview(&raw, preview_limit);
-    let (blob_ref, blob_path) = write_blob(trace_dir, &raw, options, seen)?;
-    if !blob_files.contains(&blob_path) {
-        blob_files.push(blob_path);
+    match write_blob(trace_dir, &raw, options, seen, budget_remaining)? {
+        WriteBlobResult::Written {
+            blob_ref,
+            blob_path,
+        } => {
+            if !blob_files.contains(&blob_path) {
+                blob_files.push(blob_path);
+            }
+            *value = json!({
+                "preview": preview,
+                "size_bytes": raw.len() as u64,
+                "blob_ref": blob_ref
+            });
+            Ok(false)
+        }
+        WriteBlobResult::BudgetExceeded => Ok(true),
     }
-    *value = json!({
-        "preview": preview,
-        "size_bytes": raw.len() as u64,
-        "blob_ref": blob_ref
-    });
-    Ok(())
 }
 
 fn is_externalized_payload(value: &JsonValue) -> bool {
@@ -801,12 +1819,21 @@ fn build_payload_preview(raw: &[u8], limit: usize) -> String {
     preview
 }
 
+enum WriteBlobResult {
+    Written {
+        blob_ref: String,
+        blob_path: PathBuf,
+    },
+    BudgetExceeded,
+}
+
 fn write_blob(
     trace_dir: &Path,
     raw: &[u8],
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
-) -> Result<(String, PathBuf)> {
+    budget_remaining: &mut u64,
+) -> Result<WriteBlobResult> {
     let hash = Sha256::digest(raw);
     let hash_hex = hex_encode(&hash);
     let extension = match options.compression {
@@ -818,19 +1845,52 @@ fn write_blob(
     let rel_string = rel_path.to_string_lossy().to_string();
     let full_path = trace_dir.join(&rel_path);
     if !seen.insert(rel_string.clone()) {
-        return Ok((rel_string, full_path));
+        return Ok(WriteBlobResult::Written {
+            blob_ref: rel_string,
+            blob_path: full_path,
+        });
     }
     if let Some(parent) = full_path.parent() {
         fs::create_dir_all(parent)?;
     }
-    if !full_path.exists() {
-        let payload = match options.compression {
+    let file_exists = full_path.exists();
+    let mut needs_write = !file_exists;
+    let mut payload: Option<Vec<u8>> = None;
+    let bytes = if file_exists {
+        match fs::metadata(&full_path) {
+            Ok(metadata) => metadata.len(),
+            Err(_) => {
+                let computed = match options.compression {
+                    TraceCompression::Zstd => zstd::stream::encode_all(raw, 3)?,
+                    TraceCompression::None => raw.to_vec(),
+                };
+                let bytes = computed.len() as u64;
+                payload = Some(computed);
+                needs_write = true;
+                bytes
+            }
+        }
+    } else {
+        let computed = match options.compression {
             TraceCompression::Zstd => zstd::stream::encode_all(raw, 3)?,
             TraceCompression::None => raw.to_vec(),
         };
-        write_atomic(&full_path, payload.as_slice())?;
+        let bytes = computed.len() as u64;
+        payload = Some(computed);
+        bytes
+    };
+    if !reserve_budget(budget_remaining, bytes) {
+        return Ok(WriteBlobResult::BudgetExceeded);
     }
-    Ok((rel_string, full_path))
+    if needs_write {
+        if let Some(payload) = payload {
+            write_atomic(&full_path, payload.as_slice())?;
+        }
+    }
+    Ok(WriteBlobResult::Written {
+        blob_ref: rel_string,
+        blob_path: full_path,
+    })
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -839,6 +1899,17 @@ fn hex_encode(bytes: &[u8]) -> String {
         output.push_str(&format!("{:02x}", byte));
     }
     output
+}
+
+fn reserve_budget(remaining: &mut u64, bytes: u64) -> bool {
+    if bytes == 0 {
+        return true;
+    }
+    if *remaining < bytes {
+        return false;
+    }
+    *remaining -= bytes;
+    true
 }
 
 fn should_keep_full_detail(
@@ -1093,22 +2164,38 @@ fn ensure_unique_trace_dir(
     }
 }
 
+struct ChunkWriteResult {
+    chunks: Vec<TraceChunkRef>,
+    files: Vec<PathBuf>,
+    budget_exceeded: bool,
+}
+
+struct FinalizeWriteResult {
+    chunk: Option<TraceChunkRef>,
+    file: Option<PathBuf>,
+    budget_exceeded: bool,
+    size_exceeded: bool,
+}
+
 fn write_record_chunks(
     trace_dir: &Path,
     records: &[JsonValue],
     options: &TraceWriteOptions,
-) -> Result<(Vec<TraceChunkRef>, Vec<PathBuf>)> {
+    budget_remaining: &mut u64,
+    chunk_budget_remaining: &mut usize,
+) -> Result<ChunkWriteResult> {
     let mut chunks = Vec::new();
     let mut files = Vec::new();
+    let mut budget_exceeded = false;
 
     let mut chunk_index = 0usize;
     let mut record_start = 0usize;
     let mut current_lines: Vec<String> = Vec::new();
     let mut current_bytes: usize = 0;
 
-    let mut flush = |lines: &mut Vec<String>, start: usize, end: usize| -> Result<()> {
+    let mut flush = |lines: &mut Vec<String>, start: usize, end: usize| -> Result<bool> {
         if lines.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         chunk_index += 1;
         let filename = format!(
@@ -1119,21 +2206,24 @@ fn write_record_chunks(
             }
         );
         let path = trace_dir.join(&filename);
+        if *chunk_budget_remaining == 0 {
+            return Ok(true);
+        }
         let payload = format!("{}\n", lines.join("\n"));
         let raw_bytes = payload.as_bytes();
 
-        let bytes = match options.compression {
+        let (bytes, payload) = match options.compression {
             TraceCompression::Zstd => {
                 let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
-                let bytes = compressed.len() as u64;
-                write_atomic(&path, compressed.as_slice())?;
-                bytes
+                (compressed.len() as u64, compressed)
             }
-            TraceCompression::None => {
-                write_atomic(&path, raw_bytes)?;
-                raw_bytes.len() as u64
-            }
+            TraceCompression::None => (raw_bytes.len() as u64, raw_bytes.to_vec()),
         };
+        if !reserve_budget(budget_remaining, bytes) {
+            return Ok(true);
+        }
+        write_atomic(&path, payload.as_slice())?;
+        *chunk_budget_remaining = chunk_budget_remaining.saturating_sub(1);
         chunks.push(TraceChunkRef {
             path: filename,
             format: "ndjson".to_string(),
@@ -1149,7 +2239,7 @@ fn write_record_chunks(
         });
         files.push(path);
         lines.clear();
-        Ok(())
+        Ok(false)
     };
 
     for (index, record) in records.iter().enumerate() {
@@ -1160,7 +2250,10 @@ fn write_record_chunks(
         let exceeds_byte_limit = current_bytes + line_len > options.max_chunk_bytes_uncompressed;
         if !current_lines.is_empty() && (exceeds_record_limit || exceeds_byte_limit) {
             let end = record_start + current_lines.len() - 1;
-            flush(&mut current_lines, record_start, end)?;
+            if flush(&mut current_lines, record_start, end)? {
+                budget_exceeded = true;
+                break;
+            }
             record_start = index;
             current_bytes = 0;
         }
@@ -1168,34 +2261,47 @@ fn write_record_chunks(
         current_lines.push(line);
     }
 
-    if !current_lines.is_empty() {
+    if !budget_exceeded && !current_lines.is_empty() {
         let end = record_start + current_lines.len() - 1;
-        flush(&mut current_lines, record_start, end)?;
+        if flush(&mut current_lines, record_start, end)? {
+            budget_exceeded = true;
+        }
     }
 
-    Ok((chunks, files))
+    Ok(ChunkWriteResult {
+        chunks,
+        files,
+        budget_exceeded,
+    })
 }
 
 fn write_node_chunks(
     trace_dir: &Path,
     nodes: &[JsonValue],
     options: &TraceWriteOptions,
-) -> Result<(Vec<TraceChunkRef>, Vec<PathBuf>)> {
+    budget_remaining: &mut u64,
+    chunk_budget_remaining: &mut usize,
+) -> Result<ChunkWriteResult> {
     if nodes.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
+        return Ok(ChunkWriteResult {
+            chunks: Vec::new(),
+            files: Vec::new(),
+            budget_exceeded: false,
+        });
     }
 
     let mut chunks = Vec::new();
     let mut files = Vec::new();
+    let mut budget_exceeded = false;
 
     let mut chunk_index = 0usize;
     let mut node_start = 0usize;
     let mut current_lines: Vec<String> = Vec::new();
     let mut current_bytes: usize = 0;
 
-    let mut flush = |lines: &mut Vec<String>, start: usize, end: usize| -> Result<()> {
+    let mut flush = |lines: &mut Vec<String>, start: usize, end: usize| -> Result<bool> {
         if lines.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
         chunk_index += 1;
         let filename = format!(
@@ -1206,21 +2312,24 @@ fn write_node_chunks(
             }
         );
         let path = trace_dir.join(&filename);
+        if *chunk_budget_remaining == 0 {
+            return Ok(true);
+        }
         let payload = format!("{}\n", lines.join("\n"));
         let raw_bytes = payload.as_bytes();
 
-        let bytes = match options.compression {
+        let (bytes, payload) = match options.compression {
             TraceCompression::Zstd => {
                 let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
-                let bytes = compressed.len() as u64;
-                write_atomic(&path, compressed.as_slice())?;
-                bytes
+                (compressed.len() as u64, compressed)
             }
-            TraceCompression::None => {
-                write_atomic(&path, raw_bytes)?;
-                raw_bytes.len() as u64
-            }
+            TraceCompression::None => (raw_bytes.len() as u64, raw_bytes.to_vec()),
         };
+        if !reserve_budget(budget_remaining, bytes) {
+            return Ok(true);
+        }
+        write_atomic(&path, payload.as_slice())?;
+        *chunk_budget_remaining = chunk_budget_remaining.saturating_sub(1);
         chunks.push(TraceChunkRef {
             path: filename,
             format: "ndjson".to_string(),
@@ -1236,7 +2345,7 @@ fn write_node_chunks(
         });
         files.push(path);
         lines.clear();
-        Ok(())
+        Ok(false)
     };
 
     for (index, node) in nodes.iter().enumerate() {
@@ -1247,7 +2356,10 @@ fn write_node_chunks(
         let exceeds_byte_limit = current_bytes + line_len > options.max_chunk_bytes_uncompressed;
         if !current_lines.is_empty() && (exceeds_node_limit || exceeds_byte_limit) {
             let end = node_start + current_lines.len() - 1;
-            flush(&mut current_lines, node_start, end)?;
+            if flush(&mut current_lines, node_start, end)? {
+                budget_exceeded = true;
+                break;
+            }
             node_start = index;
             current_bytes = 0;
         }
@@ -1255,31 +2367,94 @@ fn write_node_chunks(
         current_lines.push(line);
     }
 
-    if !current_lines.is_empty() {
+    if !budget_exceeded && !current_lines.is_empty() {
         let end = node_start + current_lines.len() - 1;
-        flush(&mut current_lines, node_start, end)?;
+        if flush(&mut current_lines, node_start, end)? {
+            budget_exceeded = true;
+        }
     }
 
-    Ok((chunks, files))
+    Ok(ChunkWriteResult {
+        chunks,
+        files,
+        budget_exceeded,
+    })
 }
 
 fn lines_len_exceeds(lines: &[String], max: usize) -> bool {
     lines.len() >= max && max > 0
 }
 
+fn max_ndjson_line_bytes(items: &[JsonValue], label: &str) -> Result<usize> {
+    let mut max_len = 0usize;
+    for (index, item) in items.iter().enumerate() {
+        let payload = serde_json::to_vec(item)
+            .with_context(|| format!("failed to serialize {label} at {index}"))?;
+        let line_len = payload.len().saturating_add(1);
+        if line_len > max_len {
+            max_len = line_len;
+        }
+    }
+    Ok(max_len)
+}
+
+fn count_inline_nodes(records: &[JsonValue], max_nodes: usize) -> usize {
+    let mut total = 0usize;
+    for record in records {
+        if let Some(nodes) = record.get("nodes").and_then(|value| value.as_array()) {
+            total = total.saturating_add(nodes.len());
+            if total > max_nodes {
+                break;
+            }
+        }
+    }
+    total
+}
+
 fn total_chunk_bytes(chunks: &[TraceChunkRef]) -> u64 {
     chunks.iter().filter_map(|chunk| chunk.bytes).sum()
+}
+
+fn blob_total_bytes(blob_files: &[PathBuf]) -> u64 {
+    blob_files
+        .iter()
+        .map(|path| match fs::metadata(path) {
+            Ok(meta) => meta.len(),
+            Err(err) => {
+                warn!("failed to read blob metadata {}: {}", path.display(), err);
+                0
+            }
+        })
+        .sum()
 }
 
 fn write_finalize_chunk(
     trace_dir: &Path,
     trace: &JsonValue,
     options: &TraceWriteOptions,
-) -> Result<(Option<TraceChunkRef>, Option<PathBuf>)> {
+    budget_remaining: &mut u64,
+    chunk_budget_remaining: &mut usize,
+) -> Result<FinalizeWriteResult> {
     let finalize = match trace.get("finalize") {
         Some(value) => value,
-        None => return Ok((None, None)),
+        None => {
+            return Ok(FinalizeWriteResult {
+                chunk: None,
+                file: None,
+                budget_exceeded: false,
+                size_exceeded: false,
+            });
+        }
     };
+
+    if *chunk_budget_remaining == 0 {
+        return Ok(FinalizeWriteResult {
+            chunk: None,
+            file: None,
+            budget_exceeded: true,
+            size_exceeded: false,
+        });
+    }
 
     let filename = format!(
         "finalize.json{}",
@@ -1290,19 +2465,32 @@ fn write_finalize_chunk(
     );
     let path = trace_dir.join(&filename);
     let payload = serde_json::to_vec(finalize)?;
+    if payload.len() > options.max_chunk_bytes_uncompressed {
+        return Ok(FinalizeWriteResult {
+            chunk: None,
+            file: None,
+            budget_exceeded: false,
+            size_exceeded: true,
+        });
+    }
     let raw_bytes = payload.as_slice();
-    let bytes = match options.compression {
+    let (bytes, payload) = match options.compression {
         TraceCompression::Zstd => {
             let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
-            let bytes = compressed.len() as u64;
-            write_atomic(&path, compressed.as_slice())?;
-            bytes
+            (compressed.len() as u64, compressed)
         }
-        TraceCompression::None => {
-            write_atomic(&path, raw_bytes)?;
-            raw_bytes.len() as u64
-        }
+        TraceCompression::None => (raw_bytes.len() as u64, raw_bytes.to_vec()),
     };
+    if !reserve_budget(budget_remaining, bytes) {
+        return Ok(FinalizeWriteResult {
+            chunk: None,
+            file: None,
+            budget_exceeded: true,
+            size_exceeded: false,
+        });
+    }
+    write_atomic(&path, payload.as_slice())?;
+    *chunk_budget_remaining = chunk_budget_remaining.saturating_sub(1);
     let chunk = TraceChunkRef {
         path: filename,
         format: "json".to_string(),
@@ -1316,10 +2504,19 @@ fn write_finalize_chunk(
         node_end: None,
         bytes: Some(bytes),
     };
-    Ok((Some(chunk), Some(path)))
+    Ok(FinalizeWriteResult {
+        chunk: Some(chunk),
+        file: Some(path),
+        budget_exceeded: false,
+        size_exceeded: false,
+    })
 }
 
 fn write_atomic(path: &Path, payload: &[u8]) -> Result<()> {
+    #[cfg(test)]
+    if should_fail_write(path) {
+        return Err(anyhow::anyhow!("forced write failure"));
+    }
     let temp_path = temp_path_for(path)?;
     fs::write(&temp_path, payload)
         .with_context(|| format!("failed to write temporary file: {}", temp_path.display()))?;
@@ -1333,6 +2530,61 @@ fn write_atomic(path: &Path, payload: &[u8]) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn should_fail_write(path: &Path) -> bool {
+    let config = fail_write_config()
+        .lock()
+        .expect("fail write config lock")
+        .clone();
+    let Some(config) = config else {
+        return false;
+    };
+    if !path
+        .components()
+        .any(|component| component.as_os_str() == config.trace_id)
+    {
+        return false;
+    }
+    if let Some(filename) = config.filename.as_ref() {
+        return path.file_name() == Some(filename);
+    }
+    true
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct FailWriteConfig {
+    trace_id: std::ffi::OsString,
+    filename: Option<std::ffi::OsString>,
+}
+
+#[cfg(test)]
+fn fail_write_config() -> &'static Mutex<Option<FailWriteConfig>> {
+    static FAIL_WRITE_CONFIG: OnceLock<Mutex<Option<FailWriteConfig>>> = OnceLock::new();
+    FAIL_WRITE_CONFIG.get_or_init(|| Mutex::new(None))
+}
+
+#[cfg(test)]
+struct FailWriteGuard;
+
+#[cfg(test)]
+impl Drop for FailWriteGuard {
+    fn drop(&mut self) {
+        let mut guard = fail_write_config().lock().expect("fail write config lock");
+        *guard = None;
+    }
+}
+
+#[cfg(test)]
+fn fail_write_for_trace_id(trace_id: &str, filename: Option<&str>) -> FailWriteGuard {
+    let mut guard = fail_write_config().lock().expect("fail write config lock");
+    *guard = Some(FailWriteConfig {
+        trace_id: std::ffi::OsString::from(trace_id),
+        filename: filename.map(std::ffi::OsString::from),
+    });
+    FailWriteGuard
 }
 
 fn temp_path_for(path: &Path) -> Result<PathBuf> {

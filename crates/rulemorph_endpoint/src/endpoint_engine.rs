@@ -8,6 +8,7 @@ use anyhow::{Context, Result, anyhow};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
 use chrono::Utc;
+use http_body_util::LengthLimitError;
 use reqwest::Client;
 use rulemorph::PathToken;
 use rulemorph::v2_eval::{
@@ -24,10 +25,13 @@ use rulemorph::{
     parse_rule_file, transform_record, transform_record_with_base_dir,
     validate_rule_file_with_source,
 };
-use rulemorph_trace::TraceWriter;
+use rulemorph_trace::{TraceWriteOptions, TraceWriter, TraceWriterConfig};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tracing::warn;
+
+const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,6 +50,9 @@ impl Default for ApiMode {
 pub struct EngineConfig {
     pub internal_base: String,
     pub data_dir: PathBuf,
+    pub trace_write_options: TraceWriteOptions,
+    pub max_body_bytes: usize,
+    pub max_response_bytes: usize,
 }
 
 impl EngineConfig {
@@ -53,7 +60,25 @@ impl EngineConfig {
         Self {
             internal_base,
             data_dir,
+            trace_write_options: TraceWriteOptions::default(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
+    }
+
+    pub fn with_trace_write_options(mut self, trace_write_options: TraceWriteOptions) -> Self {
+        self.trace_write_options = trace_write_options;
+        self
+    }
+
+    pub fn with_max_body_bytes(mut self, max_body_bytes: usize) -> Self {
+        self.max_body_bytes = max_body_bytes;
+        self
+    }
+
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes;
+        self
     }
 }
 
@@ -248,6 +273,20 @@ pub struct EndpointEngine {
     trace_writer: TraceWriter,
 }
 
+fn is_length_limit_error(err: &axum::Error) -> bool {
+    let mut current: &(dyn std::error::Error + 'static) = err;
+    if current.is::<LengthLimitError>() {
+        return true;
+    }
+    while let Some(source) = current.source() {
+        if source.is::<LengthLimitError>() {
+            return true;
+        }
+        current = source;
+    }
+    false
+}
+
 struct RuleExecution {
     output: JsonValue,
     child_trace: Option<JsonValue>,
@@ -312,7 +351,13 @@ impl EndpointEngine {
             .no_proxy()
             .build()
             .map_err(|err| anyhow!(err.to_string()))?;
-        let trace_writer = TraceWriter::new(config.data_dir.clone());
+        let trace_writer = TraceWriter::with_config(
+            config.data_dir.clone(),
+            TraceWriterConfig {
+                write_options: config.trace_write_options.clone(),
+                ..TraceWriterConfig::default()
+            },
+        );
         Ok(Self {
             endpoint_rule: compiled,
             raw_rule_source,
@@ -331,15 +376,30 @@ impl EndpointEngine {
             .endpoint_rule
             .match_endpoint(&method, &path)
             .ok_or_else(|| anyhow!("no endpoint matched"))?;
-        let body_bytes = axum::body::to_bytes(body, usize::MAX)
-            .await
-            .map_err(|err| anyhow!(err.to_string()))?;
-        let body_value = if body_bytes.is_empty() {
-            Ok(None)
-        } else {
-            serde_json::from_slice::<JsonValue>(&body_bytes)
-                .map(Some)
-                .map_err(|err| EndpointError::invalid(err.to_string()))
+        let body_bytes = match axum::body::to_bytes(body, self.config.max_body_bytes).await {
+            Ok(bytes) => Ok(bytes),
+            Err(err) => {
+                if is_length_limit_error(&err) {
+                    Err(EndpointError::payload_too_large(self.config.max_body_bytes))
+                } else {
+                    Err(EndpointError::network(format!(
+                        "request body read error: {}",
+                        err
+                    )))
+                }
+            }
+        };
+        let body_value = match body_bytes {
+            Ok(body_bytes) => {
+                if body_bytes.is_empty() {
+                    Ok(None)
+                } else {
+                    serde_json::from_slice::<JsonValue>(&body_bytes)
+                        .map(Some)
+                        .map_err(|err| EndpointError::invalid(err.to_string()))
+                }
+            }
+            Err(err) => Err(err),
         };
 
         let endpoint = endpoint_match.endpoint;
@@ -1040,7 +1100,7 @@ impl EndpointEngine {
         }
 
         let value = tokio::time::timeout(rule.timeout, async {
-            let response = req
+            let mut response = req
                 .send()
                 .await
                 .map_err(|err| EndpointError::network(err.to_string()))?;
@@ -1051,10 +1111,25 @@ impl EndpointEngine {
                 return Err(EndpointError::http_status(status_u16));
             }
 
-            let bytes = response
-                .bytes()
+            let max_response_bytes = self.config.max_response_bytes;
+            if let Some(length) = response.content_length() {
+                if length > max_response_bytes as u64 {
+                    return Err(EndpointError::payload_too_large(max_response_bytes));
+                }
+            }
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut total = 0usize;
+            while let Some(chunk) = response
+                .chunk()
                 .await
-                .map_err(|err| EndpointError::network(err.to_string()))?;
+                .map_err(|err| EndpointError::network(err.to_string()))?
+            {
+                total = total.saturating_add(chunk.len());
+                if total > max_response_bytes {
+                    return Err(EndpointError::payload_too_large(max_response_bytes));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
             let value = if bytes.is_empty() {
                 JsonValue::Null
             } else {
@@ -1579,6 +1654,15 @@ impl EndpointError {
             kind: EndpointErrorKind::Invalid,
             status: None,
             message: message.into(),
+            path: None,
+        }
+    }
+
+    fn payload_too_large(limit: usize) -> Self {
+        Self {
+            kind: EndpointErrorKind::Invalid,
+            status: Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16()),
+            message: format!("payload too large (limit {} bytes)", limit),
             path: None,
         }
     }
@@ -2307,7 +2391,11 @@ fn safe_rule_ref_from_path(base_dir: &Path, path: &Path) -> Option<String> {
 fn rule_ref_from_path(base_dir: &Path, path: &Path) -> String {
     if let Ok(rel) = path.strip_prefix(base_dir) {
         let rel = rel.to_string_lossy().replace('\\', "/");
-        format!("rules/{}", rel)
+        if rel.starts_with("rules/") {
+            rel
+        } else {
+            format!("rules/{}", rel)
+        }
     } else {
         path.display().to_string()
     }
@@ -3454,6 +3542,8 @@ enum RuleKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures_util::stream;
+    use rulemorph_trace::TraceStore;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -3469,6 +3559,14 @@ mod tests {
     fn compile_retry_defaults_to_none() {
         let retry = compile_retry(None).unwrap();
         assert!(retry.is_none());
+    }
+
+    #[test]
+    fn rule_ref_from_path_avoids_double_rules_prefix() {
+        let base_dir = PathBuf::from("/tmp/rules");
+        let path = base_dir.join("rules").join("endpoint.yaml");
+        let rule_ref = rule_ref_from_path(&base_dir, &path);
+        assert_eq!(rule_ref, "rules/endpoint.yaml");
     }
 
     #[test]
@@ -3722,6 +3820,105 @@ endpoints:
             .await
             .expect("read body");
         assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn request_body_too_large_writes_trace() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/test
+    steps: []
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_max_body_bytes(16),
+        )
+        .expect("load engine");
+
+        let body = vec![b'a'; 64];
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/test")
+            .body(axum::body::Body::from(body))
+            .expect("build request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("handle request should fail");
+        assert!(format!("{err}").contains("payload too large"));
+
+        let store = TraceStore::new(rules_dir.to_path_buf())
+            .await
+            .expect("trace store");
+        let mut items = Vec::new();
+        for _ in 0..20 {
+            items = store.list().await.expect("trace list");
+            if !items.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!items.is_empty());
+        assert!(items.iter().any(|item| item.status == "error"));
+    }
+
+    #[tokio::test]
+    async fn request_body_read_error_returns_network_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/test
+    steps: []
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+        )
+        .expect("load engine");
+
+        let stream = stream::once(async {
+            Err::<axum::body::Bytes, std::io::Error>(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "boom",
+            ))
+        });
+        let body = axum::body::Body::from_stream(stream);
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/test")
+            .body(body)
+            .expect("build request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("handle request should fail");
+        assert!(format!("{err}").contains("request body read error"));
     }
 
     #[tokio::test]
@@ -4393,6 +4590,196 @@ mappings:
         assert_eq!(body, json!({ "handled": true }));
 
         let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn network_response_too_large_returns_error() {
+        let payload = "x".repeat(2048);
+        let app = axum::Router::new().route(
+            "/data",
+            axum::routing::get({
+                let payload = payload.clone();
+                move || {
+                    let payload = payload.clone();
+                    async move { axum::Json(json!({ "data": payload })) }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        });
+        let server_handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: ./rules/network.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("network.yaml"),
+            format!(
+                r#"
+version: 2
+type: network
+request:
+  method: GET
+  url: "http://{}/data"
+timeout: 1s
+"#,
+                addr
+            ),
+        )
+        .expect("write network.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_max_response_bytes(128),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("handle request should fail");
+        assert!(format!("{err}").contains("payload too large"));
+
+        let store = TraceStore::new(rules_dir.to_path_buf())
+            .await
+            .expect("trace store");
+        let mut items = Vec::new();
+        for _ in 0..20 {
+            items = store.list().await.expect("trace list");
+            if !items.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(!items.is_empty());
+        assert!(items.iter().any(|item| item.status == "error"));
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn network_chunked_response_too_large_returns_error() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+
+        let server_handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let headers = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "content-type: application/json\r\n",
+                "transfer-encoding: chunked\r\n",
+                "\r\n"
+            );
+            let _ = socket.write_all(headers.as_bytes()).await;
+
+            let chunk1 = "{\"data\":\"";
+            let chunk2 = format!("{}\"}}", "x".repeat(64));
+            let chunk1_line = format!("{:X}\r\n{}\r\n", chunk1.len(), chunk1);
+            let chunk2_line = format!("{:X}\r\n{}\r\n", chunk2.len(), chunk2);
+            let _ = socket.write_all(chunk1_line.as_bytes()).await;
+            let _ = socket.write_all(chunk2_line.as_bytes()).await;
+            let _ = socket.write_all(b"0\r\n\r\n").await;
+            let _ = socket.flush().await;
+            let _ = socket.shutdown().await;
+        });
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let rules_subdir = rules_dir.join("rules");
+        std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: ./rules/network.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+
+        std::fs::write(
+            rules_subdir.join("network.yaml"),
+            format!(
+                r#"
+version: 2
+type: network
+request:
+  method: GET
+  url: "http://{}/data"
+timeout: 1s
+"#,
+                addr
+            ),
+        )
+        .expect("write network.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_max_response_bytes(32),
+        )
+        .expect("load engine");
+
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/test")
+            .body(axum::body::Body::empty())
+            .expect("build request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("handle request should fail");
+        assert!(format!("{err}").contains("payload too large"));
+
         let _ = server_handle.await;
     }
 

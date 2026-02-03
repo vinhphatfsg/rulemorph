@@ -30,7 +30,7 @@ Provides only the UI. Internal APIs are served at `/internal/*`.
 
 ```sh
 # Development
-cargo run -p rulemorph_server
+cargo run -p rulemorph_server -- --api-mode ui-only
 
 # Release binary
 rulemorph-server --api-mode ui-only
@@ -72,25 +72,29 @@ http://127.0.0.1:8080
 
 ## Adding Sample Traces
 
-The UI loads JSON files from `data_dir/traces` as traces.
+The UI loads `trace.json` manifests and chunks under `data_dir/traces` as traces (legacy single JSON files are still supported).
 
 ```sh
-mkdir -p ./.rulemorph/traces/2025/01/01
-cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001.json
+mkdir -p ./.rulemorph/traces/2025/01/01/demo-001
+cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001/trace.json
 {
-  "id": "demo-001",
-  "title": "Demo Trace",
-  "created_at": "2025-01-01T00:00:00Z",
+  "trace_schema_version": 1,
+  "trace_id": "demo-001",
+  "timestamp": "2025-01-01T00:00:00Z",
+  "status": "ok",
   "summary": {
-    "input": {"foo": "bar"},
-    "output": {"ok": true}
+    "record_total": 1,
+    "record_success": 1,
+    "record_failed": 0
   },
-  "nodes": []
+  "max_chunk_bytes_uncompressed": 4194304
 }
 JSON
 ```
 
 > Date folders are optional, but organizing by `YYYY/MM/DD` format is recommended.
+
+Legacy single JSON files still work, but the manifest + chunk layout is recommended.
 
 See [ui-data-dir-usage-en.md](ui-data-dir-usage-en.md) for directory structure details.
 

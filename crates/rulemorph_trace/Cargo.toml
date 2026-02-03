@@ -19,3 +19,6 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "sync", 
 tracing = "0.1"
 walkdir = "2.5"
 zstd = "0.13"
+
+[dev-dependencies]
+tempfile = "3.10"

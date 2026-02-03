@@ -30,7 +30,7 @@ UIのみを提供するモードです。内部APIは `/internal/*` で提供さ
 
 ```sh
 # 開発時
-cargo run -p rulemorph_server
+cargo run -p rulemorph_server -- --api-mode ui-only
 
 # Release バイナリ
 rulemorph-server --api-mode ui-only
@@ -72,25 +72,29 @@ http://127.0.0.1:8080
 
 ## サンプルトレース投入
 
-UIは `data_dir/traces` 配下のJSONファイルをトレースとして読み込みます。
+UIは `data_dir/traces` 配下の `trace.json` マニフェストとチャンクをトレースとして読み込みます（旧形式の単一JSONも読み込み可能）。
 
 ```sh
-mkdir -p ./.rulemorph/traces/2025/01/01
-cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001.json
+mkdir -p ./.rulemorph/traces/2025/01/01/demo-001
+cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001/trace.json
 {
-  "id": "demo-001",
-  "title": "Demo Trace",
-  "created_at": "2025-01-01T00:00:00Z",
+  "trace_schema_version": 1,
+  "trace_id": "demo-001",
+  "timestamp": "2025-01-01T00:00:00Z",
+  "status": "ok",
   "summary": {
-    "input": {"foo": "bar"},
-    "output": {"ok": true}
+    "record_total": 1,
+    "record_success": 1,
+    "record_failed": 0
   },
-  "nodes": []
+  "max_chunk_bytes_uncompressed": 4194304
 }
 JSON
 ```
 
 > 日付フォルダは任意ですが、`YYYY/MM/DD` 形式で整理するのがおすすめです。
+
+旧形式（単一JSON）でも動作しますが、新形式のマニフェスト + チャンクが推奨です。
 
 ディレクトリ構成の詳細は [ui-data-dir-usage.md](ui-data-dir-usage.md) を参照してください。
 

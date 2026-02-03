@@ -5,7 +5,11 @@ mod trace_watch;
 mod trace_writer;
 
 pub use trace_schema::{
-    RuleMeta, TraceChunkRef, TraceDetailRef, TraceManifest, TraceMasking, TraceSummary,
+    RuleMeta, TRACE_CHUNK_BYTES_COMPRESSED_HARD_MAX, TRACE_CHUNK_BYTES_COMPRESSED_OVERHEAD_MAX,
+    TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES,
+    TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
+    TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceDetailRef, TraceManifest,
+    TraceMasking, TraceSummary,
 };
 pub use trace_store::{ImportResult, TraceMeta, TraceStore};
 pub use trace_watch::start_trace_watcher;
