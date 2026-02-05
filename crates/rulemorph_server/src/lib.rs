@@ -142,7 +142,9 @@ pub async fn run(config: ServerConfig) -> Result<()> {
                 let internal_base = format!("http://localhost:{}", config.port);
                 let mut engine_config = EngineConfig::new(internal_base, data_dir.clone())
                     .with_ssrf_allowlist(config.ssrf_allowlist.clone())
-                    .with_ssrf_allow_private(config.ssrf_allow_private);
+                    .with_ssrf_allow_private(config.ssrf_allow_private)
+                    .with_internal_auth_enabled(true)
+                    .with_internal_auth_path_allowlist(server::internal_auth_path_allowlist());
                 if let Some(internal_api_key) = config.internal_api_key.clone() {
                     engine_config = engine_config.with_internal_api_key(internal_api_key);
                 }

@@ -1507,12 +1507,12 @@ export default function App() {
       setZipMessage("ZIPファイルを選択してください。");
       return;
     }
-    if (!internalKey) {
-      setZipMessage("internal_key が未設定です。");
-      return;
-    }
     setZipUploading(true);
-    setZipMessage(null);
+    if (!internalKey) {
+      setZipMessage("internal_key が未設定です。認証が必要な場合は失敗します。");
+    } else {
+      setZipMessage(null);
+    }
     try {
       const formData = new FormData();
       formData.append("bundle", zipFile);
@@ -2097,8 +2097,11 @@ export default function App() {
                     <button
                       className="trace-panel__import"
                       data-testid="zip-import-button"
-                      disabled={!internalKey}
-                      title={internalKey ? "ZIPインポート" : "internal_key が必要です"}
+                      title={
+                        internalKey
+                          ? "ZIPインポート"
+                          : "internal_key 未設定でも試行できます"
+                      }
                       onClick={() => {
                         setZipMessage(null);
                         setZipModalOpen(true);

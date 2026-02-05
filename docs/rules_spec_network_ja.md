@@ -16,7 +16,7 @@ type: network
 request:
   method: GET
   url:
-    - "@context.config.api_base"
+    - "@context.config.internal_base"
     - concat: ["/users/", "@input.user_id"]
   headers:
     Authorization: "Bearer TOKEN"
@@ -42,6 +42,7 @@ select: "data"
 - `retry`: リトライ設定
 - `select`: レスポンス抽出パス
 - `catch`: エラー分岐
+- `internal_auth`: `true` の場合のみ internal_base 宛てリクエストに `x-api-key`/`x-tenant-id` を自動付与（internal_base 宛てのみ有効。内部認証が有効な環境に限る。サーバ設定で許可パスが制限される場合あり）
 
 ### 保留（MVP外）
 - 高度な認証（OIDC/SAML）
@@ -58,6 +59,9 @@ select: "data"
 `headers` は **固定文字列または v2 expr** を指定できます。
 `expr` の評価結果が `missing` の場合は **そのヘッダを送信しません**。
 `Host` / `Forwarded` / `X-Forwarded-*` は SSRF 対策のため指定不可です。
+
+### context
+- `@context.config.internal_api_key` は internal_auth が有効で internal_base 宛てのネットワークルールでのみ提供されます（未設定時は `missing`）。
 
 ```yaml
 request:

@@ -90,7 +90,9 @@ impl TenantResolver for ApiKeyResolver {
             Some(parsed) => parsed,
             None => return Ok(None),
         };
-        validate_tenant_id(&parsed.tenant_id)?;
+        if validate_tenant_id(&parsed.tenant_id).is_err() {
+            return Ok(None);
+        }
         let layout = TenantLayout::new(self.base_dir.clone(), &parsed.tenant_id)?;
         let store = ApiKeyStore::load(layout.api_keys_path(), &parsed.tenant_id)?;
         let Some(store) = store else {

@@ -6,6 +6,6 @@ request:
     - "@context.config.internal_base"
     - concat: ["/internal/traces"]
   headers:
-    x-api-key: "@context.config.internal_api_key"
     x-tenant-id: "@context.tenant_id"
 timeout: 5s
+internal_auth: true

@@ -63,12 +63,15 @@ pub struct EngineConfig {
     pub max_response_bytes: usize,
     pub ssrf_allowlist: Vec<String>,
     pub ssrf_allow_private: bool,
+    pub ssrf_private_allowlist: Vec<String>,
+    pub allow_internal_auth: bool,
+    pub internal_auth_path_allowlist: Vec<String>,
     pub internal_api_key: Option<String>,
 }
 
 impl EngineConfig {
     pub fn new(internal_base: String, data_dir: PathBuf) -> Self {
-        Self {
+        let mut config = Self {
             internal_base,
             data_dir,
             trace_write_options: TraceWriteOptions::default(),
@@ -76,8 +79,17 @@ impl EngineConfig {
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             ssrf_allowlist: Vec::new(),
             ssrf_allow_private: false,
+            ssrf_private_allowlist: Vec::new(),
+            allow_internal_auth: false,
+            internal_auth_path_allowlist: Vec::new(),
             internal_api_key: None,
+        };
+        if let Ok(parsed) = url::Url::parse(&config.internal_base) {
+            if let Some(host) = parsed.host_str() {
+                config.ssrf_private_allowlist.push(host.to_string());
+            }
         }
+        config
     }
 
     pub fn with_trace_write_options(mut self, trace_write_options: TraceWriteOptions) -> Self {
@@ -105,8 +117,24 @@ impl EngineConfig {
         self
     }
 
+    pub fn with_ssrf_private_allowlist(mut self, ssrf_private_allowlist: Vec<String>) -> Self {
+        self.ssrf_private_allowlist = ssrf_private_allowlist;
+        self
+    }
+
+    pub fn with_internal_auth_enabled(mut self, enabled: bool) -> Self {
+        self.allow_internal_auth = enabled;
+        self
+    }
+
+    pub fn with_internal_auth_path_allowlist(mut self, allowlist: Vec<String>) -> Self {
+        self.internal_auth_path_allowlist = allowlist;
+        self
+    }
+
     pub fn with_internal_api_key(mut self, internal_api_key: String) -> Self {
         self.internal_api_key = Some(internal_api_key);
+        self.allow_internal_auth = true;
         self
     }
 }
@@ -388,6 +416,10 @@ impl EndpointEngine {
             config,
             trace_writer,
         })
+    }
+
+    pub fn allows_internal_auth(&self) -> bool {
+        self.config.allow_internal_auth
     }
 
     pub async fn handle_request(&self, request: Request<axum::body::Body>) -> Result<Response> {
@@ -965,15 +997,33 @@ impl EndpointEngine {
             Ok(url) => url,
             Err(err) => return run_catch(err, 0, None),
         };
-        let headers = match build_headers(&rule.request.headers, input, context) {
+        let mut network_context_override = None;
+        let context_for_eval = if rule.internal_auth
+            && self.config.allow_internal_auth
+            && self.is_internal_target(&url)
+        {
+            if let Some(internal_api_key) = self.resolve_internal_api_key(request_context) {
+                let value = self.context_with_internal_api_key(base_context, &internal_api_key);
+                network_context_override = Some(value);
+            }
+            network_context_override
+                .as_ref()
+                .map(|value| value as &JsonValue)
+        } else {
+            None
+        };
+        let context_for_eval = context_for_eval.or(context);
+
+        let headers = match build_headers(&rule.request.headers, input, context_for_eval) {
             Ok(headers) => headers,
             Err(err) => return run_catch(err, 0, None),
         };
-        let body = match self.build_network_body(rule, input, context) {
+        let body = match self.build_network_body(rule, input, context_for_eval) {
             Ok(body) => body,
             Err(err) => return run_catch(err, 0, None),
         };
-        let body_rule_trace = Self::build_body_rule_trace(rule, input, context, body.as_ref());
+        let body_rule_trace =
+            Self::build_body_rule_trace(rule, input, context_for_eval, body.as_ref());
 
         let mut attempt = 0;
         loop {
@@ -1128,6 +1178,74 @@ impl EndpointEngine {
             .map_err(|err| EndpointError::network(err.to_string()))
     }
 
+    fn is_internal_target(&self, url: &str) -> bool {
+        let Ok(target) = url::Url::parse(url) else {
+            return false;
+        };
+        let Ok(base) = url::Url::parse(&self.config.internal_base) else {
+            return false;
+        };
+        target.scheme() == base.scheme()
+            && target.host_str() == base.host_str()
+            && target.port_or_known_default() == base.port_or_known_default()
+    }
+
+    fn resolve_internal_api_key(&self, request_context: Option<&RequestContext>) -> Option<String> {
+        if let Some(context) = request_context {
+            if let Some(key) = context.internal_api_key.as_ref() {
+                return Some(key.clone());
+            }
+        }
+        self.config.internal_api_key.clone()
+    }
+
+    fn context_with_internal_api_key(
+        &self,
+        base_context: &JsonValue,
+        internal_api_key: &str,
+    ) -> JsonValue {
+        let mut value = base_context.clone();
+        if let JsonValue::Object(ref mut map) = value {
+            let config = map
+                .entry("config".to_string())
+                .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+            if let JsonValue::Object(config) = config {
+                config.insert(
+                    "internal_api_key".to_string(),
+                    JsonValue::String(internal_api_key.to_string()),
+                );
+            }
+        }
+        value
+    }
+
+    fn ensure_internal_auth_path_allowed(&self, url: &str) -> Result<(), EndpointError> {
+        if self.config.internal_auth_path_allowlist.is_empty() {
+            return Err(EndpointError::invalid(
+                "internal_auth path allowlist not configured",
+            ));
+        }
+        let parsed =
+            url::Url::parse(url).map_err(|_| EndpointError::invalid("invalid internal url"))?;
+        let path = parsed.path();
+        let allowed = self
+            .config
+            .internal_auth_path_allowlist
+            .iter()
+            .any(|entry| {
+                if entry.ends_with('/') {
+                    path.starts_with(entry)
+                } else {
+                    path == entry
+                }
+            });
+        if allowed {
+            Ok(())
+        } else {
+            Err(EndpointError::invalid("internal_auth path not allowed"))
+        }
+    }
+
     async fn send_network_request(
         &self,
         rule: &CompiledNetworkRule,
@@ -1136,11 +1254,30 @@ impl EndpointEngine {
         body: Option<&JsonValue>,
         request_context: Option<&RequestContext>,
     ) -> Result<JsonValue, EndpointError> {
+        if rule.internal_auth && !self.config.allow_internal_auth {
+            return Err(EndpointError::invalid("internal_auth is not allowed"));
+        }
         let value = tokio::time::timeout(rule.timeout, async {
+            let internal_auth_allowed = rule.internal_auth && self.config.allow_internal_auth;
+            let is_internal = internal_auth_allowed && self.is_internal_target(url);
+            if rule.internal_auth && self.config.allow_internal_auth && !is_internal {
+                return Err(EndpointError::invalid(
+                    "internal_auth requires internal_base",
+                ));
+            }
+            let allow_private_hosts: &[String] = if is_internal {
+                &self.config.ssrf_private_allowlist
+            } else {
+                &[]
+            };
+            if is_internal {
+                self.ensure_internal_auth_path_allowed(url)?;
+            }
             let target = match resolve_ssrf_target(
                 url,
                 &self.config.ssrf_allowlist,
                 self.config.ssrf_allow_private,
+                allow_private_hosts,
             )
             .await
             {
@@ -1153,6 +1290,20 @@ impl EndpointEngine {
             let client = self.build_resolved_client(&target)?;
             let mut req = client.request(rule.request.method.clone(), url);
             let mut headers = headers.clone();
+            if is_internal {
+                if let Some(internal_api_key) = self.resolve_internal_api_key(request_context) {
+                    if !headers.contains_key("x-api-key") {
+                        let value = HeaderValue::from_str(&internal_api_key)
+                            .map_err(|_| EndpointError::invalid("invalid internal api key"))?;
+                        headers.insert(HeaderName::from_static("x-api-key"), value);
+                    }
+                }
+                if let Some(tenant_id) = request_context.and_then(|ctx| ctx.tenant_id.as_ref()) {
+                    let value = HeaderValue::from_str(tenant_id)
+                        .map_err(|_| EndpointError::invalid("invalid tenant id"))?;
+                    headers.insert(HeaderName::from_static("x-tenant-id"), value);
+                }
+            }
             if body.is_some() && !headers.contains_key("content-type") {
                 headers.insert(
                     HeaderName::from_static("content-type"),
@@ -1323,16 +1474,6 @@ impl EndpointEngine {
                 "internal_base": self.config.internal_base,
             }
         });
-        if let Some(internal_api_key) = self.config.internal_api_key.as_ref() {
-            if let JsonValue::Object(ref mut map) = value {
-                if let Some(config) = map.get_mut("config").and_then(|v| v.as_object_mut()) {
-                    config.insert(
-                        "internal_api_key".to_string(),
-                        JsonValue::String(internal_api_key.clone()),
-                    );
-                }
-            }
-        }
         if let Some(request_context) = request_context {
             if let Some(tenant_id) = request_context.tenant_id.as_ref() {
                 if let JsonValue::Object(ref mut map) = value {
@@ -1340,20 +1481,6 @@ impl EndpointEngine {
                         "tenant_id".to_string(),
                         JsonValue::String(tenant_id.clone()),
                     );
-                }
-            }
-            if request_context.internal_api_key.is_some() && self.config.internal_api_key.is_none()
-            {
-                if let Some(internal_api_key) = request_context.internal_api_key.as_ref() {
-                    if let JsonValue::Object(ref mut map) = value {
-                        if let Some(config) = map.get_mut("config").and_then(|v| v.as_object_mut())
-                        {
-                            config.insert(
-                                "internal_api_key".to_string(),
-                                JsonValue::String(internal_api_key.clone()),
-                            );
-                        }
-                    }
                 }
             }
         }
@@ -1390,6 +1517,21 @@ struct SsrAuditLog {
     reason: String,
 }
 
+fn redact_ssrf_url(url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return url.to_string();
+    };
+    let host = match parsed.host_str() {
+        Some(host) => host,
+        None => return url.to_string(),
+    };
+    let port = parsed
+        .port()
+        .map(|value| format!(":{value}"))
+        .unwrap_or_default();
+    format!("{}://{}{}{}", parsed.scheme(), host, port, parsed.path())
+}
+
 fn build_ssrf_audit_log(
     rule: &CompiledNetworkRule,
     url: &str,
@@ -1408,7 +1550,7 @@ fn build_ssrf_audit_log(
         tenant_id,
         rule_ref,
         method: rule.request.method.clone(),
-        url: url.to_string(),
+        url: redact_ssrf_url(url),
         reason: reason.to_string(),
     }
 }
@@ -1664,6 +1806,7 @@ struct CompiledNetworkRule {
     rule_ref: Option<String>,
     catch: Option<CatchSpec>,
     retry: Option<RetryConfig>,
+    internal_auth: bool,
     base_dir: PathBuf,
 }
 
@@ -1674,6 +1817,8 @@ struct NetworkRuleFile {
     rule_type: String,
     request: NetworkRequest,
     timeout: String,
+    #[serde(default)]
+    internal_auth: bool,
     #[serde(default)]
     select: Option<String>,
     #[serde(default)]
@@ -2494,6 +2639,7 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         rule_ref,
         catch: raw.catch.map(CatchSpec::from),
         retry,
+        internal_auth: raw.internal_auth,
         base_dir: path
             .parent()
             .unwrap_or_else(|| Path::new("."))
@@ -3782,6 +3928,7 @@ mod tests {
             rule_ref: Some("rules/network.yaml".to_string()),
             catch: None,
             retry: None,
+            internal_auth: false,
             base_dir: PathBuf::from("."),
         };
         let context = RequestContext {
@@ -3792,7 +3939,7 @@ mod tests {
         assert_eq!(log.tenant_id, "tenant-1");
         assert_eq!(log.rule_ref, "rules/network.yaml");
         assert_eq!(log.method, Method::GET);
-        assert_eq!(log.url, "https://example.com");
+        assert_eq!(log.url, "https://example.com/");
         assert_eq!(log.reason, "blocked");
     }
 
@@ -3813,12 +3960,38 @@ mod tests {
             rule_ref: None,
             catch: None,
             retry: None,
+            internal_auth: false,
             base_dir: PathBuf::from("."),
         };
         let log = build_ssrf_audit_log(&rule, "https://example.com", "blocked", None);
         assert_eq!(log.tenant_id, "unknown");
         assert_eq!(log.rule_ref, "unknown");
         assert_eq!(log.method, Method::POST);
+    }
+
+    #[test]
+    fn ssrf_audit_log_redacts_query() {
+        let rule = CompiledNetworkRule {
+            request: CompiledNetworkRequest {
+                method: Method::GET,
+                url: parse_v2_expr(&json!("https://example.com")).expect("parse url"),
+                headers: HashMap::new(),
+            },
+            timeout: std::time::Duration::from_secs(1),
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            body_rule_ref: None,
+            rule_ref: None,
+            catch: None,
+            retry: None,
+            internal_auth: false,
+            base_dir: PathBuf::from("."),
+        };
+        let log =
+            build_ssrf_audit_log(&rule, "https://example.com/path?token=abc", "blocked", None);
+        assert_eq!(log.url, "https://example.com/path");
     }
 
     #[test]
@@ -3943,6 +4116,7 @@ endpoints:
                 headers: None,
             },
             timeout: "0s".to_string(),
+            internal_auth: false,
             select: None,
             body: None,
             body_map: None,
@@ -3952,6 +4126,161 @@ endpoints:
         };
         let err = compile_network_rule(raw, Path::new("network.yaml")).expect_err("expected error");
         assert!(err.to_string().contains("timeout must be > 0"));
+    }
+
+    #[tokio::test]
+    async fn internal_auth_rejected_when_disabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps: []
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint.yaml");
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.join(".data"))
+                .with_ssrf_allow_private(true),
+        )
+        .expect("load engine");
+
+        let raw = NetworkRuleFile {
+            version: 2,
+            rule_type: "network".to_string(),
+            request: NetworkRequest {
+                method: "GET".to_string(),
+                url: json!("https://example.com"),
+                headers: None,
+            },
+            timeout: "1s".to_string(),
+            internal_auth: true,
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            catch: None,
+            retry: None,
+        };
+        let rule = compile_network_rule(raw, Path::new("network.yaml")).expect("compile rule");
+
+        let err = engine
+            .send_network_request(&rule, "https://example.com", &HeaderMap::new(), None, None)
+            .await
+            .expect_err("expected error");
+        assert_eq!(err.kind, EndpointErrorKind::Invalid);
+        assert!(err.message.contains("internal_auth"));
+    }
+
+    #[tokio::test]
+    async fn internal_auth_rejects_disallowed_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps: []
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint.yaml");
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost:1234".to_string(), rules_dir.join(".data"))
+                .with_internal_auth_enabled(true)
+                .with_internal_auth_path_allowlist(vec![
+                    "/internal/traces".to_string(),
+                    "/internal/traces/".to_string(),
+                ])
+                .with_internal_api_key("secret".to_string()),
+        )
+        .expect("load engine");
+        let raw = NetworkRuleFile {
+            version: 2,
+            rule_type: "network".to_string(),
+            request: NetworkRequest {
+                method: "GET".to_string(),
+                url: json!("http://localhost:1234/internal/api-keys"),
+                headers: None,
+            },
+            timeout: "1s".to_string(),
+            internal_auth: true,
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            catch: None,
+            retry: None,
+        };
+        let rule = compile_network_rule(raw, Path::new("network.yaml")).expect("compile rule");
+
+        let err = engine
+            .send_network_request(
+                &rule,
+                "http://localhost:1234/internal/api-keys",
+                &HeaderMap::new(),
+                None,
+                None,
+            )
+            .await
+            .expect_err("expected error");
+        assert_eq!(err.kind, EndpointErrorKind::Invalid);
+        assert!(err.message.contains("internal_auth path"));
+    }
+
+    #[test]
+    fn context_internal_api_key_is_injected_on_demand() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps: []
+    reply:
+      status: 200
+"#,
+        )
+        .expect("write endpoint.yaml");
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.join(".data"))
+                .with_internal_api_key("secret".to_string()),
+        )
+        .expect("load engine");
+        let base_context = engine.build_context_json(None);
+        assert!(
+            base_context
+                .get("config")
+                .and_then(|value| value.get("internal_api_key"))
+                .is_none()
+        );
+        let injected = engine.context_with_internal_api_key(&base_context, "secret");
+        assert_eq!(
+            injected
+                .get("config")
+                .and_then(|value| value.get("internal_api_key"))
+                .and_then(|value| value.as_str()),
+            Some("secret")
+        );
     }
 
     #[test]
@@ -5278,6 +5607,7 @@ mappings: []
             rule_ref: None,
             catch: None,
             retry: None,
+            internal_auth: false,
             base_dir: PathBuf::from("."),
         };
         let timing = NetworkExecution {

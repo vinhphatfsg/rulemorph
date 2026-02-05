@@ -73,6 +73,15 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
+pub(crate) fn internal_auth_path_allowlist() -> Vec<String> {
+    vec![
+        "/internal/traces".to_string(),
+        "/internal/traces/".to_string(),
+        "/internal/api-graph".to_string(),
+        "/internal/stream".to_string(),
+    ]
+}
+
 pub struct TenantRegistry {
     base_dir: PathBuf,
     rules_dir: Option<PathBuf>,
@@ -203,11 +212,21 @@ impl TenantRegistry {
                     return Err(errs.into());
                 }
                 let internal_base = format!("http://localhost:{}", self.port);
+                let allow_internal_auth = self
+                    .rules_dir
+                    .as_ref()
+                    .map(|path| path.is_absolute())
+                    .unwrap_or(false);
                 let mut config = EngineConfig::new(internal_base, layout.data_dir())
                     .with_ssrf_allowlist(self.ssrf_allowlist.clone())
-                    .with_ssrf_allow_private(self.ssrf_allow_private);
-                if let Some(internal_api_key) = self.internal_api_key.clone() {
-                    config = config.with_internal_api_key(internal_api_key);
+                    .with_ssrf_allow_private(self.ssrf_allow_private)
+                    .with_internal_auth_enabled(allow_internal_auth);
+                if allow_internal_auth {
+                    config =
+                        config.with_internal_auth_path_allowlist(internal_auth_path_allowlist());
+                    if let Some(internal_api_key) = self.internal_api_key.clone() {
+                        config = config.with_internal_api_key(internal_api_key);
+                    }
                 }
                 Some(Arc::new(EndpointEngine::load(rules_dir.clone(), config)?))
             }
@@ -279,13 +298,17 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             .route("/internal/stream", get(stream_traces))
             .route("/internal/api-graph", get(get_api_graph))
             .route("/internal/import", post(import_bundle_path))
-            .route("/internal/import-zip", post(import_bundle_zip))
+            .route("/internal/import-zip", post(import_bundle_zip));
+
+        let mut internal_admin = Router::new()
             .route("/internal/api-keys", get(list_api_keys).post(issue_api_key))
             .route("/internal/api-keys/:id/revoke", post(revoke_api_key))
             .route("/internal/api-keys/:id/rotate", post(rotate_api_key));
 
         if state.rate_limiter.is_some() {
             internal = internal.layer(from_fn_with_state(state.clone(), api_rate_limit));
+            internal_admin =
+                internal_admin.layer(from_fn_with_state(state.clone(), api_rate_limit));
         }
         if !state.allow_unauth_internal
             || state.internal_api_key.is_some()
@@ -293,14 +316,21 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
         {
             internal = internal.layer(from_fn_with_state(state.clone(), internal_auth));
         }
+        internal_admin =
+            internal_admin.layer(from_fn_with_state(state.clone(), internal_auth_required));
         if state.tenant_resolver.is_some() {
             internal = internal.layer(from_fn_with_state(state.clone(), internal_tenant));
+            internal_admin =
+                internal_admin.layer(from_fn_with_state(state.clone(), internal_tenant));
         }
         if state.rate_limiter.is_some() {
             internal = internal.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
+            internal_admin =
+                internal_admin.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
         }
 
         app = app.merge(internal);
+        app = app.merge(internal_admin);
         if let Some(ui_source) = state.ui_source.clone() {
             app = match ui_source {
                 UiSource::Filesystem(dir) => {
@@ -375,8 +405,10 @@ async fn handle_rules_api(
     if let Some(context) = request.extensions().get::<TenantContext>() {
         request_context.tenant_id = Some(context.tenant_id.clone());
     }
-    if let Some(internal_api_key) = state.internal_api_key.clone() {
-        request_context.internal_api_key = Some(internal_api_key);
+    if engine.allows_internal_auth() {
+        if let Some(internal_api_key) = state.internal_api_key.clone() {
+            request_context.internal_api_key = Some(internal_api_key);
+        }
     }
     request.extensions_mut().insert(request_context);
     match engine.handle_request(request).await {
@@ -462,6 +494,24 @@ async fn internal_auth(
         if state.allow_unauth_internal {
             return Ok(next.run(request).await);
         }
+        return Err(ApiError::service_unavailable(
+            "internal api key not configured",
+        ));
+    };
+    let provided = extract_api_key(request.headers())
+        .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
+    if provided != expected {
+        return Err(ApiError::unauthorized("invalid internal api key"));
+    }
+    Ok(next.run(request).await)
+}
+
+async fn internal_auth_required(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    let Some(expected) = state.internal_api_key.as_deref() else {
         return Err(ApiError::service_unavailable(
             "internal api key not configured",
         ));
