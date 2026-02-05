@@ -5,8 +5,10 @@ use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -27,6 +29,7 @@ const IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 // Zstd frames produced with default settings expect at least an 8MB window.
 const ZSTD_WINDOW_BYTES_MIN: usize = 8 * 1024 * 1024;
+const MAX_TRACE_FUTURE_SKEW: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceMeta {
@@ -50,6 +53,19 @@ pub struct ImportResult {
     pub imported: usize,
     pub trace_ids: Vec<String>,
     pub rules_imported: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct PurgeFailure {
+    pub trace_id: String,
+    pub path: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PurgeReport {
+    pub purged: Vec<TraceMeta>,
+    pub failed: Vec<PurgeFailure>,
 }
 
 struct ImportWorkResult {
@@ -82,6 +98,49 @@ impl TraceStore {
         let mut items: Vec<_> = self.index.read().await.values().cloned().collect();
         items.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
         Ok(items)
+    }
+
+    pub async fn purge_traces(&self, retention: Duration, dry_run: bool) -> Result<PurgeReport> {
+        let traces = self.list().await?;
+        let cutoff = SystemTime::now()
+            .checked_sub(retention)
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let traces_dir = traces_dir(&self.data_dir);
+        let mut purged = Vec::new();
+        let mut failed = Vec::new();
+
+        for meta in traces {
+            let path = PathBuf::from(&meta.path);
+            let Some(timestamp) = resolve_trace_timestamp(&meta, &path).await else {
+                continue;
+            };
+            if timestamp > cutoff {
+                continue;
+            }
+            if dry_run {
+                purged.push(meta);
+                continue;
+            }
+            if let Err(err) = delete_trace_path(&path, &traces_dir).await {
+                failed.push(PurgeFailure {
+                    trace_id: meta.trace_id.clone(),
+                    path: meta.path.clone(),
+                    error: err.to_string(),
+                });
+                warn!(
+                    "failed to purge trace {} at {}: {}",
+                    meta.trace_id, meta.path, err
+                );
+                continue;
+            }
+            purged.push(meta);
+        }
+
+        if !dry_run {
+            self.refresh_index().await?;
+        }
+
+        Ok(PurgeReport { purged, failed })
     }
 
     pub async fn get(&self, trace_id: &str) -> Result<Option<Value>> {
@@ -608,6 +667,51 @@ fn rules_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("rules")
 }
 
+async fn resolve_trace_timestamp(meta: &TraceMeta, path: &Path) -> Option<SystemTime> {
+    if let Some(timestamp) = meta.timestamp.as_deref() {
+        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+            let utc = parsed.with_timezone(&Utc);
+            let parsed_time = SystemTime::from(utc);
+            let now = SystemTime::now();
+            if parsed_time <= now {
+                return Some(parsed_time);
+            }
+            if let Ok(delta) = parsed_time.duration_since(now) {
+                if delta <= MAX_TRACE_FUTURE_SKEW {
+                    return Some(parsed_time);
+                }
+            }
+        }
+    }
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    metadata.modified().ok()
+}
+
+async fn delete_trace_path(path: &Path, traces_dir: &Path) -> Result<()> {
+    let traces_root = traces_dir
+        .canonicalize()
+        .unwrap_or_else(|_| traces_dir.to_path_buf());
+    let candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !candidate.starts_with(&traces_root) {
+        return Err(anyhow::anyhow!(
+            "trace path escapes traces dir: {}",
+            candidate.display()
+        ));
+    }
+    let file_name = candidate.file_name().and_then(|name| name.to_str());
+    let parent = candidate.parent().unwrap_or_else(|| traces_root.as_path());
+    if file_name == Some("trace.json") && parent != traces_root {
+        tokio::fs::remove_dir_all(parent)
+            .await
+            .with_context(|| format!("failed to remove trace dir {}", parent.display()))?;
+    } else {
+        tokio::fs::remove_file(&candidate)
+            .await
+            .with_context(|| format!("failed to remove trace file {}", candidate.display()))?;
+    }
+    Ok(())
+}
+
 fn ensure_import_base_dir(base_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(base_dir)
         .with_context(|| format!("failed to create import base dir: {}", base_dir.display()))?;
@@ -824,15 +928,18 @@ mod tests {
     use super::{
         ChunkBudget, Result, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
         TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
-        TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest, TraceStore,
-        apply_legacy_limits_with_thresholds, build_trace_from_manifest_with_budget,
+        TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest, TraceMeta,
+        TraceStore, apply_legacy_limits_with_thresholds, build_trace_from_manifest_with_budget,
         fallback_trace_id_for_path, path_hash_for_trace_id, resolve_chunk_path,
+        resolve_trace_timestamp,
     };
     use crate::TraceDetailRef;
     use crate::trace_id::sanitize_trace_id;
+    use chrono::{Duration as ChronoDuration, SecondsFormat, Utc};
     use serde_json::{Value, json};
     use std::fs;
     use std::path::Path;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     #[test]
@@ -987,6 +1094,109 @@ mod tests {
                 .any(|reason| reason == "budget_exceeded")
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn purge_traces_removes_old_entries() -> Result<()> {
+        let temp = tempdir()?;
+        let data_dir = temp.path().to_path_buf();
+        let old_dir = data_dir.join("traces/2026/01/01/trace-old");
+        let new_dir = data_dir.join("traces/2026/01/01/trace-new");
+        fs::create_dir_all(&old_dir)?;
+        fs::create_dir_all(&new_dir)?;
+
+        let old_ts =
+            (Utc::now() - chrono::Duration::days(20)).to_rfc3339_opts(SecondsFormat::Secs, true);
+        let new_ts =
+            (Utc::now() - chrono::Duration::days(2)).to_rfc3339_opts(SecondsFormat::Secs, true);
+
+        fs::write(
+            old_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-old",
+                "timestamp": old_ts,
+                "status": "ok"
+            }))?,
+        )?;
+        fs::write(
+            new_dir.join("trace.json"),
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-new",
+                "timestamp": new_ts,
+                "status": "ok"
+            }))?,
+        )?;
+
+        let store = TraceStore::new(data_dir.clone()).await?;
+        let dry_run = store
+            .purge_traces(Duration::from_secs(10 * 86_400), true)
+            .await?;
+        assert!(
+            dry_run
+                .purged
+                .iter()
+                .any(|meta| meta.trace_id == "trace-old")
+        );
+        assert!(
+            !dry_run
+                .purged
+                .iter()
+                .any(|meta| meta.trace_id == "trace-new")
+        );
+        assert!(dry_run.failed.is_empty());
+        assert!(old_dir.exists());
+
+        let purged = store
+            .purge_traces(Duration::from_secs(10 * 86_400), false)
+            .await?;
+        assert!(
+            purged
+                .purged
+                .iter()
+                .any(|meta| meta.trace_id == "trace-old")
+        );
+        assert!(purged.failed.is_empty());
+        assert!(!old_dir.exists());
+        assert!(new_dir.exists());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resolve_trace_timestamp_ignores_far_future() -> Result<()> {
+        let temp = tempdir()?;
+        let trace_dir = temp.path().join("traces/2026/01/01/trace-future");
+        fs::create_dir_all(&trace_dir)?;
+        let future_dt = Utc::now() + ChronoDuration::days(365);
+        let future_ts = future_dt.to_rfc3339_opts(SecondsFormat::Secs, true);
+        let trace_path = trace_dir.join("trace.json");
+        fs::write(
+            &trace_path,
+            serde_json::to_vec(&json!({
+                "trace_schema_version": 1,
+                "trace_id": "trace-future",
+                "timestamp": future_ts,
+                "status": "ok"
+            }))?,
+        )?;
+
+        let meta = TraceMeta {
+            trace_id: "trace-future".to_string(),
+            status: "ok".to_string(),
+            timestamp: Some(future_ts),
+            duration_us: None,
+            rule: None,
+            summary: None,
+            path: trace_path.to_string_lossy().to_string(),
+        };
+
+        let resolved = resolve_trace_timestamp(&meta, &trace_path)
+            .await
+            .expect("timestamp");
+        assert!(resolved < std::time::SystemTime::from(future_dt));
         Ok(())
     }
 

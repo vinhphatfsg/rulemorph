@@ -1,6 +1,8 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+#[cfg(feature = "server")]
+use std::time::Duration;
 
 #[cfg(feature = "server")]
 use clap::ArgAction;
@@ -15,6 +17,8 @@ use rulemorph::{
 use rulemorph_server::{
     ApiMode, RulesDirErrors, ServerConfig, run as run_server, validate_rules_dir,
 };
+#[cfg(feature = "server")]
+use rulemorph_trace::TraceStore;
 use serde_json::json;
 
 #[derive(Parser)]
@@ -35,6 +39,8 @@ enum Commands {
     Generate(GenerateArgs),
     #[cfg(feature = "server")]
     Ui(UiArgs),
+    #[cfg(feature = "server")]
+    PurgeTraces(PurgeTracesArgs),
 }
 
 #[derive(Args)]
@@ -113,8 +119,31 @@ struct UiArgs {
     api_mode: UiApiMode,
     #[arg(long)]
     rules_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 60)]
+    rate_limit_per_sec: u64,
+    #[arg(long, action = ArgAction::Append)]
+    ssrf_allowlist: Vec<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    ssrf_allow_private: bool,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    ssrf_allow_any: bool,
     #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
     no_ui: bool,
+    #[arg(long)]
+    internal_api_key: Option<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    allow_unauth_internal: bool,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct PurgeTracesArgs {
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    retention_days: u64,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    dry_run: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -160,6 +189,8 @@ fn main() {
         Commands::Generate(args) => run_generate(args),
         #[cfg(feature = "server")]
         Commands::Ui(args) => run_ui(args),
+        #[cfg(feature = "server")]
+        Commands::PurgeTraces(args) => run_purge_traces(args),
     };
     std::process::exit(exit_code);
 }
@@ -449,6 +480,26 @@ fn run_ui(args: UiArgs) -> i32 {
         rules_dir: args.rules_dir,
         api_mode,
         ui_enabled,
+        tenant_resolver: None,
+        internal_api_key: args
+            .internal_api_key
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string()),
+        allow_unauth_internal: args.allow_unauth_internal,
+        rate_limit_per_sec: if args.rate_limit_per_sec == 0 {
+            None
+        } else {
+            Some(args.rate_limit_per_sec)
+        },
+        ssrf_allowlist: args
+            .ssrf_allowlist
+            .into_iter()
+            .filter(|entry| !entry.trim().is_empty())
+            .collect(),
+        ssrf_allow_private: args.ssrf_allow_private,
+        ssrf_allow_any: args.ssrf_allow_any,
     };
 
     let runtime = match tokio::runtime::Runtime::new() {
@@ -469,6 +520,60 @@ fn run_ui(args: UiArgs) -> i32 {
     }
 
     0
+}
+
+#[cfg(feature = "server")]
+fn run_purge_traces(args: PurgeTracesArgs) -> i32 {
+    if args.retention_days == 0 {
+        eprintln!("--retention-days must be greater than 0");
+        return 1;
+    }
+
+    let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
+    let retention = Duration::from_secs(args.retention_days.saturating_mul(86_400));
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to start runtime: {}", err);
+            return 1;
+        }
+    };
+
+    let result = runtime.block_on(async {
+        let store = TraceStore::new(data_dir).await?;
+        store.purge_traces(retention, args.dry_run).await
+    });
+
+    match result {
+        Ok(report) => {
+            let purged = report.purged;
+            if args.dry_run {
+                println!("dry-run: {} trace(s) would be removed", purged.len());
+            } else {
+                println!("removed {} trace(s)", purged.len());
+            }
+            for trace in purged {
+                let timestamp = trace.timestamp.as_deref().unwrap_or("unknown timestamp");
+                println!("- {} ({}) {}", trace.trace_id, timestamp, trace.path);
+            }
+            if !report.failed.is_empty() {
+                eprintln!("failed to remove {} trace(s)", report.failed.len());
+                for failure in report.failed {
+                    eprintln!(
+                        "- {} ({}) {}",
+                        failure.trace_id, failure.error, failure.path
+                    );
+                }
+                return 2;
+            }
+            0
+        }
+        Err(err) => {
+            eprintln!("purge failed: {}", err);
+            1
+        }
+    }
 }
 
 fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {

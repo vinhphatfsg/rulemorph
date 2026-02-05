@@ -56,6 +56,7 @@ select: "data"
 
 ### headers
 `headers` は固定文字列のみ（MVPでは expr 非対応）。
+`Host` / `Forwarded` / `X-Forwarded-*` は SSRF 対策のため指定不可です。
 
 ```yaml
 request:
@@ -170,3 +171,26 @@ catch:
 - `headers` は固定値のみ
 - `url` 内でテンプレート展開は行わない（expr を使う）
 - 高度な認証やキャッシュは後続フェーズ
+
+## 運用向けメモ（SSRF対策）
+network ルールのリクエストは SSRF 対策のバリデーションを通過する必要があります。
+
+- 許可スキーム: `http` / `https` のみ
+- IPリテラル（例: `http://127.0.0.1` / `http://[::1]`）は拒否
+- allowlist 未設定時は **ホスト名は許可**（ただし IP リテラルは拒否）
+- Cloud/APIキー運用では allowlist の指定を必須とし、例外的に許可する場合は `--ssrf-allow-any` を明示
+- allowlist 設定時は **完全一致 or サブドメイン一致** のみ許可
+- リダイレクトは無効化（外部への誘導を防止）
+
+allowlist はサーバ起動時に指定します。
+
+```sh
+rulemorph ui --ssrf-allowlist api.example.com --ssrf-allowlist auth.example.com
+# もしくは
+rulemorph-server --ssrf-allowlist api.example.com
+# allowlist を明示的に不要とする場合
+rulemorph-server --ssrf-allow-any
+```
+
+ローカル検証を行う場合は `localhost` を使用してください（`127.0.0.1` など IP リテラルは拒否されます）。
+内部IP/localhost を許可したい場合は明示的に `--ssrf-allow-private` を指定してください（本番では非推奨）。

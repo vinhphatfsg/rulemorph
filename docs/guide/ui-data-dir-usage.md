@@ -88,3 +88,37 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 ```
 
 起動方法の詳細は [ui-run-and-verify.md](ui-run-and-verify.md) を参照してください。
+
+## 内部APIキーとUIアクセス
+
+Cloud/APIキー運用（`--api-key` を有効にする構成）では、内部API（`/internal/*`）へのアクセスに **`--internal-api-key` の設定が必須** です。UI を利用する場合は、起動時に内部キーを設定し、UI アクセス時にクエリで渡してください。
+
+```sh
+rulemorph-server --api-key <API_KEY> --internal-api-key <INTERNAL_KEY> ...
+```
+
+UI:
+
+```
+http://localhost:8080/?internal_key=<INTERNAL_KEY>
+```
+
+`internal_key` は初回アクセス時に localStorage に保存され、URL から削除されます（履歴/リファラでの漏えいを避けるため）。以降はクエリを付けずにアクセスできます。
+
+内部キーが設定されている場合、UI のトレース一覧更新はポーリングで行われます（既定 5 秒間隔）。
+
+## 運用向け: 保持期限の削除（purge-traces）
+
+古いトレースを削除する場合は `rulemorph purge-traces` を利用します。
+
+```sh
+rulemorph purge-traces --retention-days 30 --dry-run
+rulemorph purge-traces --retention-days 30
+```
+
+- `--retention-days` は必須です（0 はエラー）。
+- 期限判定は `trace.json` の `timestamp`（RFC3339）を優先し、無い場合はファイルの更新日時を利用します。
+- `trace.json` が存在するディレクトリはディレクトリごと削除します（旧形式単一JSONはファイル単位で削除）。
+- `--dry-run` は削除対象の列挙のみで、実際の削除は行いません。
+
+定期実行は運用側のスケジューラで行ってください（cron など）。

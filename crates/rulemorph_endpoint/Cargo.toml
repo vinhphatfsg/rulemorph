@@ -26,4 +26,5 @@ uuid = { version = "1.8", features = ["v4"] }
 
 [dev-dependencies]
 futures-util = "0.3"
+tokio-test = "0.4"
 tempfile = "3.10"

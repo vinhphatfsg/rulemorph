@@ -34,6 +34,8 @@ const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 use uuid::Uuid;
 
+use crate::ssrf::{ResolvedSsrTarget, resolve_ssrf_target};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiMode {
     UiOnly,
@@ -53,6 +55,8 @@ pub struct EngineConfig {
     pub trace_write_options: TraceWriteOptions,
     pub max_body_bytes: usize,
     pub max_response_bytes: usize,
+    pub ssrf_allowlist: Vec<String>,
+    pub ssrf_allow_private: bool,
 }
 
 impl EngineConfig {
@@ -63,6 +67,8 @@ impl EngineConfig {
             trace_write_options: TraceWriteOptions::default(),
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
+            ssrf_allowlist: Vec::new(),
+            ssrf_allow_private: false,
         }
     }
 
@@ -78,6 +84,16 @@ impl EngineConfig {
 
     pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
         self.max_response_bytes = max_response_bytes;
+        self
+    }
+
+    pub fn with_ssrf_allowlist(mut self, ssrf_allowlist: Vec<String>) -> Self {
+        self.ssrf_allowlist = ssrf_allowlist;
+        self
+    }
+
+    pub fn with_ssrf_allow_private(mut self, ssrf_allow_private: bool) -> Self {
+        self.ssrf_allow_private = ssrf_allow_private;
         self
     }
 }
@@ -269,7 +285,6 @@ pub struct EndpointEngine {
     endpoint_rule: CompiledEndpointRule,
     raw_rule_source: JsonValue,
     config: EngineConfig,
-    client: Client,
     trace_writer: TraceWriter,
 }
 
@@ -347,10 +362,6 @@ impl EndpointEngine {
             return Err(anyhow!("endpoint rule type must be endpoint"));
         }
         let compiled = CompiledEndpointRule::compile(raw.clone(), &endpoint_path)?;
-        let client = Client::builder()
-            .no_proxy()
-            .build()
-            .map_err(|err| anyhow!(err.to_string()))?;
         let trace_writer = TraceWriter::with_config(
             config.data_dir.clone(),
             TraceWriterConfig {
@@ -362,7 +373,6 @@ impl EndpointEngine {
             endpoint_rule: compiled,
             raw_rule_source,
             config,
-            client,
             trace_writer,
         })
     }
@@ -1079,6 +1089,15 @@ impl EndpointEngine {
         ))
     }
 
+    fn build_resolved_client(&self, target: &ResolvedSsrTarget) -> Result<Client, EndpointError> {
+        Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&target.host, target.addr)
+            .build()
+            .map_err(|err| EndpointError::network(err.to_string()))
+    }
+
     async fn send_network_request(
         &self,
         rule: &CompiledNetworkRule,
@@ -1086,20 +1105,28 @@ impl EndpointEngine {
         headers: &HeaderMap,
         body: Option<&JsonValue>,
     ) -> Result<JsonValue, EndpointError> {
-        let mut req = self.client.request(rule.request.method.clone(), url);
-        let mut headers = headers.clone();
-        if body.is_some() && !headers.contains_key("content-type") {
-            headers.insert(
-                HeaderName::from_static("content-type"),
-                HeaderValue::from_static("application/json"),
-            );
-        }
-        req = req.headers(headers);
-        if let Some(body) = body {
-            req = req.json(body);
-        }
-
         let value = tokio::time::timeout(rule.timeout, async {
+            let target = resolve_ssrf_target(
+                url,
+                &self.config.ssrf_allowlist,
+                self.config.ssrf_allow_private,
+            )
+            .await
+            .map_err(EndpointError::invalid)?;
+            let client = self.build_resolved_client(&target)?;
+            let mut req = client.request(rule.request.method.clone(), url);
+            let mut headers = headers.clone();
+            if body.is_some() && !headers.contains_key("content-type") {
+                headers.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_static("application/json"),
+                );
+            }
+            req = req.headers(headers);
+            if let Some(body) = body {
+                req = req.json(body);
+            }
+
             let mut response = req
                 .send()
                 .await
@@ -1743,6 +1770,16 @@ fn build_input_from_parts(
 fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, EndpointError> {
     let mut map = HeaderMap::new();
     for (key, value) in headers {
+        let lower = key.trim().to_ascii_lowercase();
+        if matches!(
+            lower.as_str(),
+            "host" | "forwarded" | "x-forwarded-for" | "x-forwarded-host" | "x-forwarded-proto"
+        ) {
+            return Err(EndpointError::invalid(format!(
+                "disallowed header: {}",
+                key
+            )));
+        }
         let name = HeaderName::from_bytes(key.as_bytes())
             .map_err(|_| EndpointError::invalid("invalid header name"))?;
         let header_value = HeaderValue::from_str(value)
@@ -3562,6 +3599,15 @@ mod tests {
     }
 
     #[test]
+    fn build_headers_rejects_host_header() {
+        let mut headers = HashMap::new();
+        headers.insert("Host".to_string(), "example.com".to_string());
+        let err = build_headers(&headers).expect_err("expected error");
+        assert_eq!(err.kind, EndpointErrorKind::Invalid);
+        assert!(err.message.contains("disallowed header"));
+    }
+
+    #[test]
     fn rule_ref_from_path_avoids_double_rules_prefix() {
         let base_dir = PathBuf::from("/tmp/rules");
         let path = base_dir.join("rules").join("endpoint.yaml");
@@ -3614,7 +3660,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://127.0.0.1:8080".to_string(), rules_dir.join(".data")),
+            EngineConfig::new("http://127.0.0.1:8080".to_string(), rules_dir.join(".data"))
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -3652,7 +3699,8 @@ endpoints:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.join(".data")),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.join(".data"))
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -3744,7 +3792,8 @@ body_rule: body_rule.yaml
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -3799,7 +3848,8 @@ endpoints:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -3844,6 +3894,7 @@ endpoints:
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
             EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true)
                 .with_max_body_bytes(16),
         )
         .expect("load engine");
@@ -3897,7 +3948,8 @@ endpoints:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -3980,7 +4032,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4044,7 +4097,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4108,7 +4162,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4173,7 +4228,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4242,7 +4298,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4309,7 +4366,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4387,7 +4445,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4469,7 +4528,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4502,6 +4562,7 @@ mappings:
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("local addr");
+        let host = format!("localhost:{}", addr.port());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
@@ -4546,7 +4607,7 @@ select: "missing.path"
 catch:
   default: ./catch.yaml
 "#,
-                addr
+                host
             ),
         )
         .expect("write network.yaml");
@@ -4567,7 +4628,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4610,6 +4672,7 @@ mappings:
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("local addr");
+        let host = format!("localhost:{}", addr.port());
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
         let server = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async {
             let _ = shutdown_rx.await;
@@ -4651,7 +4714,7 @@ request:
   url: "http://{}/data"
 timeout: 1s
 "#,
-                addr
+                host
             ),
         )
         .expect("write network.yaml");
@@ -4659,6 +4722,7 @@ timeout: 1s
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
             EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true)
                 .with_max_response_bytes(128),
         )
         .expect("load engine");
@@ -4699,6 +4763,7 @@ timeout: 1s
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("local addr");
+        let host = format!("localhost:{}", addr.port());
 
         let server_handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
@@ -4756,7 +4821,7 @@ request:
   url: "http://{}/data"
 timeout: 1s
 "#,
-                addr
+                host
             ),
         )
         .expect("write network.yaml");
@@ -4764,6 +4829,7 @@ timeout: 1s
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
             EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true)
                 .with_max_response_bytes(32),
         )
         .expect("load engine");
@@ -4789,6 +4855,7 @@ timeout: 1s
             .await
             .expect("bind");
         let addr = listener.local_addr().expect("local addr");
+        let host = format!("localhost:{}", addr.port());
 
         let server_handle = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.expect("accept");
@@ -4841,7 +4908,7 @@ timeout: 100ms
 catch:
   timeout: ./catch.yaml
 "#,
-                addr
+                host
             ),
         )
         .expect("write network.yaml");
@@ -4862,7 +4929,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 
@@ -4929,7 +4997,8 @@ mappings:
 
         let engine = EndpointEngine::load(
             rules_dir.to_path_buf(),
-            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf()),
+            EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
+                .with_ssrf_allow_private(true),
         )
         .expect("load engine");
 

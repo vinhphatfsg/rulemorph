@@ -1,6 +1,8 @@
 mod api_graph;
 mod server;
+mod tenant;
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -11,9 +13,10 @@ use rulemorph_endpoint::{EndpointEngine, EngineConfig};
 use rulemorph_trace::{TraceStore, start_trace_watcher};
 use tokio::sync::broadcast;
 
-pub use server::{AppState, UiSource, build_router};
+pub use server::{AppState, RateLimiter, UiSource, build_router};
+pub use tenant::{TenantContext, TenantResolver};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ServerConfig {
     pub port: u16,
     pub data_dir: PathBuf,
@@ -21,6 +24,33 @@ pub struct ServerConfig {
     pub rules_dir: Option<PathBuf>,
     pub api_mode: ApiMode,
     pub ui_enabled: bool,
+    pub tenant_resolver: Option<Arc<dyn TenantResolver>>,
+    pub internal_api_key: Option<String>,
+    pub allow_unauth_internal: bool,
+    pub rate_limit_per_sec: Option<u64>,
+    pub ssrf_allowlist: Vec<String>,
+    pub ssrf_allow_private: bool,
+    pub ssrf_allow_any: bool,
+}
+
+impl fmt::Debug for ServerConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ServerConfig")
+            .field("port", &self.port)
+            .field("data_dir", &self.data_dir)
+            .field("ui_dir", &self.ui_dir)
+            .field("rules_dir", &self.rules_dir)
+            .field("api_mode", &self.api_mode)
+            .field("ui_enabled", &self.ui_enabled)
+            .field("tenant_resolver", &self.tenant_resolver.is_some())
+            .field("internal_api_key", &self.internal_api_key.is_some())
+            .field("allow_unauth_internal", &self.allow_unauth_internal)
+            .field("rate_limit_per_sec", &self.rate_limit_per_sec)
+            .field("ssrf_allowlist", &self.ssrf_allowlist)
+            .field("ssrf_allow_private", &self.ssrf_allow_private)
+            .field("ssrf_allow_any", &self.ssrf_allow_any)
+            .finish()
+    }
 }
 
 impl ServerConfig {
@@ -50,6 +80,14 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     if !config.ui_enabled && config.api_mode == ApiMode::UiOnly {
         anyhow::bail!("ui-only mode cannot be used with UI disabled");
     }
+    if config.tenant_resolver.is_some()
+        && config.ssrf_allowlist.is_empty()
+        && !config.ssrf_allow_any
+    {
+        anyhow::bail!(
+            "ssrf allowlist required when api key auth is enabled; use --ssrf-allowlist or --ssrf-allow-any"
+        );
+    }
 
     let store = TraceStore::new(config.data_dir.clone())
         .await
@@ -71,7 +109,9 @@ pub async fn run(config: ServerConfig) -> Result<()> {
             let internal_base = format!("http://127.0.0.1:{}", config.port);
             Some(EndpointEngine::load(
                 rules_dir,
-                EngineConfig::new(internal_base, config.data_dir.clone()),
+                EngineConfig::new(internal_base, config.data_dir.clone())
+                    .with_ssrf_allowlist(config.ssrf_allowlist.clone())
+                    .with_ssrf_allow_private(config.ssrf_allow_private),
             )?)
         }
     };
@@ -87,6 +127,13 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         api_mode: config.api_mode,
         api_engine: api_engine.map(Arc::new),
         trace_events,
+        tenant_resolver: config.tenant_resolver.clone(),
+        internal_api_key: config.internal_api_key.clone(),
+        allow_unauth_internal: config.allow_unauth_internal,
+        rate_limiter: config
+            .rate_limit_per_sec
+            .filter(|limit| *limit > 0)
+            .map(|limit| Arc::new(RateLimiter::new(limit))),
     };
 
     let app = build_router(state, config.ui_enabled);
@@ -96,7 +143,12 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .context("failed to bind port")?;
-    axum::serve(listener, app).await.context("server error")?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .context("server error")?;
     Ok(())
 }
 

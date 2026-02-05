@@ -2,16 +2,21 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Result;
+use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use rulemorph_endpoint::{EndpointEngine, EngineConfig};
-use rulemorph_server::{ApiMode, AppState, build_router};
+use rulemorph_server::{
+    ApiMode, AppState, RateLimiter, TenantContext, TenantResolver, build_router,
+};
 use rulemorph_trace::TraceStore;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use tokio::sync::broadcast;
+use tower::Service;
 use tower::ServiceExt;
 
 #[tokio::test]
@@ -69,6 +74,10 @@ finalize:
         api_mode: ApiMode::Rules,
         api_engine: Some(Arc::new(engine)),
         trace_events,
+        tenant_resolver: None,
+        internal_api_key: None,
+        allow_unauth_internal: true,
+        rate_limiter: None,
     };
     let app = build_router(state, true);
 
@@ -170,6 +179,10 @@ async fn cloud_scenario_basic_detail_fallback() {
         api_mode: ApiMode::UiOnly,
         api_engine: None,
         trace_events,
+        tenant_resolver: None,
+        internal_api_key: None,
+        allow_unauth_internal: true,
+        rate_limiter: None,
     };
     let app = build_router(state, true);
 
@@ -242,4 +255,364 @@ async fn wait_for_trace_id(app: &Router) -> String {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("trace not found after waiting");
+}
+
+struct StaticTenantResolver {
+    api_key: String,
+    tenant_id: String,
+}
+
+#[async_trait]
+impl TenantResolver for StaticTenantResolver {
+    async fn resolve(&self, api_key: &str) -> Result<Option<TenantContext>> {
+        if api_key == self.api_key {
+            Ok(Some(TenantContext::new(self.tenant_id.clone())))
+        } else {
+            Ok(None)
+        }
+    }
+}
+
+struct RejectTenantResolver;
+
+#[async_trait]
+impl TenantResolver for RejectTenantResolver {
+    async fn resolve(&self, _api_key: &str) -> Result<Option<TenantContext>> {
+        Ok(None)
+    }
+}
+
+async fn build_v1_app(
+    api_key_resolver: Option<Arc<dyn TenantResolver>>,
+    rate_limit_per_sec: Option<u64>,
+) -> (Router, tempfile::TempDir) {
+    let temp = tempdir().expect("tempdir");
+    let rules_dir = temp.path().join("rules");
+    let data_dir = temp.path().join("data");
+    fs::create_dir_all(rules_dir.join("rules")).expect("create rules");
+    fs::write(
+        rules_dir.join("endpoint.yaml"),
+        r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /v1/test
+    steps:
+      - rule: rules/ok.yaml
+    reply:
+      status: 200
+      body:
+        ok: true
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: rules/ok.yaml
+    reply:
+      status: 200
+      body:
+        ok: true
+"#,
+    )
+    .expect("write endpoint.yaml");
+    fs::write(
+        rules_dir.join("rules/ok.yaml"),
+        r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "output.value"
+    value: 1
+finalize:
+  wrap:
+    key: result
+"#,
+    )
+    .expect("write ok.yaml");
+
+    let engine = EndpointEngine::load(
+        rules_dir.clone(),
+        EngineConfig::new("http://127.0.0.1:8080".to_string(), data_dir.clone()),
+    )
+    .expect("load engine");
+    let store = TraceStore::new(data_dir.clone())
+        .await
+        .expect("trace store");
+    let (trace_events, _) = broadcast::channel(16);
+    let state = AppState {
+        store: Arc::new(store),
+        ui_source: None,
+        api_mode: ApiMode::Rules,
+        api_engine: Some(Arc::new(engine)),
+        trace_events,
+        tenant_resolver: api_key_resolver,
+        internal_api_key: None,
+        allow_unauth_internal: false,
+        rate_limiter: rate_limit_per_sec.map(RateLimiter::new).map(Arc::new),
+    };
+    (build_router(state, false), temp)
+}
+
+#[tokio::test]
+async fn v1_returns_503_when_resolver_missing() {
+    let (app, _temp) = build_v1_app(None, None).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn v1_returns_401_for_invalid_key() {
+    let resolver = Arc::new(RejectTenantResolver);
+    let (app, _temp) = build_v1_app(Some(resolver), None).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/test")
+                .header("authorization", "Bearer invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn v1_invalid_key_is_rate_limited() {
+    let resolver = Arc::new(RejectTenantResolver);
+    let (mut app, _temp) = build_v1_app(Some(resolver), Some(1)).await;
+
+    let response = <Router as ServiceExt<Request<Body>>>::ready(&mut app)
+        .await
+        .expect("ready")
+        .call(
+            Request::builder()
+                .uri("/v1/test")
+                .header("authorization", "Bearer invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = <Router as ServiceExt<Request<Body>>>::ready(&mut app)
+        .await
+        .expect("ready")
+        .call(
+            Request::builder()
+                .uri("/v1/test")
+                .header("authorization", "Bearer invalid")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn v1_returns_200_for_valid_key() {
+    let resolver = Arc::new(StaticTenantResolver {
+        api_key: "valid-key".to_string(),
+        tenant_id: "tenant-1".to_string(),
+    });
+    let (app, _temp) = build_v1_app(Some(resolver), None).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/test")
+                .header("authorization", "Bearer valid-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn api_requires_auth_when_resolver_set() {
+    let resolver = Arc::new(StaticTenantResolver {
+        api_key: "valid-key".to_string(),
+        tenant_id: "tenant-1".to_string(),
+    });
+    let (app, _temp) = build_v1_app(Some(resolver), None).await;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn v1_rate_limit_returns_429() {
+    let resolver = Arc::new(StaticTenantResolver {
+        api_key: "valid-key".to_string(),
+        tenant_id: "tenant-1".to_string(),
+    });
+    let (mut app, _temp) = build_v1_app(Some(resolver), Some(1)).await;
+
+    let response = <Router as ServiceExt<Request<Body>>>::ready(&mut app)
+        .await
+        .expect("ready")
+        .call(
+            Request::builder()
+                .uri("/v1/test")
+                .header("authorization", "Bearer valid-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = <Router as ServiceExt<Request<Body>>>::ready(&mut app)
+        .await
+        .expect("ready")
+        .call(
+            Request::builder()
+                .uri("/v1/test")
+                .header("authorization", "Bearer valid-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn api_rate_limit_applies_without_resolver() {
+    let (mut app, _temp) = build_v1_app(None, Some(1)).await;
+
+    let response = <Router as ServiceExt<Request<Body>>>::ready(&mut app)
+        .await
+        .expect("ready")
+        .call(
+            Request::builder()
+                .uri("/api/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = <Router as ServiceExt<Request<Body>>>::ready(&mut app)
+        .await
+        .expect("ready")
+        .call(
+            Request::builder()
+                .uri("/api/test")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn internal_requires_key_when_configured() {
+    let temp = tempdir().expect("tempdir");
+    let data_dir = temp.path().join("data");
+    let store = TraceStore::new(data_dir.clone())
+        .await
+        .expect("trace store");
+    let (trace_events, _) = broadcast::channel(16);
+    let state = AppState {
+        store: Arc::new(store),
+        ui_source: None,
+        api_mode: ApiMode::UiOnly,
+        api_engine: None,
+        trace_events,
+        tenant_resolver: None,
+        internal_api_key: Some("internal-key".to_string()),
+        allow_unauth_internal: false,
+        rate_limiter: None,
+    };
+    let app = build_router(state, true);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/traces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/traces")
+                .header("authorization", "Bearer internal-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn internal_requires_key_when_tenant_resolver_set() {
+    let temp = tempdir().expect("tempdir");
+    let data_dir = temp.path().join("data");
+    let store = TraceStore::new(data_dir.clone())
+        .await
+        .expect("trace store");
+    let (trace_events, _) = broadcast::channel(16);
+    let resolver = Arc::new(StaticTenantResolver {
+        api_key: "valid-key".to_string(),
+        tenant_id: "tenant-1".to_string(),
+    });
+    let state = AppState {
+        store: Arc::new(store),
+        ui_source: None,
+        api_mode: ApiMode::UiOnly,
+        api_engine: None,
+        trace_events,
+        tenant_resolver: Some(resolver),
+        internal_api_key: None,
+        allow_unauth_internal: false,
+        rate_limiter: None,
+    };
+    let app = build_router(state, true);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/traces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

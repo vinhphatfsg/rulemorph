@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{Path as AxumPath, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Path as AxumPath, State},
+    http::{HeaderMap, Request, StatusCode},
+    middleware::{Next, from_fn_with_state},
     response::{
         IntoResponse,
         sse::{Event, Sse},
@@ -13,13 +14,16 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::time::Duration;
-use tokio::sync::broadcast;
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
+use tokio::sync::{Mutex, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::api_graph::{ApiGraphResponse, build_api_graph};
+use crate::{TenantContext, TenantResolver};
 use rulemorph_endpoint::{ApiMode, EndpointEngine};
 use rulemorph_trace::{ImportResult, TraceManifest, TraceMeta, TraceNodeChunkEntry, TraceStore};
 
@@ -45,18 +49,100 @@ pub struct AppState {
     pub api_mode: ApiMode,
     pub api_engine: Option<Arc<EndpointEngine>>,
     pub trace_events: broadcast::Sender<()>,
+    pub tenant_resolver: Option<Arc<dyn TenantResolver>>,
+    pub internal_api_key: Option<String>,
+    pub allow_unauth_internal: bool,
+    pub rate_limiter: Option<Arc<RateLimiter>>,
+}
+
+#[derive(Debug)]
+pub struct RateLimiter {
+    limit: u64,
+    state: Mutex<HashMap<String, RateLimitState>>,
+    max_entries: usize,
+    ttl: Duration,
+}
+
+#[derive(Debug)]
+struct RateLimitState {
+    window_start: Instant,
+    count: u64,
+    last_seen: Instant,
+}
+
+impl RateLimiter {
+    pub fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            state: Mutex::new(HashMap::new()),
+            max_entries: 10_000,
+            ttl: Duration::from_secs(600),
+        }
+    }
+
+    pub async fn allow(&self, key: &str) -> bool {
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        if state.len() >= self.max_entries {
+            state.retain(|_, entry| now.duration_since(entry.last_seen) <= self.ttl);
+            if state.len() >= self.max_entries {
+                if let Some((oldest_key, _)) = state.iter().min_by_key(|(_, entry)| entry.last_seen)
+                {
+                    let oldest_key = oldest_key.clone();
+                    state.remove(&oldest_key);
+                }
+            }
+        }
+
+        let entry = state.entry(key.to_string()).or_insert(RateLimitState {
+            window_start: now,
+            count: 0,
+            last_seen: now,
+        });
+        entry.last_seen = now;
+        if now.duration_since(entry.window_start) >= Duration::from_secs(1) {
+            entry.window_start = now;
+            entry.count = 0;
+        }
+        if entry.count >= self.limit {
+            return false;
+        }
+        entry.count += 1;
+        true
+    }
 }
 
 pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
     let api = match state.api_mode {
         ApiMode::UiOnly => Router::new(),
-        ApiMode::Rules => Router::new().route("/api/*path", any(handle_rules_api)),
+        ApiMode::Rules => {
+            let mut api_router = Router::new().route("/api/*path", any(handle_rules_api));
+            if state.rate_limiter.is_some() {
+                api_router = api_router.layer(from_fn_with_state(state.clone(), api_rate_limit));
+            }
+            if state.tenant_resolver.is_some() {
+                api_router = api_router.layer(from_fn_with_state(state.clone(), v1_auth));
+                if state.rate_limiter.is_some() {
+                    api_router =
+                        api_router.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
+                }
+            }
+            let mut v1 = Router::new().route("/v1/*path", any(handle_rules_api));
+            if state.rate_limiter.is_some() {
+                v1 = v1.layer(from_fn_with_state(state.clone(), api_rate_limit));
+            }
+            v1 = v1.layer(from_fn_with_state(state.clone(), v1_auth));
+            if state.rate_limiter.is_some() {
+                v1 = v1.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
+            }
+            Router::new().merge(api_router).merge(v1)
+        }
     };
 
     let mut app = Router::new().merge(api);
 
     if ui_enabled {
-        let internal = Router::new()
+        let mut internal = Router::new()
             .route("/internal/traces", get(list_traces))
             .route("/internal/traces/:id", get(get_trace))
             .route("/internal/traces/:id/manifest", get(get_trace_manifest))
@@ -72,6 +158,19 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             .route("/internal/stream", get(stream_traces))
             .route("/internal/api-graph", get(get_api_graph))
             .route("/internal/import", post(import_bundle_path));
+
+        if state.rate_limiter.is_some() {
+            internal = internal.layer(from_fn_with_state(state.clone(), api_rate_limit));
+        }
+        if !state.allow_unauth_internal
+            || state.internal_api_key.is_some()
+            || state.tenant_resolver.is_some()
+        {
+            internal = internal.layer(from_fn_with_state(state.clone(), internal_auth));
+        }
+        if state.rate_limiter.is_some() {
+            internal = internal.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
+        }
 
         let ui_source = match state.ui_source.clone() {
             Some(source) => source,
@@ -153,6 +252,121 @@ async fn handle_rules_api(
             }
         }
     }
+}
+
+async fn v1_auth(
+    State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    let resolver = state
+        .tenant_resolver
+        .as_ref()
+        .ok_or_else(|| ApiError::service_unavailable("tenant resolver not configured"))?;
+    let api_key = extract_api_key(request.headers())
+        .ok_or_else(|| ApiError::unauthorized("missing api key"))?;
+    let context = resolver
+        .resolve(&api_key)
+        .await
+        .map_err(ApiError::internal)?;
+    let Some(context) = context else {
+        return Err(ApiError::unauthorized("invalid api key"));
+    };
+    request.extensions_mut().insert(context);
+    Ok(next.run(request).await)
+}
+
+async fn internal_auth(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    let Some(expected) = state.internal_api_key.as_deref() else {
+        if state.allow_unauth_internal {
+            return Ok(next.run(request).await);
+        }
+        return Err(ApiError::service_unavailable(
+            "internal api key not configured",
+        ));
+    };
+    let provided = extract_api_key(request.headers())
+        .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
+    if provided != expected {
+        return Err(ApiError::unauthorized("invalid internal api key"));
+    }
+    Ok(next.run(request).await)
+}
+
+async fn pre_auth_rate_limit(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if let Some(limiter) = state.rate_limiter.as_ref() {
+        let key = pre_auth_rate_limit_key(&request);
+        if !limiter.allow(&key).await {
+            return Err(ApiError::too_many_requests("rate limit exceeded"));
+        }
+    }
+    Ok(next.run(request).await)
+}
+
+fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
+    if let Some(ConnectInfo(addr)) = request
+        .extensions()
+        .get::<ConnectInfo<std::net::SocketAddr>>()
+    {
+        return format!("preauth:ip:{}", addr.ip());
+    }
+    if let Some(api_key) = extract_api_key(request.headers()) {
+        return format!("preauth:key:{:x}", hash_string(&api_key));
+    }
+    "preauth:anonymous".to_string()
+}
+
+fn hash_string(value: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+async fn api_rate_limit(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if let Some(limiter) = state.rate_limiter.as_ref() {
+        let key = rate_limit_key(&state, &request);
+        if !limiter.allow(&key).await {
+            return Err(ApiError::too_many_requests("rate limit exceeded"));
+        }
+    }
+    Ok(next.run(request).await)
+}
+
+fn rate_limit_key(state: &AppState, request: &Request<axum::body::Body>) -> String {
+    if let Some(context) = request.extensions().get::<TenantContext>() {
+        return format!("tenant:{}", context.tenant_id);
+    }
+    if state.internal_api_key.is_some() && request.uri().path().starts_with("/internal") {
+        return "internal".to_string();
+    }
+    "global".to_string()
+}
+
+fn extract_api_key(headers: &HeaderMap) -> Option<String> {
+    if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
+        let value = value.to_str().ok()?;
+        let mut parts = value.split_whitespace();
+        let scheme = parts.next()?;
+        if scheme.eq_ignore_ascii_case("bearer") {
+            return parts.next().map(|part| part.to_string());
+        }
+    }
+    headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.to_string())
 }
 
 #[derive(Serialize)]
@@ -346,6 +560,27 @@ impl ApiError {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: err.to_string(),
+        }
+    }
+
+    fn service_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: message.into(),
+        }
+    }
+
+    fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: message.into(),
+        }
+    }
+
+    fn too_many_requests(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: message.into(),
         }
     }
 

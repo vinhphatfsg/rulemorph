@@ -172,6 +172,52 @@ type ApiGraphResponse = {
 };
 
 const API_BASE = "/internal";
+const INTERNAL_KEY_STORAGE = "rulemorph_internal_key";
+let cachedInternalKey: string | null | undefined;
+
+function getInternalKey(): string | null {
+  if (cachedInternalKey !== undefined) {
+    return cachedInternalKey;
+  }
+  if (typeof window === "undefined") {
+    cachedInternalKey = null;
+    return cachedInternalKey;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const paramKey =
+    params.get("internal_key") ?? params.get("internal_api_key");
+  const trimmed = paramKey?.trim();
+  if (trimmed) {
+    try {
+      window.localStorage.setItem(INTERNAL_KEY_STORAGE, trimmed);
+    } catch {
+      // ignore storage failures
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("internal_key");
+      url.searchParams.delete("internal_api_key");
+      if (url.toString() !== window.location.href) {
+        window.history.replaceState(null, "", url.toString());
+      }
+    } catch {
+      // ignore history failures
+    }
+    cachedInternalKey = trimmed;
+    return trimmed;
+  }
+  try {
+    const stored = window.localStorage.getItem(INTERNAL_KEY_STORAGE);
+    if (stored && stored.trim()) {
+      cachedInternalKey = stored.trim();
+      return cachedInternalKey;
+    }
+  } catch {
+    // ignore storage failures
+  }
+  cachedInternalKey = null;
+  return cachedInternalKey;
+}
 
 const graphDefaults = {
   rankdir: "LR",
@@ -184,7 +230,14 @@ const INITIAL_CENTER_PADDING = 0.22;
 
 async function fetchJson<T>(path: string): Promise<T | null> {
   try {
-    const res = await fetch(path);
+    const internalKey = getInternalKey();
+    const headers: Record<string, string> = { "x-rulemorph-ui": "1" };
+    if (internalKey) {
+      headers["x-api-key"] = internalKey;
+    }
+    const res = await fetch(path, {
+      headers
+    });
     if (!res.ok) return null;
     return (await res.json()) as T;
   } catch {
@@ -1248,6 +1301,15 @@ export default function App() {
   }, [loadTraces]);
 
   useEffect(() => {
+    const internalKey = getInternalKey();
+    if (internalKey) {
+      const timer = window.setInterval(() => {
+        loadTraces(true);
+      }, 5000);
+      return () => {
+        window.clearInterval(timer);
+      };
+    }
     const source = new EventSource(`${API_BASE}/stream`);
     const onUpdate = () => {
       loadTraces(true);
