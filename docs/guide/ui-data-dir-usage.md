@@ -10,7 +10,8 @@ Rulemorph UIが使用するデータディレクトリの構成と配置ルー�
 ./.rulemorph/
 ├── traces/          # トレースマニフェストとチャンク（JSON/NDJSON）
 ├── rules/           # トレース参照用ルール（YAML）
-└── api_rules/       # カスタムAPI用ルール（YAML）
+├── api_rules/       # カスタムAPI用ルール（YAML）
+└── auth/            # APIキー情報（api_keys.json）
 ```
 
 | ディレクトリ | 用途 |
@@ -18,6 +19,7 @@ Rulemorph UIが使用するデータディレクトリの構成と配置ルー�
 | `traces/` | 変換実行のトレースログ（`trace.json` マニフェスト + チャンク、旧形式の単一JSONも可） |
 | `rules/` | トレース内で参照されるルールファイル |
 | `api_rules/` | `/api/*` エンドポイントを定義するルール |
+| `auth/` | APIキー情報（`api_keys.json`） |
 
 > `.rulemorph/` は `.gitignore` に追加することを推奨します。
 
@@ -75,6 +77,29 @@ rules モードで `/api/*` を提供するルールを配置します。
     └── get.yaml
 ```
 
+### auth/
+
+APIキーは `auth/api_keys.json` に保存されます。
+
+```
+./.rulemorph/auth/
+└── api_keys.json
+```
+
+## テナント有効時の構成
+
+`--api-key-store` などでテナント分離を有効にすると、`tenants/<tenant_id>/` 配下にデータが作成されます。
+
+```
+./.rulemorph/tenants/
+└── <tenant_id>/
+    ├── traces/
+    ├── rules/
+    ├── api_rules/
+    └── auth/
+        └── api_keys.json
+```
+
 ## トラブルシューティング
 
 トレースが反映されない場合：
@@ -91,21 +116,22 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 
 ## 内部APIキーとUIアクセス
 
-Cloud/APIキー運用（`--api-key` を有効にする構成）では、内部API（`/internal/*`）へのアクセスに **`--internal-api-key` の設定が必須** です。UI を利用する場合は、起動時に内部キーを設定し、UI アクセス時にクエリで渡してください。
+Cloud/APIキー運用では `/api/*` と `/internal/*` の両方にキーが必要になります。
+UI は `/api/*` を利用するため、`api_key` と `internal_key` をクエリで渡してください。
 
 ```sh
-rulemorph-server --api-key <API_KEY> --internal-api-key <INTERNAL_KEY> ...
+rulemorph-server --api-key-store --internal-api-key <INTERNAL_KEY> ...
 ```
 
 UI:
 
 ```
-http://localhost:8080/?internal_key=<INTERNAL_KEY>
+http://localhost:8080/?api_key=<API_KEY>&internal_key=<INTERNAL_KEY>
 ```
 
-`internal_key` は初回アクセス時に localStorage に保存され、URL から削除されます（履歴/リファラでの漏えいを避けるため）。以降はクエリを付けずにアクセスできます。
+`api_key` / `internal_key` は初回アクセス時に localStorage に保存され、URL から削除されます（履歴/リファラでの漏えいを避けるため）。以降はクエリを付けずにアクセスできます。
 
-内部キーが設定されている場合、UI のトレース一覧更新はポーリングで行われます（既定 5 秒間隔）。
+`/api` 利用時は UI のトレース一覧更新はポーリングで行われます（既定 5 秒間隔）。
 
 ## 運用向け: 保持期限の削除（purge-traces）
 

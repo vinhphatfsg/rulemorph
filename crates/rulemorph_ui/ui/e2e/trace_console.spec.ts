@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { spawn } from "child_process";
+import { execFileSync, spawn } from "child_process";
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
@@ -11,6 +11,7 @@ const repoRoot = path.resolve(
   "../../../.."
 );
 const uiDist = path.resolve(repoRoot, "crates/rulemorph_ui/ui/dist");
+const apiRulesDir = path.resolve(repoRoot, "assets/api_rules");
 
 function getAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -229,6 +230,45 @@ function writeBasicTrace(dataDir: string) {
   );
 }
 
+function writeErrorTrace(dataDir: string) {
+  const traceDir = path.join(dataDir, "traces", "2026", "02", "03", "error-001");
+  mkdirSync(traceDir, { recursive: true });
+  writeFileSync(
+    path.join(traceDir, "trace.json"),
+    JSON.stringify(
+      {
+        trace_schema_version: 1,
+        trace_id: "error-001",
+        timestamp: "2026-02-03T00:15:00Z",
+        status: "error",
+        rule: {
+          type: "normal",
+          name: "error",
+          path: "rules/error.yaml",
+          version: 2
+        },
+        input_format: "json",
+        summary: {
+          record_total: 1,
+          record_success: 0,
+          record_failed: 1,
+          duration_us: 1200
+        },
+        max_chunk_bytes_uncompressed: 1048576,
+        detail: {
+          layout: "records_nodes_split",
+          status: "basic",
+          reason: [],
+          records: [],
+          nodes: []
+        }
+      },
+      null,
+      2
+    )
+  );
+}
+
 function writeBrokenTrace(dataDir: string) {
   const traceDir = path.join(dataDir, "traces", "2026", "02", "03", "broken-001");
   mkdirSync(traceDir, { recursive: true });
@@ -280,6 +320,9 @@ async function startServer(dataDir: string, port: number) {
   if (!existsSync(uiDist)) {
     throw new Error(`UI dist not found at ${uiDist}. Run npm --prefix crates/rulemorph_ui/ui run build first.`);
   }
+  if (!existsSync(apiRulesDir)) {
+    throw new Error(`api rules not found at ${apiRulesDir}.`);
+  }
   const child = spawn(
     "cargo",
     [
@@ -288,11 +331,15 @@ async function startServer(dataDir: string, port: number) {
       "rulemorph_server",
       "--",
       "--api-mode",
-      "ui-only",
+      "rules",
+      "--rules-dir",
+      apiRulesDir,
       "--data-dir",
       dataDir,
       "--ui-dir",
       uiDist,
+      "--allow-unauth-internal",
+      "--ssrf-allow-private",
       "--port",
       String(port)
     ],
@@ -345,7 +392,120 @@ test("Trace Console loads chunks and shows details", async ({ page }) => {
 
     await page.getByTestId("rf__node-detail-rules/demo.yaml::step-0").click();
     await expect(page.getByText('"foo": 1')).toBeVisible();
-    await expect(page.getByText('"bar": 2')).toBeVisible();
+    await expect(page.getByText('"bar": 2').first()).toBeVisible();
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("Trace Console filters traces", async ({ page }) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-"));
+  writeDemoTrace(dataDir);
+  writeInlineNodesTrace(dataDir);
+  writeErrorTrace(dataDir);
+  const port = await getAvailablePort();
+  const server = await startServer(dataDir, port);
+
+  try {
+    await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+
+    const search = page.locator(".trace-filter__search");
+    await search.fill("inline");
+    await expect(page.getByRole("button", { name: /inline/ }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /demo/ })).toHaveCount(0);
+
+    await search.fill("");
+    await page.getByRole("combobox", { name: "ステータス" }).selectOption("error");
+    await expect(page.getByRole("button", { name: /error/ }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /demo/ })).toHaveCount(0);
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("Trace Console shows finalize details", async ({ page }) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-"));
+  writeDemoTrace(dataDir);
+  const port = await getAvailablePort();
+  const server = await startServer(dataDir, port);
+
+  try {
+    await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+    await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+    await page.getByRole("button", { name: /demo/ }).first().click();
+
+    await page.getByTestId("rf__node-rules/demo.yaml").click();
+    await page.getByRole("heading", { name: "Records" }).waitFor();
+    await page.getByTestId("record-finalize").click();
+
+    await page
+      .locator(".inspector__section--finalize .inspector__section-toggle")
+      .waitFor();
+    await expect(page.getByText('"bar": 2').first()).toBeVisible();
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("Trace Console imports ZIP bundles", async ({ page }) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-"));
+  const bundleDir = mkdtempSync(path.join(tmpdir(), "rulemorph-bundle-"));
+  const traceDir = path.join(bundleDir, "traces", "2026", "02", "03", "zip-001");
+  mkdirSync(traceDir, { recursive: true });
+  writeFileSync(
+    path.join(traceDir, "trace.json"),
+    JSON.stringify(
+      {
+        trace_schema_version: 1,
+        trace_id: "zip-001",
+        timestamp: "2026-02-03T00:30:00Z",
+        status: "ok",
+        rule: {
+          type: "normal",
+          name: "zip",
+          path: "rules/zip.yaml",
+          version: 2
+        },
+        input_format: "json",
+        summary: {
+          record_total: 1,
+          record_success: 1,
+          record_failed: 0,
+          duration_us: 800
+        },
+        max_chunk_bytes_uncompressed: 1048576,
+        detail: {
+          layout: "records_nodes_split",
+          status: "basic",
+          reason: [],
+          records: [],
+          nodes: []
+        }
+      },
+      null,
+      2
+    )
+  );
+  const zipPath = path.join(bundleDir, "bundle.zip");
+  execFileSync("zip", ["-r", zipPath, "traces"], { cwd: bundleDir });
+
+  const port = await getAvailablePort();
+  const server = await startServer(dataDir, port);
+
+  try {
+    await page.goto(`http://127.0.0.1:${port}/?internal_key=internal-test`, {
+      waitUntil: "domcontentloaded"
+    });
+    await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+
+    await page.getByTestId("zip-import-button").click();
+    await page.getByTestId("zip-import-file").setInputFiles(zipPath);
+    await page.getByTestId("zip-import-submit").click();
+    await expect(page.getByTestId("zip-import-message")).toContainText("imported 1 traces");
+    await expect(
+      page.getByRole("button", { name: /rules\/zip\.yaml/ }).first()
+    ).toBeVisible();
   } finally {
     server.kill("SIGTERM");
   }

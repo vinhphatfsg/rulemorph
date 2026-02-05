@@ -13,6 +13,7 @@ use serde_json::{Value as JsonValue, json};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
+use crate::trace_backend::TraceWriteBackend;
 use crate::trace_id::{sanitize_trace_id, trace_id_is_placeholder};
 use crate::trace_schema::{
     RuleMeta, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
@@ -112,12 +113,13 @@ pub enum TraceCompression {
     None,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct TraceWriterConfig {
     pub queue_capacity: usize,
     pub queue_max_bytes: usize,
     pub write_options: TraceWriteOptions,
     pub spawn_worker: bool,
+    pub write_backend: Option<Arc<dyn TraceWriteBackend>>,
 }
 
 impl Default for TraceWriterConfig {
@@ -127,7 +129,25 @@ impl Default for TraceWriterConfig {
             queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
             write_options: TraceWriteOptions::default(),
             spawn_worker: true,
+            write_backend: None,
         }
+    }
+}
+
+#[derive(Clone)]
+struct FileTraceWriteBackend {
+    data_dir: PathBuf,
+}
+
+impl FileTraceWriteBackend {
+    fn new(data_dir: PathBuf) -> Self {
+        Self { data_dir }
+    }
+}
+
+impl TraceWriteBackend for FileTraceWriteBackend {
+    fn write_trace_bundle(&self, trace: &JsonValue, options: &TraceWriteOptions) -> Result<()> {
+        write_trace_bundle_sync(&self.data_dir, trace, options).map(|_| ())
     }
 }
 
@@ -143,8 +163,11 @@ impl TraceWriter {
     }
 
     pub fn with_config(data_dir: PathBuf, config: TraceWriterConfig) -> Self {
+        let backend = config
+            .write_backend
+            .unwrap_or_else(|| Arc::new(FileTraceWriteBackend::new(data_dir)));
         let queue = Arc::new(TraceQueue::new(
-            data_dir,
+            backend,
             config.queue_capacity,
             config.queue_max_bytes,
         ));
@@ -264,7 +287,7 @@ struct TraceWriteRequest {
 }
 
 struct TraceQueue {
-    data_dir: PathBuf,
+    backend: Arc<dyn TraceWriteBackend>,
     capacity: usize,
     max_bytes: usize,
     items: Mutex<VecDeque<TraceWriteRequest>>,
@@ -272,9 +295,9 @@ struct TraceQueue {
 }
 
 impl TraceQueue {
-    fn new(data_dir: PathBuf, capacity: usize, max_bytes: usize) -> Self {
+    fn new(backend: Arc<dyn TraceWriteBackend>, capacity: usize, max_bytes: usize) -> Self {
         Self {
-            data_dir,
+            backend,
             capacity: capacity.max(1),
             max_bytes: max_bytes.max(1),
             items: Mutex::new(VecDeque::new()),
@@ -301,7 +324,9 @@ fn trace_writer_loop(queue: Arc<TraceQueue>) {
                 trace_id_for_log(&request.trace)
             );
         }
-        if let Err(err) = write_trace_bundle_sync(&queue.data_dir, &request.trace, &request.options)
+        if let Err(err) = queue
+            .backend
+            .write_trace_bundle(&request.trace, &request.options)
         {
             warn!("failed to write trace bundle: {}", err);
         }
@@ -404,6 +429,7 @@ mod queue_tests {
                 queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -426,6 +452,7 @@ mod queue_tests {
                 queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -455,6 +482,7 @@ mod queue_tests {
                 queue_max_bytes: 512,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -490,6 +518,7 @@ mod queue_tests {
                 queue_max_bytes: 256,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -527,6 +556,7 @@ mod queue_tests {
                 queue_max_bytes: 256,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -572,6 +602,7 @@ mod queue_tests {
                 queue_max_bytes: 512,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -612,6 +643,7 @@ mod queue_tests {
                 queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -671,6 +703,7 @@ mod queue_tests {
                 queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 
@@ -731,6 +764,7 @@ mod queue_tests {
                 queue_max_bytes: DEFAULT_TRACE_QUEUE_MAX_BYTES,
                 write_options: TraceWriteOptions::default(),
                 spawn_worker: false,
+                write_backend: None,
             },
         );
 

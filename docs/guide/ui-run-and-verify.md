@@ -26,26 +26,23 @@ npm run build
 
 ### ui-only モード
 
-UIのみを提供するモードです。内部APIは `/internal/*` で提供されます。
-
-```sh
-# 開発時
-cargo run -p rulemorph_server -- --api-mode ui-only
-
-# Release バイナリ
-rulemorph-server --api-mode ui-only
-```
+内部APIのみを提供するモードです。UIは `/api/*` を利用するため、UIを閲覧する場合は rules モードを使用してください。
 
 ### rules モード（デフォルト）
 
 UIに加えて、YAMLで定義したカスタムAPIを `/api/*` で提供するモードです。
+デフォルトUI用ルールは `assets/api_rules/` を利用します。
 
 ```sh
 # 開発時
-cargo run -p rulemorph_server -- --api-mode rules
+cargo run -p rulemorph_server -- \\
+  --api-mode rules \\
+  --rules-dir ./assets/api_rules \\
+  --allow-unauth-internal \\
+  --ssrf-allow-private
 
 # Release バイナリ
-rulemorph-server --api-mode rules
+rulemorph-server --api-mode rules --rules-dir ./assets/api_rules --allow-unauth-internal --ssrf-allow-private
 ```
 
 ### オプション一覧
@@ -57,6 +54,9 @@ rulemorph-server --api-mode rules
 | `--data-dir <PATH>` | データディレクトリ | `./.rulemorph` |
 | `--rules-dir <PATH>` | APIルールディレクトリ | `./.rulemorph/api_rules` |
 | `--no-ui` | UIを無効化（APIのみ提供） | - |
+| `--internal-api-key <KEY>` | `/internal/*` 用の内部キー | - |
+| `--allow-unauth-internal` | 内部APIを鍵なしで許可 | - |
+| `--ssrf-allow-private` | private IP/localhost を許可 | - |
 
 ## ブラウザ確認
 
@@ -68,7 +68,19 @@ http://127.0.0.1:8080
 
 - トレース一覧が表示される
 - トレースをクリックすると詳細が確認できる
-- トレース更新は SSE (`/internal/stream`) で自動反映される
+- `/api` 利用時はポーリングで更新される
+
+APIキーが必要な構成では `api_key` をクエリで渡します（初回アクセス時に localStorage へ保存され、URL から削除されます）。
+
+```
+http://127.0.0.1:8080/?api_key=<API_KEY>
+```
+
+ZIPインポートや内部操作を行う場合は `internal_key` を併用します。
+
+```
+http://127.0.0.1:8080/?api_key=<API_KEY>&internal_key=<INTERNAL_KEY>
+```
 
 ## サンプルトレース投入
 

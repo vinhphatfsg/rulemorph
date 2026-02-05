@@ -1,0 +1,80 @@
+version: 2
+type: endpoint
+
+endpoints:
+  - method: GET
+    path: /api/traces
+    steps:
+      - rule: ./network/list_traces.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+
+  - method: GET
+    path: /api/traces/{id}
+    steps:
+      - rule: ./network/get_trace.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+
+  - method: GET
+    path: /api/traces/{id}/manifest
+    steps:
+      - rule: ./network/get_manifest.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+
+  - method: GET
+    path: /api/traces/{id}/records/{chunk}
+    steps:
+      - rule: ./network/get_records_chunk.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+
+  - method: GET
+    path: /api/traces/{id}/nodes/{chunk}
+    steps:
+      - rule: ./network/get_nodes_chunk.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+
+  - method: GET
+    path: /api/traces/{id}/finalize
+    steps:
+      - rule: ./network/get_finalize.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"
+
+  - method: GET
+    path: /api/api-graph
+    steps:
+      - rule: ./network/get_api_graph.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"

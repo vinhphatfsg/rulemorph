@@ -1,9 +1,11 @@
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Path as AxumPath, State},
+    extract::{ConnectInfo, Extension, Multipart, Path as AxumPath, State},
     http::{HeaderMap, Request, StatusCode},
     middleware::{Next, from_fn_with_state},
     response::{
@@ -18,14 +20,20 @@ use std::collections::HashMap;
 use std::convert::Infallible;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
-use tokio::sync::{Mutex, broadcast};
+use tokio::sync::{Mutex, OnceCell, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
 use tower_http::services::{ServeDir, ServeFile};
+use zip::ZipArchive;
 
 use crate::api_graph::{ApiGraphResponse, build_api_graph};
-use crate::{TenantContext, TenantResolver};
-use rulemorph_endpoint::{ApiMode, EndpointEngine};
-use rulemorph_trace::{ImportResult, TraceManifest, TraceMeta, TraceNodeChunkEntry, TraceStore};
+use crate::{ApiKeyInfo, ApiKeyIssueResult, ApiKeyStore};
+use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
+use rulemorph_endpoint::{
+    ApiMode, EndpointEngine, EngineConfig, RequestContext, validate_rules_dir,
+};
+use rulemorph_trace::{
+    ImportResult, TraceManifest, TraceMeta, TraceNodeChunkEntry, TraceStore, start_trace_watcher,
+};
 
 #[cfg(feature = "embedded-ui")]
 use axum::{extract::OriginalUri, http::HeaderMap};
@@ -43,16 +51,38 @@ pub enum UiSource {
 }
 
 #[derive(Clone)]
-pub struct AppState {
+pub struct TenantResources {
+    pub tenant_id: String,
+    pub data_dir: PathBuf,
+    pub rules_dir: PathBuf,
+    pub auth_dir: PathBuf,
     pub store: Arc<TraceStore>,
-    pub ui_source: Option<UiSource>,
-    pub api_mode: ApiMode,
     pub api_engine: Option<Arc<EndpointEngine>>,
     pub trace_events: broadcast::Sender<()>,
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    pub default_resources: Arc<TenantResources>,
+    pub tenant_registry: Option<Arc<TenantRegistry>>,
+    pub ui_source: Option<UiSource>,
+    pub api_mode: ApiMode,
     pub tenant_resolver: Option<Arc<dyn TenantResolver>>,
     pub internal_api_key: Option<String>,
     pub allow_unauth_internal: bool,
     pub rate_limiter: Option<Arc<RateLimiter>>,
+}
+
+pub struct TenantRegistry {
+    base_dir: PathBuf,
+    rules_dir: Option<PathBuf>,
+    api_mode: ApiMode,
+    ui_enabled: bool,
+    port: u16,
+    ssrf_allowlist: Vec<String>,
+    ssrf_allow_private: bool,
+    internal_api_key: Option<String>,
+    tenants: Mutex<HashMap<String, Arc<OnceCell<Arc<TenantResources>>>>>,
 }
 
 #[derive(Debug)]
@@ -69,6 +99,9 @@ struct RateLimitState {
     count: u64,
     last_seen: Instant,
 }
+
+const IMPORT_ZIP_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const IMPORT_ZIP_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
 impl RateLimiter {
     pub fn new(limit: u64) -> Self {
@@ -109,6 +142,94 @@ impl RateLimiter {
         }
         entry.count += 1;
         true
+    }
+}
+
+impl TenantRegistry {
+    pub fn new(
+        base_dir: PathBuf,
+        rules_dir: Option<PathBuf>,
+        api_mode: ApiMode,
+        ui_enabled: bool,
+        port: u16,
+        ssrf_allowlist: Vec<String>,
+        ssrf_allow_private: bool,
+        internal_api_key: Option<String>,
+    ) -> Self {
+        Self {
+            base_dir,
+            rules_dir,
+            api_mode,
+            ui_enabled,
+            port,
+            ssrf_allowlist,
+            ssrf_allow_private,
+            internal_api_key,
+            tenants: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub async fn get_or_init(&self, tenant_id: &str) -> anyhow::Result<Arc<TenantResources>> {
+        validate_tenant_id(tenant_id)?;
+        let cell = {
+            let mut guard = self.tenants.lock().await;
+            guard
+                .entry(tenant_id.to_string())
+                .or_insert_with(|| Arc::new(OnceCell::new()))
+                .clone()
+        };
+        let resources = cell
+            .get_or_try_init(|| async { self.init_resources(tenant_id).await })
+            .await?;
+        Ok(resources.clone())
+    }
+
+    async fn init_resources(&self, tenant_id: &str) -> anyhow::Result<Arc<TenantResources>> {
+        let layout = TenantLayout::new(self.base_dir.clone(), tenant_id)?;
+        tokio::fs::create_dir_all(layout.api_rules_dir()).await?;
+        tokio::fs::create_dir_all(layout.auth_dir()).await?;
+
+        let store = TraceStore::new(layout.data_dir()).await?;
+        let (trace_events, _) = broadcast::channel(64);
+        if self.ui_enabled {
+            start_trace_watcher(layout.data_dir(), trace_events.clone());
+        }
+
+        let rules_dir = self.resolve_rules_dir(&layout);
+        let api_engine = match self.api_mode {
+            ApiMode::UiOnly => None,
+            ApiMode::Rules => {
+                if let Err(errs) = validate_rules_dir(&rules_dir) {
+                    return Err(errs.into());
+                }
+                let internal_base = format!("http://localhost:{}", self.port);
+                let mut config = EngineConfig::new(internal_base, layout.data_dir())
+                    .with_ssrf_allowlist(self.ssrf_allowlist.clone())
+                    .with_ssrf_allow_private(self.ssrf_allow_private);
+                if let Some(internal_api_key) = self.internal_api_key.clone() {
+                    config = config.with_internal_api_key(internal_api_key);
+                }
+                Some(Arc::new(EndpointEngine::load(rules_dir.clone(), config)?))
+            }
+        };
+
+        Ok(Arc::new(TenantResources {
+            tenant_id: tenant_id.to_string(),
+            data_dir: layout.data_dir(),
+            rules_dir,
+            auth_dir: layout.auth_dir(),
+            store: Arc::new(store),
+            api_engine,
+            trace_events,
+        }))
+    }
+
+    fn resolve_rules_dir(&self, layout: &TenantLayout) -> PathBuf {
+        match &self.rules_dir {
+            Some(path) if path.is_absolute() => path.clone(),
+            Some(path) => layout.data_dir().join(path),
+            None => layout.api_rules_dir(),
+        }
     }
 }
 
@@ -157,7 +278,11 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             .route("/internal/traces/:id/finalize", get(get_trace_finalize))
             .route("/internal/stream", get(stream_traces))
             .route("/internal/api-graph", get(get_api_graph))
-            .route("/internal/import", post(import_bundle_path));
+            .route("/internal/import", post(import_bundle_path))
+            .route("/internal/import-zip", post(import_bundle_zip))
+            .route("/internal/api-keys", get(list_api_keys).post(issue_api_key))
+            .route("/internal/api-keys/:id/revoke", post(revoke_api_key))
+            .route("/internal/api-keys/:id/rotate", post(rotate_api_key));
 
         if state.rate_limiter.is_some() {
             internal = internal.layer(from_fn_with_state(state.clone(), api_rate_limit));
@@ -168,30 +293,29 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
         {
             internal = internal.layer(from_fn_with_state(state.clone(), internal_auth));
         }
+        if state.tenant_resolver.is_some() {
+            internal = internal.layer(from_fn_with_state(state.clone(), internal_tenant));
+        }
         if state.rate_limiter.is_some() {
             internal = internal.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
         }
 
-        let ui_source = match state.ui_source.clone() {
-            Some(source) => source,
-            None => {
-                return app.merge(internal).with_state(state);
-            }
-        };
-
         app = app.merge(internal);
-        app = match ui_source {
-            UiSource::Filesystem(dir) => {
-                let static_service =
-                    ServeDir::new(dir.clone()).fallback(ServeFile::new(dir.join("index.html")));
-                app.fallback_service(static_service)
-            }
-            #[cfg(feature = "embedded-ui")]
-            UiSource::Embedded => app.fallback(serve_embedded_ui),
-        };
+        if let Some(ui_source) = state.ui_source.clone() {
+            app = match ui_source {
+                UiSource::Filesystem(dir) => {
+                    let static_service =
+                        ServeDir::new(dir.clone()).fallback(ServeFile::new(dir.join("index.html")));
+                    app.fallback_service(static_service)
+                }
+                #[cfg(feature = "embedded-ui")]
+                UiSource::Embedded => app.fallback(serve_embedded_ui),
+            };
+        }
     }
 
-    app.with_state(state)
+    app.layer(from_fn_with_state(state.clone(), inject_default_resources))
+        .with_state(state)
 }
 
 #[cfg(feature = "embedded-ui")]
@@ -234,13 +358,27 @@ fn embedded_response(path: Option<&str>, contents: &'static [u8]) -> axum::respo
 
 async fn handle_rules_api(
     state: State<AppState>,
-    request: axum::http::Request<axum::body::Body>,
+    mut request: axum::http::Request<axum::body::Body>,
 ) -> std::result::Result<axum::response::Response, ApiError> {
     let state = state.0;
-    let engine = state
+    let resources = request
+        .extensions()
+        .get::<Arc<TenantResources>>()
+        .cloned()
+        .unwrap_or_else(|| state.default_resources.clone());
+    let engine = resources
         .api_engine
         .as_ref()
+        .or(state.default_resources.api_engine.as_ref())
         .ok_or_else(|| ApiError::internal("api engine not configured"))?;
+    let mut request_context = RequestContext::default();
+    if let Some(context) = request.extensions().get::<TenantContext>() {
+        request_context.tenant_id = Some(context.tenant_id.clone());
+    }
+    if let Some(internal_api_key) = state.internal_api_key.clone() {
+        request_context.internal_api_key = Some(internal_api_key);
+    }
+    request.extensions_mut().insert(request_context);
     match engine.handle_request(request).await {
         Ok(response) => Ok(response),
         Err(err) => {
@@ -272,7 +410,46 @@ async fn v1_auth(
     let Some(context) = context else {
         return Err(ApiError::unauthorized("invalid api key"));
     };
+    validate_tenant_id(&context.tenant_id)
+        .map_err(|err| ApiError::bad_request(format!("invalid tenant_id: {}", err)))?;
+    if let Some(registry) = state.tenant_registry.as_ref() {
+        let resources = registry
+            .get_or_init(&context.tenant_id)
+            .await
+            .map_err(ApiError::internal)?;
+        request.extensions_mut().insert(resources);
+    }
     request.extensions_mut().insert(context);
+    Ok(next.run(request).await)
+}
+
+async fn internal_tenant(
+    State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Ok(next.run(request).await);
+    }
+    let tenant_id = request
+        .headers()
+        .get("x-tenant-id")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| ApiError::bad_request("missing x-tenant-id"))?;
+    validate_tenant_id(&tenant_id)
+        .map_err(|err| ApiError::bad_request(format!("invalid tenant_id: {}", err)))?;
+    if let Some(registry) = state.tenant_registry.as_ref() {
+        let resources = registry
+            .get_or_init(&tenant_id)
+            .await
+            .map_err(ApiError::internal)?;
+        request.extensions_mut().insert(resources);
+    }
+    request
+        .extensions_mut()
+        .insert(TenantContext::new(tenant_id));
     Ok(next.run(request).await)
 }
 
@@ -293,6 +470,19 @@ async fn internal_auth(
         .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
     if provided != expected {
         return Err(ApiError::unauthorized("invalid internal api key"));
+    }
+    Ok(next.run(request).await)
+}
+
+async fn inject_default_resources(
+    State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if request.extensions().get::<Arc<TenantResources>>().is_none() {
+        request
+            .extensions_mut()
+            .insert(state.default_resources.clone());
     }
     Ok(next.run(request).await)
 }
@@ -401,27 +591,25 @@ struct TraceChunkPath {
 }
 
 async fn list_traces(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
 ) -> std::result::Result<Json<TraceListResponse>, ApiError> {
-    let state = state.0;
-    let mut traces = state.store.list().await.map_err(ApiError::internal)?;
+    let mut traces = resources.store.list().await.map_err(ApiError::internal)?;
     if traces.is_empty() {
-        state
+        resources
             .store
             .seed_sample()
             .await
             .map_err(ApiError::internal)?;
-        traces = state.store.list().await.map_err(ApiError::internal)?;
+        traces = resources.store.list().await.map_err(ApiError::internal)?;
     }
     Ok(Json(TraceListResponse { traces }))
 }
 
 async fn get_trace(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
     AxumPath(id): AxumPath<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let state = state.0;
-    let trace = state.store.get(&id).await.map_err(ApiError::internal)?;
+    let trace = resources.store.get(&id).await.map_err(ApiError::internal)?;
     match trace {
         Some(value) => Ok(Json(json!({ "trace": value }))),
         None => Err(ApiError::not_found("trace not found")),
@@ -429,11 +617,10 @@ async fn get_trace(
 }
 
 async fn get_trace_manifest(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
     AxumPath(id): AxumPath<String>,
 ) -> std::result::Result<Json<TraceManifestResponse>, ApiError> {
-    let state = state.0;
-    let manifest = state
+    let manifest = resources
         .store
         .get_manifest(&id)
         .await
@@ -445,11 +632,10 @@ async fn get_trace_manifest(
 }
 
 async fn get_trace_records_chunk(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
     AxumPath(path): AxumPath<TraceChunkPath>,
 ) -> std::result::Result<Json<TraceRecordsResponse>, ApiError> {
-    let state = state.0;
-    let records = state
+    let records = resources
         .store
         .get_records_chunk(&path.id, path.chunk)
         .await
@@ -461,11 +647,10 @@ async fn get_trace_records_chunk(
 }
 
 async fn get_trace_nodes_chunk(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
     AxumPath(path): AxumPath<TraceChunkPath>,
 ) -> std::result::Result<Json<TraceNodesResponse>, ApiError> {
-    let state = state.0;
-    let nodes = state
+    let nodes = resources
         .store
         .get_nodes_chunk(&path.id, path.chunk)
         .await
@@ -477,11 +662,10 @@ async fn get_trace_nodes_chunk(
 }
 
 async fn get_trace_finalize(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
     AxumPath(id): AxumPath<String>,
 ) -> std::result::Result<Json<TraceFinalizeResponse>, ApiError> {
-    let state = state.0;
-    let finalize = state
+    let finalize = resources
         .store
         .get_finalize_chunk(&id)
         .await
@@ -497,18 +681,128 @@ struct ImportPathRequest {
     bundle_path: String,
 }
 
+#[derive(Deserialize)]
+struct ApiKeyIssueRequest {
+    label: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ApiKeyRotateRequest {
+    label: Option<String>,
+}
+
+#[derive(Serialize)]
+struct ApiKeyListResponse {
+    keys: Vec<ApiKeyInfo>,
+}
+
 async fn import_bundle_path(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
     Json(payload): Json<ImportPathRequest>,
 ) -> std::result::Result<Json<ImportResult>, ApiError> {
-    let state = state.0;
     let bundle_path = validate_bundle_path(&PathBuf::from(payload.bundle_path))?;
-    let result = state
+    let result = resources
         .store
         .import_bundle(&bundle_path)
         .await
         .map_err(ApiError::internal)?;
     Ok(Json(result))
+}
+
+async fn import_bundle_zip(
+    Extension(resources): Extension<Arc<TenantResources>>,
+    mut multipart: Multipart,
+) -> std::result::Result<Json<ImportResult>, ApiError> {
+    let mut zip_file: Option<tempfile::NamedTempFile> = None;
+    let mut total_bytes: u64 = 0;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|err| ApiError::bad_request(format!("multipart error: {}", err)))?
+    {
+        let name = field.name().map(|value| value.to_string());
+        if name.as_deref() != Some("bundle") {
+            continue;
+        }
+        let mut handle =
+            tempfile::NamedTempFile::new().map_err(|err| ApiError::internal(err.to_string()))?;
+        let mut field = field;
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|err| ApiError::bad_request(format!("upload error: {}", err)))?
+        {
+            total_bytes = total_bytes.saturating_add(chunk.len() as u64);
+            if total_bytes > IMPORT_ZIP_MAX_TOTAL_BYTES {
+                return Err(ApiError::bad_request("zip exceeds max size"));
+            }
+            handle
+                .write_all(&chunk)
+                .map_err(|err| ApiError::internal(err.to_string()))?;
+        }
+        zip_file = Some(handle);
+        break;
+    }
+    let zip_file = zip_file.ok_or_else(|| ApiError::bad_request("missing bundle file"))?;
+    let extract_dir =
+        tempfile::TempDir::new().map_err(|err| ApiError::internal(err.to_string()))?;
+    extract_zip(zip_file.path(), extract_dir.path()).map_err(ApiError::bad_request)?;
+    let bundle_root = resolve_bundle_root(extract_dir.path())?;
+    let result = resources
+        .store
+        .import_bundle(&bundle_root)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(result))
+}
+
+async fn list_api_keys(
+    Extension(resources): Extension<Arc<TenantResources>>,
+) -> std::result::Result<Json<ApiKeyListResponse>, ApiError> {
+    let path = resources.auth_dir.join("api_keys.json");
+    let store = ApiKeyStore::load(path, &resources.tenant_id).map_err(ApiError::internal)?;
+    let keys = store.map(|store| store.list()).unwrap_or_default();
+    Ok(Json(ApiKeyListResponse { keys }))
+}
+
+async fn issue_api_key(
+    Extension(resources): Extension<Arc<TenantResources>>,
+    Json(payload): Json<ApiKeyIssueRequest>,
+) -> std::result::Result<Json<ApiKeyIssueResult>, ApiError> {
+    let path = resources.auth_dir.join("api_keys.json");
+    let mut store =
+        ApiKeyStore::load_or_init(path, &resources.tenant_id).map_err(ApiError::internal)?;
+    let issued = store.issue(payload.label).map_err(ApiError::internal)?;
+    Ok(Json(issued))
+}
+
+async fn revoke_api_key(
+    Extension(resources): Extension<Arc<TenantResources>>,
+    AxumPath(id): AxumPath<String>,
+) -> std::result::Result<Json<serde_json::Value>, ApiError> {
+    let path = resources.auth_dir.join("api_keys.json");
+    let mut store = ApiKeyStore::load(path, &resources.tenant_id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::not_found("api key store not found"))?;
+    let revoked = store.revoke(&id).map_err(ApiError::internal)?;
+    Ok(Json(json!({ "revoked": revoked })))
+}
+
+async fn rotate_api_key(
+    Extension(resources): Extension<Arc<TenantResources>>,
+    AxumPath(id): AxumPath<String>,
+    Json(payload): Json<ApiKeyRotateRequest>,
+) -> std::result::Result<Json<ApiKeyIssueResult>, ApiError> {
+    let path = resources.auth_dir.join("api_keys.json");
+    let mut store =
+        ApiKeyStore::load_or_init(path, &resources.tenant_id).map_err(ApiError::internal)?;
+    let issued = store
+        .rotate(&id, payload.label)
+        .map_err(ApiError::internal)?;
+    let Some(issued) = issued else {
+        return Err(ApiError::not_found("api key not found"));
+    };
+    Ok(Json(issued))
 }
 
 fn validate_bundle_path(bundle_path: &Path) -> std::result::Result<PathBuf, ApiError> {
@@ -530,23 +824,97 @@ fn validate_bundle_path(bundle_path: &Path) -> std::result::Result<PathBuf, ApiE
     Ok(bundle_path)
 }
 
+fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
+    let file = File::open(path).map_err(|err| format!("failed to open zip: {}", err))?;
+    let mut archive = ZipArchive::new(file).map_err(|err| format!("invalid zip: {}", err))?;
+    let mut total_bytes: u64 = 0;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|err| format!("zip entry error: {}", err))?;
+        let name = entry.name().to_string();
+        let entry_path = Path::new(&name);
+        for component in entry_path.components() {
+            match component {
+                std::path::Component::Normal(_) => {}
+                _ => {
+                    return Err(format!("invalid zip entry path: {}", name));
+                }
+            }
+        }
+        if let Some(mode) = entry.unix_mode() {
+            if (mode & 0o170000) == 0o120000 {
+                return Err(format!("zip entry is symlink: {}", name));
+            }
+        }
+        let out_path = dest.join(entry_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|err| format!("failed to create dir: {}", err))?;
+            continue;
+        }
+        let size = entry.size();
+        if size > IMPORT_ZIP_MAX_FILE_BYTES {
+            return Err(format!("zip entry too large: {}", name));
+        }
+        total_bytes = total_bytes.saturating_add(size);
+        if total_bytes > IMPORT_ZIP_MAX_TOTAL_BYTES {
+            return Err("zip exceeds max total bytes".to_string());
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create dir: {}", err))?;
+        }
+        let mut outfile = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out_path)
+            .map_err(|err| format!("failed to create file: {}", err))?;
+        std::io::copy(&mut entry, &mut outfile)
+            .map_err(|err| format!("failed to write file: {}", err))?;
+    }
+    Ok(())
+}
+
+fn resolve_bundle_root(base: &Path) -> std::result::Result<PathBuf, ApiError> {
+    if base.join("traces").exists() || base.join("rules").exists() {
+        return Ok(base.to_path_buf());
+    }
+    let mut entries = std::fs::read_dir(base)
+        .map_err(|err| ApiError::bad_request(format!("invalid zip bundle: {}", err)))?
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    if entries.len() == 1 {
+        let entry = entries.remove(0);
+        let path = entry.path();
+        if path.is_dir() && (path.join("traces").exists() || path.join("rules").exists()) {
+            return Ok(path);
+        }
+    }
+    Err(ApiError::bad_request(
+        "zip bundle must include traces/ or rules/",
+    ))
+}
+
 async fn stream_traces(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
 ) -> Sse<impl tokio_stream::Stream<Item = Result<Event, Infallible>>> {
     let stream =
-        BroadcastStream::new(state.trace_events.subscribe()).filter_map(|message| match message {
-            Ok(_) => Some(Ok(Event::default().event("traces").data("updated"))),
-            Err(_) => None,
-        });
+        BroadcastStream::new(resources.trace_events.subscribe()).filter_map(
+            |message| match message {
+                Ok(_) => Some(Ok(Event::default().event("traces").data("updated"))),
+                Err(_) => None,
+            },
+        );
     Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::new().interval(Duration::from_secs(15)))
 }
 
 async fn get_api_graph(
-    state: State<AppState>,
+    Extension(resources): Extension<Arc<TenantResources>>,
 ) -> std::result::Result<Json<ApiGraphResponse>, ApiError> {
-    let state = state.0;
-    let graph = build_api_graph(state.store.data_dir()).map_err(ApiError::internal)?;
+    let graph = build_api_graph(&resources.rules_dir).map_err(ApiError::internal)?;
     Ok(Json(graph))
 }
 

@@ -64,6 +64,7 @@ export type TraceRecord = {
 };
 
 type DurationUnit = "us" | "ms";
+type TimeRange = "all" | "1h" | "24h" | "7d" | "30d";
 
 export type EndpointSpec = {
   method: string;
@@ -140,7 +141,14 @@ export type TracePayload = {
   rule_source?: EndpointRule;
   detail?: TraceDetailRef;
   records?: TraceRecord[];
-  finalize?: { nodes?: TraceNode[]; input?: unknown; output?: unknown; status?: string };
+  finalize?: {
+    nodes?: TraceNode[];
+    input?: unknown;
+    output?: unknown;
+    status?: string;
+    duration_us?: number;
+    duration_ms?: number;
+  };
   summary?: TraceSummary;
   input_format?: string;
 };
@@ -171,9 +179,54 @@ type ApiGraphResponse = {
   edges: ApiGraphEdge[];
 };
 
-const API_BASE = "/internal";
+const API_BASE = "/api";
+const INTERNAL_BASE = "/internal";
+const API_KEY_STORAGE = "rulemorph_api_key";
 const INTERNAL_KEY_STORAGE = "rulemorph_internal_key";
+let cachedApiKey: string | null | undefined;
 let cachedInternalKey: string | null | undefined;
+
+function getApiKey(): string | null {
+  if (cachedApiKey !== undefined) {
+    return cachedApiKey;
+  }
+  if (typeof window === "undefined") {
+    cachedApiKey = null;
+    return cachedApiKey;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const paramKey = params.get("api_key");
+  const trimmed = paramKey?.trim();
+  if (trimmed) {
+    try {
+      window.localStorage.setItem(API_KEY_STORAGE, trimmed);
+    } catch {
+      // ignore storage failures
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("api_key");
+      if (url.toString() !== window.location.href) {
+        window.history.replaceState(null, "", url.toString());
+      }
+    } catch {
+      // ignore history failures
+    }
+    cachedApiKey = trimmed;
+    return trimmed;
+  }
+  try {
+    const stored = window.localStorage.getItem(API_KEY_STORAGE);
+    if (stored && stored.trim()) {
+      cachedApiKey = stored.trim();
+      return cachedApiKey;
+    }
+  } catch {
+    // ignore storage failures
+  }
+  cachedApiKey = null;
+  return cachedApiKey;
+}
 
 function getInternalKey(): string | null {
   if (cachedInternalKey !== undefined) {
@@ -219,6 +272,20 @@ function getInternalKey(): string | null {
   return cachedInternalKey;
 }
 
+function getTenantIdFromApiKey(apiKey: string | null): string | null {
+  if (!apiKey) return null;
+  const trimmed = apiKey.trim();
+  if (!trimmed.startsWith("rmk_")) {
+    return null;
+  }
+  const rest = trimmed.slice("rmk_".length);
+  const [tenantId] = rest.split(".", 2);
+  if (!tenantId || !tenantId.trim()) {
+    return null;
+  }
+  return tenantId.trim();
+}
+
 const graphDefaults = {
   rankdir: "LR",
   nodesep: 220,
@@ -228,19 +295,36 @@ const graphDefaults = {
 const INITIAL_CENTER_X_RATIO = 0.45;
 const INITIAL_CENTER_PADDING = 0.22;
 
-async function fetchJson<T>(path: string): Promise<T | null> {
-  try {
+type FetchAuth = "api" | "internal";
+
+function buildHeaders(auth: FetchAuth): Record<string, string> {
+  const headers: Record<string, string> = { "x-rulemorph-ui": "1" };
+  if (auth === "internal") {
     const internalKey = getInternalKey();
-    const headers: Record<string, string> = { "x-rulemorph-ui": "1" };
     if (internalKey) {
       headers["x-api-key"] = internalKey;
     }
-    const res = await fetch(path, {
-      headers
-    });
+    const tenantId = getTenantIdFromApiKey(getApiKey());
+    if (tenantId) {
+      headers["x-tenant-id"] = tenantId;
+    }
+    return headers;
+  }
+  const apiKey = getApiKey();
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+  return headers;
+}
+
+async function fetchJson<T>(path: string, auth: FetchAuth = "api"): Promise<T | null> {
+  try {
+    const headers = buildHeaders(auth);
+    const res = await fetch(path, { headers });
     if (!res.ok) return null;
     return (await res.json()) as T;
-  } catch {
+  } catch (err) {
+    console.error("fetch failed", err);
     return null;
   }
 }
@@ -413,6 +497,80 @@ function resolveTraceDurationUs(trace?: TracePayload) {
   if (fromSummary !== undefined) return fromSummary;
   const record = trace.records?.[0];
   return resolveDurationUs(record?.duration_us, record?.duration_ms);
+}
+
+const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; ms: number | null }[] = [
+  { value: "all", label: "全期間", ms: null },
+  { value: "1h", label: "1時間", ms: 60 * 60 * 1000 },
+  { value: "24h", label: "24時間", ms: 24 * 60 * 60 * 1000 },
+  { value: "7d", label: "7日", ms: 7 * 24 * 60 * 60 * 1000 },
+  { value: "30d", label: "30日", ms: 30 * 24 * 60 * 60 * 1000 }
+];
+
+function resolveTraceStatus(item: TraceListItem) {
+  return (item.status ?? "ok").toLowerCase();
+}
+
+function resolveRuleLabel(item: TraceListItem) {
+  return item.rule?.path ?? item.rule?.name ?? null;
+}
+
+function matchesTraceQuery(item: TraceListItem, query: string) {
+  if (!query) return true;
+  const lowered = query.trim().toLowerCase();
+  if (!lowered) return true;
+  const haystack = [
+    item.trace_id,
+    item.rule?.name,
+    item.rule?.path,
+    item.status
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(lowered);
+}
+
+function isWithinTimeRange(item: TraceListItem, range: TimeRange) {
+  if (range === "all") return true;
+  const threshold = TIME_RANGE_OPTIONS.find((opt) => opt.value === range)?.ms;
+  if (!threshold) return true;
+  if (!item.timestamp) return false;
+  const parsed = Date.parse(item.timestamp);
+  if (Number.isNaN(parsed)) return false;
+  const now = Date.now();
+  const diff = now - parsed;
+  if (diff < 0) return true;
+  return diff <= threshold;
+}
+
+function applyTraceFilters(
+  items: TraceListItem[],
+  filters: {
+    status: string;
+    rule: string;
+    query: string;
+    range: TimeRange;
+  }
+) {
+  return items.filter((item) => {
+    if (filters.status !== "all" && resolveTraceStatus(item) !== filters.status) {
+      return false;
+    }
+    if (filters.rule !== "all") {
+      const ruleLabel = resolveRuleLabel(item);
+      if (!ruleLabel || ruleLabel !== filters.rule) {
+        return false;
+      }
+    }
+    if (!matchesTraceQuery(item, filters.query)) {
+      return false;
+    }
+    if (!isWithinTimeRange(item, filters.range)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function isErrorStatus(status?: string) {
@@ -1248,6 +1406,10 @@ export default function App() {
     return stored === "ms" ? "ms" : "us";
   });
   const [traces, setTraces] = useState<TraceListItem[]>([]);
+  const [traceFilterStatus, setTraceFilterStatus] = useState("all");
+  const [traceFilterRule, setTraceFilterRule] = useState("all");
+  const [traceFilterQuery, setTraceFilterQuery] = useState("");
+  const [traceFilterRange, setTraceFilterRange] = useState<TimeRange>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TracePayload | null>(null);
   const [traceManifest, setTraceManifest] = useState<TraceManifest | null>(null);
@@ -1260,7 +1422,12 @@ export default function App() {
   const [selectedOp, setSelectedOp] = useState<TraceNode | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [traceListOpen, setTraceListOpen] = useState(true);
+  const [zipModalOpen, setZipModalOpen] = useState(false);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipMessage, setZipMessage] = useState<string | null>(null);
+  const [zipUploading, setZipUploading] = useState(false);
   const [traceInspectorSections, setTraceInspectorSections] = useState(() => ({
+    finalize: true,
     step: true,
     opList: false,
     opResult: false
@@ -1280,29 +1447,120 @@ export default function App() {
   const [pinnedPositions, setPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [apiPinnedPositions, setApiPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodeTypes = useMemo(() => ({ detail: DetailNode }), []);
+  const apiKey = getApiKey();
+  const internalKey = getInternalKey();
+  const tenantId = getTenantIdFromApiKey(apiKey);
+
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>();
+    traces.forEach((item) => {
+      set.add(resolveTraceStatus(item));
+    });
+    return Array.from(set).sort();
+  }, [traces]);
+
+  const ruleOptions = useMemo(() => {
+    const set = new Set<string>();
+    traces.forEach((item) => {
+      const label = resolveRuleLabel(item);
+      if (label) {
+        set.add(label);
+      }
+    });
+    return Array.from(set).sort();
+  }, [traces]);
+
+  const filteredTraces = useMemo(
+    () =>
+      applyTraceFilters(traces, {
+        status: traceFilterStatus,
+        rule: traceFilterRule,
+        query: traceFilterQuery,
+        range: traceFilterRange
+      }),
+    [traces, traceFilterStatus, traceFilterRule, traceFilterQuery, traceFilterRange]
+  );
 
   const loadTraces = useCallback(
     async (preserveSelection: boolean) => {
       const list = await fetchJson<{ traces: TraceListItem[] }>(`${API_BASE}/traces`);
       const data = list?.traces?.length ? list.traces : [];
+      const filtered = applyTraceFilters(data, {
+        status: traceFilterStatus,
+        rule: traceFilterRule,
+        query: traceFilterQuery,
+        range: traceFilterRange
+      });
       setTraces(data);
       setSelectedId((prev) => {
-        if (!preserveSelection || !prev) {
-          return data[0]?.trace_id ?? null;
+        if (preserveSelection && prev && filtered.some((item) => item.trace_id === prev)) {
+          return prev;
         }
-        return data.some((item) => item.trace_id === prev) ? prev : data[0]?.trace_id ?? null;
+        return filtered[0]?.trace_id ?? null;
       });
     },
-    []
+    [traceFilterStatus, traceFilterRule, traceFilterQuery, traceFilterRange]
   );
+
+  const handleZipImport = useCallback(async () => {
+    if (!zipFile) {
+      setZipMessage("ZIPファイルを選択してください。");
+      return;
+    }
+    if (!internalKey) {
+      setZipMessage("internal_key が未設定です。");
+      return;
+    }
+    setZipUploading(true);
+    setZipMessage(null);
+    try {
+      const formData = new FormData();
+      formData.append("bundle", zipFile);
+      const headers = buildHeaders("internal");
+      const res = await fetch(`${INTERNAL_BASE}/import-zip`, {
+        method: "POST",
+        headers,
+        body: formData
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.error ?? "ZIPインポートに失敗しました。";
+        setZipMessage(message);
+        return;
+      }
+      const payload = await res.json();
+      const imported = typeof payload?.imported === "number" ? payload.imported : 0;
+      const rulesImported = typeof payload?.rules_imported === "number" ? payload.rules_imported : 0;
+      setZipMessage(`imported ${imported} traces / ${rulesImported} rules`);
+      setZipFile(null);
+      await loadTraces(true);
+    } catch (err) {
+      console.error("zip import failed", err);
+      setZipMessage("ZIPインポートに失敗しました。");
+    } finally {
+      setZipUploading(false);
+    }
+  }, [zipFile, internalKey, loadTraces]);
 
   useEffect(() => {
     loadTraces(false);
   }, [loadTraces]);
 
   useEffect(() => {
-    const internalKey = getInternalKey();
-    if (internalKey) {
+    if (!selectedId) {
+      if (filteredTraces.length > 0) {
+        setSelectedId(filteredTraces[0].trace_id ?? null);
+      }
+      return;
+    }
+    if (!filteredTraces.some((item) => item.trace_id === selectedId)) {
+      setSelectedId(filteredTraces[0]?.trace_id ?? null);
+    }
+  }, [filteredTraces, selectedId]);
+
+  useEffect(() => {
+    const usePolling = API_BASE.startsWith("/api");
+    if (usePolling || internalKey) {
       const timer = window.setInterval(() => {
         loadTraces(true);
       }, 5000);
@@ -1310,7 +1568,7 @@ export default function App() {
         window.clearInterval(timer);
       };
     }
-    const source = new EventSource(`${API_BASE}/stream`);
+    const source = new EventSource(`${INTERNAL_BASE}/stream`);
     const onUpdate = () => {
       loadTraces(true);
     };
@@ -1322,7 +1580,7 @@ export default function App() {
       source.removeEventListener("traces", onUpdate);
       source.close();
     };
-  }, [loadTraces]);
+  }, [loadTraces, internalKey]);
 
   useEffect(() => {
     if (viewMode !== "api") return;
@@ -1462,7 +1720,9 @@ export default function App() {
   const currentTrace = effectiveFocusedRuleId
     ? overviewGraph.traceMap.get(effectiveFocusedRuleId) ?? trace
     : trace;
-  const currentRecord = currentTrace?.records?.[recordIndex];
+  const isFinalizeSelected = recordIndex < 0;
+  const currentRecord = recordIndex >= 0 ? currentTrace?.records?.[recordIndex] : undefined;
+  const finalizePayload = currentTrace?.finalize ?? null;
   const bundles = useMemo(() => {
     const map = new Map<string, DetailBundle>();
     expandedRuleIds.forEach((ruleId) => {
@@ -1637,6 +1897,12 @@ export default function App() {
   const detailAvailable = detailStatus ? detailStatus === "full" : true;
   const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0 && detailAvailable;
   const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;
+  const finalizeDuration = resolveDurationUs(
+    finalizePayload?.duration_us,
+    finalizePayload?.duration_ms
+  );
+  const finalizeDurationParts = formatDurationParts(finalizeDuration, durationUnit);
+  const finalizeNodes = finalizePayload?.nodes ?? [];
   const selectedMeta = (selectedNode?.meta ?? {}) as Record<string, unknown>;
   const stepRecordWhen =
     typeof selectedMeta["record_when"] === "boolean" ? selectedMeta["record_when"] : undefined;
@@ -1646,11 +1912,15 @@ export default function App() {
     typeof selectedMeta["branch_taken"] === "string" ? String(selectedMeta["branch_taken"]) : undefined;
   const stepDuration = resolveDurationUs(selectedNode?.duration_us, selectedNode?.duration_ms);
   const stepDurationParts = formatDurationParts(stepDuration, durationUnit);
+  const traceFinalizeOpen = traceInspectorSections.finalize;
   const traceStepOpen = traceInspectorSections.step;
   const traceOpListOpen = traceInspectorSections.opList;
   const traceOpResultOpen = traceInspectorSections.opResult;
   const apiOpListOpen = apiInspectorSections.opList;
   const apiMemoOpen = apiInspectorSections.memo;
+  const recordLabel = isFinalizeSelected
+    ? "finalize"
+    : `record #${currentRecord?.index ?? 0}`;
   const detailLabel = detailStatus
     ? detailStatus === "full"
       ? detailLoading
@@ -1713,8 +1983,10 @@ export default function App() {
           {viewMode === "trace" ? (
             <>
               <span className="meta-pill">{detailLabel}</span>
-              <span className="meta-pill">{traces.length} traces</span>
-              <span className="meta-pill">record #{currentRecord?.index ?? 0}</span>
+              <span className="meta-pill">
+                {filteredTraces.length} / {traces.length} traces
+              </span>
+              <span className="meta-pill">{recordLabel}</span>
             </>
           ) : (
             <>
@@ -1822,6 +2094,18 @@ export default function App() {
                     <p>最新順</p>
                   </div>
                   <div className="trace-panel__actions">
+                    <button
+                      className="trace-panel__import"
+                      data-testid="zip-import-button"
+                      disabled={!internalKey}
+                      title={internalKey ? "ZIPインポート" : "internal_key が必要です"}
+                      onClick={() => {
+                        setZipMessage(null);
+                        setZipModalOpen(true);
+                      }}
+                    >
+                      ZIPインポート
+                    </button>
                     <div className="unit-toggle" role="group" aria-label="Duration unit">
                       <button
                         className={clsx("unit-toggle__button", durationUnit === "us" && "is-active")}
@@ -1844,6 +2128,69 @@ export default function App() {
                       ×
                     </button>
                   </div>
+                </div>
+                <div className="trace-panel__filters">
+                  <input
+                    className="trace-filter__search"
+                    type="search"
+                    aria-label="Trace検索"
+                    placeholder="trace / rule を検索"
+                    value={traceFilterQuery}
+                    onChange={(event) => setTraceFilterQuery(event.target.value)}
+                  />
+                  <select
+                    className="trace-filter__select"
+                    aria-label="ステータス"
+                    value={traceFilterStatus}
+                    onChange={(event) => setTraceFilterStatus(event.target.value)}
+                  >
+                    <option value="all">status: all</option>
+                    {statusOptions.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="trace-filter__select"
+                    aria-label="ルール"
+                    value={traceFilterRule}
+                    onChange={(event) => setTraceFilterRule(event.target.value)}
+                  >
+                    <option value="all">rule: all</option>
+                    {ruleOptions.map((rule) => (
+                      <option key={rule} value={rule}>
+                        {rule}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="trace-filter__select"
+                    aria-label="期間"
+                    value={traceFilterRange}
+                    onChange={(event) => setTraceFilterRange(event.target.value as TimeRange)}
+                  >
+                    {TIME_RANGE_OPTIONS.map((range) => (
+                      <option key={range.value} value={range.value}>
+                        {range.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="trace-filter__reset"
+                    type="button"
+                    onClick={() => {
+                      setTraceFilterStatus("all");
+                      setTraceFilterRule("all");
+                      setTraceFilterQuery("");
+                      setTraceFilterRange("all");
+                    }}
+                  >
+                    リセット
+                  </button>
+                  <span className="trace-filter__count">
+                    {filteredTraces.length} / {traces.length}
+                  </span>
                 </div>
               <div className="trace-list">
                 {(detailStatus && detailStatus !== "full") || detailError ? (
@@ -1871,7 +2218,13 @@ export default function App() {
                     </p>
                   </div>
                 )}
-                {traces.map((item) => (
+                {traces.length > 0 && filteredTraces.length === 0 && (
+                  <div className="empty-trace">
+                    <p>フィルタ条件に一致するトレースがありません。</p>
+                    <p className="muted">検索語や期間を調整してください。</p>
+                  </div>
+                )}
+                {filteredTraces.map((item) => (
                   <button
                     key={item.trace_id}
                     className={clsx("trace-card", selectedId === item.trace_id && "is-active")}
@@ -1906,7 +2259,7 @@ export default function App() {
             ) : (
               <button className="trace-panel__chip" onClick={() => setTraceListOpen(true)}>
                 <span>Trace一覧</span>
-                <span className="trace-panel__chip-count">{traces.length}</span>
+                <span className="trace-panel__chip-count">{filteredTraces.length}</span>
               </button>
             )}
           </aside>
@@ -1945,6 +2298,35 @@ export default function App() {
                     </span>
                   </button>
                 ))}
+                {finalizePayload && (
+                  <button
+                    key="finalize"
+                    data-testid="record-finalize"
+                    className={clsx("record-card record-card--finalize", isFinalizeSelected && "is-active")}
+                    onClick={() => {
+                      setRecordIndex(-1);
+                      setSelectedNode(null);
+                      setSelectedOp(null);
+                      setInspectorOpen(true);
+                    }}
+                  >
+                    <span>Finalize</span>
+                    <span
+                      className={clsx(
+                        "record-status",
+                        isErrorStatus(finalizePayload.status) && "record-status--error"
+                      )}
+                    >
+                      {finalizePayload.status ?? "ok"}
+                    </span>
+                    <span>
+                      {formatDuration(
+                        resolveDurationUs(finalizePayload.duration_us, finalizePayload.duration_ms),
+                        durationUnit
+                      )}
+                    </span>
+                  </button>
+                )}
               </div>
             </aside>
           </>
@@ -2036,6 +2418,83 @@ export default function App() {
             </>
           ) : (
             <>
+              {isFinalizeSelected && (
+                <div
+                  className={clsx(
+                    "inspector__section inspector__section--finalize",
+                    !traceFinalizeOpen && "is-collapsed"
+                  )}
+                >
+                  <button
+                    className="inspector__section-toggle"
+                    aria-expanded={traceFinalizeOpen}
+                    onClick={() =>
+                      setTraceInspectorSections((prev) => ({ ...prev, finalize: !prev.finalize }))
+                    }
+                  >
+                    <h3>Finalize</h3>
+                    <span className="inspector__chevron">{traceFinalizeOpen ? "v" : ">"}</span>
+                  </button>
+                  {traceFinalizeOpen && (
+                    <div className="inspector__content">
+                      {!finalizePayload ? (
+                        <p className="muted">finalize のデータがありません。</p>
+                      ) : (
+                        <>
+                          <div className="step-badges">
+                            <span
+                              className={clsx(
+                                "chip",
+                                isErrorStatus(finalizePayload.status) && "chip--error"
+                              )}
+                            >
+                              {finalizePayload.status ?? "ok"}
+                            </span>
+                            {finalizeDurationParts && (
+                              <span className="chip">
+                                duration: {finalizeDurationParts.value}{" "}
+                                <span className="chip__unit">{finalizeDurationParts.unit}</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="inspector-grid">
+                            {renderJsonBlock("input", finalizePayload.input ?? null)}
+                            {renderJsonBlock("output", finalizePayload.output ?? null)}
+                          </div>
+                          <div className="op-list">
+                            {finalizeNodes.length === 0 ? (
+                              <p className="muted">finalize ノードがありません。</p>
+                            ) : (
+                              finalizeNodes.map((node, index) => (
+                                <div
+                                  key={node.id ?? `finalize-${index}`}
+                                  className="op-item is-static"
+                                >
+                                  <span>{node.label ?? node.kind}</span>
+                                  <span className="op-item__meta">
+                                    <span className="muted">{node.kind}</span>
+                                    {resolveDurationUs(node.duration_us, node.duration_ms) !==
+                                      undefined && (
+                                      <span className="op-item__duration">
+                                        {formatDuration(
+                                          resolveDurationUs(node.duration_us, node.duration_ms),
+                                          durationUnit
+                                        )}
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {!isFinalizeSelected && (
+                <>
               <div
                 className={clsx(
                   "inspector__section inspector__section--opresult",
@@ -2229,9 +2688,74 @@ export default function App() {
                   </div>
                 )}
               </div>
+                </>
+              )}
             </>
           )}
         </aside>
+        {zipModalOpen && (
+          <div className="modal-overlay" role="dialog" aria-modal="true">
+            <div className="modal">
+              <div className="modal__header">
+                <div>
+                  <h3>ZIPインポート</h3>
+                  <p className="muted">
+                    traces/ と rules/ を含むZIPをアップロードしてください。
+                  </p>
+                </div>
+                <button
+                  className="icon-button"
+                  onClick={() => {
+                    setZipModalOpen(false);
+                    setZipFile(null);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="modal__body">
+                {tenantId && <p className="muted">tenant: {tenantId}</p>}
+                <input
+                  className="modal__file"
+                  data-testid="zip-import-file"
+                  type="file"
+                  accept=".zip"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    setZipFile(file);
+                    setZipMessage(null);
+                  }}
+                />
+                {zipMessage && (
+                  <div className="modal__message" data-testid="zip-import-message">
+                    {zipMessage}
+                  </div>
+                )}
+              </div>
+              <div className="modal__actions">
+                <button
+                  className="modal__button"
+                  type="button"
+                  onClick={() => {
+                    setZipModalOpen(false);
+                    setZipFile(null);
+                  }}
+                >
+                  閉じる
+                </button>
+                <button
+                  className="modal__button modal__button--primary"
+                  data-testid="zip-import-submit"
+                  type="button"
+                  disabled={zipUploading || !zipFile}
+                  onClick={handleZipImport}
+                >
+                  {zipUploading ? "アップロード中..." : "インポート"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

@@ -1,0 +1,11 @@
+version: 2
+type: network
+request:
+  method: GET
+  url:
+    - "@context.config.internal_base"
+    - concat: ["/internal/api-graph"]
+  headers:
+    x-api-key: "@context.config.internal_api_key"
+    x-tenant-id: "@context.tenant_id"
+timeout: 10s

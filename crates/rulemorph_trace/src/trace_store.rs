@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -15,6 +16,7 @@ use tokio::sync::RwLock;
 use tracing::warn;
 use walkdir::WalkDir;
 
+use crate::trace_backend::TraceBackend;
 use crate::trace_id::{sanitize_trace_id, trace_id_is_insufficient, trace_id_is_placeholder};
 use crate::trace_schema::{
     RuleMeta, TRACE_CHUNK_BYTES_COMPRESSED_HARD_MAX, TRACE_CHUNK_BYTES_COMPRESSED_OVERHEAD_MAX,
@@ -74,12 +76,12 @@ struct ImportWorkResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct TraceStore {
+pub struct FileTraceBackend {
     data_dir: PathBuf,
     index: Arc<RwLock<HashMap<String, TraceMeta>>>,
 }
 
-impl TraceStore {
+impl FileTraceBackend {
     pub async fn new(data_dir: PathBuf) -> Result<Self> {
         tokio::fs::create_dir_all(traces_dir(&data_dir)).await?;
         tokio::fs::create_dir_all(rules_dir(&data_dir)).await?;
@@ -659,6 +661,118 @@ impl TraceStore {
     // Sample seed disabled (data_dir-only workflow).
 }
 
+#[async_trait]
+impl TraceBackend for FileTraceBackend {
+    async fn list(&self) -> Result<Vec<TraceMeta>> {
+        FileTraceBackend::list(self).await
+    }
+
+    async fn get(&self, trace_id: &str) -> Result<Option<Value>> {
+        FileTraceBackend::get(self, trace_id).await
+    }
+
+    async fn get_manifest(&self, trace_id: &str) -> Result<Option<TraceManifest>> {
+        FileTraceBackend::get_manifest(self, trace_id).await
+    }
+
+    async fn get_records_chunk(
+        &self,
+        trace_id: &str,
+        chunk_index: usize,
+    ) -> Result<Option<Vec<Value>>> {
+        FileTraceBackend::get_records_chunk(self, trace_id, chunk_index).await
+    }
+
+    async fn get_nodes_chunk(
+        &self,
+        trace_id: &str,
+        chunk_index: usize,
+    ) -> Result<Option<Vec<TraceNodeChunkEntry>>> {
+        FileTraceBackend::get_nodes_chunk(self, trace_id, chunk_index).await
+    }
+
+    async fn get_finalize_chunk(&self, trace_id: &str) -> Result<Option<Value>> {
+        FileTraceBackend::get_finalize_chunk(self, trace_id).await
+    }
+
+    async fn import_bundle(&self, bundle_path: &Path) -> Result<ImportResult> {
+        FileTraceBackend::import_bundle(self, bundle_path).await
+    }
+
+    async fn purge_traces(&self, retention: Duration, dry_run: bool) -> Result<PurgeReport> {
+        FileTraceBackend::purge_traces(self, retention, dry_run).await
+    }
+
+    fn data_root(&self) -> &Path {
+        &self.data_dir
+    }
+}
+
+#[derive(Clone)]
+pub struct TraceStore {
+    backend: Arc<dyn TraceBackend>,
+}
+
+impl TraceStore {
+    pub async fn new(data_dir: PathBuf) -> Result<Self> {
+        let backend = FileTraceBackend::new(data_dir).await?;
+        Ok(Self::with_backend(Arc::new(backend)))
+    }
+
+    pub fn with_backend(backend: Arc<dyn TraceBackend>) -> Self {
+        Self { backend }
+    }
+
+    pub async fn list(&self) -> Result<Vec<TraceMeta>> {
+        self.backend.list().await
+    }
+
+    pub async fn get(&self, trace_id: &str) -> Result<Option<Value>> {
+        self.backend.get(trace_id).await
+    }
+
+    pub async fn get_manifest(&self, trace_id: &str) -> Result<Option<TraceManifest>> {
+        self.backend.get_manifest(trace_id).await
+    }
+
+    pub async fn get_records_chunk(
+        &self,
+        trace_id: &str,
+        chunk_index: usize,
+    ) -> Result<Option<Vec<Value>>> {
+        self.backend.get_records_chunk(trace_id, chunk_index).await
+    }
+
+    pub async fn get_nodes_chunk(
+        &self,
+        trace_id: &str,
+        chunk_index: usize,
+    ) -> Result<Option<Vec<TraceNodeChunkEntry>>> {
+        self.backend.get_nodes_chunk(trace_id, chunk_index).await
+    }
+
+    pub async fn get_finalize_chunk(&self, trace_id: &str) -> Result<Option<Value>> {
+        self.backend.get_finalize_chunk(trace_id).await
+    }
+
+    pub async fn import_bundle(&self, bundle_path: &Path) -> Result<ImportResult> {
+        self.backend.import_bundle(bundle_path).await
+    }
+
+    pub async fn purge_traces(&self, retention: Duration, dry_run: bool) -> Result<PurgeReport> {
+        self.backend.purge_traces(retention, dry_run).await
+    }
+
+    pub async fn seed_sample(&self) -> Result<()> {
+        let _ = self.list().await?;
+        Ok(())
+    }
+
+    pub fn data_dir(&self) -> &Path {
+        self.backend.data_root()
+    }
+}
+
 fn traces_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("traces")
 }
@@ -926,21 +1040,82 @@ fn fallback_trace_id_for_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChunkBudget, Result, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
+        ChunkBudget, FileTraceBackend, PurgeReport, Result,
+        TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
         TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
         TRACE_TOTAL_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TraceChunkRef, TraceManifest, TraceMeta,
         TraceStore, apply_legacy_limits_with_thresholds, build_trace_from_manifest_with_budget,
         fallback_trace_id_for_path, path_hash_for_trace_id, resolve_chunk_path,
         resolve_trace_timestamp,
     };
-    use crate::TraceDetailRef;
     use crate::trace_id::sanitize_trace_id;
+    use crate::{ImportResult, TraceBackend, TraceDetailRef, TraceNodeChunkEntry};
     use chrono::{Duration as ChronoDuration, SecondsFormat, Utc};
     use serde_json::{Value, json};
     use std::fs;
     use std::path::Path;
+    use std::sync::Arc;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    struct DummyBackend {
+        data_dir: std::path::PathBuf,
+        list: Vec<TraceMeta>,
+    }
+
+    #[async_trait::async_trait]
+    impl TraceBackend for DummyBackend {
+        async fn list(&self) -> Result<Vec<TraceMeta>> {
+            Ok(self.list.clone())
+        }
+
+        async fn get(&self, _trace_id: &str) -> Result<Option<Value>> {
+            Ok(None)
+        }
+
+        async fn get_manifest(&self, _trace_id: &str) -> Result<Option<TraceManifest>> {
+            Ok(None)
+        }
+
+        async fn get_records_chunk(
+            &self,
+            _trace_id: &str,
+            _chunk_index: usize,
+        ) -> Result<Option<Vec<Value>>> {
+            Ok(None)
+        }
+
+        async fn get_nodes_chunk(
+            &self,
+            _trace_id: &str,
+            _chunk_index: usize,
+        ) -> Result<Option<Vec<TraceNodeChunkEntry>>> {
+            Ok(None)
+        }
+
+        async fn get_finalize_chunk(&self, _trace_id: &str) -> Result<Option<Value>> {
+            Ok(None)
+        }
+
+        async fn import_bundle(&self, _bundle_path: &Path) -> Result<ImportResult> {
+            Ok(ImportResult {
+                imported: 0,
+                trace_ids: Vec::new(),
+                rules_imported: 0,
+            })
+        }
+
+        async fn purge_traces(&self, _retention: Duration, _dry_run: bool) -> Result<PurgeReport> {
+            Ok(PurgeReport {
+                purged: Vec::new(),
+                failed: Vec::new(),
+            })
+        }
+
+        fn data_root(&self) -> &Path {
+            &self.data_dir
+        }
+    }
 
     #[test]
     fn fallback_trace_id_uses_hash_when_stem_missing() {
@@ -996,6 +1171,31 @@ mod tests {
         let resolved = resolve_chunk_path(&base, "records-0001.ndjson").expect("resolve");
         let base = base.canonicalize().expect("canonicalize base");
         assert!(resolved.starts_with(&base));
+    }
+
+    #[tokio::test]
+    async fn trace_store_with_backend_uses_backend_list() -> Result<()> {
+        let temp = tempdir()?;
+        let data_dir = temp.path().to_path_buf();
+        let meta = TraceMeta {
+            trace_id: "trace-001".to_string(),
+            status: "ok".to_string(),
+            timestamp: None,
+            duration_us: None,
+            rule: None,
+            summary: None,
+            path: "traces/2026/02/03/trace-001/trace.json".to_string(),
+        };
+        let backend = DummyBackend {
+            data_dir: data_dir.clone(),
+            list: vec![meta.clone()],
+        };
+        let store = TraceStore::with_backend(Arc::new(backend));
+        let traces = store.list().await?;
+        assert_eq!(traces.len(), 1);
+        assert_eq!(traces[0].trace_id, "trace-001");
+        assert_eq!(store.data_dir(), data_dir.as_path());
+        Ok(())
     }
 
     #[tokio::test]
@@ -1582,9 +1782,9 @@ mod tests {
 
         let max_total_bytes =
             (trace_payload.len().saturating_add(records_payload.len()) as u64).saturating_sub(1);
-        let store = TraceStore::new(data_dir).await?;
+        let store = FileTraceBackend::new(data_dir).await?;
         let err = store
-            .import_bundle_inner(&bundle_dir, max_total_bytes)
+            .import_bundle_with_limit(&bundle_dir, max_total_bytes)
             .await
             .expect_err("total bytes should be rejected");
         assert!(err.to_string().contains("max total bytes"));

@@ -1,0 +1,11 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "status"
+    expr:
+      - "@context.error.status"
+      - coalesce: [500]
+  - target: "body"
+    expr: "@context.error"

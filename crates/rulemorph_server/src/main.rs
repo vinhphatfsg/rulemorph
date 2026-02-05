@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use clap::{ArgAction, Parser, ValueEnum};
-use rulemorph_server::{ApiMode, ServerConfig, TenantContext, TenantResolver, run};
+use rulemorph_server::{ApiKeyResolver, ApiMode, ServerConfig, TenantContext, TenantResolver, run};
 
 #[derive(Parser)]
 #[command(name = "rulemorph-server")]
@@ -32,6 +32,8 @@ struct Cli {
     api_key: Option<String>,
     #[arg(long)]
     tenant_id: Option<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    api_key_store: bool,
     #[arg(long)]
     internal_api_key: Option<String>,
     #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
@@ -73,20 +75,28 @@ impl From<ApiModeArg> for ApiMode {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let tenant_resolver = cli.api_key.as_ref().and_then(|key| {
-        let trimmed = key.trim();
-        if trimmed.is_empty() {
-            return None;
-        }
-        let tenant_id = cli
-            .tenant_id
-            .clone()
-            .unwrap_or_else(|| "default".to_string());
-        Some(std::sync::Arc::new(StaticTenantResolver {
-            api_key: trimmed.to_string(),
-            tenant_id,
-        }) as std::sync::Arc<dyn TenantResolver>)
-    });
+    let tenant_resolver = if cli.api_key_store {
+        Some(std::sync::Arc::new(ApiKeyResolver::new(
+            cli.data_dir
+                .clone()
+                .unwrap_or_else(ServerConfig::default_data_dir),
+        )) as std::sync::Arc<dyn TenantResolver>)
+    } else {
+        cli.api_key.as_ref().and_then(|key| {
+            let trimmed = key.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let tenant_id = cli
+                .tenant_id
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
+            Some(std::sync::Arc::new(StaticTenantResolver {
+                api_key: trimmed.to_string(),
+                tenant_id,
+            }) as std::sync::Arc<dyn TenantResolver>)
+        })
+    };
     let internal_api_key = cli
         .internal_api_key
         .as_ref()

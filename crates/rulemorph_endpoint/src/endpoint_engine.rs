@@ -42,6 +42,12 @@ pub enum ApiMode {
     Rules,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct RequestContext {
+    pub tenant_id: Option<String>,
+    pub internal_api_key: Option<String>,
+}
+
 impl Default for ApiMode {
     fn default() -> Self {
         ApiMode::Rules
@@ -57,6 +63,7 @@ pub struct EngineConfig {
     pub max_response_bytes: usize,
     pub ssrf_allowlist: Vec<String>,
     pub ssrf_allow_private: bool,
+    pub internal_api_key: Option<String>,
 }
 
 impl EngineConfig {
@@ -69,6 +76,7 @@ impl EngineConfig {
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             ssrf_allowlist: Vec::new(),
             ssrf_allow_private: false,
+            internal_api_key: None,
         }
     }
 
@@ -94,6 +102,11 @@ impl EngineConfig {
 
     pub fn with_ssrf_allow_private(mut self, ssrf_allow_private: bool) -> Self {
         self.ssrf_allow_private = ssrf_allow_private;
+        self
+    }
+
+    pub fn with_internal_api_key(mut self, internal_api_key: String) -> Self {
+        self.internal_api_key = Some(internal_api_key);
         self
     }
 }
@@ -380,6 +393,12 @@ impl EndpointEngine {
     pub async fn handle_request(&self, request: Request<axum::body::Body>) -> Result<Response> {
         let started = Instant::now();
         let (parts, body) = request.into_parts();
+        let request_context = parts
+            .extensions
+            .get::<RequestContext>()
+            .cloned()
+            .unwrap_or_default();
+        let base_context = self.build_context_json(Some(&request_context));
         let method = parts.method.clone();
         let path = parts.uri.path().to_string();
         let endpoint_match = self
@@ -436,6 +455,7 @@ impl EndpointEngine {
                         &fallback_input,
                         None,
                         &self.endpoint_rule.base_dir,
+                        &base_context,
                     )
                     .map_err(|err| anyhow!(err.to_string()))?
                 {
@@ -461,7 +481,7 @@ impl EndpointEngine {
                     let record_input = input.clone();
                     let current_result: Result<JsonValue, EndpointError> =
                         if let Some(mappings) = &endpoint.input {
-                            apply_mappings_via_rule(mappings, &input, Some(&self.config_json()))
+                            apply_mappings_via_rule(mappings, &input, Some(&base_context))
                                 .map_err(EndpointError::from_transform)
                                 .map(|value| value.unwrap_or_else(empty_object))
                         } else {
@@ -486,7 +506,7 @@ impl EndpointEngine {
                     let keep = eval_v2_condition(
                         condition,
                         &current,
-                        Some(&self.config_json()),
+                        Some(&base_context),
                         &empty_object(),
                         "steps.when",
                         &ctx,
@@ -506,13 +526,14 @@ impl EndpointEngine {
                         continue;
                     }
                 }
-                let step_context = self.step_context(step.with.as_ref(), None);
+                let step_context = self.step_context(&base_context, step.with.as_ref(), None);
                 let step_result = self
                     .execute_rule(
                         &step.rule,
                         &current,
                         Some(&step_context),
                         &self.endpoint_rule.base_dir,
+                        Some(&request_context),
                     )
                     .await;
                 match step_result {
@@ -539,6 +560,7 @@ impl EndpointEngine {
                                     &current,
                                     step.with.as_ref(),
                                     &self.endpoint_rule.base_dir,
+                                    &base_context,
                                 )
                                 .map_err(|err| anyhow!(err.to_string()))?
                             {
@@ -566,6 +588,7 @@ impl EndpointEngine {
                                     &current,
                                     None,
                                     &self.endpoint_rule.base_dir,
+                                    &base_context,
                                 )
                                 .map_err(|err| anyhow!(err.to_string()))?
                             {
@@ -610,7 +633,7 @@ impl EndpointEngine {
                 last_error_message.unwrap_or_else(|| "endpoint error".to_string())
             ))
         } else {
-            match self.build_reply(&endpoint.reply, &current) {
+            match self.build_reply(&endpoint.reply, &current, &base_context) {
                 Ok(response) => Ok(response),
                 Err(err) => {
                     let reply_error = EndpointError::invalid(err.to_string());
@@ -621,6 +644,7 @@ impl EndpointEngine {
                             &current,
                             None,
                             &self.endpoint_rule.base_dir,
+                            &base_context,
                         )
                         .map_err(|err| anyhow!(err.to_string()))?
                     } else {
@@ -629,7 +653,7 @@ impl EndpointEngine {
 
                     if let Some(next) = catch_output {
                         current = next;
-                        match self.build_reply(&endpoint.reply, &current) {
+                        match self.build_reply(&endpoint.reply, &current, &base_context) {
                             Ok(response) => Ok(response),
                             Err(err) => {
                                 let reply_error = EndpointError::invalid(err.to_string());
@@ -783,6 +807,7 @@ impl EndpointEngine {
         input: &JsonValue,
         context: Option<&JsonValue>,
         base_dir: &Path,
+        request_context: Option<&RequestContext>,
     ) -> Result<RuleExecution, RuleExecutionError> {
         let resolved = resolve_rule_path(base_dir, rule_path);
         let rule_source = std::fs::read_to_string(&resolved)
@@ -878,7 +903,7 @@ impl EndpointEngine {
             }
             RuleKind::Network(rule) => {
                 let execution = self
-                    .execute_network(&rule, input, context)
+                    .execute_network(&rule, input, context, request_context)
                     .await
                     .map_err(|err| RuleExecutionError::new(err.with_path(resolved.clone())))?;
                 let nodes = build_network_nodes_with_timing(&rule, &execution);
@@ -908,18 +933,23 @@ impl EndpointEngine {
         rule: &CompiledNetworkRule,
         input: &JsonValue,
         context: Option<&JsonValue>,
+        request_context: Option<&RequestContext>,
     ) -> Result<NetworkExecution, EndpointError> {
         if rule.request.method == Method::GET && rule.body.is_some() {
             return Err(EndpointError::invalid("GET with body is not allowed"));
         }
 
         let total_started = Instant::now();
+        let empty_context = empty_object();
+        let base_context = context.unwrap_or(&empty_context);
         let run_catch = |err: EndpointError,
                          request_us: u64,
                          body_rule_trace: Option<JsonValue>|
          -> Result<NetworkExecution, EndpointError> {
             if let Some(catch) = &rule.catch {
-                if let Some(output) = self.run_catch(catch, &err, input, None, &rule.base_dir)? {
+                if let Some(output) =
+                    self.run_catch(catch, &err, input, None, &rule.base_dir, base_context)?
+                {
                     return Ok(NetworkExecution {
                         output,
                         request_us,
@@ -935,7 +965,7 @@ impl EndpointEngine {
             Ok(url) => url,
             Err(err) => return run_catch(err, 0, None),
         };
-        let headers = match build_headers(&rule.request.headers) {
+        let headers = match build_headers(&rule.request.headers, input, context) {
             Ok(headers) => headers,
             Err(err) => return run_catch(err, 0, None),
         };
@@ -949,7 +979,7 @@ impl EndpointEngine {
         loop {
             let request_started = Instant::now();
             let result = self
-                .send_network_request(rule, &url, &headers, body.as_ref())
+                .send_network_request(rule, &url, &headers, body.as_ref(), request_context)
                 .await;
             let request_us = request_started.elapsed().as_micros() as u64;
             let run_catch_with_body =
@@ -1104,15 +1134,22 @@ impl EndpointEngine {
         url: &str,
         headers: &HeaderMap,
         body: Option<&JsonValue>,
+        request_context: Option<&RequestContext>,
     ) -> Result<JsonValue, EndpointError> {
         let value = tokio::time::timeout(rule.timeout, async {
-            let target = resolve_ssrf_target(
+            let target = match resolve_ssrf_target(
                 url,
                 &self.config.ssrf_allowlist,
                 self.config.ssrf_allow_private,
             )
             .await
-            .map_err(EndpointError::invalid)?;
+            {
+                Ok(target) => target,
+                Err(reason) => {
+                    self.log_ssrf_block(rule, url, &reason, request_context);
+                    return Err(EndpointError::invalid(reason));
+                }
+            };
             let client = self.build_resolved_client(&target)?;
             let mut req = client.request(rule.request.method.clone(), url);
             let mut headers = headers.clone();
@@ -1171,6 +1208,25 @@ impl EndpointEngine {
         Ok(value)
     }
 
+    fn log_ssrf_block(
+        &self,
+        rule: &CompiledNetworkRule,
+        url: &str,
+        reason: &str,
+        request_context: Option<&RequestContext>,
+    ) {
+        let log = build_ssrf_audit_log(rule, url, reason, request_context);
+        tracing::warn!(
+            target: "rulemorph_endpoint::ssrf",
+            tenant_id = log.tenant_id,
+            rule_ref = log.rule_ref,
+            method = %log.method,
+            url = log.url,
+            reason = log.reason,
+            "blocked ssrf request"
+        );
+    }
+
     fn run_catch(
         &self,
         catch: &CatchSpec,
@@ -1178,6 +1234,7 @@ impl EndpointEngine {
         input: &JsonValue,
         params: Option<&JsonValue>,
         base_dir: &Path,
+        base_context: &JsonValue,
     ) -> Result<Option<JsonValue>, EndpointError> {
         if let Some(target) = catch.match_target(error) {
             let target_path = resolve_rule_path(base_dir, &target.to_string_lossy());
@@ -1189,7 +1246,7 @@ impl EndpointEngine {
                     return Err(EndpointError::invalid("catch rule must be normal"));
                 }
             };
-            let error_context = self.step_context(params, Some(error));
+            let error_context = self.step_context(base_context, params, Some(error));
             let output = transform_record_with_base_dir(
                 &rule.rule,
                 input,
@@ -1203,8 +1260,13 @@ impl EndpointEngine {
         Ok(None)
     }
 
-    fn build_reply(&self, reply: &CompiledReply, input: &JsonValue) -> Result<Response> {
-        let status_value = eval_expr_value(&reply.status, input, Some(&self.config_json()))?;
+    fn build_reply(
+        &self,
+        reply: &CompiledReply,
+        input: &JsonValue,
+        context: &JsonValue,
+    ) -> Result<Response> {
+        let status_value = eval_expr_value(&reply.status, input, Some(context))?;
         let status = match status_value {
             EvalValue::Value(JsonValue::Number(num)) => num
                 .as_u64()
@@ -1220,7 +1282,7 @@ impl EndpointEngine {
         let status = StatusCode::from_u16(status as u16).context("invalid status")?;
 
         let body = if let Some(body_expr) = &reply.body {
-            match eval_expr_value(body_expr, input, Some(&self.config_json()))? {
+            match eval_expr_value(body_expr, input, Some(context))? {
                 EvalValue::Missing => Some(JsonValue::Null),
                 EvalValue::Value(value) => Some(value),
             }
@@ -1255,16 +1317,56 @@ impl EndpointEngine {
         Ok(response)
     }
 
-    fn config_json(&self) -> JsonValue {
-        json!({
+    fn build_context_json(&self, request_context: Option<&RequestContext>) -> JsonValue {
+        let mut value = json!({
             "config": {
                 "internal_base": self.config.internal_base,
             }
-        })
+        });
+        if let Some(internal_api_key) = self.config.internal_api_key.as_ref() {
+            if let JsonValue::Object(ref mut map) = value {
+                if let Some(config) = map.get_mut("config").and_then(|v| v.as_object_mut()) {
+                    config.insert(
+                        "internal_api_key".to_string(),
+                        JsonValue::String(internal_api_key.clone()),
+                    );
+                }
+            }
+        }
+        if let Some(request_context) = request_context {
+            if let Some(tenant_id) = request_context.tenant_id.as_ref() {
+                if let JsonValue::Object(ref mut map) = value {
+                    map.insert(
+                        "tenant_id".to_string(),
+                        JsonValue::String(tenant_id.clone()),
+                    );
+                }
+            }
+            if request_context.internal_api_key.is_some() && self.config.internal_api_key.is_none()
+            {
+                if let Some(internal_api_key) = request_context.internal_api_key.as_ref() {
+                    if let JsonValue::Object(ref mut map) = value {
+                        if let Some(config) = map.get_mut("config").and_then(|v| v.as_object_mut())
+                        {
+                            config.insert(
+                                "internal_api_key".to_string(),
+                                JsonValue::String(internal_api_key.clone()),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        value
     }
 
-    fn step_context(&self, params: Option<&JsonValue>, error: Option<&EndpointError>) -> JsonValue {
-        let mut value = self.config_json();
+    fn step_context(
+        &self,
+        base_context: &JsonValue,
+        params: Option<&JsonValue>,
+        error: Option<&EndpointError>,
+    ) -> JsonValue {
+        let mut value = base_context.clone();
         if let Some(params) = params {
             if let JsonValue::Object(ref mut map) = value {
                 map.insert("params".to_string(), params.clone());
@@ -1276,6 +1378,38 @@ impl EndpointEngine {
             }
         }
         value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SsrAuditLog {
+    tenant_id: String,
+    rule_ref: String,
+    method: Method,
+    url: String,
+    reason: String,
+}
+
+fn build_ssrf_audit_log(
+    rule: &CompiledNetworkRule,
+    url: &str,
+    reason: &str,
+    request_context: Option<&RequestContext>,
+) -> SsrAuditLog {
+    let tenant_id = request_context
+        .and_then(|ctx| ctx.tenant_id.as_ref())
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
+    let rule_ref = rule
+        .rule_ref
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    SsrAuditLog {
+        tenant_id,
+        rule_ref,
+        method: rule.request.method.clone(),
+        url: url.to_string(),
+        reason: reason.to_string(),
     }
 }
 
@@ -1527,6 +1661,7 @@ struct CompiledNetworkRule {
     body_map: Option<Vec<Mapping>>,
     body_rule: Option<LoadedRule>,
     body_rule_ref: Option<String>,
+    rule_ref: Option<String>,
     catch: Option<CatchSpec>,
     retry: Option<RetryConfig>,
     base_dir: PathBuf,
@@ -1558,7 +1693,7 @@ struct NetworkRequest {
     method: String,
     url: JsonValue,
     #[serde(default)]
-    headers: Option<HashMap<String, String>>,
+    headers: Option<HashMap<String, JsonValue>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1589,7 +1724,7 @@ enum RetryBackoff {
 struct CompiledNetworkRequest {
     method: Method,
     url: rulemorph::v2_model::V2Expr,
-    headers: HashMap<String, String>,
+    headers: HashMap<String, rulemorph::v2_model::V2Expr>,
 }
 
 #[derive(Debug)]
@@ -1767,9 +1902,13 @@ fn build_input_from_parts(
     input
 }
 
-fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, EndpointError> {
+fn build_headers(
+    headers: &HashMap<String, rulemorph::v2_model::V2Expr>,
+    input: &JsonValue,
+    context: Option<&JsonValue>,
+) -> Result<HeaderMap, EndpointError> {
     let mut map = HeaderMap::new();
-    for (key, value) in headers {
+    for (key, expr) in headers {
         let lower = key.trim().to_ascii_lowercase();
         if matches!(
             lower.as_str(),
@@ -1780,9 +1919,23 @@ fn build_headers(headers: &HashMap<String, String>) -> Result<HeaderMap, Endpoin
                 key
             )));
         }
+        let value = match eval_expr_value(expr, input, context)
+            .map_err(|err| EndpointError::invalid(format!("expr eval error: {}", err)))?
+        {
+            EvalValue::Missing => {
+                continue;
+            }
+            EvalValue::Value(JsonValue::String(value)) => value,
+            EvalValue::Value(other) => {
+                return Err(EndpointError::invalid(format!(
+                    "expected string, got {}",
+                    json_value_kind(&other)
+                )));
+            }
+        };
         let name = HeaderName::from_bytes(key.as_bytes())
             .map_err(|_| EndpointError::invalid("invalid header name"))?;
-        let header_value = HeaderValue::from_str(value)
+        let header_value = HeaderValue::from_str(&value)
             .map_err(|_| EndpointError::invalid("invalid header value"))?;
         map.insert(name, header_value);
     }
@@ -2284,13 +2437,11 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         return Err(anyhow!("GET with body is not allowed"));
     }
     let url_expr = parse_v2_expr(&raw.request.url).map_err(|err| anyhow!(err))?;
-    let headers = raw
-        .request
-        .headers
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(k, v)| (k.to_lowercase(), v))
-        .collect();
+    let mut headers: HashMap<String, rulemorph::v2_model::V2Expr> = HashMap::new();
+    for (key, value) in raw.request.headers.unwrap_or_default() {
+        let expr = parse_v2_expr(&value).map_err(|err| anyhow!(err))?;
+        headers.insert(key.to_lowercase(), expr);
+    }
     let timeout = parse_duration(&raw.timeout)?;
     if timeout.is_zero() {
         return Err(anyhow!("timeout must be > 0"));
@@ -2324,6 +2475,10 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
     });
 
     let retry = compile_retry(raw.retry.as_ref())?;
+    let rule_ref = {
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        Some(rule_ref_from_path(base_dir, path))
+    };
     Ok(CompiledNetworkRule {
         request: CompiledNetworkRequest {
             method,
@@ -2336,6 +2491,7 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
         body_map: raw.body_map,
         body_rule,
         body_rule_ref,
+        rule_ref,
         catch: raw.catch.map(CatchSpec::from),
         retry,
         base_dir: path
@@ -3045,10 +3201,11 @@ fn build_network_nodes_with_timing(
         JsonValue::String(format!("{:?}", rule.request.url)),
     );
     if !rule.request.headers.is_empty() {
-        request_args.insert(
-            "headers".to_string(),
-            serde_json::to_value(&rule.request.headers).unwrap_or_else(|_| json!({})),
-        );
+        let mut headers = JsonMap::new();
+        for (key, expr) in &rule.request.headers {
+            headers.insert(key.to_string(), JsonValue::String(format!("{:?}", expr)));
+        }
+        request_args.insert("headers".to_string(), JsonValue::Object(headers));
     }
     children.push(json!({
         "id": "op-request",
@@ -3601,10 +3758,67 @@ mod tests {
     #[test]
     fn build_headers_rejects_host_header() {
         let mut headers = HashMap::new();
-        headers.insert("Host".to_string(), "example.com".to_string());
-        let err = build_headers(&headers).expect_err("expected error");
+        let expr = parse_v2_expr(&json!("example.com")).expect("parse expr");
+        headers.insert("Host".to_string(), expr);
+        let err = build_headers(&headers, &json!({}), None).expect_err("expected error");
         assert_eq!(err.kind, EndpointErrorKind::Invalid);
         assert!(err.message.contains("disallowed header"));
+    }
+
+    #[test]
+    fn ssrf_audit_log_populates_fields() {
+        let rule = CompiledNetworkRule {
+            request: CompiledNetworkRequest {
+                method: Method::GET,
+                url: parse_v2_expr(&json!("https://example.com")).expect("parse url"),
+                headers: HashMap::new(),
+            },
+            timeout: std::time::Duration::from_secs(1),
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            body_rule_ref: None,
+            rule_ref: Some("rules/network.yaml".to_string()),
+            catch: None,
+            retry: None,
+            base_dir: PathBuf::from("."),
+        };
+        let context = RequestContext {
+            tenant_id: Some("tenant-1".to_string()),
+            internal_api_key: None,
+        };
+        let log = build_ssrf_audit_log(&rule, "https://example.com", "blocked", Some(&context));
+        assert_eq!(log.tenant_id, "tenant-1");
+        assert_eq!(log.rule_ref, "rules/network.yaml");
+        assert_eq!(log.method, Method::GET);
+        assert_eq!(log.url, "https://example.com");
+        assert_eq!(log.reason, "blocked");
+    }
+
+    #[test]
+    fn ssrf_audit_log_defaults_to_unknown() {
+        let rule = CompiledNetworkRule {
+            request: CompiledNetworkRequest {
+                method: Method::POST,
+                url: parse_v2_expr(&json!("https://example.com")).expect("parse url"),
+                headers: HashMap::new(),
+            },
+            timeout: std::time::Duration::from_secs(1),
+            select: None,
+            body: None,
+            body_map: None,
+            body_rule: None,
+            body_rule_ref: None,
+            rule_ref: None,
+            catch: None,
+            retry: None,
+            base_dir: PathBuf::from("."),
+        };
+        let log = build_ssrf_audit_log(&rule, "https://example.com", "blocked", None);
+        assert_eq!(log.tenant_id, "unknown");
+        assert_eq!(log.rule_ref, "unknown");
+        assert_eq!(log.method, Method::POST);
     }
 
     #[test]
@@ -5061,6 +5275,7 @@ mappings: []
                 base_dir: PathBuf::from("."),
             }),
             body_rule_ref: Some("rules/body.yaml".to_string()),
+            rule_ref: None,
             catch: None,
             retry: None,
             base_dir: PathBuf::from("."),

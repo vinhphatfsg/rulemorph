@@ -35,7 +35,7 @@ select: "data"
 - `timeout`: 例 `5s`, `500ms`
 
 ### 任意
-- `request.headers`: 文字列のマップ（MVPではリテラルのみ）
+- `request.headers`: 文字列 or v2 expr のマップ（`missing` はヘッダを送らない）
 - `body`: v2 expr
 - `body_map`: v2 `mappings`（入力からボディを組み立てる）
 - `body_rule`: 外部ルール参照
@@ -55,13 +55,16 @@ select: "data"
 `missing` や非文字列はエラーとして `catch` に渡します。
 
 ### headers
-`headers` は固定文字列のみ（MVPでは expr 非対応）。
+`headers` は **固定文字列または v2 expr** を指定できます。
+`expr` の評価結果が `missing` の場合は **そのヘッダを送信しません**。
 `Host` / `Forwarded` / `X-Forwarded-*` は SSRF 対策のため指定不可です。
 
 ```yaml
 request:
   method: GET
   url: "https://api.example.com/users"
+  headers:
+    Authorization: "Bearer TOKEN"
 ```
 
 ```yaml
@@ -70,6 +73,8 @@ request:
   url:
     - "https://api.example.com/users/"
     - concat: ["@input.user_id"]
+  headers:
+    x-tenant-id: "@context.tenant_id"
 ```
 
 ## body
@@ -194,3 +199,7 @@ rulemorph-server --ssrf-allow-any
 
 ローカル検証を行う場合は `localhost` を使用してください（`127.0.0.1` など IP リテラルは拒否されます）。
 内部IP/localhost を許可したい場合は明示的に `--ssrf-allow-private` を指定してください（本番では非推奨）。
+
+### SSRF監査ログ
+SSRF判定でブロックされた場合は `rulemorph_endpoint::ssrf` ターゲットで警告ログを出力します。
+ログには `tenant_id` / `rule_ref` / `method` / `url` / `reason` が含まれます。

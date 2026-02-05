@@ -1,0 +1,11 @@
+version: 2
+type: network
+request:
+  method: GET
+  url:
+    - "@context.config.internal_base"
+    - concat: ["/internal/traces/", "@input.path.id", "/manifest"]
+  headers:
+    x-api-key: "@context.config.internal_api_key"
+    x-tenant-id: "@context.tenant_id"
+timeout: 5s

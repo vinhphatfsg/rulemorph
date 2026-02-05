@@ -1,4 +1,5 @@
 mod api_graph;
+mod api_keys;
 mod server;
 mod tenant;
 
@@ -13,8 +14,12 @@ use rulemorph_endpoint::{EndpointEngine, EngineConfig};
 use rulemorph_trace::{TraceStore, start_trace_watcher};
 use tokio::sync::broadcast;
 
-pub use server::{AppState, RateLimiter, UiSource, build_router};
-pub use tenant::{TenantContext, TenantResolver};
+pub use api_keys::{
+    ApiKeyInfo, ApiKeyIssueResult, ApiKeyRecord, ApiKeyResolver, ApiKeyStore, ParsedApiKey,
+    parse_api_key,
+};
+pub use server::{AppState, RateLimiter, TenantRegistry, TenantResources, UiSource, build_router};
+pub use tenant::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -89,44 +94,81 @@ pub async fn run(config: ServerConfig) -> Result<()> {
         );
     }
 
-    let store = TraceStore::new(config.data_dir.clone())
-        .await
-        .context("failed to init trace store")?;
-    let (trace_events, _) = broadcast::channel(64);
-    if config.ui_enabled {
-        start_trace_watcher(config.data_dir.clone(), trace_events.clone());
-    }
-    let api_engine = match config.api_mode {
-        ApiMode::UiOnly => None,
-        ApiMode::Rules => {
-            let rules_dir = config
-                .rules_dir
-                .clone()
-                .unwrap_or_else(ServerConfig::default_rules_dir);
-            if let Err(errs) = validate_rules_dir(&rules_dir) {
-                return Err(errs.into());
-            }
-            let internal_base = format!("http://127.0.0.1:{}", config.port);
-            Some(EndpointEngine::load(
-                rules_dir,
-                EngineConfig::new(internal_base, config.data_dir.clone())
-                    .with_ssrf_allowlist(config.ssrf_allowlist.clone())
-                    .with_ssrf_allow_private(config.ssrf_allow_private),
-            )?)
-        }
-    };
     let ui_source = if config.ui_enabled {
         Some(resolve_ui_source(&config)?)
     } else {
         None
     };
 
+    let (default_resources, tenant_registry) = if config.tenant_resolver.is_some() {
+        let registry = Arc::new(TenantRegistry::new(
+            config.data_dir.clone(),
+            config.rules_dir.clone(),
+            config.api_mode,
+            config.ui_enabled,
+            config.port,
+            config.ssrf_allowlist.clone(),
+            config.ssrf_allow_private,
+            config.internal_api_key.clone(),
+        ));
+        let default_resources = registry
+            .get_or_init("default")
+            .await
+            .context("failed to init default tenant")?;
+        (default_resources, Some(registry))
+    } else {
+        let data_dir = config.data_dir.clone();
+        let auth_dir = data_dir.join("auth");
+        tokio::fs::create_dir_all(&auth_dir)
+            .await
+            .context("failed to create auth dir")?;
+        let store = TraceStore::new(data_dir.clone())
+            .await
+            .context("failed to init trace store")?;
+        let (trace_events, _) = broadcast::channel(64);
+        if config.ui_enabled {
+            start_trace_watcher(data_dir.clone(), trace_events.clone());
+        }
+        let api_engine = match config.api_mode {
+            ApiMode::UiOnly => None,
+            ApiMode::Rules => {
+                let rules_dir = config
+                    .rules_dir
+                    .clone()
+                    .unwrap_or_else(ServerConfig::default_rules_dir);
+                if let Err(errs) = validate_rules_dir(&rules_dir) {
+                    return Err(errs.into());
+                }
+                let internal_base = format!("http://localhost:{}", config.port);
+                let mut engine_config = EngineConfig::new(internal_base, data_dir.clone())
+                    .with_ssrf_allowlist(config.ssrf_allowlist.clone())
+                    .with_ssrf_allow_private(config.ssrf_allow_private);
+                if let Some(internal_api_key) = config.internal_api_key.clone() {
+                    engine_config = engine_config.with_internal_api_key(internal_api_key);
+                }
+                Some(Arc::new(EndpointEngine::load(rules_dir, engine_config)?))
+            }
+        };
+        let resources = TenantResources {
+            tenant_id: "default".to_string(),
+            data_dir,
+            rules_dir: config
+                .rules_dir
+                .clone()
+                .unwrap_or_else(ServerConfig::default_rules_dir),
+            auth_dir,
+            store: Arc::new(store),
+            api_engine,
+            trace_events,
+        };
+        (Arc::new(resources), None)
+    };
+
     let state = AppState {
-        store: Arc::new(store),
+        default_resources,
+        tenant_registry,
         ui_source,
         api_mode: config.api_mode,
-        api_engine: api_engine.map(Arc::new),
-        trace_events,
         tenant_resolver: config.tenant_resolver.clone(),
         internal_api_key: config.internal_api_key.clone(),
         allow_unauth_internal: config.allow_unauth_internal,
