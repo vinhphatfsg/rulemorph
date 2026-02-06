@@ -2598,32 +2598,24 @@ fn parse_node_chunk_entry(value: Value) -> NodeChunkEntry {
     let record_index_value = value.get("record_index");
     let record_index_present = record_index_value.is_some();
     let record_index = record_index_value.and_then(parse_record_index);
-    let (has_node_wrapper, extra_keys) = match value.as_object() {
-        Some(obj) => {
+    let mut node = match value {
+        Value::Object(mut obj) => {
             let has_node = obj.contains_key("node");
             let has_core_fields =
                 obj.contains_key("id") || obj.contains_key("kind") || obj.contains_key("status");
-            let extras = obj
-                .keys()
-                .filter(|key| key.as_str() != "node" && key.as_str() != "record_index")
-                .cloned()
-                .collect::<Vec<_>>();
-            let is_wrapper = has_node && !has_core_fields;
-            (is_wrapper, extras)
+            let legacy_wrapper_shape = has_node
+                && !has_core_fields
+                && obj
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "node" | "record_index"));
+            if legacy_wrapper_shape {
+                obj.remove("node").unwrap_or(Value::Null)
+            } else {
+                obj.remove("record_index");
+                Value::Object(obj)
+            }
         }
-        None => (false, Vec::new()),
-    };
-    if has_node_wrapper && !extra_keys.is_empty() {
-        warn!("node wrapper has extra keys ignored: {:?}", extra_keys);
-    }
-    let mut node = if has_node_wrapper {
-        value.get("node").cloned().unwrap_or(Value::Null)
-    } else {
-        let mut node = value;
-        if let Some(obj) = node.as_object_mut() {
-            obj.remove("record_index");
-        }
-        node
+        other => other,
     };
     if !node.is_object() {
         node = json!({ "value": node });

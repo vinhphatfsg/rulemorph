@@ -590,6 +590,87 @@ async fn write_trace_bundle_recovers_nodes_without_record_index() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn write_trace_bundle_preserves_node_owned_record_index() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-node-owned-record-index",
+        "records": [
+            {
+                "status": "ok",
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "kind": "mappings",
+                        "status": "ok",
+                        "record_index": "node-owned"
+                    }
+                ]
+            }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        split_nodes: true,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let detail = manifest.detail.expect("detail should exist");
+    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let node_chunk = &detail.nodes[0];
+    let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
+    let first_line = node_payload
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .expect("node line should exist");
+    let raw_entry: serde_json::Value = serde_json::from_str(first_line)?;
+    assert_eq!(
+        raw_entry
+            .get("record_index")
+            .and_then(|value| value.as_u64()),
+        Some(0)
+    );
+    assert_eq!(
+        raw_entry
+            .get("node")
+            .and_then(|value| value.get("record_index"))
+            .and_then(|value| value.as_str()),
+        Some("node-owned")
+    );
+
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-node-owned-record-index")
+        .await?
+        .expect("trace should load");
+    let records = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .expect("records should exist");
+    let nodes = records[0]
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .expect("nodes should be array");
+    assert_eq!(
+        nodes[0].get("id").and_then(|value| value.as_str()),
+        Some("n1")
+    );
+    assert_eq!(
+        nodes[0]
+            .get("record_index")
+            .and_then(|value| value.as_str()),
+        Some("node-owned")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir)?;
@@ -664,7 +745,7 @@ async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn write_trace_bundle_reads_legacy_node_wrapper_with_extra_keys() -> anyhow::Result<()> {
+async fn write_trace_bundle_keeps_node_key_with_sibling_fields() -> anyhow::Result<()> {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir)?;
 
@@ -730,10 +811,19 @@ async fn write_trace_bundle_reads_legacy_node_wrapper_with_extra_keys() -> anyho
         .get("nodes")
         .and_then(|value| value.as_array())
         .expect("first nodes should be array");
+    assert!(nodes_first[0].get("id").is_none());
     assert_eq!(
-        nodes_first[0].get("id").and_then(|value| value.as_str()),
+        nodes_first[0].get("extra").and_then(|value| value.as_str()),
+        Some("ignored")
+    );
+    assert_eq!(
+        nodes_first[0]
+            .get("node")
+            .and_then(|value| value.get("id"))
+            .and_then(|value| value.as_str()),
         Some("n1")
     );
+    assert!(nodes_first[0].get("record_index").is_none());
 
     Ok(())
 }

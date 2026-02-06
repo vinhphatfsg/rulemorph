@@ -2085,6 +2085,26 @@ fn parse_record_index(value: &JsonValue) -> Option<u64> {
     }
 }
 
+fn build_node_chunk_entry(node: &JsonValue, record_index: u64) -> JsonValue {
+    match node {
+        JsonValue::Object(map) if map.contains_key("record_index") => json!({
+            "record_index": record_index,
+            "node": JsonValue::Object(map.clone()),
+        }),
+        JsonValue::Object(map) => {
+            let mut entry = JsonValue::Object(map.clone());
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("record_index".to_string(), JsonValue::from(record_index));
+            }
+            entry
+        }
+        other => json!({
+            "record_index": record_index,
+            "value": other,
+        }),
+    }
+}
+
 fn split_records_and_nodes(records: &[JsonValue]) -> (Vec<JsonValue>, Vec<JsonValue>) {
     let mut records_out = Vec::with_capacity(records.len());
     let mut nodes_out = Vec::new();
@@ -2119,25 +2139,11 @@ fn split_records_and_nodes(records: &[JsonValue]) -> (Vec<JsonValue>, Vec<JsonVa
             match nodes_value {
                 JsonValue::Array(nodes) => {
                     for node in nodes {
-                        let mut entry = match node {
-                            JsonValue::Object(map) => JsonValue::Object(map.clone()),
-                            other => json!({ "value": other }),
-                        };
-                        if let Some(obj) = entry.as_object_mut() {
-                            obj.insert("record_index".to_string(), JsonValue::from(record_index));
-                        }
-                        nodes_out.push(entry);
+                        nodes_out.push(build_node_chunk_entry(node, record_index));
                     }
                 }
                 other => {
-                    let mut entry = match other {
-                        JsonValue::Object(map) => JsonValue::Object(map.clone()),
-                        value => json!({ "value": value }),
-                    };
-                    if let Some(obj) = entry.as_object_mut() {
-                        obj.insert("record_index".to_string(), JsonValue::from(record_index));
-                    }
-                    nodes_out.push(entry);
+                    nodes_out.push(build_node_chunk_entry(other, record_index));
                 }
             }
         }
