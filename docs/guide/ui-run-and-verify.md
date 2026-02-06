@@ -54,7 +54,7 @@ rulemorph-server --api-mode rules --rules-dir ./assets/api_rules --allow-unauth-
 | `--data-dir <PATH>` | データディレクトリ | `./.rulemorph` |
 | `--rules-dir <PATH>` | APIルールディレクトリ | `./.rulemorph/api_rules` |
 | `--no-ui` | UIを無効化（APIのみ提供） | - |
-| `--internal-api-key <KEY>` | `/internal/*` 用の内部キー | - |
+| `--internal-api-key <KEY>` | `/internal/*` と `/api/import` 用の内部キー | - |
 | `--allow-unauth-internal` | 内部APIを鍵なしで許可 | - |
 | `--ssrf-allow-private` | private IP/localhost を許可 | - |
 
@@ -81,6 +81,20 @@ ZIPインポートや内部操作を行う場合は `internal_key` を併用し�
 ```
 http://127.0.0.1:8080/?api_key=<API_KEY>&internal_key=<INTERNAL_KEY>
 ```
+
+`/api/import` の認証は内部APIポリシーに従います。UI有効時は `/internal/*` と同じ扱いで、`--internal-api-key` 未設定かつ `--allow-unauth-internal` 有効時は鍵なしで利用できます。
+UI からのZIPインポートは `x-rulemorph-import: zip` ヘッダ付きで送信されます。
+`/api/import` は `--no-ui`（UI無効）時でも利用できますが、この場合は `internal_key` 必須です（`--allow-unauth-internal` だけでは許可されません）。
+`endpoint.yaml` に `POST /api/import` を定義している場合、通常リクエストはルール側が優先されます。ZIPインポートを強制する場合は `x-rulemorph-import: zip` を付与してください。
+`--api-key-store` などでテナント認証を有効化している場合、この優先判定は認証済みテナントの `endpoint.yaml` に対して評価されます。
+`--rate-limit-per-sec` を有効化している場合、`/api/import` の上記優先判定では pre-auth レート制限がテナント解決より先に適用され、上限超過時は resolver 実行前に 429 が返ります。
+
+## 破壊的変更メモ（2026-02-06）
+
+- 旧: `POST /internal/import-zip`
+- 新: `POST /api/import`（`multipart/form-data`, `bundle` フィールド, ZIP用途は `x-rulemorph-import: zip` 推奨）
+
+既存クライアント/スクリプトで `POST /internal/import-zip` を呼んでいる場合は、`POST /api/import` へ移行してください。
 
 ## サンプルトレース投入
 

@@ -422,6 +422,10 @@ impl EndpointEngine {
         self.config.allow_internal_auth
     }
 
+    pub fn has_endpoint(&self, method: &Method, path: &str) -> bool {
+        self.endpoint_rule.match_endpoint(method, path).is_some()
+    }
+
     pub async fn handle_request(&self, request: Request<axum::body::Body>) -> Result<Response> {
         let started = Instant::now();
         let (parts, body) = request.into_parts();

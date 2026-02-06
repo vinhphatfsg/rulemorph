@@ -531,7 +531,20 @@ test("Trace Console imports ZIP bundles", async ({ page }) => {
   execFileSync("zip", ["-r", zipPath, "traces"], { cwd: bundleDir });
 
   const port = await getAvailablePort();
-  const server = await startServer(dataDir, port);
+  const server = await startServerWithOptions(dataDir, port, {
+    internalApiKey: "internal-test",
+    allowUnauthInternal: true
+  });
+  let apiImportRequests = 0;
+  let internalImportZipRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/import")) {
+      apiImportRequests += 1;
+    }
+    if (request.method() === "POST" && request.url().endsWith("/internal/import-zip")) {
+      internalImportZipRequests += 1;
+    }
+  });
 
   try {
     await page.goto(`http://127.0.0.1:${port}/?internal_key=internal-test`, {
@@ -541,8 +554,18 @@ test("Trace Console imports ZIP bundles", async ({ page }) => {
 
     await page.getByTestId("zip-import-button").click();
     await page.getByTestId("zip-import-file").setInputFiles(zipPath);
+    const importResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/api/import")
+    );
     await page.getByTestId("zip-import-submit").click();
+    const importResponse = await importResponsePromise;
+    expect(importResponse.status()).toBe(200);
+    expect(importResponse.request().headers()["x-api-key"]).toBe("internal-test");
+    expect(importResponse.request().headers()["x-rulemorph-import"]).toBe("zip");
     await expect(page.getByTestId("zip-import-message")).toContainText("imported 1 traces");
+    expect(apiImportRequests).toBeGreaterThan(0);
+    expect(internalImportZipRequests).toBe(0);
     await expect(
       page.getByRole("button", { name: /rules\/zip\.yaml/ }).first()
     ).toBeVisible();
@@ -600,6 +623,16 @@ test("Trace Console imports ZIP bundles with static auth", async ({ page }) => {
     internalApiKey: "internal-test-key",
     allowUnauthInternal: false
   });
+  let apiImportRequests = 0;
+  let internalImportZipRequests = 0;
+  page.on("request", (request) => {
+    if (request.method() === "POST" && request.url().endsWith("/api/import")) {
+      apiImportRequests += 1;
+    }
+    if (request.method() === "POST" && request.url().endsWith("/internal/import-zip")) {
+      internalImportZipRequests += 1;
+    }
+  });
 
   try {
     await page.goto(
@@ -612,8 +645,18 @@ test("Trace Console imports ZIP bundles with static auth", async ({ page }) => {
 
     await page.getByTestId("zip-import-button").click();
     await page.getByTestId("zip-import-file").setInputFiles(zipPath);
+    const importResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && response.url().endsWith("/api/import")
+    );
     await page.getByTestId("zip-import-submit").click();
+    const importResponse = await importResponsePromise;
+    expect(importResponse.status()).toBe(200);
+    expect(importResponse.request().headers()["x-api-key"]).toBe("internal-test-key");
+    expect(importResponse.request().headers()["x-rulemorph-import"]).toBe("zip");
     await expect(page.getByTestId("zip-import-message")).toContainText("imported 1 traces");
+    expect(apiImportRequests).toBeGreaterThan(0);
+    expect(internalImportZipRequests).toBe(0);
     await expect(
       page.getByRole("button", { name: /rules\/zip-auth\.yaml/ }).first()
     ).toBeVisible();

@@ -5,8 +5,8 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Extension, Multipart, Path as AxumPath, State},
-    http::{HeaderMap, Request, StatusCode},
+    extract::{ConnectInfo, Extension, FromRequest, Multipart, Path as AxumPath, State},
+    http::{HeaderMap, Method, Request, StatusCode},
     middleware::{Next, from_fn_with_state},
     response::{
         IntoResponse,
@@ -266,9 +266,20 @@ impl TenantRegistry {
 
 pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
     let api = match state.api_mode {
-        ApiMode::UiOnly => Router::new(),
+        ApiMode::UiOnly => {
+            if ui_enabled {
+                Router::new().route("/api/import", any(handle_api_import_only))
+            } else {
+                Router::new()
+            }
+        }
         ApiMode::Rules => {
             let mut api_router = Router::new().route("/api/*path", any(handle_rules_api));
+            let api_import = if ui_enabled {
+                Router::new().route("/api/import", any(handle_api_import_or_rules))
+            } else {
+                Router::new().route("/api/import", any(handle_api_import_or_rules_strict))
+            };
             if state.rate_limiter.is_some() {
                 api_router = api_router.layer(from_fn_with_state(state.clone(), api_rate_limit));
             }
@@ -287,7 +298,7 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             if state.rate_limiter.is_some() {
                 v1 = v1.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
             }
-            Router::new().merge(api_router).merge(v1)
+            Router::new().merge(api_import).merge(api_router).merge(v1)
         }
     };
 
@@ -309,8 +320,7 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             .route("/internal/traces/:id/finalize", get(get_trace_finalize))
             .route("/internal/stream", get(stream_traces))
             .route("/internal/api-graph", get(get_api_graph))
-            .route("/internal/import", post(import_bundle_path))
-            .route("/internal/import-zip", post(import_bundle_zip));
+            .route("/internal/import", post(import_bundle_path));
 
         let mut internal_admin = Router::new()
             .route("/internal/api-keys", get(list_api_keys).post(issue_api_key))
@@ -398,21 +408,164 @@ fn embedded_response(path: Option<&str>, contents: &'static [u8]) -> axum::respo
     (headers, contents).into_response()
 }
 
-async fn handle_rules_api(
-    state: State<AppState>,
-    mut request: axum::http::Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    let state = state.0;
-    let resources = request
+fn request_resources(
+    state: &AppState,
+    request: &Request<axum::body::Body>,
+) -> Arc<TenantResources> {
+    request
         .extensions()
         .get::<Arc<TenantResources>>()
         .cloned()
-        .unwrap_or_else(|| state.default_resources.clone());
-    let engine = resources
+        .unwrap_or_else(|| state.default_resources.clone())
+}
+
+fn request_engine<'a>(
+    state: &'a AppState,
+    resources: &'a Arc<TenantResources>,
+) -> std::result::Result<&'a Arc<EndpointEngine>, ApiError> {
+    resources
         .api_engine
         .as_ref()
         .or(state.default_resources.api_engine.as_ref())
-        .ok_or_else(|| ApiError::internal("api engine not configured"))?;
+        .ok_or_else(|| ApiError::internal("api engine not configured"))
+}
+
+fn is_multipart_form_data(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .is_some_and(|part| part.trim().eq_ignore_ascii_case("multipart/form-data"))
+        })
+        .unwrap_or(false)
+}
+
+fn has_zip_import_hint(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-rulemorph-import")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("zip"))
+}
+
+fn is_zip_import_request(request: &Request<axum::body::Body>) -> bool {
+    request.method() == Method::POST
+        && request.uri().path() == "/api/import"
+        && is_multipart_form_data(request.headers())
+}
+
+async fn handle_api_import_only(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if !is_zip_import_request(&request) {
+        return Err(ApiError::not_found("no endpoint matched"));
+    }
+    run_api_import_request(&state, request, false).await
+}
+
+async fn handle_api_import_or_rules(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    handle_api_import_or_rules_with_auth_mode(state, request, false).await
+}
+
+async fn handle_api_import_or_rules_strict(
+    State(state): State<AppState>,
+    request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    handle_api_import_or_rules_with_auth_mode(state, request, true).await
+}
+
+async fn handle_api_import_or_rules_with_auth_mode(
+    state: AppState,
+    mut request: Request<axum::body::Body>,
+    require_internal_key: bool,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if !is_zip_import_request(&request) {
+        return run_rules_api_request(&state, request).await;
+    }
+    if has_zip_import_hint(request.headers()) {
+        return run_api_import_request(&state, request, require_internal_key).await;
+    }
+    if state.tenant_resolver.is_some() && state.rate_limiter.is_some() {
+        ensure_pre_auth_rate_limit_for_request(&state, &mut request).await?;
+    }
+    maybe_apply_v1_auth_context_for_dispatch(&state, &mut request).await?;
+    let resources = request_resources(&state, &request);
+    let has_rule = request_engine(&state, &resources)
+        .map(|engine| engine.has_endpoint(request.method(), request.uri().path()))
+        .unwrap_or(false);
+    if has_rule {
+        return run_rules_api_request(&state, request).await;
+    }
+    run_api_import_request(&state, request, require_internal_key).await
+}
+
+async fn run_rules_api_request(
+    state: &AppState,
+    mut request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if state.tenant_resolver.is_some() && state.rate_limiter.is_some() {
+        ensure_pre_auth_rate_limit_for_request(state, &mut request).await?;
+    }
+    if state.tenant_resolver.is_some() && request.extensions().get::<TenantContext>().is_none() {
+        if request
+            .extensions()
+            .get::<DispatchInvalidApiKeyForRules>()
+            .is_some()
+        {
+            return Err(ApiError::unauthorized("invalid api key"));
+        }
+        apply_v1_auth_context(state, &mut request).await?;
+    }
+    if state.rate_limiter.is_some() {
+        let key = rate_limit_key(state, &request);
+        enforce_api_rate_limit(state, key).await?;
+    }
+    handle_rules_api_core(state, request).await
+}
+
+async fn run_api_import_request(
+    state: &AppState,
+    mut request: Request<axum::body::Body>,
+    require_internal_key: bool,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    if state.rate_limiter.is_some() {
+        ensure_pre_auth_rate_limit_for_request(state, &mut request).await?;
+    }
+    if require_internal_key {
+        ensure_internal_auth_required(state, request.headers())?;
+    } else {
+        ensure_internal_auth(state, request.headers())?;
+    }
+    if state.tenant_resolver.is_some() {
+        apply_internal_tenant_context(state, &mut request).await?;
+    }
+    if state.rate_limiter.is_some() {
+        request.extensions_mut().insert(InternalApiRateLimitScope);
+        let key = rate_limit_key(state, &request);
+        enforce_api_rate_limit(state, key).await?;
+    }
+    import_bundle_zip_from_request(state, request).await
+}
+
+async fn handle_rules_api(
+    state: State<AppState>,
+    request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    handle_rules_api_core(&state.0, request).await
+}
+
+async fn handle_rules_api_core(
+    state: &AppState,
+    mut request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    let resources = request_resources(state, &request);
+    let engine = request_engine(state, &resources)?;
     let mut request_context = RequestContext::default();
     if let Some(context) = request.extensions().get::<TenantContext>() {
         request_context.tenant_id = Some(context.tenant_id.clone());
@@ -436,26 +589,52 @@ async fn handle_rules_api(
     }
 }
 
-async fn v1_auth(
-    State(state): State<AppState>,
-    mut request: Request<axum::body::Body>,
-    next: Next,
-) -> std::result::Result<axum::response::Response, ApiError> {
+async fn apply_v1_auth_context(
+    state: &AppState,
+    request: &mut Request<axum::body::Body>,
+) -> std::result::Result<(), ApiError> {
+    if state.tenant_resolver.is_none() {
+        return Err(ApiError::service_unavailable(
+            "tenant resolver not configured",
+        ));
+    }
+    if request.extensions().get::<TenantContext>().is_some() {
+        return Ok(());
+    }
+    let api_key = extract_api_key(request.headers())
+        .ok_or_else(|| ApiError::unauthorized("missing api key"))?;
+    let context = resolve_v1_tenant_context(state, &api_key).await?;
+    let Some(context) = context else {
+        return Err(ApiError::unauthorized("invalid api key"));
+    };
+    attach_tenant_context(state, request, context).await?;
+    Ok(())
+}
+
+async fn resolve_v1_tenant_context(
+    state: &AppState,
+    api_key: &str,
+) -> std::result::Result<Option<TenantContext>, ApiError> {
     let resolver = state
         .tenant_resolver
         .as_ref()
         .ok_or_else(|| ApiError::service_unavailable("tenant resolver not configured"))?;
-    let api_key = extract_api_key(request.headers())
-        .ok_or_else(|| ApiError::unauthorized("missing api key"))?;
     let context = resolver
-        .resolve(&api_key)
+        .resolve(api_key)
         .await
         .map_err(ApiError::internal)?;
-    let Some(context) = context else {
-        return Err(ApiError::unauthorized("invalid api key"));
-    };
-    validate_tenant_id(&context.tenant_id)
-        .map_err(|err| ApiError::bad_request(format!("invalid tenant_id: {}", err)))?;
+    if let Some(context) = context.as_ref() {
+        validate_tenant_id(&context.tenant_id)
+            .map_err(|err| ApiError::bad_request(format!("invalid tenant_id: {}", err)))?;
+    }
+    Ok(context)
+}
+
+async fn attach_tenant_context(
+    state: &AppState,
+    request: &mut Request<axum::body::Body>,
+    context: TenantContext,
+) -> std::result::Result<(), ApiError> {
     if let Some(registry) = state.tenant_registry.as_ref() {
         let resources = registry
             .get_or_init(&context.tenant_id)
@@ -464,16 +643,43 @@ async fn v1_auth(
         request.extensions_mut().insert(resources);
     }
     request.extensions_mut().insert(context);
-    Ok(next.run(request).await)
+    Ok(())
 }
 
-async fn internal_tenant(
+async fn maybe_apply_v1_auth_context_for_dispatch(
+    state: &AppState,
+    request: &mut Request<axum::body::Body>,
+) -> std::result::Result<(), ApiError> {
+    if state.tenant_resolver.is_none() || request.extensions().get::<TenantContext>().is_some() {
+        return Ok(());
+    }
+    let Some(api_key) = extract_api_key(request.headers()) else {
+        return Ok(());
+    };
+    let Some(context) = resolve_v1_tenant_context(state, &api_key).await? else {
+        request
+            .extensions_mut()
+            .insert(DispatchInvalidApiKeyForRules);
+        return Ok(());
+    };
+    attach_tenant_context(state, request, context).await
+}
+
+async fn v1_auth(
     State(state): State<AppState>,
     mut request: Request<axum::body::Body>,
     next: Next,
 ) -> std::result::Result<axum::response::Response, ApiError> {
+    apply_v1_auth_context(&state, &mut request).await?;
+    Ok(next.run(request).await)
+}
+
+async fn apply_internal_tenant_context(
+    state: &AppState,
+    request: &mut Request<axum::body::Body>,
+) -> std::result::Result<(), ApiError> {
     if state.tenant_resolver.is_none() {
-        return Ok(next.run(request).await);
+        return Ok(());
     }
     let tenant_id = request
         .headers()
@@ -494,7 +700,53 @@ async fn internal_tenant(
     request
         .extensions_mut()
         .insert(TenantContext::new(tenant_id));
+    Ok(())
+}
+
+async fn internal_tenant(
+    State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    apply_internal_tenant_context(&state, &mut request).await?;
     Ok(next.run(request).await)
+}
+
+fn ensure_internal_auth(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> std::result::Result<(), ApiError> {
+    let Some(expected) = state.internal_api_key.as_deref() else {
+        if state.allow_unauth_internal {
+            return Ok(());
+        }
+        return Err(ApiError::service_unavailable(
+            "internal api key not configured",
+        ));
+    };
+    let provided = extract_api_key(headers)
+        .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
+    if provided != expected {
+        return Err(ApiError::unauthorized("invalid internal api key"));
+    }
+    Ok(())
+}
+
+fn ensure_internal_auth_required(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> std::result::Result<(), ApiError> {
+    let Some(expected) = state.internal_api_key.as_deref() else {
+        return Err(ApiError::service_unavailable(
+            "internal api key not configured",
+        ));
+    };
+    let provided = extract_api_key(headers)
+        .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
+    if provided != expected {
+        return Err(ApiError::unauthorized("invalid internal api key"));
+    }
+    Ok(())
 }
 
 async fn internal_auth(
@@ -502,19 +754,7 @@ async fn internal_auth(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> std::result::Result<axum::response::Response, ApiError> {
-    let Some(expected) = state.internal_api_key.as_deref() else {
-        if state.allow_unauth_internal {
-            return Ok(next.run(request).await);
-        }
-        return Err(ApiError::service_unavailable(
-            "internal api key not configured",
-        ));
-    };
-    let provided = extract_api_key(request.headers())
-        .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
-    if provided != expected {
-        return Err(ApiError::unauthorized("invalid internal api key"));
-    }
+    ensure_internal_auth(&state, request.headers())?;
     Ok(next.run(request).await)
 }
 
@@ -523,16 +763,7 @@ async fn internal_auth_required(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> std::result::Result<axum::response::Response, ApiError> {
-    let Some(expected) = state.internal_api_key.as_deref() else {
-        return Err(ApiError::service_unavailable(
-            "internal api key not configured",
-        ));
-    };
-    let provided = extract_api_key(request.headers())
-        .ok_or_else(|| ApiError::unauthorized("missing internal api key"))?;
-    if provided != expected {
-        return Err(ApiError::unauthorized("invalid internal api key"));
-    }
+    ensure_internal_auth_required(&state, request.headers())?;
     Ok(next.run(request).await)
 }
 
@@ -549,17 +780,51 @@ async fn inject_default_resources(
     Ok(next.run(request).await)
 }
 
-async fn pre_auth_rate_limit(
-    State(state): State<AppState>,
-    request: Request<axum::body::Body>,
-    next: Next,
-) -> std::result::Result<axum::response::Response, ApiError> {
+#[derive(Clone, Copy, Debug)]
+struct PreAuthRateLimitApplied;
+
+#[derive(Clone, Copy, Debug)]
+struct InternalApiRateLimitScope;
+
+#[derive(Clone, Copy, Debug)]
+struct DispatchInvalidApiKeyForRules;
+
+async fn ensure_pre_auth_rate_limit_for_request(
+    state: &AppState,
+    request: &mut Request<axum::body::Body>,
+) -> std::result::Result<(), ApiError> {
+    if state.rate_limiter.is_none()
+        || request
+            .extensions()
+            .get::<PreAuthRateLimitApplied>()
+            .is_some()
+    {
+        return Ok(());
+    }
+    let key = pre_auth_rate_limit_key(request);
+    enforce_pre_auth_rate_limit(state, key).await?;
+    request.extensions_mut().insert(PreAuthRateLimitApplied);
+    Ok(())
+}
+
+async fn enforce_pre_auth_rate_limit(
+    state: &AppState,
+    key: String,
+) -> std::result::Result<(), ApiError> {
     if let Some(limiter) = state.rate_limiter.as_ref() {
-        let key = pre_auth_rate_limit_key(&request);
         if !limiter.allow(&key).await {
             return Err(ApiError::too_many_requests("rate limit exceeded"));
         }
     }
+    Ok(())
+}
+
+async fn pre_auth_rate_limit(
+    State(state): State<AppState>,
+    mut request: Request<axum::body::Body>,
+    next: Next,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    ensure_pre_auth_rate_limit_for_request(&state, &mut request).await?;
     Ok(next.run(request).await)
 }
 
@@ -582,23 +847,38 @@ fn hash_string(value: &str) -> u64 {
     hasher.finish()
 }
 
+async fn enforce_api_rate_limit(
+    state: &AppState,
+    key: String,
+) -> std::result::Result<(), ApiError> {
+    if let Some(limiter) = state.rate_limiter.as_ref() {
+        if !limiter.allow(&key).await {
+            return Err(ApiError::too_many_requests("rate limit exceeded"));
+        }
+    }
+    Ok(())
+}
+
 async fn api_rate_limit(
     State(state): State<AppState>,
     request: Request<axum::body::Body>,
     next: Next,
 ) -> std::result::Result<axum::response::Response, ApiError> {
-    if let Some(limiter) = state.rate_limiter.as_ref() {
-        let key = rate_limit_key(&state, &request);
-        if !limiter.allow(&key).await {
-            return Err(ApiError::too_many_requests("rate limit exceeded"));
-        }
-    }
+    let key = rate_limit_key(&state, &request);
+    enforce_api_rate_limit(&state, key).await?;
     Ok(next.run(request).await)
 }
 
 fn rate_limit_key(state: &AppState, request: &Request<axum::body::Body>) -> String {
     if let Some(context) = request.extensions().get::<TenantContext>() {
         return format!("tenant:{}", context.tenant_id);
+    }
+    if request
+        .extensions()
+        .get::<InternalApiRateLimitScope>()
+        .is_some()
+    {
+        return "internal".to_string();
     }
     if state.internal_api_key.is_some() && request.uri().path().starts_with("/internal") {
         return "internal".to_string();
@@ -771,10 +1051,22 @@ async fn import_bundle_path(
     Ok(Json(result))
 }
 
-async fn import_bundle_zip(
-    Extension(resources): Extension<Arc<TenantResources>>,
+async fn import_bundle_zip_from_request(
+    state: &AppState,
+    request: Request<axum::body::Body>,
+) -> std::result::Result<axum::response::Response, ApiError> {
+    let resources = request_resources(state, &request);
+    let multipart = Multipart::from_request(request, state)
+        .await
+        .map_err(|err| ApiError::bad_request(format!("multipart error: {}", err)))?;
+    let result = import_bundle_zip_with_resources(resources, multipart).await?;
+    Ok(Json(result).into_response())
+}
+
+async fn import_bundle_zip_with_resources(
+    resources: Arc<TenantResources>,
     mut multipart: Multipart,
-) -> std::result::Result<Json<ImportResult>, ApiError> {
+) -> std::result::Result<ImportResult, ApiError> {
     let mut zip_file: Option<tempfile::NamedTempFile> = None;
     let mut total_bytes: u64 = 0;
     while let Some(field) = multipart
@@ -815,7 +1107,7 @@ async fn import_bundle_zip(
         .import_bundle(&bundle_root)
         .await
         .map_err(ApiError::internal)?;
-    Ok(Json(result))
+    Ok(result)
 }
 
 async fn list_api_keys(

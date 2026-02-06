@@ -1586,8 +1586,8 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append("bundle", zipFile);
-      const headers = buildHeaders("internal");
-      const res = await fetch(`${INTERNAL_BASE}/import-zip`, {
+      const headers = { ...buildHeaders("internal"), "x-rulemorph-import": "zip" };
+      const res = await fetch(`${API_BASE}/import`, {
         method: "POST",
         headers,
         body: formData
