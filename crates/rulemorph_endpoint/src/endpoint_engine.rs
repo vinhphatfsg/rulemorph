@@ -2467,6 +2467,21 @@ fn validate_network_rule(
             );
         }
     }
+    if let Some(headers) = &raw.request.headers {
+        for (key, value) in headers {
+            if let Err(err) = parse_v2_expr(value) {
+                let field = format!("request.headers.{}", key);
+                push_error(
+                    errors,
+                    "InvalidExpr",
+                    path,
+                    format!("{}: {}", field, err),
+                    Some(field),
+                    None,
+                );
+            }
+        }
+    }
 
     match parse_duration(&raw.timeout) {
         Ok(timeout) => {

@@ -161,8 +161,10 @@ impl FileTraceBackend {
         let value: Value =
             parse_result.with_context(|| format!("invalid trace json: {}", path.display()))?;
         if is_manifest(&value) {
-            let manifest: TraceManifest = serde_json::from_value(value.clone())
+            let mut manifest: TraceManifest = serde_json::from_value(value)
                 .with_context(|| format!("invalid trace manifest: {}", path.display()))?;
+            manifest.trace_id = meta.trace_id.clone();
+            apply_record_total_budget_for_get(&mut manifest);
             let trace_dir = path
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
@@ -1495,6 +1497,26 @@ mod tests {
                 .any(|reason| reason == "budget_exceeded")
         );
 
+        let trace = store.get("trace-record-budget").await?.expect("trace");
+        let detail = trace
+            .get("detail")
+            .and_then(|value| value.as_object())
+            .expect("detail object");
+        assert_eq!(
+            detail.get("status").and_then(|value| value.as_str()),
+            Some("basic")
+        );
+        let reasons = detail
+            .get("reason")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            reasons
+                .iter()
+                .any(|value| value.as_str() == Some("budget_exceeded"))
+        );
+
         Ok(())
     }
 
@@ -1613,7 +1635,10 @@ mod tests {
                         {
                             "path": "records-0001.ndjson.zst",
                             "format": "ndjson",
-                            "compression": "zstd"
+                            "compression": "zstd",
+                            "bytes": 1024,
+                            "record_start": 0,
+                            "record_end": 0
                         }
                     ],
                     "nodes": []
@@ -2041,6 +2066,37 @@ fn parse_manifest_meta(manifest: &TraceManifest, path: &Path) -> Result<TraceMet
         summary: manifest.summary.clone(),
         path: path.display().to_string(),
     })
+}
+
+fn apply_record_total_budget_for_get(manifest: &mut TraceManifest) {
+    let record_total = manifest
+        .summary
+        .as_ref()
+        .and_then(|summary| summary.record_total);
+    let Some(record_total) = record_total else {
+        return;
+    };
+    if record_total as usize <= TRACE_RECORD_COUNT_HARD_MAX {
+        return;
+    }
+    let Some(detail) = manifest.detail.as_mut() else {
+        return;
+    };
+    if detail.status != "full" {
+        return;
+    }
+
+    detail.status = "basic".to_string();
+    if !detail
+        .reason
+        .iter()
+        .any(|reason| reason == "budget_exceeded")
+    {
+        detail.reason.push("budget_exceeded".to_string());
+    }
+    detail.records.clear();
+    detail.nodes.clear();
+    detail.finalize = None;
 }
 
 fn resolve_max_chunk_bytes(manifest: &TraceManifest) -> usize {

@@ -59,6 +59,7 @@ select: "data"
 `headers` は **固定文字列または v2 expr** を指定できます。
 `expr` の評価結果が `missing` の場合は **そのヘッダを送信しません**。
 `Host` / `Forwarded` / `X-Forwarded-*` は SSRF 対策のため指定不可です。
+`validate-rules-dir` の事前検証でも `request.headers` の各値は v2 expr として構文検証されます。
 
 ### context
 - `@context.config.internal_api_key` は internal_auth が有効で internal_base 宛てのネットワークルールでのみ提供されます（未設定時は `missing`）。
