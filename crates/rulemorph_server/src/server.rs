@@ -564,14 +564,14 @@ async fn pre_auth_rate_limit(
 }
 
 fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
+    if let Some(api_key) = extract_api_key(request.headers()) {
+        return format!("preauth:key:{:x}", hash_string(&api_key));
+    }
     if let Some(ConnectInfo(addr)) = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
     {
         return format!("preauth:ip:{}", addr.ip());
-    }
-    if let Some(api_key) = extract_api_key(request.headers()) {
-        return format!("preauth:key:{:x}", hash_string(&api_key));
     }
     "preauth:anonymous".to_string()
 }
@@ -1039,5 +1039,47 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> axum::response::Response {
         let body = Json(json!({ "error": self.message }));
         (self.status, body).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::{Ipv4Addr, SocketAddr};
+
+    use axum::extract::ConnectInfo;
+    use axum::http::{HeaderValue, Request, header::AUTHORIZATION};
+
+    use super::pre_auth_rate_limit_key;
+
+    #[test]
+    fn pre_auth_rate_limit_uses_api_key_even_with_connect_info() {
+        let mut request = Request::builder()
+            .uri("/v1/traces")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            HeaderValue::from_static("Bearer rmk_tenant-a.secret"),
+        );
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+
+        let key = pre_auth_rate_limit_key(&request);
+        assert!(key.starts_with("preauth:key:"));
+    }
+
+    #[test]
+    fn pre_auth_rate_limit_falls_back_to_ip_without_api_key() {
+        let mut request = Request::builder()
+            .uri("/v1/traces")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+
+        let key = pre_auth_rate_limit_key(&request);
+        assert_eq!(key, "preauth:ip:127.0.0.1");
     }
 }

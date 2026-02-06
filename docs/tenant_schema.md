@@ -55,6 +55,7 @@ Rulemorph でテナント分離を有効にした場合のデータ構成と API
 
 - `prefix`: 表示用の先頭文字列（秘密部は保持しません）
 - `hash`: `sha256(salt + api_key)`
+- 更新時は一時ファイル経由で本体へ置換します。Windows を含む環境で `issue`/`revoke`/`rotate` を繰り返しても継続して保存できます。
 
 ## CLI 操作
 
@@ -98,3 +99,4 @@ rulemorph api-keys rotate --tenant-id <tenant_id> --id <key_id>
 - `POST /internal/api-keys/:id/rotate`
 
 同一テナントの `api_keys.json` 更新（issue/revoke/rotate）はサーバ内で直列化され、同時更新時の上書きロストを防ぎます。
+pre-auth レート制限は API キーを優先してキー化し（`preauth:key:<hash>`）、API キーが無い場合のみ送信元 IP（`preauth:ip:<addr>`）を使います。これによりリバースプロキシ配下でのテナント間干渉を抑制します。
