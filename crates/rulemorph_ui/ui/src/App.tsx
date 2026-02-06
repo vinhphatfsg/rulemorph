@@ -340,20 +340,27 @@ function getTenantIdFromQueryOrStorage(): string | null {
   return cachedTenantId;
 }
 
-function getTenantId(): string | null {
-  const tenantFromQuery = getTenantIdFromQueryOrStorage();
-  if (tenantFromQuery) {
-    return tenantFromQuery;
-  }
-  const apiKey = getApiKey();
+export function resolveTenantId(
+  apiKey: string | null,
+  tenantFromQueryOrStorage: string | null
+): string | null {
   const tenantFromApiKey = getTenantIdFromApiKey(apiKey);
   if (tenantFromApiKey) {
     return tenantFromApiKey;
+  }
+  if (tenantFromQueryOrStorage) {
+    return tenantFromQueryOrStorage;
   }
   if (apiKey?.trim()) {
     return "default";
   }
   return null;
+}
+
+function getTenantId(): string | null {
+  const apiKey = getApiKey();
+  const tenantFromQuery = getTenantIdFromQueryOrStorage();
+  return resolveTenantId(apiKey, tenantFromQuery);
 }
 
 const graphDefaults = {

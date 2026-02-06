@@ -85,10 +85,12 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     if !config.ui_enabled && config.api_mode == ApiMode::UiOnly {
         anyhow::bail!("ui-only mode cannot be used with UI disabled");
     }
-    if config.tenant_resolver.is_some()
-        && config.ssrf_allowlist.is_empty()
-        && !config.ssrf_allow_any
-    {
+    if requires_ssrf_allowlist(
+        &config.api_mode,
+        config.tenant_resolver.is_some(),
+        &config.ssrf_allowlist,
+        config.ssrf_allow_any,
+    ) {
         anyhow::bail!(
             "ssrf allowlist required when api key auth is enabled; use --ssrf-allowlist or --ssrf-allow-any"
         );
@@ -220,5 +222,40 @@ fn resolve_ui_source(config: &ServerConfig) -> Result<UiSource> {
             "ui directory not found at {} and embedded UI is disabled",
             default_dir.display()
         );
+    }
+}
+
+fn requires_ssrf_allowlist(
+    api_mode: &ApiMode,
+    tenant_auth_enabled: bool,
+    ssrf_allowlist: &[String],
+    ssrf_allow_any: bool,
+) -> bool {
+    tenant_auth_enabled
+        && api_mode == &ApiMode::Rules
+        && ssrf_allowlist.is_empty()
+        && !ssrf_allow_any
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiMode, requires_ssrf_allowlist};
+
+    #[test]
+    fn ssrf_allowlist_required_for_rules_with_tenant_auth() {
+        let required = requires_ssrf_allowlist(&ApiMode::Rules, true, &[], false);
+        assert!(required);
+    }
+
+    #[test]
+    fn ssrf_allowlist_not_required_for_ui_only() {
+        let required = requires_ssrf_allowlist(&ApiMode::UiOnly, true, &[], false);
+        assert!(!required);
+    }
+
+    #[test]
+    fn ssrf_allowlist_not_required_when_allow_any_enabled() {
+        let required = requires_ssrf_allowlist(&ApiMode::Rules, true, &[], true);
+        assert!(!required);
     }
 }
