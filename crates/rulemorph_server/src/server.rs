@@ -1,7 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use axum::{
     Json, Router,
@@ -111,6 +111,18 @@ struct RateLimitState {
 
 const IMPORT_ZIP_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_ZIP_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+static API_KEY_FILE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn api_key_file_lock(path: &Path) -> Arc<Mutex<()>> {
+    let lock_map = API_KEY_FILE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut guard = lock_map
+        .lock()
+        .expect("api key lock map should not be poisoned");
+    guard
+        .entry(path.to_path_buf())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
 
 impl RateLimiter {
     pub fn new(limit: u64) -> Self {
@@ -820,6 +832,8 @@ async fn issue_api_key(
     Json(payload): Json<ApiKeyIssueRequest>,
 ) -> std::result::Result<Json<ApiKeyIssueResult>, ApiError> {
     let path = resources.auth_dir.join("api_keys.json");
+    let lock = api_key_file_lock(&path);
+    let _guard = lock.lock().await;
     let mut store =
         ApiKeyStore::load_or_init(path, &resources.tenant_id).map_err(ApiError::internal)?;
     let issued = store.issue(payload.label).map_err(ApiError::internal)?;
@@ -831,6 +845,8 @@ async fn revoke_api_key(
     AxumPath(id): AxumPath<String>,
 ) -> std::result::Result<Json<serde_json::Value>, ApiError> {
     let path = resources.auth_dir.join("api_keys.json");
+    let lock = api_key_file_lock(&path);
+    let _guard = lock.lock().await;
     let mut store = ApiKeyStore::load(path, &resources.tenant_id)
         .map_err(ApiError::internal)?
         .ok_or_else(|| ApiError::not_found("api key store not found"))?;
@@ -844,6 +860,8 @@ async fn rotate_api_key(
     Json(payload): Json<ApiKeyRotateRequest>,
 ) -> std::result::Result<Json<ApiKeyIssueResult>, ApiError> {
     let path = resources.auth_dir.join("api_keys.json");
+    let lock = api_key_file_lock(&path);
+    let _guard = lock.lock().await;
     let mut store =
         ApiKeyStore::load_or_init(path, &resources.tenant_id).map_err(ApiError::internal)?;
     let issued = store

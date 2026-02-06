@@ -21,6 +21,11 @@ Rulemorph でテナント分離を有効にした場合のデータ構成と API
 - `api_rules/`: `/api/*` 用のルール
 - `auth/`: APIキー情報
 
+### 初期化タイミング
+
+- テナント領域は遅延初期化です。`tenant_id` が実際に参照された時点で `tenants/<tenant_id>/` が作成されます。
+- 起動時に `default` テナントは必須ではありません。`tenants/tenant-1/api_rules` のみが存在する構成でも動作します。
+
 ## APIキー形式
 
 - 形式: `rmk_<tenant_id>.<secret>`
@@ -91,3 +96,5 @@ rulemorph api-keys rotate --tenant-id <tenant_id> --id <key_id>
 - `POST /internal/api-keys`
 - `POST /internal/api-keys/:id/revoke`
 - `POST /internal/api-keys/:id/rotate`
+
+同一テナントの `api_keys.json` 更新（issue/revoke/rotate）はサーバ内で直列化され、同時更新時の上書きロストを防ぎます。

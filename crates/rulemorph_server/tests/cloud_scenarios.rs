@@ -291,6 +291,40 @@ async fn request_json_with_headers(
     (status, value)
 }
 
+async fn request_json_post_with_headers(
+    app: &Router,
+    path: String,
+    headers: &[(&str, &str)],
+    body: Value,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method("POST")
+        .uri(&path)
+        .header("content-type", "application/json");
+    for (key, value) in headers {
+        builder = builder.header(*key, *value);
+    }
+    let payload = serde_json::to_vec(&body).expect("serialize request body");
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from(payload)).unwrap())
+        .await
+        .expect("request");
+    let status = response.status();
+    let body = response
+        .into_body()
+        .collect()
+        .await
+        .expect("collect")
+        .to_bytes();
+    let value = if body.is_empty() {
+        json!(null)
+    } else {
+        serde_json::from_slice(&body).expect("json")
+    };
+    (status, value)
+}
+
 async fn wait_for_trace_id(app: &Router) -> String {
     for _ in 0..40 {
         let (status, list) = request_json(app, "/internal/traces".to_string()).await;
@@ -812,6 +846,80 @@ async fn internal_requires_tenant_id_when_resolver_set() {
         .await
         .expect("response");
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn internal_api_key_issue_is_serialized_per_store() {
+    let temp = tempdir().expect("tempdir");
+    let data_dir = temp.path().join("data");
+    let store = TraceStore::new(data_dir.clone())
+        .await
+        .expect("trace store");
+    let (trace_events, _) = broadcast::channel(16);
+    let auth_dir = data_dir.join("auth");
+    fs::create_dir_all(&auth_dir).expect("create auth dir");
+    let resources = TenantResources {
+        tenant_id: "default".to_string(),
+        data_dir: data_dir.clone(),
+        rules_dir: data_dir.join("api_rules"),
+        auth_dir,
+        store: Arc::new(store),
+        api_engine: None,
+        trace_events,
+    };
+    let state = AppState {
+        default_resources: Arc::new(resources),
+        tenant_registry: None,
+        ui_source: None,
+        api_mode: ApiMode::UiOnly,
+        tenant_resolver: None,
+        internal_api_key: Some("internal-key".to_string()),
+        allow_unauth_internal: false,
+        rate_limiter: None,
+    };
+    let app = build_router(state, true);
+    let issue_count = 32usize;
+
+    let mut handles = Vec::with_capacity(issue_count);
+    for i in 0..issue_count {
+        let app = app.clone();
+        handles.push(tokio::spawn(async move {
+            let (status, payload) = request_json_post_with_headers(
+                &app,
+                "/internal/api-keys".to_string(),
+                &[("authorization", "Bearer internal-key")],
+                json!({ "label": format!("parallel-{i}") }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+            payload
+                .get("id")
+                .and_then(|value| value.as_str())
+                .expect("issued id")
+                .to_string()
+        }));
+    }
+
+    let mut ids = Vec::with_capacity(issue_count);
+    for handle in handles {
+        ids.push(handle.await.expect("join"));
+    }
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), issue_count);
+
+    let (status, list) = request_json_with_headers(
+        &app,
+        "/internal/api-keys".to_string(),
+        &[("authorization", "Bearer internal-key")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = list
+        .get("keys")
+        .and_then(|value| value.as_array())
+        .expect("keys");
+    assert_eq!(keys.len(), issue_count);
 }
 
 #[tokio::test]
