@@ -310,6 +310,11 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
             internal_admin =
                 internal_admin.layer(from_fn_with_state(state.clone(), api_rate_limit));
         }
+        if state.tenant_resolver.is_some() {
+            internal = internal.layer(from_fn_with_state(state.clone(), internal_tenant));
+            internal_admin =
+                internal_admin.layer(from_fn_with_state(state.clone(), internal_tenant));
+        }
         if !state.allow_unauth_internal
             || state.internal_api_key.is_some()
             || state.tenant_resolver.is_some()
@@ -318,11 +323,6 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
         }
         internal_admin =
             internal_admin.layer(from_fn_with_state(state.clone(), internal_auth_required));
-        if state.tenant_resolver.is_some() {
-            internal = internal.layer(from_fn_with_state(state.clone(), internal_tenant));
-            internal_admin =
-                internal_admin.layer(from_fn_with_state(state.clone(), internal_tenant));
-        }
         if state.rate_limiter.is_some() {
             internal = internal.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
             internal_admin =

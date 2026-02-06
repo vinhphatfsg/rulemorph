@@ -717,6 +717,55 @@ async fn internal_requires_key_when_tenant_resolver_set() {
 }
 
 #[tokio::test]
+async fn internal_unauthorized_request_does_not_initialize_tenant() {
+    let temp = tempdir().expect("tempdir");
+    let data_dir = temp.path().join("data");
+    let resolver = Arc::new(StaticTenantResolver {
+        api_key: "valid-key".to_string(),
+        tenant_id: "tenant-1".to_string(),
+    });
+    let registry = Arc::new(TenantRegistry::new(
+        data_dir.clone(),
+        None,
+        ApiMode::UiOnly,
+        true,
+        8080,
+        Vec::new(),
+        true,
+        Some("internal-key".to_string()),
+    ));
+    let default_resources = registry
+        .get_or_init("default")
+        .await
+        .expect("default resources");
+    let state = AppState {
+        default_resources,
+        tenant_registry: Some(registry),
+        ui_source: None,
+        api_mode: ApiMode::UiOnly,
+        tenant_resolver: Some(resolver),
+        internal_api_key: Some("internal-key".to_string()),
+        allow_unauth_internal: false,
+        rate_limiter: None,
+    };
+    let app = build_router(state, true);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/traces")
+                .header("x-tenant-id", "tenant-attack")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!data_dir.join("tenants/tenant-attack").exists());
+}
+
+#[tokio::test]
 async fn internal_requires_tenant_id_when_resolver_set() {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");

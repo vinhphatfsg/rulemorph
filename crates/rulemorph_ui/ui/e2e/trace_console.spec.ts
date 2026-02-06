@@ -317,32 +317,61 @@ function writeBrokenTrace(dataDir: string) {
 }
 
 async function startServer(dataDir: string, port: number) {
+  return startServerWithOptions(dataDir, port, {
+    allowUnauthInternal: true
+  });
+}
+
+type ServerOptions = {
+  apiKey?: string;
+  tenantId?: string;
+  internalApiKey?: string;
+  allowUnauthInternal?: boolean;
+};
+
+async function startServerWithOptions(dataDir: string, port: number, options: ServerOptions) {
   if (!existsSync(uiDist)) {
     throw new Error(`UI dist not found at ${uiDist}. Run npm --prefix crates/rulemorph_ui/ui run build first.`);
   }
   if (!existsSync(apiRulesDir)) {
     throw new Error(`api rules not found at ${apiRulesDir}.`);
   }
+  const args = [
+    "run",
+    "-p",
+    "rulemorph_server",
+    "--",
+    "--api-mode",
+    "rules",
+    "--rules-dir",
+    apiRulesDir,
+    "--data-dir",
+    dataDir,
+    "--ui-dir",
+    uiDist,
+    "--ssrf-allow-private",
+    "--port",
+    String(port)
+  ];
+  if (options.allowUnauthInternal ?? false) {
+    args.push("--allow-unauth-internal");
+  }
+  if (options.apiKey) {
+    args.push("--api-key", options.apiKey);
+  }
+  if (options.tenantId) {
+    args.push("--tenant-id", options.tenantId);
+  }
+  if (options.internalApiKey) {
+    args.push("--internal-api-key", options.internalApiKey);
+  }
+  if (options.apiKey) {
+    args.push("--ssrf-allow-any");
+  }
+
   const child = spawn(
     "cargo",
-    [
-      "run",
-      "-p",
-      "rulemorph_server",
-      "--",
-      "--api-mode",
-      "rules",
-      "--rules-dir",
-      apiRulesDir,
-      "--data-dir",
-      dataDir,
-      "--ui-dir",
-      uiDist,
-      "--allow-unauth-internal",
-      "--ssrf-allow-private",
-      "--port",
-      String(port)
-    ],
+    args,
     {
       cwd: repoRoot,
       env: { ...process.env, RUST_LOG: "info" },
@@ -405,20 +434,31 @@ test("Trace Console filters traces", async ({ page }) => {
   writeErrorTrace(dataDir);
   const port = await getAvailablePort();
   const server = await startServer(dataDir, port);
+  let traceListRequestCount = 0;
+  page.on("request", (request) => {
+    if (request.method() === "GET" && request.url().endsWith("/api/traces")) {
+      traceListRequestCount += 1;
+    }
+  });
 
   try {
     await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
     await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+    const beforeFilterRequests = traceListRequestCount;
 
     const search = page.locator(".trace-filter__search");
     await search.fill("inline");
     await expect(page.getByRole("button", { name: /inline/ }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /demo/ })).toHaveCount(0);
+    await page.waitForTimeout(200);
+    expect(traceListRequestCount).toBe(beforeFilterRequests);
 
     await search.fill("");
     await page.getByRole("combobox", { name: "ステータス" }).selectOption("error");
     await expect(page.getByRole("button", { name: /error/ }).first()).toBeVisible();
     await expect(page.getByRole("button", { name: /demo/ })).toHaveCount(0);
+    await page.waitForTimeout(200);
+    expect(traceListRequestCount).toBe(beforeFilterRequests);
   } finally {
     server.kill("SIGTERM");
   }
@@ -505,6 +545,77 @@ test("Trace Console imports ZIP bundles", async ({ page }) => {
     await expect(page.getByTestId("zip-import-message")).toContainText("imported 1 traces");
     await expect(
       page.getByRole("button", { name: /rules\/zip\.yaml/ }).first()
+    ).toBeVisible();
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("Trace Console imports ZIP bundles with static auth", async ({ page }) => {
+  const dataDir = mkdtempSync(path.join(tmpdir(), "rulemorph-e2e-auth-"));
+  const bundleDir = mkdtempSync(path.join(tmpdir(), "rulemorph-bundle-auth-"));
+  const traceDir = path.join(bundleDir, "traces", "2026", "02", "03", "zip-auth-001");
+  mkdirSync(traceDir, { recursive: true });
+  writeFileSync(
+    path.join(traceDir, "trace.json"),
+    JSON.stringify(
+      {
+        trace_schema_version: 1,
+        trace_id: "zip-auth-001",
+        timestamp: "2026-02-03T00:35:00Z",
+        status: "ok",
+        rule: {
+          type: "normal",
+          name: "zip-auth",
+          path: "rules/zip-auth.yaml",
+          version: 2
+        },
+        input_format: "json",
+        summary: {
+          record_total: 1,
+          record_success: 1,
+          record_failed: 0,
+          duration_us: 900
+        },
+        max_chunk_bytes_uncompressed: 1048576,
+        detail: {
+          layout: "records_nodes_split",
+          status: "basic",
+          reason: [],
+          records: [],
+          nodes: []
+        }
+      },
+      null,
+      2
+    )
+  );
+  const zipPath = path.join(bundleDir, "bundle.zip");
+  execFileSync("zip", ["-r", zipPath, "traces"], { cwd: bundleDir });
+
+  const port = await getAvailablePort();
+  const server = await startServerWithOptions(dataDir, port, {
+    apiKey: "static-test-key",
+    tenantId: "tenant-static",
+    internalApiKey: "internal-test-key",
+    allowUnauthInternal: false
+  });
+
+  try {
+    await page.goto(
+      `http://127.0.0.1:${port}/?api_key=static-test-key&internal_key=internal-test-key&tenant_id=tenant-static`,
+      {
+        waitUntil: "domcontentloaded"
+      }
+    );
+    await page.getByRole("heading", { name: "Trace一覧" }).waitFor();
+
+    await page.getByTestId("zip-import-button").click();
+    await page.getByTestId("zip-import-file").setInputFiles(zipPath);
+    await page.getByTestId("zip-import-submit").click();
+    await expect(page.getByTestId("zip-import-message")).toContainText("imported 1 traces");
+    await expect(
+      page.getByRole("button", { name: /rules\/zip-auth\.yaml/ }).first()
     ).toBeVisible();
   } finally {
     server.kill("SIGTERM");

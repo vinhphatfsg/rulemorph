@@ -183,8 +183,10 @@ const API_BASE = "/api";
 const INTERNAL_BASE = "/internal";
 const API_KEY_STORAGE = "rulemorph_api_key";
 const INTERNAL_KEY_STORAGE = "rulemorph_internal_key";
+const TENANT_ID_STORAGE = "rulemorph_tenant_id";
 let cachedApiKey: string | null | undefined;
 let cachedInternalKey: string | null | undefined;
+let cachedTenantId: string | null | undefined;
 
 function getApiKey(): string | null {
   if (cachedApiKey !== undefined) {
@@ -272,6 +274,14 @@ function getInternalKey(): string | null {
   return cachedInternalKey;
 }
 
+function normalizeTenantId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
 function getTenantIdFromApiKey(apiKey: string | null): string | null {
   if (!apiKey) return null;
   const trimmed = apiKey.trim();
@@ -283,7 +293,67 @@ function getTenantIdFromApiKey(apiKey: string | null): string | null {
   if (!tenantId || !tenantId.trim()) {
     return null;
   }
-  return tenantId.trim();
+  return normalizeTenantId(tenantId);
+}
+
+function getTenantIdFromQueryOrStorage(): string | null {
+  if (cachedTenantId !== undefined) {
+    return cachedTenantId;
+  }
+  if (typeof window === "undefined") {
+    cachedTenantId = null;
+    return cachedTenantId;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const tenantParam = normalizeTenantId(params.get("tenant_id"));
+  if (tenantParam) {
+    try {
+      window.localStorage.setItem(TENANT_ID_STORAGE, tenantParam);
+    } catch {
+      // ignore storage failures
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("tenant_id");
+      if (url.toString() !== window.location.href) {
+        window.history.replaceState(null, "", url.toString());
+      }
+    } catch {
+      // ignore history failures
+    }
+    cachedTenantId = tenantParam;
+    return tenantParam;
+  }
+
+  try {
+    const stored = normalizeTenantId(window.localStorage.getItem(TENANT_ID_STORAGE));
+    if (stored) {
+      cachedTenantId = stored;
+      return stored;
+    }
+  } catch {
+    // ignore storage failures
+  }
+
+  cachedTenantId = null;
+  return cachedTenantId;
+}
+
+function getTenantId(): string | null {
+  const tenantFromQuery = getTenantIdFromQueryOrStorage();
+  if (tenantFromQuery) {
+    return tenantFromQuery;
+  }
+  const apiKey = getApiKey();
+  const tenantFromApiKey = getTenantIdFromApiKey(apiKey);
+  if (tenantFromApiKey) {
+    return tenantFromApiKey;
+  }
+  if (apiKey?.trim()) {
+    return "default";
+  }
+  return null;
 }
 
 const graphDefaults = {
@@ -304,7 +374,7 @@ function buildHeaders(auth: FetchAuth): Record<string, string> {
     if (internalKey) {
       headers["x-api-key"] = internalKey;
     }
-    const tenantId = getTenantIdFromApiKey(getApiKey());
+    const tenantId = getTenantId();
     if (tenantId) {
       headers["x-tenant-id"] = tenantId;
     }
@@ -1447,9 +1517,8 @@ export default function App() {
   const [pinnedPositions, setPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [apiPinnedPositions, setApiPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodeTypes = useMemo(() => ({ detail: DetailNode }), []);
-  const apiKey = getApiKey();
   const internalKey = getInternalKey();
-  const tenantId = getTenantIdFromApiKey(apiKey);
+  const tenantId = getTenantId();
 
   const statusOptions = useMemo(() => {
     const set = new Set<string>();
@@ -1485,21 +1554,15 @@ export default function App() {
     async (preserveSelection: boolean) => {
       const list = await fetchJson<{ traces: TraceListItem[] }>(`${API_BASE}/traces`);
       const data = list?.traces?.length ? list.traces : [];
-      const filtered = applyTraceFilters(data, {
-        status: traceFilterStatus,
-        rule: traceFilterRule,
-        query: traceFilterQuery,
-        range: traceFilterRange
-      });
       setTraces(data);
       setSelectedId((prev) => {
-        if (preserveSelection && prev && filtered.some((item) => item.trace_id === prev)) {
+        if (preserveSelection && prev && data.some((item) => item.trace_id === prev)) {
           return prev;
         }
-        return filtered[0]?.trace_id ?? null;
+        return data[0]?.trace_id ?? null;
       });
     },
-    [traceFilterStatus, traceFilterRule, traceFilterQuery, traceFilterRange]
+    []
   );
 
   const handleZipImport = useCallback(async () => {
