@@ -78,3 +78,14 @@ endpoints:
     reply:
       status: "@input.status"
       body: "@input.body"
+
+  - method: POST
+    path: /api/import
+    steps:
+      - rule: ./network/import_bundle.yaml
+      - rule: ./rules/wrap_success.yaml
+    catch:
+      default: ./rules/error_response.yaml
+    reply:
+      status: "@input.status"
+      body: "@input.body"

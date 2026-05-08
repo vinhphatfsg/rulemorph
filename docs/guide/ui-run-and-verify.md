@@ -82,10 +82,10 @@ ZIPインポートや内部操作を行う場合は `internal_key` を併用し�
 http://127.0.0.1:8080/?api_key=<API_KEY>&internal_key=<INTERNAL_KEY>
 ```
 
-`/api/import` の認証は内部APIポリシーに従います。UI有効時は `/internal/*` と同じ扱いで、`--internal-api-key` 未設定かつ `--allow-unauth-internal` 有効時は鍵なしで利用できます。
-UI からのZIPインポートは `x-rulemorph-import: zip` ヘッダ付きで送信されます。
+`/api/import` は既定の `assets/api_rules/endpoint.yaml` ではYAMLルール経由で処理されます。endpoint側で `multipart/form-data` の `bundle` を一時展開し、`input.body.bundle_path` を network ルールへ渡して `/internal/import` を呼びます。
+UI からのZIPインポートは `x-rulemorph-import: zip` ヘッダ付きで送信されます。このヘッダは既存クライアント互換のため維持されます。
 `/api/import` は `--no-ui`（UI無効）時でも利用できますが、この場合は `internal_key` 必須です（`--allow-unauth-internal` だけでは許可されません）。
-`endpoint.yaml` に `POST /api/import` を定義している場合、通常リクエストはルール側が優先されます。ZIPインポートを強制する場合は `x-rulemorph-import: zip` を付与してください。
+`endpoint.yaml` に `POST /api/import` を定義している場合、ZIPヘッダ付きのリクエストもルール側が優先されます。定義がない場合のみ専用axumハンドラへfallbackします。
 `--api-key-store` などでテナント認証を有効化している場合、この優先判定は認証済みテナントの `endpoint.yaml` に対して評価されます。
 `--rate-limit-per-sec` を有効化している場合、`/api/import` の上記優先判定では pre-auth レート制限がテナント解決より先に適用され、上限超過時は resolver 実行前に 429 が返ります。
 

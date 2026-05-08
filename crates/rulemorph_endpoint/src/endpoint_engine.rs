@@ -1,5 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -7,7 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
+use bytes::Bytes;
 use chrono::Utc;
+use futures_util::stream;
 use http_body_util::LengthLimitError;
 use reqwest::Client;
 use rulemorph::PathToken;
@@ -29,9 +33,12 @@ use rulemorph_trace::{TraceWriteOptions, TraceWriter, TraceWriterConfig};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tracing::warn;
+use zip::ZipArchive;
 
 const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+const MULTIPART_IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
+const MULTIPART_IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 use uuid::Uuid;
 
 use crate::ssrf::{ResolvedSsrTarget, resolve_ssrf_target};
@@ -441,11 +448,17 @@ impl EndpointEngine {
             .endpoint_rule
             .match_endpoint(&method, &path)
             .ok_or_else(|| anyhow!("no endpoint matched"))?;
-        let body_bytes = match axum::body::to_bytes(body, self.config.max_body_bytes).await {
+        let is_multipart = is_multipart_form_data(&parts.headers);
+        let body_limit = if is_multipart {
+            MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize
+        } else {
+            self.config.max_body_bytes
+        };
+        let body_bytes = match axum::body::to_bytes(body, body_limit).await {
             Ok(bytes) => Ok(bytes),
             Err(err) => {
                 if is_length_limit_error(&err) {
-                    Err(EndpointError::payload_too_large(self.config.max_body_bytes))
+                    Err(EndpointError::payload_too_large(body_limit))
                 } else {
                     Err(EndpointError::network(format!(
                         "request body read error: {}",
@@ -454,14 +467,25 @@ impl EndpointEngine {
                 }
             }
         };
+        let mut _multipart_temp_dir: Option<tempfile::TempDir> = None;
         let body_value = match body_bytes {
             Ok(body_bytes) => {
-                if body_bytes.is_empty() {
-                    Ok(None)
+                if is_multipart {
+                    match build_multipart_import_body(&parts.headers, body_bytes).await {
+                        Ok((body, temp_dir)) => {
+                            _multipart_temp_dir = Some(temp_dir);
+                            Ok(Some(body))
+                        }
+                        Err(err) => Err(err),
+                    }
                 } else {
-                    serde_json::from_slice::<JsonValue>(&body_bytes)
-                        .map(Some)
-                        .map_err(|err| EndpointError::invalid(err.to_string()))
+                    if body_bytes.is_empty() {
+                        Ok(None)
+                    } else {
+                        serde_json::from_slice::<JsonValue>(&body_bytes)
+                            .map(Some)
+                            .map_err(|err| EndpointError::invalid(err.to_string()))
+                    }
                 }
             }
             Err(err) => Err(err),
@@ -1969,6 +1993,15 @@ impl EndpointError {
         }
     }
 
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            kind: EndpointErrorKind::Invalid,
+            status: Some(StatusCode::BAD_REQUEST.as_u16()),
+            message: message.into(),
+            path: None,
+        }
+    }
+
     fn payload_too_large(limit: usize) -> Self {
         Self {
             kind: EndpointErrorKind::Invalid,
@@ -2049,6 +2082,140 @@ fn build_input_from_parts(
     }
 
     input
+}
+
+fn is_multipart_form_data(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| multer::parse_boundary(value).is_ok())
+}
+
+async fn build_multipart_import_body(
+    headers: &HeaderMap,
+    body_bytes: Bytes,
+) -> Result<(JsonValue, tempfile::TempDir), EndpointError> {
+    let content_type = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| EndpointError::bad_request("missing content-type"))?;
+    let boundary = multer::parse_boundary(content_type)
+        .map_err(|err| EndpointError::bad_request(format!("multipart error: {}", err)))?;
+    let stream = stream::once(async move { Ok::<Bytes, std::io::Error>(body_bytes) });
+    let mut multipart = multer::Multipart::new(stream, boundary);
+    let mut zip_file: Option<tempfile::NamedTempFile> = None;
+    let mut total_bytes: u64 = 0;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|err| EndpointError::bad_request(format!("multipart error: {}", err)))?
+    {
+        if field.name() != Some("bundle") {
+            continue;
+        }
+        let mut handle = tempfile::NamedTempFile::new()
+            .map_err(|err| EndpointError::network(err.to_string()))?;
+        let mut field = field;
+        while let Some(chunk) = field
+            .chunk()
+            .await
+            .map_err(|err| EndpointError::bad_request(format!("upload error: {}", err)))?
+        {
+            total_bytes = total_bytes.saturating_add(chunk.len() as u64);
+            if total_bytes > MULTIPART_IMPORT_MAX_TOTAL_BYTES {
+                return Err(EndpointError::payload_too_large(
+                    MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize,
+                ));
+            }
+            handle
+                .write_all(&chunk)
+                .map_err(|err| EndpointError::network(err.to_string()))?;
+        }
+        zip_file = Some(handle);
+        break;
+    }
+
+    let zip_file = zip_file.ok_or_else(|| EndpointError::bad_request("missing bundle file"))?;
+    let extract_dir =
+        tempfile::TempDir::new().map_err(|err| EndpointError::network(err.to_string()))?;
+    extract_zip(zip_file.path(), extract_dir.path()).map_err(EndpointError::bad_request)?;
+    let bundle_root = resolve_bundle_root(extract_dir.path())?;
+    Ok((
+        json!({ "bundle_path": bundle_root.display().to_string() }),
+        extract_dir,
+    ))
+}
+
+fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
+    let file = File::open(path).map_err(|err| format!("failed to open zip: {}", err))?;
+    let mut archive = ZipArchive::new(file).map_err(|err| format!("invalid zip: {}", err))?;
+    let mut total_bytes: u64 = 0;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|err| format!("zip entry error: {}", err))?;
+        let name = entry.name().to_string();
+        let entry_path = Path::new(&name);
+        for component in entry_path.components() {
+            match component {
+                std::path::Component::Normal(_) => {}
+                _ => return Err(format!("invalid zip entry path: {}", name)),
+            }
+        }
+        if let Some(mode) = entry.unix_mode() {
+            if (mode & 0o170000) == 0o120000 {
+                return Err(format!("zip entry is symlink: {}", name));
+            }
+        }
+        let out_path = dest.join(entry_path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out_path)
+                .map_err(|err| format!("failed to create dir: {}", err))?;
+            continue;
+        }
+        let size = entry.size();
+        if size > MULTIPART_IMPORT_MAX_FILE_BYTES {
+            return Err(format!("zip entry too large: {}", name));
+        }
+        total_bytes = total_bytes.saturating_add(size);
+        if total_bytes > MULTIPART_IMPORT_MAX_TOTAL_BYTES {
+            return Err("zip exceeds max total bytes".to_string());
+        }
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create dir: {}", err))?;
+        }
+        let mut outfile = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&out_path)
+            .map_err(|err| format!("failed to create file: {}", err))?;
+        std::io::copy(&mut entry, &mut outfile)
+            .map_err(|err| format!("failed to write file: {}", err))?;
+    }
+    Ok(())
+}
+
+fn resolve_bundle_root(base: &Path) -> Result<PathBuf, EndpointError> {
+    if base.join("traces").exists() || base.join("rules").exists() {
+        return Ok(base.to_path_buf());
+    }
+    let mut entries = std::fs::read_dir(base)
+        .map_err(|err| EndpointError::bad_request(format!("invalid zip bundle: {}", err)))?
+        .filter_map(|entry| entry.ok())
+        .collect::<Vec<_>>();
+    if entries.len() == 1 {
+        let entry = entries.remove(0);
+        let path = entry.path();
+        if path.is_dir() && (path.join("traces").exists() || path.join("rules").exists()) {
+            return Ok(path);
+        }
+    }
+    Err(EndpointError::bad_request(
+        "zip bundle must include traces/ or rules/",
+    ))
 }
 
 fn build_headers(
@@ -5215,6 +5382,197 @@ mappings:
 
         let _ = shutdown_tx.send(());
         let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn multipart_import_body_is_available_to_network_rule() {
+        let app = axum::Router::new().route(
+            "/internal/import",
+            axum::routing::post(
+                |headers: HeaderMap, axum::Json(payload): axum::Json<JsonValue>| async move {
+                    assert_eq!(
+                        headers
+                            .get("x-api-key")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("internal-key")
+                    );
+                    assert_eq!(
+                        headers
+                            .get("x-tenant-id")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("tenant-a")
+                    );
+                    let bundle_path = payload
+                        .get("bundle_path")
+                        .and_then(|value| value.as_str())
+                        .expect("bundle_path");
+                    assert!(Path::new(bundle_path).join("rules/ok.yaml").exists());
+                    axum::Json(json!({ "imported": 1, "rules_imported": 1 }))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let host = format!("localhost:{}", addr.port());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server = axum::serve(listener, app.into_make_service()).with_graceful_shutdown(async {
+            let _ = shutdown_rx.await;
+        });
+        let server_handle = tokio::spawn(async move {
+            let _ = server.await;
+        });
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        let network_dir = rules_dir.join("network");
+        std::fs::create_dir_all(&network_dir).expect("create network dir");
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/import
+    steps:
+      - rule: ./network/import_bundle.yaml
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+        std::fs::write(
+            network_dir.join("import_bundle.yaml"),
+            r#"
+version: 2
+type: network
+request:
+  method: POST
+  url:
+    - "@context.config.internal_base"
+    - concat: ["/internal/import"]
+  headers:
+    x-tenant-id: "@context.tenant_id"
+timeout: 1s
+internal_auth: true
+body_map:
+  - target: "bundle_path"
+    source: "input.body.bundle_path"
+"#,
+        )
+        .expect("write import_bundle.yaml");
+
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new(format!("http://{}", host), rules_dir.join(".data"))
+                .with_internal_auth_enabled(true)
+                .with_internal_auth_path_allowlist(vec!["/internal/import".to_string()])
+                .with_internal_api_key("internal-key".to_string()),
+        )
+        .expect("load engine");
+        let (boundary, body) = build_multipart_zip_body();
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/api/import")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(axum::body::Body::from(body))
+            .expect("request");
+        request.extensions_mut().insert(RequestContext {
+            tenant_id: Some("tenant-a".to_string()),
+            internal_api_key: None,
+        });
+        let response = engine.handle_request(request).await.expect("response");
+        assert_eq!(response.status().as_u16(), 200);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
+        assert_eq!(body, json!({ "imported": 1, "rules_imported": 1 }));
+
+        let _ = shutdown_tx.send(());
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn multipart_import_requires_bundle_field() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: POST
+    path: /api/import
+    steps: []
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://127.0.0.1:8080".to_string(), rules_dir.join(".data")),
+        )
+        .expect("load engine");
+        let boundary = "BOUNDARY";
+        let body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"not_bundle\"\r\n\r\nvalue\r\n--{boundary}--\r\n"
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/import")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(axum::body::Body::from(body))
+            .expect("request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("handle request should fail");
+        assert!(err.to_string().contains("missing bundle file"));
+    }
+
+    fn build_multipart_zip_body() -> (String, Vec<u8>) {
+        let mut zip_writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        zip_writer
+            .start_file("rules/ok.yaml", options)
+            .expect("start file");
+        zip_writer
+            .write_all(
+                br#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings: []
+"#,
+            )
+            .expect("write file");
+        let zip_bytes = zip_writer.finish().expect("finish zip").into_inner();
+        let boundary = "BOUNDARY".to_string();
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            b"Content-Disposition: form-data; name=\"bundle\"; filename=\"bundle.zip\"\r\n",
+        );
+        body.extend_from_slice(b"Content-Type: application/zip\r\n\r\n");
+        body.extend_from_slice(&zip_bytes);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        (boundary, body)
     }
 
     #[tokio::test]

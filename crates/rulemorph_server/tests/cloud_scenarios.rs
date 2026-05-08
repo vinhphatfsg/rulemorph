@@ -1378,6 +1378,25 @@ finalize:
         Some("rule")
     );
 
+    let (boundary, zip_body) = build_zip_import_payload("zip-shadow-unauth")?;
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/import")
+                .header("x-rulemorph-import", "zip")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(zip_body))
+                .unwrap(),
+        )
+        .await
+        .expect("response");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
     let (boundary, zip_body) = build_zip_import_payload("zip-shadow-001")?;
     let response = app
         .clone()
@@ -1398,8 +1417,11 @@ finalize:
         .expect("response");
     assert_eq!(response.status(), StatusCode::OK);
     let payload = response.into_body().collect().await?.to_bytes();
-    let result: ImportResult = serde_json::from_slice(&payload)?;
-    assert_eq!(result.imported, 1);
+    let body: Value = serde_json::from_slice(&payload)?;
+    assert_eq!(
+        body.get("kind").and_then(|value| value.as_str()),
+        Some("rule")
+    );
 
     Ok(())
 }
@@ -1508,6 +1530,7 @@ finalize:
     };
     let app = build_router(state, true);
 
+    let (boundary, body) = build_zip_import_payload("zip-tenant-rule-001")?;
     let response = app
         .clone()
         .oneshot(
@@ -1515,8 +1538,12 @@ finalize:
                 .method("POST")
                 .uri("/api/import")
                 .header("authorization", "Bearer tenant-key")
-                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
-                .body(Body::empty())
+                .header("x-rulemorph-import", "zip")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(body))
                 .unwrap(),
         )
         .await

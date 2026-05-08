@@ -119,8 +119,9 @@ lsof -nP -iTCP:8080 -sTCP:LISTEN
 
 Cloud/APIキー運用では `/api/*` と `/internal/*` の両方にキーが必要になります。
 UI は `/api/*` を利用するため、`api_key` と `internal_key` をクエリで渡してください。
-ZIPインポートは `POST /api/import`（`multipart/form-data`）で実行され、UI有効時の認証は内部APIポリシー（`/internal/*` と同じ）に従います。`--internal-api-key` を設定している場合は `internal_key` が必要で、未設定かつ `--allow-unauth-internal` 有効時は鍵なしで利用できます。`--no-ui` で運用する場合は `internal_key` 必須です。
-UI は `x-rulemorph-import: zip` ヘッダ付きで呼び出します。`endpoint.yaml` に `POST /api/import` を定義している場合でも、このヘッダを付けたリクエストはZIPインポートとして扱われます。
+ZIPインポートは `POST /api/import`（`multipart/form-data`）で実行されます。既定ルールでは endpoint側で `bundle` を一時展開し、`input.body.bundle_path` をYAMLの network ルールへ渡して `/internal/import` を呼びます。
+UI は `x-rulemorph-import: zip` ヘッダ付きで呼び出します。`endpoint.yaml` に `POST /api/import` を定義している場合、このヘッダ付きリクエストもYAMLルール側が優先されます。定義がない場合のみ専用axumハンドラへfallbackします。
+認証は内部APIポリシーに従います。`--internal-api-key` を設定している場合は `internal_key` が必要で、未設定かつ `--allow-unauth-internal` 有効時は鍵なしで利用できます。`--no-ui` で運用する場合は `internal_key` 必須です。
 `--api-key-store` などでテナント認証を有効化している場合、`POST /api/import` のルール衝突判定は認証済みテナントの `endpoint.yaml` に対して行われます（デフォルトテナント固定ではありません）。
 旧 `POST /internal/import-zip` は廃止されています。
 

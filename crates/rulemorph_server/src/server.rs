@@ -78,6 +78,7 @@ pub(crate) fn internal_auth_path_allowlist() -> Vec<String> {
         "/internal/traces".to_string(),
         "/internal/traces/".to_string(),
         "/internal/api-graph".to_string(),
+        "/internal/import".to_string(),
         "/internal/stream".to_string(),
     ]
 }
@@ -443,13 +444,6 @@ fn is_multipart_form_data(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-fn has_zip_import_hint(headers: &HeaderMap) -> bool {
-    headers
-        .get("x-rulemorph-import")
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.trim().eq_ignore_ascii_case("zip"))
-}
-
 fn is_zip_import_request(request: &Request<axum::body::Body>) -> bool {
     request.method() == Method::POST
         && request.uri().path() == "/api/import"
@@ -488,11 +482,18 @@ async fn handle_api_import_or_rules_with_auth_mode(
     if !is_zip_import_request(&request) {
         return run_rules_api_request(&state, request).await;
     }
-    if has_zip_import_hint(request.headers()) {
-        return run_api_import_request(&state, request, require_internal_key).await;
-    }
     if state.tenant_resolver.is_some() && state.rate_limiter.is_some() {
         ensure_pre_auth_rate_limit_for_request(&state, &mut request).await?;
+    }
+    if state.tenant_resolver.is_none() || request.headers().contains_key("x-tenant-id") {
+        if require_internal_key {
+            ensure_internal_auth_required(&state, request.headers())?;
+        } else {
+            ensure_internal_auth(&state, request.headers())?;
+        }
+        if state.tenant_resolver.is_some() {
+            apply_internal_tenant_context(&state, &mut request).await?;
+        }
     }
     maybe_apply_v1_auth_context_for_dispatch(&state, &mut request).await?;
     let resources = request_resources(&state, &request);

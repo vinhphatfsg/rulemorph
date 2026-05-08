@@ -1927,9 +1927,11 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "axum",
+ "bytes",
  "chrono",
  "futures-util",
  "http-body-util",
+ "multer",
  "reqwest",
  "rulemorph",
  "rulemorph_trace",
@@ -1942,6 +1944,7 @@ dependencies = [
  "tracing",
  "url",
  "uuid",
+ "zip",
 ]
 
 [[package]]
