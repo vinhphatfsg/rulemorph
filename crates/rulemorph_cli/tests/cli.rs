@@ -227,6 +227,34 @@ fn cli_rejects_input_over_byte_limit_before_transform() {
 }
 
 #[test]
+fn cli_reports_invalid_utf8_as_transform_error() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let input = temp_dir.path().join("bad.csv");
+    fs::write(&input, [0xff, 0xfe, b'\n']).unwrap();
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(input)
+        .arg("-e")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    assert_eq!(value[0]["type"], "transform");
+    assert_eq!(value[0]["kind"], "InvalidInput");
+    assert!(value[0]["message"].as_str().unwrap().contains("UTF-8"));
+}
+
+#[test]
 fn cli_limits_file_is_accepted() {
     let base = fixtures_dir().join("t01_csv_basic");
     let temp_dir = tempfile::tempdir().unwrap();

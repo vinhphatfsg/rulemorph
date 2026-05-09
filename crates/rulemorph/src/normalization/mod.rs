@@ -12,6 +12,7 @@ use crate::error::{TransformError, TransformErrorKind};
 use crate::model::{InputFormat, RuleFile};
 use crate::path::{get_path, parse_path};
 
+#[derive(Clone, Copy)]
 pub enum InputData<'a> {
     Text(&'a str),
     Bytes(&'a [u8]),

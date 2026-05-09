@@ -8,11 +8,11 @@ use std::time::Duration;
 use clap::ArgAction;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
-    DtoLanguage, InputFormat, NormalizationOptions, RuleError, RuleFile, RuleFormat,
+    DtoLanguage, InputData, InputFormat, NormalizationOptions, RuleError, RuleFile, RuleFormat,
     TransformError, TransformErrorKind, TransformWarning, generate_dto,
     parse_rule_file_with_format, preflight_validate_with_warnings_with_base_dir,
-    transform_stream_with_base_dir_and_options, transform_with_warnings_with_base_dir_and_options,
-    validate_rule_file_with_source,
+    transform_input_with_warnings_with_base_dir_and_options,
+    transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
 };
 #[cfg(feature = "server")]
 use rulemorph_server::{
@@ -388,7 +388,7 @@ fn run_transform(args: TransformArgs) -> i32 {
         }
     };
 
-    let input = match load_input_with_limit(&args.input, options.max_input_bytes) {
+    let input = match load_input_bytes_with_limit(&args.input, options.max_input_bytes) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -411,9 +411,9 @@ fn run_transform(args: TransformArgs) -> i32 {
     }
 
     let base_dir = rule_base_dir(&args.rules);
-    let (output, warnings) = match transform_with_warnings_with_base_dir_and_options(
+    let (output, warnings) = match transform_input_with_warnings_with_base_dir_and_options(
         &rule,
-        &input,
+        InputData::Bytes(&input),
         context_value.as_ref(),
         &base_dir,
         &options,
@@ -457,7 +457,7 @@ fn run_transform(args: TransformArgs) -> i32 {
 
 fn run_transform_ndjson(
     rule: &RuleFile,
-    input: &str,
+    input: &[u8],
     context: Option<&serde_json::Value>,
     output: Option<PathBuf>,
     error_format: ErrorFormat,
@@ -465,8 +465,12 @@ fn run_transform_ndjson(
     options: &NormalizationOptions,
 ) -> i32 {
     let base_dir = rule_base_dir(rules_path);
-    let stream = match transform_stream_with_base_dir_and_options(
-        rule, input, context, &base_dir, options,
+    let stream = match transform_stream_input_with_base_dir_and_options(
+        rule,
+        InputData::Bytes(input),
+        context,
+        &base_dir,
+        options,
     ) {
         Ok(stream) => stream,
         Err(err) => {
@@ -925,10 +929,10 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {
 }
 
 fn load_input(path: &PathBuf) -> Result<String, i32> {
-    load_input_with_limit(path, NormalizationOptions::default().max_input_bytes)
+    load_text_input_with_limit(path, NormalizationOptions::default().max_input_bytes)
 }
 
-fn load_input_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<String, i32> {
+fn load_text_input_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<String, i32> {
     match read_text_file_with_limit(path, max_input_bytes) {
         Ok(value) => Ok(value),
         Err(message) => {
@@ -938,7 +942,22 @@ fn load_input_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<Strin
     }
 }
 
+fn load_input_bytes_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<Vec<u8>, i32> {
+    match read_file_with_limit(path, max_input_bytes) {
+        Ok(value) => Ok(value),
+        Err(message) => {
+            eprintln!("failed to read input: {}", message);
+            Err(1)
+        }
+    }
+}
+
 fn read_text_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<String, String> {
+    let bytes = read_file_with_limit(path, max_bytes)?;
+    String::from_utf8(bytes).map_err(|err| err.to_string())
+}
+
+fn read_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, String> {
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
     if metadata.len() > max_bytes as u64 {
         return Err(format!("input exceeds max_input_bytes ({})", max_bytes));
@@ -952,7 +971,7 @@ fn read_text_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<String,
     if bytes.len() > max_bytes {
         return Err(format!("input exceeds max_input_bytes ({})", max_bytes));
     }
-    String::from_utf8(bytes).map_err(|err| err.to_string())
+    Ok(bytes)
 }
 
 fn load_context(path: &Option<PathBuf>) -> Result<Option<serde_json::Value>, i32> {
