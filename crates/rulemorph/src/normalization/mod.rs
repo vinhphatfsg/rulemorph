@@ -1,4 +1,5 @@
 mod csv;
+mod excel;
 mod json;
 mod options;
 mod toml;
@@ -45,13 +46,19 @@ pub fn normalize_records_with_options(
     input: InputData<'_>,
     options: &NormalizationOptions,
 ) -> Result<NormalizedRecords, TransformError> {
-    let text = text_input(input, options)?;
     let records = match rule.input.format {
-        InputFormat::Csv => csv::normalize_csv_records(rule, text, options)?,
-        InputFormat::Json => json::normalize_json_records(rule, text, options)?,
-        InputFormat::Yaml => yaml::normalize_yaml_records(rule, text, options)?,
-        InputFormat::Toml => toml::normalize_toml_records(rule, text, options)?,
-        InputFormat::Xml | InputFormat::Html | InputFormat::Excel => {
+        InputFormat::Csv => csv::normalize_csv_records(rule, text_input(input, options)?, options)?,
+        InputFormat::Json => {
+            json::normalize_json_records(rule, text_input(input, options)?, options)?
+        }
+        InputFormat::Yaml => {
+            yaml::normalize_yaml_records(rule, text_input(input, options)?, options)?
+        }
+        InputFormat::Toml => {
+            toml::normalize_toml_records(rule, text_input(input, options)?, options)?
+        }
+        InputFormat::Excel => excel::normalize_excel_records(rule, input, options)?,
+        InputFormat::Xml | InputFormat::Html => {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidInput,
                 "input format is not supported yet",

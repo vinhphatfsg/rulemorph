@@ -16,6 +16,9 @@ csv = "1.3"
 regex = "1.12"
 chrono = "0.4"
 toml = "0.8"
+calamine = { version = "0.26", features = ["dates"] }
+zip = "0.6"
+quick-xml = "0.31"
 
 [dev-dependencies]
 criterion = "0.5"

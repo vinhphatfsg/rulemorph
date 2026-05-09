@@ -1,0 +1,16 @@
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Users
+    has_header: true
+    header_row: 1
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+  - target: "active"
+    source: "active"
+  - target: "score"
+    source: "score"
