@@ -902,6 +902,14 @@ fn input_records_iter<'a>(
         InputFormat::Json => Ok(InputRecordsIter::Json(JsonRecordIter::new(parse_json(
             rule, input,
         )?))),
+        InputFormat::Yaml
+        | InputFormat::Toml
+        | InputFormat::Xml
+        | InputFormat::Html
+        | InputFormat::Excel => Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "input format is not supported yet",
+        )),
     }
 }
 
