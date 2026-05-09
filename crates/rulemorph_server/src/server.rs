@@ -38,7 +38,7 @@ use rulemorph_trace::{
 };
 
 #[cfg(feature = "embedded-ui")]
-use axum::{extract::OriginalUri, http::HeaderMap};
+use axum::extract::OriginalUri;
 #[cfg(feature = "embedded-ui")]
 use include_dir::{Dir, include_dir};
 
