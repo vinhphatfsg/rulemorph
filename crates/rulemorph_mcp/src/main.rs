@@ -2055,7 +2055,7 @@ fn absolute_clean_path(path: &Path) -> Result<PathBuf, String> {
         match component {
             std::path::Component::Prefix(prefix) => clean.push(prefix.as_os_str()),
             std::path::Component::RootDir => {
-                clean.push(std::path::MAIN_SEPARATOR.to_string());
+                push_root_dir(&mut clean);
             }
             std::path::Component::CurDir => {}
             std::path::Component::ParentDir => {
@@ -2067,6 +2067,22 @@ fn absolute_clean_path(path: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(clean)
+}
+
+fn push_root_dir(clean: &mut PathBuf) {
+    #[cfg(windows)]
+    {
+        if matches!(
+            clean.components().next(),
+            Some(std::path::Component::Prefix(_))
+        ) {
+            let mut rooted = clean.as_os_str().to_os_string();
+            rooted.push(std::path::MAIN_SEPARATOR.to_string());
+            *clean = PathBuf::from(rooted);
+            return;
+        }
+    }
+    clean.push(std::path::MAIN_SEPARATOR.to_string());
 }
 
 fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
@@ -2112,9 +2128,11 @@ fn allowed_roots() -> Result<Vec<PathBuf>, String> {
             return Ok(roots);
         }
     }
-    std::env::current_dir()
-        .map(|path| vec![path])
-        .map_err(|err| format!("failed to resolve current directory: {}", err))
+    let cwd = std::env::current_dir()
+        .map_err(|err| format!("failed to read current directory: {}", err))?
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve current directory: {}", err))?;
+    Ok(vec![cwd])
 }
 
 fn allow_any_path() -> bool {
@@ -4956,5 +4974,58 @@ fn transform_kind_to_str(kind: &TransformErrorKind) -> &'static str {
         TransformErrorKind::TypeCastFailed => "TypeCastFailed",
         TransformErrorKind::ExprError => "ExprError",
         TransformErrorKind::AssertionFailed => "AssertionFailed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn allowed_roots_fallback_uses_canonical_current_dir() {
+        let _guard = env_lock();
+        let previous_cwd = std::env::current_dir().expect("current dir");
+        let previous_allowed_roots = std::env::var_os("RULEMORPH_MCP_ALLOWED_ROOTS");
+        let previous_allow_any = std::env::var_os("RULEMORPH_MCP_ALLOW_ANY_PATH");
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        unsafe {
+            std::env::remove_var("RULEMORPH_MCP_ALLOWED_ROOTS");
+            std::env::remove_var("RULEMORPH_MCP_ALLOW_ANY_PATH");
+        }
+        std::env::set_current_dir(temp.path()).expect("set current dir");
+
+        let roots = allowed_roots().expect("allowed roots");
+        assert_eq!(
+            roots,
+            vec![temp.path().canonicalize().expect("canonical temp")]
+        );
+
+        std::env::set_current_dir(previous_cwd).expect("restore current dir");
+        unsafe {
+            match previous_allowed_roots {
+                Some(value) => std::env::set_var("RULEMORPH_MCP_ALLOWED_ROOTS", value),
+                None => std::env::remove_var("RULEMORPH_MCP_ALLOWED_ROOTS"),
+            }
+            match previous_allow_any {
+                Some(value) => std::env::set_var("RULEMORPH_MCP_ALLOW_ANY_PATH", value),
+                None => std::env::remove_var("RULEMORPH_MCP_ALLOW_ANY_PATH"),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_clean_path_preserves_windows_drive_root() {
+        let path = Path::new(r"C:\work\..\allowed\out.json");
+        let clean = absolute_clean_path(path).expect("clean path");
+
+        assert_eq!(clean, PathBuf::from(r"C:\allowed\out.json"));
     }
 }

@@ -372,6 +372,7 @@ export function getInternalKey(): string | null {
 export function __resetAuthCachesForTest(): void {
   cachedApiKey = undefined;
   cachedInternalKey = undefined;
+  cachedTenantId = undefined;
   pendingApiKeyFromUrl = undefined;
   pendingInternalKeyFromUrl = undefined;
   capturedAuthLocation = undefined;
@@ -400,9 +401,6 @@ function getTenantIdFromApiKey(apiKey: string | null): string | null {
 }
 
 function getTenantIdFromQueryOrStorage(): string | null {
-  if (cachedTenantId !== undefined) {
-    return cachedTenantId;
-  }
   if (typeof window === "undefined") {
     cachedTenantId = null;
     return cachedTenantId;
@@ -427,6 +425,10 @@ function getTenantIdFromQueryOrStorage(): string | null {
     }
     cachedTenantId = tenantParam;
     return tenantParam;
+  }
+
+  if (cachedTenantId !== undefined) {
+    return cachedTenantId;
   }
 
   try {
@@ -458,6 +460,10 @@ export function resolveTenantId(
     return "default";
   }
   return null;
+}
+
+export function __getTenantIdFromQueryOrStorageForTest(): string | null {
+  return getTenantIdFromQueryOrStorage();
 }
 
 function getTenantId(): string | null {

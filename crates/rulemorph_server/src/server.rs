@@ -225,21 +225,13 @@ impl TenantRegistry {
                     return Err(errs.into());
                 }
                 let internal_base = format!("http://localhost:{}", self.port);
-                let allow_internal_auth = self
-                    .rules_dir
-                    .as_ref()
-                    .map(|path| path.is_absolute())
-                    .unwrap_or(false);
                 let mut config = EngineConfig::new(internal_base, layout.data_dir())
                     .with_ssrf_allowlist(self.ssrf_allowlist.clone())
                     .with_ssrf_allow_private(self.ssrf_allow_private)
-                    .with_internal_auth_enabled(allow_internal_auth);
-                if allow_internal_auth {
-                    config =
-                        config.with_internal_auth_path_allowlist(internal_auth_path_allowlist());
-                    if let Some(internal_api_key) = self.internal_api_key.clone() {
-                        config = config.with_internal_api_key(internal_api_key);
-                    }
+                    .with_internal_auth_enabled(true)
+                    .with_internal_auth_path_allowlist(internal_auth_path_allowlist());
+                if let Some(internal_api_key) = self.internal_api_key.clone() {
+                    config = config.with_internal_api_key(internal_api_key);
                 }
                 Some(Arc::new(EndpointEngine::load(rules_dir.clone(), config)?))
             }
@@ -291,15 +283,20 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
                         api_router.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
                 }
             }
-            let mut v1 = Router::new().route("/v1/*path", any(handle_rules_api));
-            if state.rate_limiter.is_some() {
-                v1 = v1.layer(from_fn_with_state(state.clone(), api_rate_limit));
+            let api = Router::new().merge(api_import).merge(api_router);
+            if state.tenant_resolver.is_some() {
+                let mut v1 = Router::new().route("/v1/*path", any(handle_rules_api));
+                if state.rate_limiter.is_some() {
+                    v1 = v1.layer(from_fn_with_state(state.clone(), api_rate_limit));
+                }
+                v1 = v1.layer(from_fn_with_state(state.clone(), v1_auth));
+                if state.rate_limiter.is_some() {
+                    v1 = v1.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
+                }
+                api.merge(v1)
+            } else {
+                api
             }
-            v1 = v1.layer(from_fn_with_state(state.clone(), v1_auth));
-            if state.rate_limiter.is_some() {
-                v1 = v1.layer(from_fn_with_state(state.clone(), pre_auth_rate_limit));
-            }
-            Router::new().merge(api_import).merge(api_router).merge(v1)
         }
     };
 
