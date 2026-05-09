@@ -3835,6 +3835,64 @@ async fn write_trace_bundle_masks_url_query_params() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn write_trace_bundle_masks_url_fragment_params() -> anyhow::Result<()> {
+    let temp_dir = unique_temp_dir();
+    fs::create_dir_all(&temp_dir)?;
+
+    let trace = json!({
+        "trace_id": "trace-mask-url-fragment",
+        "records": [
+            {
+                "index": 0,
+                "input": {
+                    "fragment_only": "https://example.com/callback#access_token=abc&ok=1",
+                    "query_and_fragment": "https://example.com/path?ok=1#token=abc",
+                    "hash_route": "https://example.com/#/callback?token=abc&ok=1"
+                }
+            }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        ..Default::default()
+    };
+
+    let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let store = TraceStore::new(temp_dir.clone()).await?;
+    let loaded = store
+        .get("trace-mask-url-fragment")
+        .await?
+        .expect("trace should load");
+
+    let input = loaded
+        .get("records")
+        .and_then(|value| value.as_array())
+        .and_then(|records| records.first())
+        .and_then(|value| value.as_object())
+        .and_then(|record| record.get("input"))
+        .and_then(|value| value.as_object())
+        .expect("input object");
+
+    assert_eq!(
+        input.get("fragment_only").and_then(|value| value.as_str()),
+        Some("https://example.com/callback#access_token=[masked]&ok=1")
+    );
+    assert_eq!(
+        input
+            .get("query_and_fragment")
+            .and_then(|value| value.as_str()),
+        Some("https://example.com/path?ok=1#token=[masked]")
+    );
+    assert_eq!(
+        input.get("hash_route").and_then(|value| value.as_str()),
+        Some("https://example.com/#/callback?token=[masked]&ok=1")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn write_trace_bundle_drops_oversized_rule_source() -> anyhow::Result<()> {
     let temp_dir = unique_temp_dir();
     fs::create_dir_all(&temp_dir)?;

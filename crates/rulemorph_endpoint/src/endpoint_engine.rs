@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -39,6 +39,7 @@ const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 const MULTIPART_IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const MULTIPART_IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const MULTIPART_IMPORT_MAX_ENTRIES: usize = 4096;
 use uuid::Uuid;
 
 use crate::ssrf::{ResolvedSsrTarget, resolve_ssrf_target};
@@ -448,7 +449,7 @@ impl EndpointEngine {
             .endpoint_rule
             .match_endpoint(&method, &path)
             .ok_or_else(|| anyhow!("no endpoint matched"))?;
-        let is_multipart = is_multipart_form_data(&parts.headers);
+        let is_multipart = is_multipart_import_request(&method, &path, &parts.headers);
         let body_limit = if is_multipart {
             MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize
         } else {
@@ -2091,6 +2092,10 @@ fn is_multipart_form_data(headers: &HeaderMap) -> bool {
         .is_some_and(|value| multer::parse_boundary(value).is_ok())
 }
 
+fn is_multipart_import_request(method: &Method, path: &str, headers: &HeaderMap) -> bool {
+    method == Method::POST && path == "/api/import" && is_multipart_form_data(headers)
+}
+
 async fn build_multipart_import_body(
     headers: &HeaderMap,
     body_bytes: Bytes,
@@ -2152,6 +2157,10 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
     let mut archive = ZipArchive::new(file).map_err(|err| format!("invalid zip: {}", err))?;
     let mut total_bytes: u64 = 0;
 
+    if archive.len() > MULTIPART_IMPORT_MAX_ENTRIES {
+        return Err("zip has too many entries".to_string());
+    }
+
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -2192,10 +2201,38 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
             .create_new(true)
             .open(&out_path)
             .map_err(|err| format!("failed to create file: {}", err))?;
-        std::io::copy(&mut entry, &mut outfile)
-            .map_err(|err| format!("failed to write file: {}", err))?;
+        let copied =
+            copy_zip_entry_bounded(&mut entry, &mut outfile, MULTIPART_IMPORT_MAX_FILE_BYTES)
+                .map_err(|err| format!("failed to write file: {}", err))?;
+        total_bytes = total_bytes.saturating_sub(size).saturating_add(copied);
+        if copied > MULTIPART_IMPORT_MAX_FILE_BYTES {
+            return Err(format!("zip entry too large: {}", name));
+        }
+        if total_bytes > MULTIPART_IMPORT_MAX_TOTAL_BYTES {
+            return Err("zip exceeds max total bytes".to_string());
+        }
     }
     Ok(())
+}
+
+fn copy_zip_entry_bounded<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    max_bytes: u64,
+) -> std::io::Result<u64> {
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(copied);
+        }
+        copied = copied.saturating_add(read as u64);
+        if copied > max_bytes {
+            return Ok(copied);
+        }
+        writer.write_all(&buffer[..read])?;
+    }
 }
 
 fn resolve_bundle_root(base: &Path) -> Result<PathBuf, EndpointError> {
@@ -4082,6 +4119,35 @@ mod tests {
     }
 
     #[test]
+    fn zip_copy_stops_after_file_limit() {
+        let mut input = std::io::Cursor::new(vec![b'x'; 12]);
+        let mut output = Vec::new();
+        let copied = copy_zip_entry_bounded(&mut input, &mut output, 8).expect("copy");
+        assert_eq!(copied, 12);
+        assert!(output.len() <= 8);
+    }
+
+    #[test]
+    fn zip_extract_rejects_too_many_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let zip_path = temp.path().join("bundle.zip");
+        let file = File::create(&zip_path).expect("create zip");
+        let mut zip_writer = zip::ZipWriter::new(file);
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for index in 0..=MULTIPART_IMPORT_MAX_ENTRIES {
+            zip_writer
+                .start_file(format!("rules/{index}.yaml"), options)
+                .expect("start file");
+        }
+        zip_writer.finish().expect("finish zip");
+
+        let err = extract_zip(&zip_path, temp.path().join("out").as_path())
+            .expect_err("zip should be rejected");
+        assert!(err.contains("too many entries"));
+    }
+
+    #[test]
     fn compile_retry_defaults_to_none() {
         let retry = compile_retry(None).unwrap();
         assert!(retry.is_none());
@@ -5542,6 +5608,48 @@ endpoints:
             .await
             .expect_err("handle request should fail");
         assert!(err.to_string().contains("missing bundle file"));
+    }
+
+    #[tokio::test]
+    async fn multipart_body_is_only_import_special_case() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let rules_dir = temp.path();
+        std::fs::write(
+            rules_dir.join("endpoint.yaml"),
+            r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/traces
+    steps: []
+    reply:
+      status: 200
+      body: "@input"
+"#,
+        )
+        .expect("write endpoint.yaml");
+        let engine = EndpointEngine::load(
+            rules_dir.to_path_buf(),
+            EngineConfig::new("http://127.0.0.1:8080".to_string(), rules_dir.join(".data")),
+        )
+        .expect("load engine");
+        let (boundary, body) = build_multipart_zip_body();
+        let request = Request::builder()
+            .method("GET")
+            .uri("/api/traces")
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                format!("multipart/form-data; boundary={boundary}"),
+            )
+            .body(axum::body::Body::from(body))
+            .expect("request");
+
+        let err = engine
+            .handle_request(request)
+            .await
+            .expect_err("multipart should not be parsed on non-import endpoints");
+        assert!(!err.to_string().contains("missing bundle file"));
     }
 
     fn build_multipart_zip_body() -> (String, Vec<u8>) {

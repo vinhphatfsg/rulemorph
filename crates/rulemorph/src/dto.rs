@@ -42,17 +42,17 @@ pub fn generate_dto(
     language: DtoLanguage,
     name: Option<&str>,
 ) -> Result<String, DtoError> {
-    let name = name.unwrap_or("Record");
+    let name = safe_type_name(language, name.unwrap_or("Record"));
     let schema = build_schema(rule)?;
 
     match language {
-        DtoLanguage::Rust => render_rust(&schema, name),
-        DtoLanguage::TypeScript => render_typescript(&schema, name),
-        DtoLanguage::Python => render_python(&schema, name),
-        DtoLanguage::Go => render_go(&schema, name),
-        DtoLanguage::Java => render_java(&schema, name),
-        DtoLanguage::Kotlin => render_kotlin(&schema, name),
-        DtoLanguage::Swift => render_swift(&schema, name),
+        DtoLanguage::Rust => render_rust(&schema, &name),
+        DtoLanguage::TypeScript => render_typescript(&schema, &name),
+        DtoLanguage::Python => render_python(&schema, &name),
+        DtoLanguage::Go => render_go(&schema, &name),
+        DtoLanguage::Java => render_java(&schema, &name),
+        DtoLanguage::Kotlin => render_kotlin(&schema, &name),
+        DtoLanguage::Swift => render_swift(&schema, &name),
     }
 }
 
@@ -331,6 +331,87 @@ fn field_identifier(lang: DtoLanguage, key: &str, used: &mut HashMap<String, usi
         *entry = 1;
         ident
     }
+}
+
+fn safe_type_name(lang: DtoLanguage, name: &str) -> String {
+    let words = words_from_key(name);
+    let mut ident = pascal_case(&words);
+    if ident.is_empty() {
+        ident = "Record".to_string();
+    }
+    if ident
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_digit())
+        .unwrap_or(true)
+    {
+        ident = format!("Record{}", ident);
+    }
+    if is_reserved(lang, &ident) {
+        ident.push_str("Record");
+    }
+    ident
+}
+
+fn rust_string_literal(value: &str) -> String {
+    format!("{:?}", value)
+}
+
+fn json_string_literal(value: &str) -> String {
+    serde_json::to_string(value).expect("string serialization should not fail")
+}
+
+fn swift_string_literal(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            ch if ch.is_control() => out.push_str(&format!("\\u{{{:x}}}", ch as u32)),
+            ch => out.push(ch),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn safe_comment_text(value: &str) -> String {
+    value.replace("*/", "* /").replace(['\r', '\n'], "\\n")
+}
+
+fn go_json_tag_literal(key: &str, optional: bool) -> String {
+    if !key.contains('`')
+        && !key.contains('"')
+        && !key.contains('\\')
+        && !key.contains('\r')
+        && !key.contains('\n')
+    {
+        if optional {
+            return format!("`json:\"{},omitempty\"`", key);
+        }
+        return format!("`json:\"{}\"`", key);
+    }
+    let mut tag_key = String::with_capacity(key.len());
+    for ch in key.chars() {
+        match ch {
+            '\\' => tag_key.push_str("\\\\"),
+            '"' => tag_key.push_str("\\\""),
+            '\n' => tag_key.push_str("\\n"),
+            '\r' => tag_key.push_str("\\r"),
+            '\t' => tag_key.push_str("\\t"),
+            ch => tag_key.push(ch),
+        }
+    }
+    let tag = if optional {
+        format!("json:\"{},omitempty\"", tag_key)
+    } else {
+        format!("json:\"{}\"", tag_key)
+    };
+    json_string_literal(&tag)
 }
 
 fn words_from_key(key: &str) -> Vec<String> {
@@ -749,7 +830,7 @@ fn render_rust(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
                 attrs.push("skip_serializing_if = \"Option::is_none\"".to_string());
             }
             if rename {
-                attrs.push(format!("rename = \"{}\"", field.key));
+                attrs.push(format!("rename = {}", rust_string_literal(&field.key)));
             }
 
             if !attrs.is_empty() {
@@ -806,7 +887,10 @@ fn render_typescript(schema: &SchemaNode, name: &str) -> Result<String, DtoError
             };
             let field_type = typescript_type_for_field(field, &def.path, &registry);
             if rename {
-                out.push_str(&format!("  /** json: \"{}\" */\n", field.key));
+                out.push_str(&format!(
+                    "  /** json: {} */\n",
+                    json_string_literal(&safe_comment_text(&field.key))
+                ));
             }
             let suffix = if optional { "?" } else { "" };
             out.push_str(&format!("  {}{}: {};\n", ident, suffix, field_type));
@@ -908,19 +992,26 @@ fn render_python(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
             .chain(fields.iter().filter(|field| field.optional))
         {
             if field.rename {
-                out.push_str(&format!("    # json: \"{}\"\n", field.key));
+                out.push_str(&format!(
+                    "    # json: {}\n",
+                    json_string_literal(&safe_comment_text(&field.key))
+                ));
             }
 
             if field.rename {
                 if field.optional {
                     out.push_str(&format!(
-                        "    {}: {} = field(default=None, metadata={{\"json_key\": \"{}\"}})\n",
-                        field.ident, field.field_type, field.key
+                        "    {}: {} = field(default=None, metadata={{\"json_key\": {}}})\n",
+                        field.ident,
+                        field.field_type,
+                        json_string_literal(&field.key)
                     ));
                 } else {
                     out.push_str(&format!(
-                        "    {}: {} = field(metadata={{\"json_key\": \"{}\"}})\n",
-                        field.ident, field.field_type, field.key
+                        "    {}: {} = field(metadata={{\"json_key\": {}}})\n",
+                        field.ident,
+                        field.field_type,
+                        json_string_literal(&field.key)
                     ));
                 }
             } else if field.optional {
@@ -990,11 +1081,7 @@ fn render_go(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
                 _ => field.optional,
             };
             let field_type = go_type_for_field(field, &def.path, &registry, optional);
-            let tag = if optional {
-                format!("`json:\"{},omitempty\"`", field.key)
-            } else {
-                format!("`json:\"{}\"`", field.key)
-            };
+            let tag = go_json_tag_literal(&field.key, optional);
             out.push_str(&format!("    {} {} {}\n", ident, field_type, tag));
         }
         out.push_str("}\n\n");
@@ -1065,7 +1152,10 @@ fn render_java(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
             let field_type = java_type_for_field(field, &def.path, &registry, optional);
 
             if rename {
-                out.push_str(&format!("    @JsonProperty(\"{}\")\n", field.key));
+                out.push_str(&format!(
+                    "    @JsonProperty({})\n",
+                    json_string_literal(&field.key)
+                ));
             }
             out.push_str(&format!("    public {} {};\n", field_type, ident));
         }
@@ -1136,7 +1226,10 @@ fn render_kotlin(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
             let field_type = kotlin_type_for_field(field, &def.path, &registry, optional);
 
             if rename {
-                out.push_str(&format!("    @JsonProperty(\"{}\")\n", field.key));
+                out.push_str(&format!(
+                    "    @JsonProperty({})\n",
+                    json_string_literal(&field.key)
+                ));
             }
             let suffix = if index + 1 == def.node.fields.len() {
                 ""
@@ -1199,7 +1292,11 @@ fn render_swift(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
 
             out.push_str(&format!("    let {}: {}\n", ident, field_type));
             if rename {
-                coding_keys.push(format!("        case {} = \"{}\"", ident, field.key));
+                coding_keys.push(format!(
+                    "        case {} = {}",
+                    ident,
+                    swift_string_literal(&field.key)
+                ));
             }
         }
 

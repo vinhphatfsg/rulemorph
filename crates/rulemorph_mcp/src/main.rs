@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use csv::ReaderBuilder;
 use rulemorph::{
@@ -820,28 +820,21 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
         ));
     }
 
-    let (mut rule, yaml) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
-    let base_dir = rules_path.as_deref().and_then(|path| {
-        let parent = Path::new(path).parent()?;
-        if parent.as_os_str().is_empty() {
-            None
-        } else {
-            Some(parent.to_path_buf())
-        }
-    });
+    let (mut rule, yaml, base_dir) =
+        load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    if rules_text.is_some() && rule_has_file_branch(&rule) {
+        return Err(CallError::InvalidParams(
+            "rules_text cannot use branch file references; use rules_path under an allowed root"
+                .to_string(),
+        ));
+    }
 
     let input = match (
         input_path.as_deref(),
         input_text.as_deref(),
         input_json.as_ref(),
     ) {
-        (Some(path), None, None) => fs::read_to_string(path).map_err(|err| {
-            let message = format!("failed to read input: {}", err);
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![io_error_json(&message, Some(path))]),
-            }
-        })?,
+        (Some(path), None, None) => read_allowed_to_string(path, "input")?,
         (None, Some(text), None) => text.to_string(),
         (None, None, Some(value)) => serde_json::to_string(value).map_err(|err| {
             let message = format!("failed to serialize input JSON: {}", err);
@@ -859,13 +852,7 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
 
     let context_value = match (context_path.as_deref(), context_json.as_ref()) {
         (Some(path), None) => {
-            let data = fs::read_to_string(path).map_err(|err| {
-                let message = format!("failed to read context: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![io_error_json(&message, Some(path))]),
-                }
-            })?;
+            let data = read_allowed_to_string(path, "context")?;
             Some(serde_json::from_str(&data).map_err(|err| {
                 let message = format!("failed to parse context JSON: {}", err);
                 CallError::Tool {
@@ -927,7 +914,7 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     };
 
     if let Some(path) = output_path.as_deref() {
-        write_output(path, &output_text).map_err(|err| {
+        write_allowed_output(path, &output_text).map_err(|err| {
             let message = err;
             CallError::Tool {
                 message: message.clone(),
@@ -1009,7 +996,7 @@ fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError
         ));
     }
 
-    let (rule, yaml) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, yaml, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
     match validate_rule_file_with_source(&rule, &yaml) {
         Ok(_) => {
             let warnings = collect_rule_warnings(&rule);
@@ -1068,7 +1055,7 @@ fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> 
         language.ok_or_else(|| CallError::InvalidParams("language is required".to_string()))?;
     let language = parse_dto_language(&language).map_err(CallError::InvalidParams)?;
 
-    let (rule, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, _, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
     let dto = generate_dto(&rule, language, name.as_deref()).map_err(|err| {
         let message = format!("failed to generate dto: {}", err);
         CallError::Tool {
@@ -1346,13 +1333,7 @@ fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError>
     }
 
     let input_text = match (input_path.as_deref(), input_text.as_deref()) {
-        (Some(path), None) => fs::read_to_string(path).map_err(|err| {
-            let message = format!("failed to read input: {}", err);
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![io_error_json(&message, Some(path))]),
-            }
-        })?,
+        (Some(path), None) => read_allowed_to_string(path, "input")?,
         (None, Some(text)) => text.to_string(),
         (None, None) => String::new(),
         _ => {
@@ -1467,7 +1448,7 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
         ));
     }
 
-    let (rule, yaml) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, yaml, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
     let mut yaml_value: YamlValue = serde_yaml::from_str(&yaml).map_err(|err| {
         let message = format!("failed to parse rules yaml: {}", err);
         CallError::Tool {
@@ -1477,13 +1458,7 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
     })?;
 
     let input_text = match (input_path.as_deref(), input_text.as_deref()) {
-        (Some(path), None) => fs::read_to_string(path).map_err(|err| {
-            let message = format!("failed to read input: {}", err);
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![io_error_json(&message, Some(path))]),
-            }
-        })?,
+        (Some(path), None) => read_allowed_to_string(path, "input")?,
         (None, Some(text)) => text.to_string(),
         (None, None) => String::new(),
         _ => {
@@ -1717,13 +1692,7 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
     }
 
     let input_text = match (input_path.as_deref(), input_text.as_deref()) {
-        (Some(path), None) => fs::read_to_string(path).map_err(|err| {
-            let message = format!("failed to read input: {}", err);
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![io_error_json(&message, Some(path))]),
-            }
-        })?,
+        (Some(path), None) => read_allowed_to_string(path, "input")?,
         (None, Some(text)) => text.to_string(),
         (None, None) => String::new(),
         _ => {
@@ -1974,16 +1943,10 @@ fn get_optional_object(args: &Map<String, Value>, key: &str) -> Result<Option<Va
 fn load_rule_from_source(
     rules_path: Option<&str>,
     rules_text: Option<&str>,
-) -> Result<(RuleFile, String), CallError> {
+) -> Result<(RuleFile, String, Option<PathBuf>), CallError> {
     match (rules_path, rules_text) {
         (Some(path), None) => {
-            let yaml = fs::read_to_string(path).map_err(|err| {
-                let message = format!("failed to read rules: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![io_error_json(&message, Some(path))]),
-                }
-            })?;
+            let (resolved_path, yaml) = read_allowed_file(path, "rules")?;
             let rule = parse_rule_file(&yaml).map_err(|err| {
                 let message = format!("failed to parse rules: {}", err);
                 CallError::Tool {
@@ -1991,7 +1954,8 @@ fn load_rule_from_source(
                     errors: Some(vec![parse_error_json(&message, Some(path))]),
                 }
             })?;
-            Ok((rule, yaml))
+            let base_dir = resolved_path.parent().map(Path::to_path_buf);
+            Ok((rule, yaml, base_dir))
         }
         (None, Some(text)) => {
             let rule = parse_rule_file(text).map_err(|err| {
@@ -2001,12 +1965,179 @@ fn load_rule_from_source(
                     errors: Some(vec![parse_error_json(&message, None)]),
                 }
             })?;
-            Ok((rule, text.to_string()))
+            Ok((rule, text.to_string(), None))
         }
         _ => Err(CallError::InvalidParams(
             "rules_path or rules_text is required".to_string(),
         )),
     }
+}
+
+fn read_allowed_to_string(path: &str, label: &str) -> Result<String, CallError> {
+    read_allowed_file(path, label).map(|(_, data)| data)
+}
+
+fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallError> {
+    let path = allowed_existing_path(path).map_err(|err| {
+        let message = format!("failed to read {}: {}", label, err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![io_error_json(&message, Some(path))]),
+        }
+    })?;
+    let data = fs::read_to_string(&path).map_err(|err| {
+        let message = format!("failed to read {}: {}", label, err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![io_error_json(
+                &message,
+                Some(path.to_string_lossy().as_ref()),
+            )]),
+        }
+    })?;
+    Ok((path, data))
+}
+
+fn rule_has_file_branch(rule: &RuleFile) -> bool {
+    rule.steps
+        .as_ref()
+        .is_some_and(|steps| steps.iter().any(|step| step.branch.is_some()))
+}
+
+fn write_allowed_output(path: &str, output: &str) -> Result<(), String> {
+    let path = Path::new(path);
+    ensure_allowed_output_path(path)?;
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create output directory: {}", err))?;
+        }
+    }
+    fs::write(path, output.as_bytes()).map_err(|err| format!("failed to write output: {}", err))
+}
+
+fn allowed_existing_path(path: &str) -> Result<PathBuf, String> {
+    let path = Path::new(path);
+    let canonical = path
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve path: {}", err))?;
+    ensure_allowed_canonical_path(&canonical)?;
+    Ok(canonical)
+}
+
+fn ensure_allowed_output_path(path: &Path) -> Result<(), String> {
+    let path = absolute_clean_path(path)?;
+    if path.exists() {
+        let check_path = path
+            .canonicalize()
+            .map_err(|err| format!("failed to resolve output path: {}", err))?;
+        ensure_allowed_canonical_path(&check_path)
+    } else {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        let ancestor = nearest_existing_ancestor(parent)?;
+        let check_path = ancestor
+            .canonicalize()
+            .map_err(|err| format!("failed to resolve output directory: {}", err))?;
+        ensure_allowed_canonical_path(&check_path)
+    }
+}
+
+fn absolute_clean_path(path: &Path) -> Result<PathBuf, String> {
+    let mut clean = if path.is_absolute() {
+        PathBuf::new()
+    } else {
+        std::env::current_dir()
+            .map_err(|err| format!("failed to read current directory: {}", err))?
+            .canonicalize()
+            .map_err(|err| format!("failed to resolve current directory: {}", err))?
+    };
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => clean.push(prefix.as_os_str()),
+            std::path::Component::RootDir => {
+                push_root_dir(&mut clean);
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !clean.pop() {
+                    return Err("output path escapes filesystem root".to_string());
+                }
+            }
+            std::path::Component::Normal(value) => clean.push(value),
+        }
+    }
+    Ok(clean)
+}
+
+fn push_root_dir(clean: &mut PathBuf) {
+    #[cfg(windows)]
+    {
+        if matches!(
+            clean.components().next(),
+            Some(std::path::Component::Prefix(_))
+        ) {
+            let mut rooted = clean.as_os_str().to_os_string();
+            rooted.push(std::path::MAIN_SEPARATOR.to_string());
+            *clean = PathBuf::from(rooted);
+            return;
+        }
+    }
+    clean.push(std::path::MAIN_SEPARATOR.to_string());
+}
+
+fn nearest_existing_ancestor(path: &Path) -> Result<PathBuf, String> {
+    let mut ancestor = path.to_path_buf();
+    loop {
+        if ancestor.exists() {
+            return Ok(ancestor);
+        }
+        if !ancestor.pop() {
+            return Err("failed to find existing output directory ancestor".to_string());
+        }
+    }
+}
+
+fn ensure_allowed_canonical_path(path: &Path) -> Result<(), String> {
+    if allow_any_path() {
+        return Ok(());
+    }
+    let roots = allowed_roots()?;
+    if roots.iter().any(|root| path.starts_with(root)) {
+        return Ok(());
+    }
+    Err(format!(
+        "path is outside MCP allowed roots: {}",
+        path.display()
+    ))
+}
+
+fn allowed_roots() -> Result<Vec<PathBuf>, String> {
+    if let Some(raw) = std::env::var_os("RULEMORPH_MCP_ALLOWED_ROOTS") {
+        let roots = std::env::split_paths(&raw)
+            .map(|path| {
+                path.canonicalize().map_err(|err| {
+                    format!(
+                        "failed to resolve MCP allowed root {}: {}",
+                        path.display(),
+                        err
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if !roots.is_empty() {
+            return Ok(roots);
+        }
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|err| format!("failed to read current directory: {}", err))?
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve current directory: {}", err))?;
+    Ok(vec![cwd])
+}
+
+fn allow_any_path() -> bool {
+    std::env::var("RULEMORPH_MCP_ALLOW_ANY_PATH")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
 fn parse_dto_language(value: &str) -> Result<DtoLanguage, String> {
@@ -4562,17 +4693,6 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<&str>) -> Result<()
     Ok(())
 }
 
-fn write_output(path: &str, output: &str) -> Result<(), String> {
-    let path = std::path::Path::new(path);
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create output directory: {}", err))?;
-        }
-    }
-    fs::write(path, output.as_bytes()).map_err(|err| format!("failed to write output: {}", err))
-}
-
 fn transform_to_ndjson(
     rule: &RuleFile,
     input: &str,
@@ -4854,5 +4974,58 @@ fn transform_kind_to_str(kind: &TransformErrorKind) -> &'static str {
         TransformErrorKind::TypeCastFailed => "TypeCastFailed",
         TransformErrorKind::ExprError => "ExprError",
         TransformErrorKind::AssertionFailed => "AssertionFailed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn allowed_roots_fallback_uses_canonical_current_dir() {
+        let _guard = env_lock();
+        let previous_cwd = std::env::current_dir().expect("current dir");
+        let previous_allowed_roots = std::env::var_os("RULEMORPH_MCP_ALLOWED_ROOTS");
+        let previous_allow_any = std::env::var_os("RULEMORPH_MCP_ALLOW_ANY_PATH");
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        unsafe {
+            std::env::remove_var("RULEMORPH_MCP_ALLOWED_ROOTS");
+            std::env::remove_var("RULEMORPH_MCP_ALLOW_ANY_PATH");
+        }
+        std::env::set_current_dir(temp.path()).expect("set current dir");
+
+        let roots = allowed_roots().expect("allowed roots");
+        assert_eq!(
+            roots,
+            vec![temp.path().canonicalize().expect("canonical temp")]
+        );
+
+        std::env::set_current_dir(previous_cwd).expect("restore current dir");
+        unsafe {
+            match previous_allowed_roots {
+                Some(value) => std::env::set_var("RULEMORPH_MCP_ALLOWED_ROOTS", value),
+                None => std::env::remove_var("RULEMORPH_MCP_ALLOWED_ROOTS"),
+            }
+            match previous_allow_any {
+                Some(value) => std::env::set_var("RULEMORPH_MCP_ALLOW_ANY_PATH", value),
+                None => std::env::remove_var("RULEMORPH_MCP_ALLOW_ANY_PATH"),
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn absolute_clean_path_preserves_windows_drive_root() {
+        let path = Path::new(r"C:\work\..\allowed\out.json");
+        let clean = absolute_clean_path(path).expect("clean path");
+
+        assert_eq!(clean, PathBuf::from(r"C:\allowed\out.json"));
     }
 }

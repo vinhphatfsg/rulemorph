@@ -1408,17 +1408,55 @@ fn normalize_masking_rules(rules: &[String]) -> Vec<String> {
 }
 
 fn mask_url_query(value: &str, rules: &[String]) -> Option<String> {
-    if rules.is_empty() || !value.contains('?') {
+    if rules.is_empty() || (!value.contains('?') && !value.contains('#')) {
         return None;
     }
-    let (base, rest) = value.split_once('?')?;
-    let (query, fragment) = match rest.split_once('#') {
-        Some((query, fragment)) => (query, Some(fragment)),
-        None => (rest, None),
+    let (without_fragment, fragment) = match value.split_once('#') {
+        Some((prefix, fragment)) => (prefix, Some(fragment)),
+        None => (value, None),
+    };
+    let (base, query) = match without_fragment.split_once('?') {
+        Some((base, query)) => (base, Some(query)),
+        None => (without_fragment, None),
     };
     let mut masked = false;
+    let masked_query = query.map(|query| {
+        let (value, did_mask) = mask_url_param_pairs(query, rules);
+        masked |= did_mask;
+        value
+    });
+    let masked_fragment = fragment.map(|fragment| {
+        let (value, did_mask) = mask_url_fragment(fragment, rules);
+        masked |= did_mask;
+        value
+    });
+    let mut masked_value = String::with_capacity(value.len());
+    masked_value.push_str(base);
+    if let Some(query) = masked_query {
+        masked_value.push('?');
+        masked_value.push_str(&query);
+    }
+    if let Some(fragment) = masked_fragment {
+        masked_value.push('#');
+        masked_value.push_str(&fragment);
+    }
+    masked.then_some(masked_value)
+}
+
+fn mask_url_fragment(value: &str, rules: &[String]) -> (String, bool) {
+    if let Some((route, query)) = value.split_once('?') {
+        let (masked_query, did_mask) = mask_url_param_pairs(query, rules);
+        if did_mask {
+            return (format!("{route}?{masked_query}"), true);
+        }
+    }
+    mask_url_param_pairs(value, rules)
+}
+
+fn mask_url_param_pairs(value: &str, rules: &[String]) -> (String, bool) {
+    let mut masked = false;
     let mut parts = Vec::new();
-    for pair in query.split('&') {
+    for pair in value.split('&') {
         if pair.is_empty() {
             parts.push(String::new());
             continue;
@@ -1437,18 +1475,7 @@ fn mask_url_query(value: &str, rules: &[String]) -> Option<String> {
             parts.push(pair.to_string());
         }
     }
-    if !masked {
-        return None;
-    }
-    let mut masked_value = String::with_capacity(value.len());
-    masked_value.push_str(base);
-    masked_value.push('?');
-    masked_value.push_str(&parts.join("&"));
-    if let Some(fragment) = fragment {
-        masked_value.push('#');
-        masked_value.push_str(fragment);
-    }
-    Some(masked_value)
+    (parts.join("&"), masked)
 }
 
 fn apply_masking(value: &mut JsonValue, rules: &[String]) {
