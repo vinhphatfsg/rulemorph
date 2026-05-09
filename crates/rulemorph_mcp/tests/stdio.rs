@@ -16,6 +16,27 @@ impl McpServer {
     fn start() -> Self {
         let bin = env!("CARGO_BIN_EXE_rulemorph-mcp");
         let mut child = Command::new(bin)
+            .env("RULEMORPH_MCP_ALLOW_ANY_PATH", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn mcp server");
+
+        let stdin = child.stdin.take().expect("take stdin");
+        let stdout = child.stdout.take().expect("take stdout");
+
+        Self {
+            child,
+            stdin: Some(stdin),
+            stdout: BufReader::new(stdout),
+        }
+    }
+
+    fn start_with_allowed_root(root: &std::path::Path) -> Self {
+        let bin = env!("CARGO_BIN_EXE_rulemorph-mcp");
+        let mut child = Command::new(bin)
+            .env("RULEMORPH_MCP_ALLOWED_ROOTS", root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
@@ -142,6 +163,123 @@ mappings:
     assert_eq!(output, json!([{ "id": 1 }]));
     assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
 
+    server.shutdown();
+}
+
+#[test]
+fn transform_rejects_paths_outside_allowed_root() {
+    let allowed = tempdir().expect("allowed temp dir");
+    let outside = tempdir().expect("outside temp dir");
+    let rules_path = outside.path().join("rules.yaml");
+    let input_path = outside.path().join("input.json");
+
+    fs::write(
+        &rules_path,
+        r#"version: 1
+input:
+  format: json
+  json: {}
+mappings: []
+"#,
+    )
+    .expect("write rules");
+    fs::write(&input_path, r#"{"id": 1}"#).expect("write input");
+
+    let mut server = McpServer::start_with_allowed_root(allowed.path());
+    initialize(&mut server);
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 30,
+        "method": "tools/call",
+        "params": {
+            "name": "transform",
+            "arguments": {
+                "rules_path": rules_path.to_string_lossy(),
+                "input_path": input_path.to_string_lossy()
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let message = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(message.contains("outside MCP allowed roots"));
+    server.shutdown();
+}
+
+#[test]
+fn transform_allows_new_output_directory_inside_allowed_root() {
+    let dir = tempdir().expect("allowed temp dir");
+    let rules_path = dir.path().join("rules.yaml");
+    let input_path = dir.path().join("input.json");
+    let output_path = dir.path().join("new").join("out.json");
+
+    fs::write(
+        &rules_path,
+        r#"version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("write rules");
+    fs::write(&input_path, r#"{"id": 1}"#).expect("write input");
+
+    let mut server = McpServer::start_with_allowed_root(dir.path());
+    initialize(&mut server);
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 31,
+        "method": "tools/call",
+        "params": {
+            "name": "transform",
+            "arguments": {
+                "rules_path": rules_path.to_string_lossy(),
+                "input_path": input_path.to_string_lossy(),
+                "output_path": output_path.to_string_lossy()
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
+    let output_file = fs::read_to_string(&output_path).expect("read output file");
+    let output: Value = serde_json::from_str(&output_file).expect("output json");
+    assert_eq!(output, json!([{ "id": 1 }]));
+    server.shutdown();
+}
+
+#[test]
+fn transform_rejects_rules_text_file_branch() {
+    let dir = tempdir().expect("allowed temp dir");
+    let mut server = McpServer::start_with_allowed_root(dir.path());
+    initialize(&mut server);
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 32,
+        "method": "tools/call",
+        "params": {
+            "name": "transform",
+            "arguments": {
+                "rules_text": "version: 2\ninput:\n  format: json\n  json: {}\nsteps:\n  - branch:\n      when: { eq: [1, 1] }\n      then: /tmp/outside.yaml\n",
+                "input_json": { "id": 1 }
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert_eq!(response["error"]["code"], -32602);
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .expect("error message")
+            .contains("rules_text cannot use branch")
+    );
     server.shutdown();
 }
 

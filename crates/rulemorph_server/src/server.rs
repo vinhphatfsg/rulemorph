@@ -1,5 +1,5 @@
 use std::fs::{File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
@@ -18,7 +18,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell, broadcast};
 use tokio_stream::{StreamExt, wrappers::BroadcastStream};
@@ -112,6 +111,7 @@ struct RateLimitState {
 
 const IMPORT_ZIP_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_ZIP_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
+const IMPORT_ZIP_MAX_ENTRIES: usize = 4096;
 static API_KEY_FILE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
 
 fn api_key_file_lock(path: &Path) -> Arc<Mutex<()>> {
@@ -718,7 +718,7 @@ fn ensure_internal_auth(
     headers: &HeaderMap,
 ) -> std::result::Result<(), ApiError> {
     let Some(expected) = state.internal_api_key.as_deref() else {
-        if state.allow_unauth_internal {
+        if state.allow_unauth_internal && state.tenant_resolver.is_none() {
             return Ok(());
         }
         return Err(ApiError::service_unavailable(
@@ -830,9 +830,6 @@ async fn pre_auth_rate_limit(
 }
 
 fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
-    if let Some(api_key) = extract_api_key(request.headers()) {
-        return format!("preauth:key:{:x}", hash_string(&api_key));
-    }
     if let Some(ConnectInfo(addr)) = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -840,12 +837,6 @@ fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
         return format!("preauth:ip:{}", addr.ip());
     }
     "preauth:anonymous".to_string()
-}
-
-fn hash_string(value: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
 }
 
 async fn enforce_api_rate_limit(
@@ -1190,6 +1181,10 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
     let mut archive = ZipArchive::new(file).map_err(|err| format!("invalid zip: {}", err))?;
     let mut total_bytes: u64 = 0;
 
+    if archive.len() > IMPORT_ZIP_MAX_ENTRIES {
+        return Err("zip has too many entries".to_string());
+    }
+
     for i in 0..archive.len() {
         let mut entry = archive
             .by_index(i)
@@ -1232,10 +1227,37 @@ fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
             .create_new(true)
             .open(&out_path)
             .map_err(|err| format!("failed to create file: {}", err))?;
-        std::io::copy(&mut entry, &mut outfile)
+        let copied = copy_zip_entry_bounded(&mut entry, &mut outfile, IMPORT_ZIP_MAX_FILE_BYTES)
             .map_err(|err| format!("failed to write file: {}", err))?;
+        total_bytes = total_bytes.saturating_sub(size).saturating_add(copied);
+        if copied > IMPORT_ZIP_MAX_FILE_BYTES {
+            return Err(format!("zip entry too large: {}", name));
+        }
+        if total_bytes > IMPORT_ZIP_MAX_TOTAL_BYTES {
+            return Err("zip exceeds max total bytes".to_string());
+        }
     }
     Ok(())
+}
+
+fn copy_zip_entry_bounded<R: Read, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    max_bytes: u64,
+) -> std::io::Result<u64> {
+    let mut copied = 0u64;
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(copied);
+        }
+        copied = copied.saturating_add(read as u64);
+        if copied > max_bytes {
+            return Ok(copied);
+        }
+        writer.write_all(&buffer[..read])?;
+    }
 }
 
 fn resolve_bundle_root(base: &Path) -> std::result::Result<PathBuf, ApiError> {
@@ -1338,14 +1360,30 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::sync::Arc;
 
+    use async_trait::async_trait;
     use axum::extract::ConnectInfo;
     use axum::http::{HeaderValue, Request, header::AUTHORIZATION};
 
-    use super::pre_auth_rate_limit_key;
+    use crate::{TenantContext, TenantResolver};
+
+    use super::{
+        ApiMode, AppState, IMPORT_ZIP_MAX_ENTRIES, TenantResources, TraceStore, build_router,
+        copy_zip_entry_bounded, extract_zip, pre_auth_rate_limit_key,
+    };
+
+    struct StaticTenantResolver;
+
+    #[async_trait]
+    impl TenantResolver for StaticTenantResolver {
+        async fn resolve(&self, _api_key: &str) -> anyhow::Result<Option<TenantContext>> {
+            Ok(Some(TenantContext::new("tenant-a")))
+        }
+    }
 
     #[test]
-    fn pre_auth_rate_limit_uses_api_key_even_with_connect_info() {
+    fn pre_auth_rate_limit_uses_ip_even_with_api_key() {
         let mut request = Request::builder()
             .uri("/v1/traces")
             .body(axum::body::Body::empty())
@@ -1359,7 +1397,7 @@ mod tests {
             .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
 
         let key = pre_auth_rate_limit_key(&request);
-        assert!(key.starts_with("preauth:key:"));
+        assert_eq!(key, "preauth:ip:127.0.0.1");
     }
 
     #[test]
@@ -1374,5 +1412,82 @@ mod tests {
 
         let key = pre_auth_rate_limit_key(&request);
         assert_eq!(key, "preauth:ip:127.0.0.1");
+    }
+
+    #[test]
+    fn zip_copy_stops_after_file_limit() {
+        let mut input = std::io::Cursor::new(vec![b'x'; 12]);
+        let mut output = Vec::new();
+        let copied = copy_zip_entry_bounded(&mut input, &mut output, 8).expect("copy");
+        assert_eq!(copied, 12);
+        assert!(output.len() <= 8);
+    }
+
+    #[test]
+    fn zip_extract_rejects_too_many_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let zip_path = temp.path().join("bundle.zip");
+        let file = std::fs::File::create(&zip_path).expect("create zip");
+        let mut zip_writer = zip::ZipWriter::new(file);
+        let options =
+            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        for index in 0..=IMPORT_ZIP_MAX_ENTRIES {
+            zip_writer
+                .start_file(format!("traces/{index}/trace.json"), options)
+                .expect("start file");
+        }
+        zip_writer.finish().expect("finish zip");
+
+        let err = extract_zip(&zip_path, temp.path().join("out").as_path())
+            .expect_err("zip should be rejected");
+        assert!(err.contains("too many entries"));
+    }
+
+    #[tokio::test]
+    async fn unauth_internal_is_not_allowed_with_tenant_resolver() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("data");
+        let store = TraceStore::new(data_dir.clone())
+            .await
+            .expect("trace store");
+        let (trace_events, _) = tokio::sync::broadcast::channel(16);
+        let auth_dir = data_dir.join("auth");
+        tokio::fs::create_dir_all(&auth_dir)
+            .await
+            .expect("create auth dir");
+        let resources = TenantResources {
+            tenant_id: "default".to_string(),
+            data_dir: data_dir.clone(),
+            rules_dir: data_dir.join("api_rules"),
+            auth_dir,
+            store: Arc::new(store),
+            api_engine: None,
+            trace_events,
+        };
+        let state = AppState {
+            default_resources: Arc::new(resources),
+            tenant_registry: None,
+            ui_source: None,
+            api_mode: ApiMode::UiOnly,
+            tenant_resolver: Some(Arc::new(StaticTenantResolver)),
+            internal_api_key: None,
+            allow_unauth_internal: true,
+            rate_limiter: None,
+        };
+        let app = build_router(state, true);
+        let response = tower::ServiceExt::oneshot(
+            app,
+            Request::builder()
+                .uri("/internal/traces")
+                .header("x-tenant-id", "tenant-a")
+                .body(axum::body::Body::empty())
+                .expect("request"),
+        )
+        .await
+        .expect("response");
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }
