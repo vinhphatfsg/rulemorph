@@ -1,7 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rulemorph::{TransformErrorKind, parse_rule_file, transform};
+use rulemorph::{
+    InputData, NormalizationOptions, TransformErrorKind, normalize_records_with_options,
+    parse_rule_file, transform,
+};
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -69,6 +72,111 @@ fn t02_csv_no_header() {
     let expected = load_json(&base.join("expected.json"));
     let output = transform(&rule, &input, None).expect("transform failed");
     assert_eq!(output, expected);
+}
+
+#[test]
+fn csv_trailing_missing_field_is_missing_not_error() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+    default: "missing-name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let output = transform(&rule, "id,name\n1\n", None).expect("transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "id": "1", "name": "missing-name" }])
+    );
+}
+
+#[test]
+fn csv_duplicate_header_is_invalid_input() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, "id,id\n1,2\n", None).expect_err("duplicate header should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn json_input_duplicate_key_is_invalid() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json:
+    records_path: items
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, r#"{ "items": [{ "id": 1, "id": 2 }] }"#, None)
+        .expect_err("duplicate key should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn normalization_rejects_input_over_byte_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_input_bytes: 4,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(&rule, InputData::Text(r#"{ "id": 1 }"#), &options)
+        .expect_err("limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn normalization_rejects_too_many_records() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_records: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(&rule, InputData::Text("id\n1\n2\n"), &options)
+        .expect_err("record limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
 
 #[test]

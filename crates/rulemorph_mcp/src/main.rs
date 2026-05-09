@@ -1,14 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
-use csv::ReaderBuilder;
+use rulemorph::serde_guard::parse_json_value_strict;
 use rulemorph::{
-    DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError, RuleFile, RuleFormat,
-    TransformError, TransformErrorKind, TransformWarning, generate_dto,
-    parse_rule_file_with_format, transform_stream, transform_stream_with_base_dir,
-    transform_with_warnings, transform_with_warnings_with_base_dir, validate_rule_file_with_source,
+    DtoLanguage, Expr, ExprChain, ExprOp, InputData, InputFormat, NormalizationOptions, RuleError,
+    RuleFile, RuleFormat, TransformError, TransformErrorKind, TransformWarning, generate_dto,
+    normalize_records_with_options, parse_rule_file_with_format, transform_stream,
+    transform_stream_with_base_dir, transform_with_warnings, transform_with_warnings_with_base_dir,
+    validate_rule_file_with_source,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -20,6 +21,9 @@ const RESOURCE_URI_README: &str = "rulemorph://docs/readme";
 const RESOURCE_RULES_SPEC_EN: &str = include_str!("../../../docs/rules_spec_en.md");
 const RESOURCE_RULES_SPEC_JA: &str = include_str!("../../../docs/rules_spec_ja.md");
 const RESOURCE_README: &str = include_str!("../../../README.md");
+const MCP_MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+const MCP_MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
+const MCP_MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() {
     if let Err(err) = run() {
@@ -68,25 +72,29 @@ fn read_message(
     reader: &mut impl BufRead,
     output_mode: &mut OutputMode,
 ) -> io::Result<Option<String>> {
-    let mut line = String::new();
+    let mut line: String;
     loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
-            return Ok(None);
-        }
+        line = match read_line_bounded(reader, MCP_MAX_MESSAGE_BYTES)? {
+            Some(line) => line,
+            None => return Ok(None),
+        };
 
         if let Some(length) = line.strip_prefix("Content-Length:") {
             let length = length.trim().parse::<usize>().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length")
             })?;
+            if length > MCP_MAX_MESSAGE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Content-Length exceeds MCP message limit",
+                ));
+            }
 
             loop {
-                line.clear();
-                let bytes = reader.read_line(&mut line)?;
-                if bytes == 0 {
-                    return Ok(None);
-                }
+                line = match read_line_bounded(reader, MCP_MAX_HEADER_LINE_BYTES)? {
+                    Some(line) => line,
+                    None => return Ok(None),
+                };
                 if line == "\r\n" || line == "\n" {
                     break;
                 }
@@ -105,6 +113,39 @@ fn read_message(
         *output_mode = OutputMode::Line;
         return Ok(Some(trimmed.to_string()));
     }
+}
+
+fn read_line_bounded(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        let take_len = match available.iter().position(|byte| *byte == b'\n') {
+            Some(index) => index + 1,
+            None => available.len(),
+        };
+        if bytes.len().saturating_add(take_len) > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "line exceeds MCP message limit",
+            ));
+        }
+        bytes.extend_from_slice(&available[..take_len]);
+        reader.consume(take_len);
+        if bytes.last() == Some(&b'\n') {
+            break;
+        }
+    }
+
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
 fn write_message(
@@ -459,7 +500,7 @@ fn transform_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "context_path": {
@@ -596,7 +637,7 @@ fn analyze_input_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "format": {
@@ -647,7 +688,7 @@ fn generate_rules_from_base_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "format": {
@@ -698,7 +739,7 @@ fn generate_rules_from_dto_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "format": {
@@ -1377,16 +1418,11 @@ fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError>
         json_records_from_value(&value, records_path.as_deref())?
     } else {
         match normalize_format(format.as_deref(), &input_text) {
-            InputDataFormat::Json => {
-                let value = serde_json::from_str(&input_text).map_err(|err| {
-                    let message = format!("failed to parse input JSON: {}", err);
-                    CallError::Tool {
-                        message: message.clone(),
-                        errors: Some(vec![parse_error_json(&message, input_path.as_deref())]),
-                    }
-                })?;
-                json_records_from_value(&value, records_path.as_deref())?
-            }
+            InputDataFormat::Json => parse_json_records_strict(
+                &input_text,
+                records_path.as_deref(),
+                input_path.as_deref(),
+            )?,
             InputDataFormat::Csv => parse_csv_records(&input_text).map_err(|err| {
                 let message = format!("failed to parse input CSV: {}", err);
                 CallError::Tool {
@@ -1537,14 +1573,7 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
             json_records_from_value(&value, records_path.as_deref())?
         }
         (InputDataFormat::Json, None) => {
-            let value = serde_json::from_str(&input_text).map_err(|err| {
-                let message = format!("failed to parse input JSON: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![parse_error_json(&message, input_path.as_deref())]),
-                }
-            })?;
-            json_records_from_value(&value, records_path.as_deref())?
+            parse_json_records_strict(&input_text, records_path.as_deref(), input_path.as_deref())?
         }
         (InputDataFormat::Csv, _) => parse_csv_records(&input_text).map_err(|err| {
             let message = format!("failed to parse input CSV: {}", err);
@@ -1761,14 +1790,7 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
             json_records_from_value(&value, records_path.as_deref())?
         }
         (InputDataFormat::Json, None) => {
-            let value = serde_json::from_str(&input_text).map_err(|err| {
-                let message = format!("failed to parse input JSON: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![parse_error_json(&message, input_path.as_deref())]),
-                }
-            })?;
-            json_records_from_value(&value, records_path.as_deref())?
+            parse_json_records_strict(&input_text, records_path.as_deref(), input_path.as_deref())?
         }
         (InputDataFormat::Csv, _) => parse_csv_records(&input_text).map_err(|err| {
             let message = format!("failed to parse input CSV: {}", err);
@@ -2041,7 +2063,7 @@ fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallE
             errors: Some(vec![io_error_json(&message, Some(path))]),
         }
     })?;
-    let data = fs::read_to_string(&path).map_err(|err| {
+    let data = read_text_file_with_limit(&path, MCP_MAX_FILE_BYTES).map_err(|err| {
         let message = format!("failed to read {}: {}", label, err);
         CallError::Tool {
             message: message.clone(),
@@ -2052,6 +2074,23 @@ fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallE
         }
     })?;
     Ok((path, data))
+}
+
+fn read_text_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
+    if metadata.len() > max_bytes as u64 {
+        return Err(format!("file exceeds maximum size ({})", max_bytes));
+    }
+    let mut file = fs::File::open(path).map_err(|err| err.to_string())?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    if bytes.len() > max_bytes {
+        return Err(format!("file exceeds maximum size ({})", max_bytes));
+    }
+    String::from_utf8(bytes).map_err(|err| err.to_string())
 }
 
 fn rule_has_file_branch(rule: &RuleFile) -> bool {
@@ -2306,60 +2345,42 @@ fn json_records_from_value(
     }
 }
 
-fn parse_csv_records(text: &str) -> Result<Vec<Value>, String> {
-    let mut reader = ReaderBuilder::new()
-        .has_headers(true)
-        .from_reader(text.as_bytes());
-    let headers = reader
-        .headers()
-        .map_err(|err| err.to_string())?
-        .iter()
-        .enumerate()
-        .map(|(index, name)| {
-            let trimmed = name.trim();
-            if trimmed.is_empty() {
-                format!("column_{}", index + 1)
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut records = Vec::new();
-    for result in reader.records() {
-        let record = result.map_err(|err| err.to_string())?;
-        let mut obj = Map::new();
-        for (index, value) in record.iter().enumerate() {
-            if let Some(key) = headers.get(index) {
-                obj.insert(key.clone(), csv_cell_to_value(value));
-            }
+fn parse_json_records_strict(
+    input_text: &str,
+    records_path: Option<&str>,
+    input_path: Option<&str>,
+) -> Result<Vec<Value>, CallError> {
+    let value = parse_json_value_strict(input_text).map_err(|err| {
+        let message = format!("failed to parse input JSON: {}", err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![parse_error_json(&message, input_path)]),
         }
-        records.push(Value::Object(obj));
-    }
-    Ok(records)
+    })?;
+    json_records_from_value(&value, records_path)
 }
 
-fn csv_cell_to_value(value: &str) -> Value {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Value::Null;
-    }
-    let lower = trimmed.to_ascii_lowercase();
-    if lower == "true" {
-        return Value::Bool(true);
-    }
-    if lower == "false" {
-        return Value::Bool(false);
-    }
-    if let Ok(number) = trimmed.parse::<i64>() {
-        return Value::Number(number.into());
-    }
-    if let Ok(number) = trimmed.parse::<f64>() {
-        if let Some(number) = serde_json::Number::from_f64(number) {
-            return Value::Number(number);
-        }
-    }
-    Value::String(trimmed.to_string())
+fn parse_csv_records(text: &str) -> Result<Vec<Value>, String> {
+    let rule = parse_rule_file_with_format(
+        r#"version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings: []
+"#,
+        RuleFormat::Yaml,
+    )
+    .map_err(|err| err.to_string())?;
+    let records = normalize_records_with_options(
+        &rule,
+        InputData::Text(text),
+        &NormalizationOptions::default(),
+    )
+    .map_err(|err| err.to_string())?;
+    records
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| err.to_string())
 }
 
 #[derive(Default)]
@@ -5036,11 +5057,28 @@ fn transform_kind_to_str(kind: &TransformErrorKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn bounded_line_reader_rejects_oversized_line() {
+        let mut reader = BufReader::new(Cursor::new(b"{\"jsonrpc\":\"2.0\"}\n".to_vec()));
+        let err = read_line_bounded(&mut reader, 8).expect_err("oversized line should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn bounded_line_reader_reads_complete_line() {
+        let mut reader = BufReader::new(Cursor::new(b"{\"jsonrpc\":\"2.0\"}\n".to_vec()));
+        let line = read_line_bounded(&mut reader, 64)
+            .expect("read line")
+            .expect("line");
+        assert_eq!(line, "{\"jsonrpc\":\"2.0\"}\n");
     }
 
     #[test]

@@ -130,6 +130,16 @@ fn initialize_and_list_tools() {
             "rules_format schema missing for {name}"
         );
     }
+    let transform_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "transform")
+        .expect("transform tool");
+    let input_json_description =
+        transform_tool["inputSchema"]["properties"]["input_json"]["description"]
+            .as_str()
+            .expect("input_json description");
+    assert!(input_json_description.contains("Inline typed JSON value"));
+    assert!(input_json_description.contains("Duplicate-key validation"));
 
     server.shutdown();
 }
@@ -178,6 +188,52 @@ mappings:
 
     assert_eq!(output, json!([{ "id": 1 }]));
     assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
+
+    server.shutdown();
+}
+
+#[test]
+fn transform_csv_input_text_keeps_cell_values_as_strings() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let rules_text = r#"version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "flag"
+    source: "flag"
+  - target: "empty"
+    source: "empty"
+"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 32,
+        "method": "tools/call",
+        "params": {
+            "name": "transform",
+            "arguments": {
+                "rules_text": rules_text,
+                "input_text": "id,flag,empty\n001,true,\n",
+                "format": "csv"
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let output: Value = serde_json::from_str(output_text).expect("output json");
+    assert_eq!(
+        output,
+        json!([{ "id": "001", "flag": "true", "empty": "" }])
+    );
 
     server.shutdown();
 }
@@ -842,6 +898,78 @@ fn analyze_input_json_success() {
         .expect("paths array");
     assert!(paths.iter().any(|item| item["path"] == "id"));
     assert!(paths.iter().any(|item| item["path"] == "name"));
+
+    server.shutdown();
+}
+
+#[test]
+fn raw_json_input_text_rejects_duplicate_keys_for_analysis_and_generation() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let duplicate_input = r#"{"items":[{"id":1,"id":2}]}"#;
+    let base_rules_text = r#"version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "old_id"
+"#;
+    let dto_text = r#"export interface Record {
+  id: string;
+}"#;
+
+    let cases = [
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1201,
+            "method": "tools/call",
+            "params": {
+                "name": "analyze_input",
+                "arguments": {
+                    "input_text": duplicate_input,
+                    "format": "json"
+                }
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1202,
+            "method": "tools/call",
+            "params": {
+                "name": "generate_rules_from_base",
+                "arguments": {
+                    "rules_text": base_rules_text,
+                    "input_text": duplicate_input,
+                    "format": "json"
+                }
+            }
+        }),
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1203,
+            "method": "tools/call",
+            "params": {
+                "name": "generate_rules_from_dto",
+                "arguments": {
+                    "dto_text": dto_text,
+                    "dto_language": "typescript",
+                    "input_text": duplicate_input,
+                    "format": "json"
+                }
+            }
+        }),
+    ];
+
+    for request in cases {
+        let response = server.send(&request);
+        assert_eq!(response["result"]["isError"], true);
+        let message = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("error text");
+        assert!(message.contains("duplicate key"), "{message}");
+    }
 
     server.shutdown();
 }
