@@ -78,6 +78,11 @@ jobs:
         run: |
           STATUS="$(
             curl -sS \
+              --connect-timeout 10 \
+              --max-time 30 \
+              --retry 3 \
+              --retry-delay 2 \
+              --retry-all-errors \
               -A "rulemorph-release-workflow/${VERSION}" \
               -o crates-io-version.json \
               -w "%{http_code}" \

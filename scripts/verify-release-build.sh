@@ -10,11 +10,14 @@ else
   TARGETS=("$(rustc -vV | awk '/^host:/ { print $2 }')")
 fi
 
+METADATA_FILE="$(mktemp "${TMPDIR:-/tmp}/rulemorph-release-metadata.XXXXXX.json")"
+trap 'rm -f "$METADATA_FILE"' EXIT
+
 echo "==> cargo fmt --check"
 cargo fmt --check
 
 echo "==> cargo metadata --locked"
-cargo metadata --locked --format-version 1 --no-deps > /tmp/rulemorph-release-metadata.json
+cargo metadata --locked --format-version 1 --no-deps > "$METADATA_FILE"
 
 echo "==> cargo test"
 cargo test
