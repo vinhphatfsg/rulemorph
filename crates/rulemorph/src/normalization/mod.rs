@@ -1,6 +1,8 @@
 mod csv;
 mod json;
 mod options;
+mod toml;
+mod yaml;
 
 pub use options::NormalizationOptions;
 
@@ -8,6 +10,7 @@ use serde_json::Value as JsonValue;
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::{InputFormat, RuleFile};
+use crate::path::{get_path, parse_path};
 
 pub enum InputData<'a> {
     Text(&'a str),
@@ -45,11 +48,9 @@ pub fn normalize_records_with_options(
     let records = match rule.input.format {
         InputFormat::Csv => csv::normalize_csv_records(rule, text, options)?,
         InputFormat::Json => json::normalize_json_records(rule, text, options)?,
-        InputFormat::Yaml
-        | InputFormat::Toml
-        | InputFormat::Xml
-        | InputFormat::Html
-        | InputFormat::Excel => {
+        InputFormat::Yaml => yaml::normalize_yaml_records(rule, text, options)?,
+        InputFormat::Toml => toml::normalize_toml_records(rule, text, options)?,
+        InputFormat::Xml | InputFormat::Html | InputFormat::Excel => {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidInput,
                 "input format is not supported yet",
@@ -141,4 +142,36 @@ pub(crate) fn enforce_json_limits(
     }
 
     walk(value, 0, options)
+}
+
+pub(crate) fn select_records_from_document(
+    value: &JsonValue,
+    records_path: Option<&str>,
+    path_for_error: &'static str,
+) -> Result<Vec<JsonValue>, TransformError> {
+    let records_value = match records_path {
+        Some(path) => {
+            let tokens = parse_path(path).map_err(|err| {
+                TransformError::new(TransformErrorKind::InvalidRecordsPath, err.message())
+                    .with_path(path_for_error)
+            })?;
+            get_path(value, &tokens).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::InvalidRecordsPath,
+                    "records_path does not exist",
+                )
+                .with_path(path_for_error)
+            })?
+        }
+        None => value,
+    };
+
+    match records_value {
+        JsonValue::Array(items) => Ok(items.clone()),
+        JsonValue::Object(_) => Ok(vec![records_value.clone()]),
+        _ => Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "records_path must point to an array or object",
+        )),
+    }
 }
