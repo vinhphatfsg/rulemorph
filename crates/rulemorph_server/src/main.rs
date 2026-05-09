@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 use clap::{ArgAction, Parser, ValueEnum};
-use rulemorph_server::{ApiKeyResolver, ApiMode, ServerConfig, TenantContext, TenantResolver, run};
+use rulemorph_server::{
+    ApiKeyResolver, ApiMode, ServerConfig, TenantContext, TenantResolver, run, validate_tenant_id,
+};
 
 #[derive(Parser)]
 #[command(name = "rulemorph-server")]
@@ -72,6 +74,26 @@ impl From<ApiModeArg> for ApiMode {
     }
 }
 
+fn build_static_tenant_resolver(
+    api_key: Option<&str>,
+    tenant_id: Option<String>,
+) -> anyhow::Result<Option<std::sync::Arc<dyn TenantResolver>>> {
+    let Some(api_key) = api_key else {
+        return Ok(None);
+    };
+    let trimmed = api_key.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let tenant_id = tenant_id.unwrap_or_else(|| "default".to_string());
+    validate_tenant_id(&tenant_id)
+        .map_err(|err| anyhow::anyhow!("invalid --tenant-id: {}", err))?;
+    Ok(Some(std::sync::Arc::new(StaticTenantResolver {
+        api_key: trimmed.to_string(),
+        tenant_id,
+    }) as std::sync::Arc<dyn TenantResolver>))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -82,20 +104,7 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(ServerConfig::default_data_dir),
         )) as std::sync::Arc<dyn TenantResolver>)
     } else {
-        cli.api_key.as_ref().and_then(|key| {
-            let trimmed = key.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-            let tenant_id = cli
-                .tenant_id
-                .clone()
-                .unwrap_or_else(|| "default".to_string());
-            Some(std::sync::Arc::new(StaticTenantResolver {
-                api_key: trimmed.to_string(),
-                tenant_id,
-            }) as std::sync::Arc<dyn TenantResolver>)
-        })
+        build_static_tenant_resolver(cli.api_key.as_deref(), cli.tenant_id.clone())?
     };
     let internal_api_key = cli
         .internal_api_key
@@ -127,4 +136,22 @@ async fn main() -> anyhow::Result<()> {
         ssrf_allow_any: cli.ssrf_allow_any,
     };
     run(config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_static_tenant_resolver;
+
+    #[test]
+    fn static_tenant_resolver_rejects_invalid_tenant_id() {
+        let err = match build_static_tenant_resolver(
+            Some("static-key"),
+            Some("tenant.invalid".to_string()),
+        ) {
+            Ok(_) => panic!("invalid tenant id should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("invalid --tenant-id"));
+    }
 }

@@ -18,6 +18,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::time::{Duration, Instant};
@@ -835,6 +836,12 @@ async fn pre_auth_rate_limit(
 }
 
 fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
+    if let Some(api_key) = extract_api_key(request.headers())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return format!("preauth:key:{}", short_hash(&api_key));
+    }
     if let Some(ConnectInfo(addr)) = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
@@ -842,6 +849,14 @@ fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
         return format!("preauth:ip:{}", addr.ip());
     }
     "preauth:anonymous".to_string()
+}
+
+fn short_hash(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 async fn enforce_api_rate_limit(
@@ -1390,7 +1405,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_auth_rate_limit_uses_ip_even_with_api_key() {
+    fn pre_auth_rate_limit_uses_api_key_when_present() {
         let mut request = Request::builder()
             .uri("/v1/traces")
             .body(axum::body::Body::empty())
@@ -1404,7 +1419,37 @@ mod tests {
             .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
 
         let key = pre_auth_rate_limit_key(&request);
-        assert_eq!(key, "preauth:ip:127.0.0.1");
+        assert!(key.starts_with("preauth:key:"));
+        assert!(!key.contains("rmk_tenant-a.secret"));
+    }
+
+    #[test]
+    fn pre_auth_rate_limit_separates_distinct_api_keys() {
+        let mut first = Request::builder()
+            .uri("/v1/traces")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        first
+            .headers_mut()
+            .insert(AUTHORIZATION, HeaderValue::from_static("Bearer key-a"));
+        first
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+        let mut second = Request::builder()
+            .uri("/v1/traces")
+            .body(axum::body::Body::empty())
+            .expect("request");
+        second
+            .headers_mut()
+            .insert(AUTHORIZATION, HeaderValue::from_static("Bearer key-b"));
+        second
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 3000))));
+
+        assert_ne!(
+            pre_auth_rate_limit_key(&first),
+            pre_auth_rate_limit_key(&second)
+        );
     }
 
     #[test]

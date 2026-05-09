@@ -9,10 +9,9 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
 use axum::response::Response;
-use bytes::Bytes;
 use chrono::Utc;
-use futures_util::stream;
-use http_body_util::LengthLimitError;
+use futures_util::TryStreamExt;
+use http_body_util::{BodyExt, LengthLimitError, Limited};
 use reqwest::Client;
 use rulemorph::PathToken;
 use rulemorph::v2_eval::{
@@ -457,46 +456,30 @@ impl EndpointEngine {
             .match_endpoint(&method, &path)
             .ok_or_else(|| anyhow!("no endpoint matched"))?;
         let is_multipart = is_multipart_import_request(&method, &path, &parts.headers);
-        let body_limit = if is_multipart {
-            MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize
-        } else {
-            self.config.max_body_bytes
-        };
-        let body_bytes = match axum::body::to_bytes(body, body_limit).await {
-            Ok(bytes) => Ok(bytes),
-            Err(err) => {
-                if is_length_limit_error(&err) {
-                    Err(EndpointError::payload_too_large(body_limit))
-                } else {
-                    Err(EndpointError::network(format!(
-                        "request body read error: {}",
-                        err
-                    )))
-                }
-            }
-        };
         let mut _multipart_temp_dir: Option<tempfile::TempDir> = None;
-        let body_value = match body_bytes {
-            Ok(body_bytes) => {
-                if is_multipart {
-                    match build_multipart_import_body(&parts.headers, body_bytes).await {
-                        Ok((body, temp_dir)) => {
-                            _multipart_temp_dir = Some(temp_dir);
-                            Ok(Some(body))
-                        }
-                        Err(err) => Err(err),
-                    }
-                } else {
-                    if body_bytes.is_empty() {
-                        Ok(None)
-                    } else {
-                        serde_json::from_slice::<JsonValue>(&body_bytes)
-                            .map(Some)
-                            .map_err(|err| EndpointError::invalid(err.to_string()))
-                    }
+        let body_value = if is_multipart {
+            match build_multipart_import_body(&parts.headers, body).await {
+                Ok((body, temp_dir)) => {
+                    _multipart_temp_dir = Some(temp_dir);
+                    Ok(Some(body))
                 }
+                Err(err) => Err(err),
             }
-            Err(err) => Err(err),
+        } else {
+            let body_limit = self.config.max_body_bytes;
+            match axum::body::to_bytes(body, body_limit).await {
+                Ok(body_bytes) if body_bytes.is_empty() => Ok(None),
+                Ok(body_bytes) => serde_json::from_slice::<JsonValue>(&body_bytes)
+                    .map(Some)
+                    .map_err(|err| EndpointError::invalid(err.to_string())),
+                Err(err) if is_length_limit_error(&err) => {
+                    Err(EndpointError::payload_too_large(body_limit))
+                }
+                Err(err) => Err(EndpointError::network(format!(
+                    "request body read error: {}",
+                    err
+                ))),
+            }
         };
 
         let endpoint = endpoint_match.endpoint;
@@ -2123,7 +2106,7 @@ fn is_loopback_host(host: &str) -> bool {
 
 async fn build_multipart_import_body(
     headers: &HeaderMap,
-    body_bytes: Bytes,
+    body: axum::body::Body,
 ) -> Result<(JsonValue, tempfile::TempDir), EndpointError> {
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
@@ -2131,27 +2114,21 @@ async fn build_multipart_import_body(
         .ok_or_else(|| EndpointError::bad_request("missing content-type"))?;
     let boundary = multer::parse_boundary(content_type)
         .map_err(|err| EndpointError::bad_request(format!("multipart error: {}", err)))?;
-    let stream = stream::once(async move { Ok::<Bytes, std::io::Error>(body_bytes) });
+    let stream = Limited::new(body, MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize)
+        .into_data_stream()
+        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
     let mut multipart = multer::Multipart::new(stream, boundary);
     let mut zip_file: Option<tempfile::NamedTempFile> = None;
     let mut total_bytes: u64 = 0;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|err| EndpointError::bad_request(format!("multipart error: {}", err)))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(multipart_error)? {
         if field.name() != Some("bundle") {
             continue;
         }
         let mut handle = tempfile::NamedTempFile::new()
             .map_err(|err| EndpointError::network(err.to_string()))?;
         let mut field = field;
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|err| EndpointError::bad_request(format!("upload error: {}", err)))?
-        {
+        while let Some(chunk) = field.chunk().await.map_err(multipart_upload_error)? {
             total_bytes = total_bytes.saturating_add(chunk.len() as u64);
             if total_bytes > MULTIPART_IMPORT_MAX_TOTAL_BYTES {
                 return Err(EndpointError::payload_too_large(
@@ -2175,6 +2152,24 @@ async fn build_multipart_import_body(
         json!({ "bundle_path": bundle_root.display().to_string() }),
         extract_dir,
     ))
+}
+
+fn multipart_error(err: multer::Error) -> EndpointError {
+    let message = err.to_string();
+    if message.contains("length limit") {
+        EndpointError::payload_too_large(MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize)
+    } else {
+        EndpointError::bad_request(format!("multipart error: {}", message))
+    }
+}
+
+fn multipart_upload_error(err: multer::Error) -> EndpointError {
+    let message = err.to_string();
+    if message.contains("length limit") {
+        EndpointError::payload_too_large(MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize)
+    } else {
+        EndpointError::bad_request(format!("upload error: {}", message))
+    }
 }
 
 fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
@@ -3498,7 +3493,7 @@ fn build_rule_nodes_from_rule(
         finalize_trace = Some(finalize);
     }
 
-    let duration_us = sum_node_duration_us(&nodes);
+    let duration_us = sum_rule_trace_duration_us(&nodes, finalize_trace.as_ref());
 
     RuleTraceNodes {
         nodes,
@@ -3513,6 +3508,15 @@ fn sum_node_duration_us(nodes: &[JsonValue]) -> u64 {
         .iter()
         .filter_map(|node| node.get("duration_us").and_then(|value| value.as_u64()))
         .sum()
+}
+
+fn sum_rule_trace_duration_us(nodes: &[JsonValue], finalize: Option<&JsonValue>) -> u64 {
+    sum_node_duration_us(nodes).saturating_add(
+        finalize
+            .and_then(|trace| trace.get("duration_us"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0),
+    )
 }
 
 fn transform_error_to_trace(err: &TransformError) -> JsonValue {
@@ -6117,6 +6121,14 @@ steps:
             .get("duration_us")
             .and_then(|value| value.as_u64());
         assert!(duration.is_some());
+    }
+
+    #[test]
+    fn rule_trace_duration_includes_finalize_duration() {
+        let nodes = vec![json!({ "duration_us": 10 }), json!({ "duration_us": 15 })];
+        let finalize = json!({ "duration_us": 7 });
+
+        assert_eq!(sum_rule_trace_duration_us(&nodes, Some(&finalize)), 32);
     }
 
     #[test]
