@@ -456,9 +456,6 @@ export function resolveTenantId(
   if (tenantFromQueryOrStorage) {
     return tenantFromQueryOrStorage;
   }
-  if (apiKey?.trim()) {
-    return "default";
-  }
   return null;
 }
 

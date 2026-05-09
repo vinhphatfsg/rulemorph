@@ -26,7 +26,15 @@ npm run build
 
 ### ui-only モード
 
-内部APIのみを提供するモードです。UIは `/api/*` を利用するため、UIを閲覧する場合は rules モードを使用してください。
+UI静的ファイルと `/internal/*` を提供する互換・診断向けモードです。現在のTrace Consoleは通常 `/api/*` 経由で利用するため、ブラウザでUI機能を確認する場合は下の rules モードを使用してください。`ui-only` はUI配信を前提にしたモードなので、`--no-ui` とは併用できません。
+
+```sh
+# 開発時
+cargo run -p rulemorph_server -- --api-mode ui-only
+
+# Release バイナリ
+rulemorph-server --api-mode ui-only
+```
 
 ### rules モード（デフォルト）
 

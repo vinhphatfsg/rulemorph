@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { execFileSync, spawn } from "child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from "fs";
+import { spawn } from "child_process";
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import path from "path";
 import net from "net";
@@ -12,6 +12,87 @@ const repoRoot = path.resolve(
 );
 const uiDist = path.resolve(repoRoot, "crates/rulemorph_ui/ui/dist");
 const apiRulesDir = path.resolve(repoRoot, "assets/api_rules");
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (const byte of buffer) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(date = new Date("2026-02-03T00:00:00Z")) {
+  const year = Math.max(1980, date.getUTCFullYear());
+  const dosTime =
+    (date.getUTCHours() << 11) | (date.getUTCMinutes() << 5) | Math.floor(date.getUTCSeconds() / 2);
+  const dosDate = ((year - 1980) << 9) | ((date.getUTCMonth() + 1) << 5) | date.getUTCDate();
+  return { dosDate, dosTime };
+}
+
+function createStoredZip(zipPath: string, entries: Array<{ name: string; data: Buffer }>) {
+  const localParts: Buffer[] = [];
+  const centralParts: Buffer[] = [];
+  let offset = 0;
+  const { dosDate, dosTime } = dosDateTime();
+
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name.replace(/\\/g, "/"));
+    const data = entry.data;
+    const checksum = crc32(data);
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0, 6);
+    local.writeUInt16LE(0, 8);
+    local.writeUInt16LE(dosTime, 10);
+    local.writeUInt16LE(dosDate, 12);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(name.length, 26);
+    local.writeUInt16LE(0, 28);
+    localParts.push(local, name, data);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0, 8);
+    central.writeUInt16LE(0, 10);
+    central.writeUInt16LE(dosTime, 12);
+    central.writeUInt16LE(dosDate, 14);
+    central.writeUInt32LE(checksum, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(data.length, 24);
+    central.writeUInt16LE(name.length, 28);
+    central.writeUInt16LE(0, 30);
+    central.writeUInt16LE(0, 32);
+    central.writeUInt16LE(0, 34);
+    central.writeUInt16LE(0, 36);
+    central.writeUInt32LE(0, 38);
+    central.writeUInt32LE(offset, 42);
+    centralParts.push(central, name);
+
+    offset += local.length + name.length + data.length;
+  }
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+
+  writeFileSync(zipPath, Buffer.concat([...localParts, ...centralParts, end]));
+}
 
 function getAvailablePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -380,21 +461,32 @@ async function startServerWithOptions(dataDir: string, port: number, options: Se
   );
 
   await new Promise<void>((resolve, reject) => {
+    let settled = false;
     const timeout = setTimeout(() => {
+      settled = true;
       reject(new Error("server did not start in time"));
     }, 20_000);
+    const cleanup = () => {
+      clearTimeout(timeout);
+      child.stdout?.off("data", onData);
+      child.stderr?.off("data", onData);
+    };
     const onData = (data: Buffer) => {
       const text = data.toString();
       if (text.includes("listening on 127.0.0.1")) {
-        clearTimeout(timeout);
-        child.stdout?.off("data", onData);
+        settled = true;
+        cleanup();
         resolve();
       }
     };
     child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
     child.on("exit", (code) => {
-      clearTimeout(timeout);
-      reject(new Error(`server exited early: ${code}`));
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(new Error(`server exited early: ${code}`));
+      }
     });
   });
 
@@ -528,7 +620,12 @@ test("Trace Console imports ZIP bundles", async ({ page }) => {
     )
   );
   const zipPath = path.join(bundleDir, "bundle.zip");
-  execFileSync("zip", ["-r", zipPath, "traces"], { cwd: bundleDir });
+  createStoredZip(zipPath, [
+    {
+      name: "traces/2026/02/03/zip-001/trace.json",
+      data: readFileSync(path.join(traceDir, "trace.json"))
+    }
+  ]);
 
   const port = await getAvailablePort();
   const server = await startServerWithOptions(dataDir, port, {
@@ -614,7 +711,12 @@ test("Trace Console imports ZIP bundles with static auth", async ({ page }) => {
     )
   );
   const zipPath = path.join(bundleDir, "bundle.zip");
-  execFileSync("zip", ["-r", zipPath, "traces"], { cwd: bundleDir });
+  createStoredZip(zipPath, [
+    {
+      name: "traces/2026/02/03/zip-auth-001/trace.json",
+      data: readFileSync(path.join(traceDir, "trace.json"))
+    }
+  ]);
 
   const port = await getAvailablePort();
   const server = await startServerWithOptions(dataDir, port, {

@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 
 use axum::{
     Json, Router,
-    extract::{ConnectInfo, Extension, FromRequest, Multipart, Path as AxumPath, State},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Extension, FromRequest, Multipart, Path as AxumPath, State,
+    },
     http::{HeaderMap, Method, Request, StatusCode},
     middleware::{Next, from_fn_with_state},
     response::{
@@ -251,7 +253,7 @@ impl TenantRegistry {
     fn resolve_rules_dir(&self, layout: &TenantLayout) -> PathBuf {
         match &self.rules_dir {
             Some(path) if path.is_absolute() => path.clone(),
-            Some(path) => layout.data_dir().join(path),
+            Some(path) => path.clone(),
             None => layout.api_rules_dir(),
         }
     }
@@ -261,7 +263,9 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
     let api = match state.api_mode {
         ApiMode::UiOnly => {
             if ui_enabled {
-                Router::new().route("/api/import", any(handle_api_import_only))
+                Router::new()
+                    .route("/api/import", any(handle_api_import_only))
+                    .route_layer(DefaultBodyLimit::max(IMPORT_ZIP_MAX_TOTAL_BYTES as usize))
             } else {
                 Router::new()
             }
@@ -269,9 +273,13 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
         ApiMode::Rules => {
             let mut api_router = Router::new().route("/api/*path", any(handle_rules_api));
             let api_import = if ui_enabled {
-                Router::new().route("/api/import", any(handle_api_import_or_rules))
+                Router::new()
+                    .route("/api/import", any(handle_api_import_or_rules))
+                    .route_layer(DefaultBodyLimit::max(IMPORT_ZIP_MAX_TOTAL_BYTES as usize))
             } else {
-                Router::new().route("/api/import", any(handle_api_import_or_rules_strict))
+                Router::new()
+                    .route("/api/import", any(handle_api_import_or_rules_strict))
+                    .route_layer(DefaultBodyLimit::max(IMPORT_ZIP_MAX_TOTAL_BYTES as usize))
             };
             if state.rate_limiter.is_some() {
                 api_router = api_router.layer(from_fn_with_state(state.clone(), api_rate_limit));
@@ -1357,6 +1365,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::PathBuf;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -1364,6 +1373,7 @@ mod tests {
     use axum::http::{HeaderValue, Request, header::AUTHORIZATION};
 
     use crate::{TenantContext, TenantResolver};
+    use crate::{TenantLayout, TenantRegistry};
 
     use super::{
         ApiMode, AppState, IMPORT_ZIP_MAX_ENTRIES, TenantResources, TraceStore, build_router,
@@ -1409,6 +1419,27 @@ mod tests {
 
         let key = pre_auth_rate_limit_key(&request);
         assert_eq!(key, "preauth:ip:127.0.0.1");
+    }
+
+    #[test]
+    fn tenant_registry_keeps_configured_relative_rules_dir_relative_to_cwd() {
+        let registry = TenantRegistry::new(
+            PathBuf::from("/tmp/rulemorph-data"),
+            Some(PathBuf::from("./assets/api_rules")),
+            ApiMode::Rules,
+            false,
+            8080,
+            Vec::new(),
+            false,
+            None,
+        );
+        let layout = TenantLayout::new(PathBuf::from("/tmp/rulemorph-data"), "tenant-a")
+            .expect("tenant layout");
+
+        assert_eq!(
+            registry.resolve_rules_dir(&layout),
+            PathBuf::from("./assets/api_rules")
+        );
     }
 
     #[test]

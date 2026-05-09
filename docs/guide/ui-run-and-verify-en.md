@@ -26,7 +26,7 @@ After building, `crates/rulemorph_ui/ui/dist` will be generated.
 
 ### ui-only Mode
 
-Provides only the UI. Internal APIs are served at `/internal/*`.
+Serves the UI static files and `/internal/*` endpoints for compatibility and diagnostics. The current Trace Console normally uses `/api/*`, so use rules mode below for browser verification of the full UI workflow. `ui-only` assumes UI serving is enabled and cannot be combined with `--no-ui`.
 
 ```sh
 # Development
@@ -38,14 +38,18 @@ rulemorph-server --api-mode ui-only
 
 ### rules Mode (Default)
 
-Provides the UI plus custom APIs defined in YAML at `/api/*`.
+Provides the UI plus custom APIs defined in YAML at `/api/*`. The bundled UI rules live under `assets/api_rules/`.
 
 ```sh
 # Development
-cargo run -p rulemorph_server -- --api-mode rules
+cargo run -p rulemorph_server -- \
+  --api-mode rules \
+  --rules-dir ./assets/api_rules \
+  --allow-unauth-internal \
+  --ssrf-allow-private
 
 # Release binary
-rulemorph-server --api-mode rules
+rulemorph-server --api-mode rules --rules-dir ./assets/api_rules --allow-unauth-internal --ssrf-allow-private
 ```
 
 ### Options
@@ -57,6 +61,9 @@ rulemorph-server --api-mode rules
 | `--data-dir <PATH>` | Data directory | `./.rulemorph` |
 | `--rules-dir <PATH>` | API rules directory | `./.rulemorph/api_rules` |
 | `--no-ui` | Disable UI (API only) | - |
+| `--internal-api-key <KEY>` | Internal key for `/internal/*` and `/api/import` | - |
+| `--allow-unauth-internal` | Allow internal APIs without a key | - |
+| `--ssrf-allow-private` | Allow private IP/localhost targets | - |
 
 ## Browser Verification
 
@@ -68,7 +75,19 @@ http://127.0.0.1:8080
 
 - Trace list is displayed
 - Click a trace to view details
-- Trace updates are automatically reflected via SSE (`/internal/stream`)
+- When using `/api`, trace updates are refreshed by polling
+
+If your setup requires an API key, pass it once in the query string. The UI stores it in localStorage and removes it from the URL.
+
+```
+http://127.0.0.1:8080/?api_key=<API_KEY>
+```
+
+For ZIP import and internal operations, also pass `internal_key`.
+
+```
+http://127.0.0.1:8080/?api_key=<API_KEY>&internal_key=<INTERNAL_KEY>
+```
 
 ## Adding Sample Traces
 

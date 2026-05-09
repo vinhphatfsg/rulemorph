@@ -35,8 +35,8 @@ describe("resolveTenantId", () => {
     expect(resolveTenantId("plain-key", "tenant-a")).toBe("tenant-a");
   });
 
-  it("uses default tenant when api key exists without tenant and no saved tenant", () => {
-    expect(resolveTenantId("plain-key", null)).toBe("default");
+  it("does not guess a tenant when api key exists without tenant and no saved tenant", () => {
+    expect(resolveTenantId("plain-key", null)).toBeNull();
   });
 
   it("returns null when neither api key nor tenant_id is available", () => {

@@ -10,7 +10,16 @@ The default data directory is `./.rulemorph`.
 ./.rulemorph/
 ├── traces/          # Trace manifests and chunks (JSON/NDJSON)
 ├── rules/           # Rules referenced by traces (YAML)
-└── api_rules/       # Custom API rules (YAML)
+├── api_rules/       # Custom API rules (YAML)
+├── auth/            # API key store for the default/non-tenant layout
+│   └── api_keys.json
+└── tenants/         # Tenant-separated layout when tenant auth is enabled
+    └── <tenant_id>/
+        ├── traces/
+        ├── rules/
+        ├── api_rules/
+        └── auth/
+            └── api_keys.json
 ```
 
 | Directory | Purpose |
@@ -18,6 +27,8 @@ The default data directory is `./.rulemorph`.
 | `traces/` | Transformation execution traces (`trace.json` manifest + chunks, legacy single JSON also supported) |
 | `rules/` | Rule files referenced within traces |
 | `api_rules/` | Rules defining `/api/*` endpoints |
+| `auth/api_keys.json` | API key store for the default/non-tenant layout |
+| `tenants/<tenant_id>/` | Per-tenant data root when tenant separation is enabled |
 
 > Adding `.rulemorph/` to `.gitignore` is recommended.
 

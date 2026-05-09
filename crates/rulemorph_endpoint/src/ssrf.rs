@@ -4,7 +4,7 @@ use tokio::net::lookup_host;
 use url::{Host, Url};
 
 #[derive(Debug)]
-pub struct ResolvedSsrTarget {
+pub struct ResolvedSsrfTarget {
     pub host: String,
     pub addr: SocketAddr,
 }
@@ -14,7 +14,7 @@ pub async fn resolve_ssrf_target(
     allowlist: &[String],
     allow_private: bool,
     allow_private_hosts: &[String],
-) -> Result<ResolvedSsrTarget, String> {
+) -> Result<ResolvedSsrfTarget, String> {
     let parsed = Url::parse(url).map_err(|err| format!("invalid url: {err}"))?;
     let scheme = parsed.scheme();
     if scheme != "http" && scheme != "https" {
@@ -37,7 +37,7 @@ pub async fn resolve_ssrf_target(
             let port = parsed
                 .port_or_known_default()
                 .ok_or_else(|| "url must include port".to_string())?;
-            Ok(ResolvedSsrTarget {
+            Ok(ResolvedSsrfTarget {
                 host: raw_host,
                 addr: SocketAddr::new(IpAddr::V4(addr), port),
             })
@@ -55,7 +55,7 @@ pub async fn resolve_ssrf_target(
             let port = parsed
                 .port_or_known_default()
                 .ok_or_else(|| "url must include port".to_string())?;
-            Ok(ResolvedSsrTarget {
+            Ok(ResolvedSsrfTarget {
                 host: raw_host,
                 addr: SocketAddr::new(IpAddr::V6(addr), port),
             })
@@ -82,7 +82,7 @@ pub async fn resolve_ssrf_target(
                 .port_or_known_default()
                 .ok_or_else(|| "url must include port".to_string())?;
             let addr = resolve_target_addr(&raw_domain, port, allow_private_for_host).await?;
-            Ok(ResolvedSsrTarget {
+            Ok(ResolvedSsrfTarget {
                 host: raw_domain,
                 addr,
             })

@@ -42,7 +42,7 @@ const MULTIPART_IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MULTIPART_IMPORT_MAX_ENTRIES: usize = 4096;
 use uuid::Uuid;
 
-use crate::ssrf::{ResolvedSsrTarget, resolve_ssrf_target};
+use crate::ssrf::{ResolvedSsrfTarget, resolve_ssrf_target};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiMode {
@@ -95,6 +95,13 @@ impl EngineConfig {
         if let Ok(parsed) = url::Url::parse(&config.internal_base) {
             if let Some(host) = parsed.host_str() {
                 config.ssrf_private_allowlist.push(host.to_string());
+                if is_loopback_host(&normalize_internal_host(host)) {
+                    config
+                        .ssrf_private_allowlist
+                        .extend(["localhost", "127.0.0.1", "::1"].map(str::to_string));
+                    config.ssrf_private_allowlist.sort();
+                    config.ssrf_private_allowlist.dedup();
+                }
             }
         }
         config
@@ -1198,7 +1205,7 @@ impl EndpointEngine {
         ))
     }
 
-    fn build_resolved_client(&self, target: &ResolvedSsrTarget) -> Result<Client, EndpointError> {
+    fn build_resolved_client(&self, target: &ResolvedSsrfTarget) -> Result<Client, EndpointError> {
         Client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
@@ -1215,7 +1222,7 @@ impl EndpointEngine {
             return false;
         };
         target.scheme() == base.scheme()
-            && target.host_str() == base.host_str()
+            && internal_hosts_match(target.host_str(), base.host_str())
             && target.port_or_known_default() == base.port_or_known_default()
     }
 
@@ -2094,6 +2101,24 @@ fn is_multipart_form_data(headers: &HeaderMap) -> bool {
 
 fn is_multipart_import_request(method: &Method, path: &str, headers: &HeaderMap) -> bool {
     method == Method::POST && path == "/api/import" && is_multipart_form_data(headers)
+}
+
+fn internal_hosts_match(target: Option<&str>, base: Option<&str>) -> bool {
+    let Some(target) = target.map(normalize_internal_host) else {
+        return false;
+    };
+    let Some(base) = base.map(normalize_internal_host) else {
+        return false;
+    };
+    target == base || is_loopback_host(&target) && is_loopback_host(&base)
+}
+
+fn normalize_internal_host(host: &str) -> String {
+    host.trim().trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 async fn build_multipart_import_body(
@@ -4116,6 +4141,36 @@ mod tests {
         assert!(path.matches("/api/traces/abc"));
         let params = path.capture("/api/traces/abc");
         assert_eq!(params.get("id"), Some(&"abc".to_string()));
+    }
+
+    #[test]
+    fn internal_hosts_match_loopback_aliases() {
+        assert!(internal_hosts_match(Some("127.0.0.1"), Some("localhost")));
+        assert!(internal_hosts_match(Some("localhost"), Some("::1")));
+        assert!(!internal_hosts_match(
+            Some("127.0.0.1"),
+            Some("example.com")
+        ));
+    }
+
+    #[test]
+    fn engine_config_allows_loopback_aliases_for_internal_base() {
+        let config = EngineConfig::new(
+            "http://localhost:8080".to_string(),
+            std::path::PathBuf::from(".data"),
+        );
+
+        assert!(
+            config
+                .ssrf_private_allowlist
+                .contains(&"localhost".to_string())
+        );
+        assert!(
+            config
+                .ssrf_private_allowlist
+                .contains(&"127.0.0.1".to_string())
+        );
+        assert!(config.ssrf_private_allowlist.contains(&"::1".to_string()));
     }
 
     #[test]
