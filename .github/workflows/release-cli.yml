@@ -226,11 +226,22 @@ jobs:
           Copy-Item "target\$env:TARGET\release\$BinMcp" "$McpbDir\$BinMcp"
           Compress-Archive -Path "$McpbDir\*" -DestinationPath "$OutDir\rulemorph-mcp-$env:VERSION-$env:TARGET.mcpb"
 
-      - name: Upload Release Assets
+      - name: Upload Release Assets (Unix)
+        if: runner.os != 'Windows'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: gh release upload "${RELEASE_TAG}" dist/* --clobber
+
+      - name: Upload Release Assets (Windows)
+        if: runner.os == 'Windows'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: pwsh
+        run: |
+          $Assets = Get-ChildItem -Path dist -File | ForEach-Object { $_.FullName }
+          gh release upload $env:RELEASE_TAG @Assets --clobber
 
   publish-mcp-registry:
     needs: build-and-upload
