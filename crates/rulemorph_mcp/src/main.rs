@@ -5,10 +5,10 @@ use std::path::{Path, PathBuf};
 
 use csv::ReaderBuilder;
 use rulemorph::{
-    DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError, RuleFile, TransformError,
-    TransformErrorKind, TransformWarning, generate_dto, parse_rule_file, transform_stream,
-    transform_stream_with_base_dir, transform_with_warnings, transform_with_warnings_with_base_dir,
-    validate_rule_file_with_source,
+    DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError, RuleFile, RuleFormat,
+    TransformError, TransformErrorKind, TransformWarning, generate_dto,
+    parse_rule_file_with_format, transform_stream, transform_stream_with_base_dir,
+    transform_with_warnings, transform_with_warnings_with_base_dir, validate_rule_file_with_source,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -438,14 +438,15 @@ fn transform_input_schema() -> Value {
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
+            "rules_format": rules_format_schema(),
             "input_path": {
                 "type": "string",
                 "description": "Path to the input CSV/JSON file. Mutually exclusive with input_text and input_json.",
@@ -513,20 +514,30 @@ fn transform_input_schema() -> Value {
     })
 }
 
+fn rules_format_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["yaml", "json"],
+        "description": "Rule parser format. Defaults to file extension for rules_path and yaml for rules_text.",
+        "examples": ["json"]
+    })
+}
+
 fn validate_rules_input_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
-            }
+            },
+            "rules_format": rules_format_schema()
         }
     })
 }
@@ -537,14 +548,15 @@ fn generate_dto_input_schema() -> Value {
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
+            "rules_format": rules_format_schema(),
             "language": {
                 "type": "string",
                 "enum": ["rust", "typescript", "python", "go", "java", "kotlin", "swift"],
@@ -614,14 +626,15 @@ fn generate_rules_from_base_input_schema() -> Value {
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
+            "rules_format": rules_format_schema(),
             "input_path": {
                 "type": "string",
                 "description": "Path to the input CSV/JSON file. Mutually exclusive with input_text and input_json.",
@@ -748,6 +761,8 @@ fn handle_tools_call(params: &Value) -> Result<Value, CallError> {
 fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
     let input_json =
@@ -820,8 +835,11 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
         ));
     }
 
-    let (mut rule, yaml, base_dir) =
-        load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (mut rule, yaml, base_dir) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     if rules_text.is_some() && rule_has_file_branch(&rule) {
         return Err(CallError::InvalidParams(
             "rules_text cannot use branch file references; use rules_path under an allowed root"
@@ -983,6 +1001,8 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
 fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
 
     let rule_source_count = rules_path.is_some() as u8 + rules_text.is_some() as u8;
     if rule_source_count == 0 {
@@ -996,7 +1016,11 @@ fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError
         ));
     }
 
-    let (rule, yaml, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, yaml, _) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     match validate_rule_file_with_source(&rule, &yaml) {
         Ok(_) => {
             let warnings = collect_rule_warnings(&rule);
@@ -1036,6 +1060,8 @@ fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError
 fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
     let language = get_optional_string(args, "language").map_err(CallError::InvalidParams)?;
     let name = get_optional_string(args, "name").map_err(CallError::InvalidParams)?;
 
@@ -1055,7 +1081,11 @@ fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> 
         language.ok_or_else(|| CallError::InvalidParams("language is required".to_string()))?;
     let language = parse_dto_language(&language).map_err(CallError::InvalidParams)?;
 
-    let (rule, _, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, _, _) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     let dto = generate_dto(&rule, language, name.as_deref()).map_err(|err| {
         let message = format!("failed to generate dto: {}", err);
         CallError::Tool {
@@ -1396,6 +1426,8 @@ fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError>
 fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
     let input_json =
@@ -1448,7 +1480,11 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
         ));
     }
 
-    let (rule, yaml, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, yaml, _) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     let mut yaml_value: YamlValue = serde_yaml::from_str(&yaml).map_err(|err| {
         let message = format!("failed to parse rules yaml: {}", err);
         CallError::Tool {
@@ -1487,6 +1523,11 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
         match rule.input.format {
             InputFormat::Csv => InputDataFormat::Csv,
             InputFormat::Json => InputDataFormat::Json,
+            InputFormat::Yaml
+            | InputFormat::Toml
+            | InputFormat::Xml
+            | InputFormat::Html
+            | InputFormat::Excel => InputDataFormat::Json,
         }
     };
 
@@ -1943,11 +1984,14 @@ fn get_optional_object(args: &Map<String, Value>, key: &str) -> Result<Option<Va
 fn load_rule_from_source(
     rules_path: Option<&str>,
     rules_text: Option<&str>,
+    rules_format: Option<&str>,
 ) -> Result<(RuleFile, String, Option<PathBuf>), CallError> {
+    let format_override = parse_rules_format(rules_format)?;
     match (rules_path, rules_text) {
         (Some(path), None) => {
             let (resolved_path, yaml) = read_allowed_file(path, "rules")?;
-            let rule = parse_rule_file(&yaml).map_err(|err| {
+            let format = format_override.unwrap_or_else(|| RuleFormat::from_path(&resolved_path));
+            let rule = parse_rule_file_with_format(&yaml, format).map_err(|err| {
                 let message = format!("failed to parse rules: {}", err);
                 CallError::Tool {
                     message: message.clone(),
@@ -1958,7 +2002,8 @@ fn load_rule_from_source(
             Ok((rule, yaml, base_dir))
         }
         (None, Some(text)) => {
-            let rule = parse_rule_file(text).map_err(|err| {
+            let format = format_override.unwrap_or(RuleFormat::Yaml);
+            let rule = parse_rule_file_with_format(text, format).map_err(|err| {
                 let message = format!("failed to parse rules: {}", err);
                 CallError::Tool {
                     message: message.clone(),
@@ -1969,6 +2014,17 @@ fn load_rule_from_source(
         }
         _ => Err(CallError::InvalidParams(
             "rules_path or rules_text is required".to_string(),
+        )),
+    }
+}
+
+fn parse_rules_format(value: Option<&str>) -> Result<Option<RuleFormat>, CallError> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.eq_ignore_ascii_case("yaml") => Ok(Some(RuleFormat::Yaml)),
+        Some(value) if value.eq_ignore_ascii_case("json") => Ok(Some(RuleFormat::Json)),
+        Some(_) => Err(CallError::InvalidParams(
+            "rules_format must be yaml or json".to_string(),
         )),
     }
 }

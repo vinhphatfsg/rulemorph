@@ -701,7 +701,8 @@ fn load_rule_from_path(
         )
         .with_path(path)
     })?;
-    let rule = crate::parse_rule_file(&yaml).map_err(|err| {
+    let format = crate::RuleFormat::from_path(&resolved);
+    let rule = crate::parse_rule_file_with_format(&yaml, format).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
             format!("failed to parse rule: {}", err),

@@ -118,6 +118,28 @@ fn transform_outputs_json() {
 }
 
 #[test]
+fn transform_accepts_json_rule_file_by_extension() {
+    let base = fixtures_dir().join("t30_json_rule_file");
+    let expected = read_json(&base.join("expected.json"));
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.json"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let actual: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn transform_outputs_ndjson() {
     let base = fixtures_dir().join("t12_ndjson_csv");
     let rules = base.join("rules.yaml");

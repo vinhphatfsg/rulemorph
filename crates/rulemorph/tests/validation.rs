@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rulemorph::{
-    ErrorCode, RuleError, parse_rule_file, validate_rule_file, validate_rule_file_with_source,
+    ErrorCode, RuleError, RuleFormat, parse_rule_file, parse_rule_file_with_format,
+    validate_rule_file, validate_rule_file_with_source,
 };
 use serde::Deserialize;
 
@@ -285,6 +286,66 @@ mappings:
     let errors = validate_rule_file(&rule).expect_err("invalid XML path should fail");
     assert!(errors.iter().any(|err| err.code.as_str() == "InvalidPath"
         && err.path.as_deref() == Some("input.xml.records_path")));
+}
+
+#[test]
+fn parse_json_rule_file_with_explicit_format() {
+    let source = r#"{
+      "version": 2,
+      "input": { "format": "json", "json": { "records_path": "items" } },
+      "mappings": [{ "target": "id", "source": "id" }]
+    }"#;
+    let rule = parse_rule_file_with_format(source, RuleFormat::Json).expect("parse json rule");
+    assert_eq!(rule.version, 2);
+}
+
+#[test]
+fn json_rule_rejects_duplicate_key() {
+    let source = r#"{
+      "version": 2,
+      "version": 1,
+      "input": { "format": "json", "json": {} },
+      "mappings": []
+    }"#;
+    let err = parse_rule_file_with_format(source, RuleFormat::Json)
+        .expect_err("duplicate JSON keys must fail");
+    assert!(err.message.contains("duplicate key"));
+}
+
+#[test]
+fn json_rule_rejects_trailing_comma() {
+    let source = r#"{ "version": 2, }"#;
+    let err =
+        parse_rule_file_with_format(source, RuleFormat::Json).expect_err("trailing comma fails");
+    assert!(err.message.contains("trailing comma") || err.message.contains("expected"));
+}
+
+#[test]
+fn json_rule_rejects_trailing_garbage() {
+    let source = r#"{
+      "version": 2,
+      "input": { "format": "json", "json": {} },
+      "mappings": []
+    } trailing"#;
+    let err =
+        parse_rule_file_with_format(source, RuleFormat::Json).expect_err("trailing garbage fails");
+    assert!(err.message.contains("trailing characters") || err.message.contains("expected"));
+}
+
+#[test]
+fn yaml_rule_rejects_duplicate_key() {
+    let source = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: id
+    source: id
+    source: other_id
+"#;
+    let err = parse_rule_file(source).expect_err("duplicate YAML keys must fail");
+    assert!(err.to_string().contains("duplicate key"));
 }
 
 #[test]

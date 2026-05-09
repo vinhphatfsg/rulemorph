@@ -8,8 +8,8 @@ use std::time::Duration;
 use clap::ArgAction;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
-    DtoLanguage, InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
-    TransformWarning, generate_dto, parse_rule_file,
+    DtoLanguage, InputFormat, RuleError, RuleFile, RuleFormat, TransformError, TransformErrorKind,
+    TransformWarning, generate_dto, parse_rule_file_with_format,
     preflight_validate_with_warnings_with_base_dir, transform_stream_with_base_dir,
     transform_with_warnings_with_base_dir, validate_rule_file_with_source,
 };
@@ -50,6 +50,8 @@ enum Commands {
 struct ValidateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
 }
@@ -67,6 +69,8 @@ struct ValidateRulesDirArgs {
 struct PreflightArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'i', long)]
     input: PathBuf,
     #[arg(short = 'f', long)]
@@ -81,6 +85,8 @@ struct PreflightArgs {
 struct TransformArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'i', long)]
     input: PathBuf,
     #[arg(short = 'f', long)]
@@ -101,6 +107,8 @@ struct TransformArgs {
 struct GenerateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'l', long)]
     lang: DtoLanguageArg,
     #[arg(short = 'n', long)]
@@ -230,6 +238,12 @@ enum FormatOverride {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum RulesFormatArg {
+    Yaml,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum DtoLanguageArg {
     Rust,
     #[value(alias = "ts")]
@@ -269,7 +283,7 @@ fn main() {
 }
 
 fn run_validate(args: ValidateArgs) -> i32 {
-    let (rule, yaml) = match load_rule(&args.rules) {
+    let (rule, yaml) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -295,7 +309,7 @@ fn run_validate_rules_dir(args: ValidateRulesDirArgs) -> i32 {
 }
 
 fn run_preflight(args: PreflightArgs) -> i32 {
-    let (mut rule, _) = match load_rule(&args.rules) {
+    let (mut rule, _) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -332,7 +346,7 @@ fn run_preflight(args: PreflightArgs) -> i32 {
 }
 
 fn run_transform(args: TransformArgs) -> i32 {
-    let (mut rule, yaml) = match load_rule(&args.rules) {
+    let (mut rule, yaml) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -489,7 +503,7 @@ fn run_transform_ndjson(
 }
 
 fn run_generate(args: GenerateArgs) -> i32 {
-    let (rule, _) = match load_rule(&args.rules) {
+    let (rule, _) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -830,7 +844,10 @@ fn emit_api_key_list(keys: &[ApiKeyInfo], json: bool) {
         println!("---");
     }
 }
-fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
+fn load_rule(
+    path: &PathBuf,
+    override_format: Option<RulesFormatArg>,
+) -> Result<(RuleFile, String), i32> {
     let yaml = match fs::read_to_string(path) {
         Ok(data) => data,
         Err(err) => {
@@ -839,7 +856,8 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
         }
     };
 
-    let rule = match parse_rule_file(&yaml) {
+    let format = detect_rule_format(path, override_format);
+    let rule = match parse_rule_file_with_format(&yaml, format) {
         Ok(rule) => rule,
         Err(err) => {
             eprintln!("failed to parse rules: {}", err);
@@ -848,6 +866,14 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     };
 
     Ok((rule, yaml))
+}
+
+fn detect_rule_format(path: &PathBuf, override_format: Option<RulesFormatArg>) -> RuleFormat {
+    match override_format {
+        Some(RulesFormatArg::Yaml) => RuleFormat::Yaml,
+        Some(RulesFormatArg::Json) => RuleFormat::Json,
+        None => RuleFormat::from_path(path),
+    }
 }
 
 fn rule_base_dir(path: &PathBuf) -> PathBuf {
