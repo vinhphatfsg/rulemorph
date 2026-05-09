@@ -26,11 +26,11 @@ After building, `crates/rulemorph_ui/ui/dist` will be generated.
 
 ### ui-only Mode
 
-Provides only the UI. Internal APIs are served at `/internal/*`.
+Serves the UI static files and `/internal/*` endpoints for compatibility and diagnostics. The current Trace Console normally uses `/api/*`, so use rules mode below for browser verification of the full UI workflow. `ui-only` assumes UI serving is enabled and cannot be combined with `--no-ui`.
 
 ```sh
 # Development
-cargo run -p rulemorph_server
+cargo run -p rulemorph_server -- --api-mode ui-only
 
 # Release binary
 rulemorph-server --api-mode ui-only
@@ -38,14 +38,18 @@ rulemorph-server --api-mode ui-only
 
 ### rules Mode (Default)
 
-Provides the UI plus custom APIs defined in YAML at `/api/*`.
+Provides the UI plus custom APIs defined in YAML at `/api/*`. The bundled UI rules live under `assets/api_rules/`.
 
 ```sh
 # Development
-cargo run -p rulemorph_server -- --api-mode rules
+cargo run -p rulemorph_server -- \
+  --api-mode rules \
+  --rules-dir ./assets/api_rules \
+  --allow-unauth-internal \
+  --ssrf-allow-private
 
 # Release binary
-rulemorph-server --api-mode rules
+rulemorph-server --api-mode rules --rules-dir ./assets/api_rules --allow-unauth-internal --ssrf-allow-private
 ```
 
 ### Options
@@ -57,6 +61,9 @@ rulemorph-server --api-mode rules
 | `--data-dir <PATH>` | Data directory | `./.rulemorph` |
 | `--rules-dir <PATH>` | API rules directory | `./.rulemorph/api_rules` |
 | `--no-ui` | Disable UI (API only) | - |
+| `--internal-api-key <KEY>` | Internal key for `/internal/*` and `/api/import` | - |
+| `--allow-unauth-internal` | Allow internal APIs without a key | - |
+| `--ssrf-allow-private` | Allow private IP/localhost targets | - |
 
 ## Browser Verification
 
@@ -68,29 +75,45 @@ http://127.0.0.1:8080
 
 - Trace list is displayed
 - Click a trace to view details
-- Trace updates are automatically reflected via SSE (`/internal/stream`)
+- When using `/api`, trace updates are refreshed by polling
+
+If your setup requires an API key, pass it once in the query string. The UI stores it in localStorage and removes it from the URL.
+
+```
+http://127.0.0.1:8080/?api_key=<API_KEY>
+```
+
+For ZIP import and internal operations, also pass `internal_key`.
+
+```
+http://127.0.0.1:8080/?api_key=<API_KEY>&internal_key=<INTERNAL_KEY>
+```
 
 ## Adding Sample Traces
 
-The UI loads JSON files from `data_dir/traces` as traces.
+The UI loads `trace.json` manifests and chunks under `data_dir/traces` as traces (legacy single JSON files are still supported).
 
 ```sh
-mkdir -p ./.rulemorph/traces/2025/01/01
-cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001.json
+mkdir -p ./.rulemorph/traces/2025/01/01/demo-001
+cat <<'JSON' > ./.rulemorph/traces/2025/01/01/demo-001/trace.json
 {
-  "id": "demo-001",
-  "title": "Demo Trace",
-  "created_at": "2025-01-01T00:00:00Z",
+  "trace_schema_version": 1,
+  "trace_id": "demo-001",
+  "timestamp": "2025-01-01T00:00:00Z",
+  "status": "ok",
   "summary": {
-    "input": {"foo": "bar"},
-    "output": {"ok": true}
+    "record_total": 1,
+    "record_success": 1,
+    "record_failed": 0
   },
-  "nodes": []
+  "max_chunk_bytes_uncompressed": 4194304
 }
 JSON
 ```
 
 > Date folders are optional, but organizing by `YYYY/MM/DD` format is recommended.
+
+Legacy single JSON files still work, but the manifest + chunk layout is recommended.
 
 See [ui-data-dir-usage-en.md](ui-data-dir-usage-en.md) for directory structure details.
 

@@ -1,6 +1,8 @@
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+#[cfg(feature = "server")]
+use std::time::Duration;
 
 #[cfg(feature = "server")]
 use clap::ArgAction;
@@ -13,8 +15,11 @@ use rulemorph::{
 };
 #[cfg(feature = "server")]
 use rulemorph_server::{
-    ApiMode, RulesDirErrors, ServerConfig, run as run_server, validate_rules_dir,
+    ApiKeyInfo, ApiKeyIssueResult, ApiKeyStore, ApiMode, RulesDirErrors, ServerConfig,
+    TenantLayout, run as run_server, validate_rules_dir,
 };
+#[cfg(feature = "server")]
+use rulemorph_trace::TraceStore;
 use serde_json::json;
 
 #[derive(Parser)]
@@ -35,6 +40,10 @@ enum Commands {
     Generate(GenerateArgs),
     #[cfg(feature = "server")]
     Ui(UiArgs),
+    #[cfg(feature = "server")]
+    PurgeTraces(PurgeTracesArgs),
+    #[cfg(feature = "server")]
+    ApiKeys(ApiKeysArgs),
 }
 
 #[derive(Args)]
@@ -113,8 +122,99 @@ struct UiArgs {
     api_mode: UiApiMode,
     #[arg(long)]
     rules_dir: Option<PathBuf>,
+    #[arg(long, default_value_t = 60)]
+    rate_limit_per_sec: u64,
+    #[arg(long, action = ArgAction::Append)]
+    ssrf_allowlist: Vec<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    ssrf_allow_private: bool,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    ssrf_allow_any: bool,
     #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
     no_ui: bool,
+    #[arg(long)]
+    internal_api_key: Option<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    allow_unauth_internal: bool,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct PurgeTracesArgs {
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    retention_days: u64,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    dry_run: bool,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct ApiKeysArgs {
+    #[command(subcommand)]
+    command: ApiKeysCommand,
+}
+
+#[cfg(feature = "server")]
+#[derive(Subcommand)]
+enum ApiKeysCommand {
+    Issue(ApiKeysIssueArgs),
+    List(ApiKeysListArgs),
+    Revoke(ApiKeysRevokeArgs),
+    Rotate(ApiKeysRotateArgs),
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct ApiKeysIssueArgs {
+    #[arg(long)]
+    tenant_id: String,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    label: Option<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    json: bool,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct ApiKeysListArgs {
+    #[arg(long)]
+    tenant_id: String,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    json: bool,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct ApiKeysRevokeArgs {
+    #[arg(long)]
+    tenant_id: String,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    id: String,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    json: bool,
+}
+
+#[cfg(feature = "server")]
+#[derive(Args)]
+struct ApiKeysRotateArgs {
+    #[arg(long)]
+    tenant_id: String,
+    #[arg(long)]
+    data_dir: Option<PathBuf>,
+    #[arg(long)]
+    id: String,
+    #[arg(long)]
+    label: Option<String>,
+    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -160,6 +260,10 @@ fn main() {
         Commands::Generate(args) => run_generate(args),
         #[cfg(feature = "server")]
         Commands::Ui(args) => run_ui(args),
+        #[cfg(feature = "server")]
+        Commands::PurgeTraces(args) => run_purge_traces(args),
+        #[cfg(feature = "server")]
+        Commands::ApiKeys(args) => run_api_keys(args),
     };
     std::process::exit(exit_code);
 }
@@ -449,6 +553,26 @@ fn run_ui(args: UiArgs) -> i32 {
         rules_dir: args.rules_dir,
         api_mode,
         ui_enabled,
+        tenant_resolver: None,
+        internal_api_key: args
+            .internal_api_key
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string()),
+        allow_unauth_internal: args.allow_unauth_internal,
+        rate_limit_per_sec: if args.rate_limit_per_sec == 0 {
+            None
+        } else {
+            Some(args.rate_limit_per_sec)
+        },
+        ssrf_allowlist: args
+            .ssrf_allowlist
+            .into_iter()
+            .filter(|entry| !entry.trim().is_empty())
+            .collect(),
+        ssrf_allow_private: args.ssrf_allow_private,
+        ssrf_allow_any: args.ssrf_allow_any,
     };
 
     let runtime = match tokio::runtime::Runtime::new() {
@@ -471,6 +595,241 @@ fn run_ui(args: UiArgs) -> i32 {
     0
 }
 
+#[cfg(feature = "server")]
+fn run_purge_traces(args: PurgeTracesArgs) -> i32 {
+    if args.retention_days == 0 {
+        eprintln!("--retention-days must be greater than 0");
+        return 1;
+    }
+
+    let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
+    let retention = Duration::from_secs(args.retention_days.saturating_mul(86_400));
+
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("failed to start runtime: {}", err);
+            return 1;
+        }
+    };
+
+    let result = runtime.block_on(async {
+        let store = TraceStore::new(data_dir).await?;
+        store.purge_traces(retention, args.dry_run).await
+    });
+
+    match result {
+        Ok(report) => {
+            let purged = report.purged;
+            if args.dry_run {
+                println!("dry-run: {} trace(s) would be removed", purged.len());
+            } else {
+                println!("removed {} trace(s)", purged.len());
+            }
+            for trace in purged {
+                let timestamp = trace.timestamp.as_deref().unwrap_or("unknown timestamp");
+                println!("- {} ({}) {}", trace.trace_id, timestamp, trace.path);
+            }
+            if !report.failed.is_empty() {
+                eprintln!("failed to remove {} trace(s)", report.failed.len());
+                for failure in report.failed {
+                    eprintln!(
+                        "- {} ({}) {}",
+                        failure.trace_id, failure.error, failure.path
+                    );
+                }
+                return 2;
+            }
+            0
+        }
+        Err(err) => {
+            eprintln!("purge failed: {}", err);
+            1
+        }
+    }
+}
+
+#[cfg(feature = "server")]
+fn run_api_keys(args: ApiKeysArgs) -> i32 {
+    match args.command {
+        ApiKeysCommand::Issue(args) => run_api_keys_issue(args),
+        ApiKeysCommand::List(args) => run_api_keys_list(args),
+        ApiKeysCommand::Revoke(args) => run_api_keys_revoke(args),
+        ApiKeysCommand::Rotate(args) => run_api_keys_rotate(args),
+    }
+}
+
+#[cfg(feature = "server")]
+fn run_api_keys_issue(args: ApiKeysIssueArgs) -> i32 {
+    let layout = match resolve_tenant_layout(&args.tenant_id, args.data_dir) {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let path = layout.api_keys_path();
+    let mut store = match ApiKeyStore::load_or_init(path, layout.tenant_id()) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let issued = match store.issue(args.label) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    emit_api_key_issue(&issued, args.json);
+    0
+}
+
+#[cfg(feature = "server")]
+fn run_api_keys_list(args: ApiKeysListArgs) -> i32 {
+    let layout = match resolve_tenant_layout(&args.tenant_id, args.data_dir) {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let path = layout.api_keys_path();
+    let store = match ApiKeyStore::load(path, layout.tenant_id()) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let keys = store.map(|store| store.list()).unwrap_or_default();
+    emit_api_key_list(&keys, args.json);
+    0
+}
+
+#[cfg(feature = "server")]
+fn run_api_keys_revoke(args: ApiKeysRevokeArgs) -> i32 {
+    let layout = match resolve_tenant_layout(&args.tenant_id, args.data_dir) {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let path = layout.api_keys_path();
+    let mut store = match ApiKeyStore::load(path, layout.tenant_id()) {
+        Ok(Some(store)) => store,
+        Ok(None) => {
+            eprintln!("api key store not found");
+            return 2;
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let revoked = match store.revoke(&args.id) {
+        Ok(value) => value,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    if args.json {
+        println!("{}", serde_json::json!({ "revoked": revoked }));
+    } else {
+        println!("revoked: {}", revoked);
+    }
+    if revoked { 0 } else { 2 }
+}
+
+#[cfg(feature = "server")]
+fn run_api_keys_rotate(args: ApiKeysRotateArgs) -> i32 {
+    let layout = match resolve_tenant_layout(&args.tenant_id, args.data_dir) {
+        Ok(layout) => layout,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let path = layout.api_keys_path();
+    let mut store = match ApiKeyStore::load_or_init(path, layout.tenant_id()) {
+        Ok(store) => store,
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    let issued = match store.rotate(&args.id, args.label) {
+        Ok(Some(issued)) => issued,
+        Ok(None) => {
+            eprintln!("api key not found");
+            return 2;
+        }
+        Err(err) => {
+            eprintln!("{err}");
+            return 2;
+        }
+    };
+    emit_api_key_issue(&issued, args.json);
+    0
+}
+
+#[cfg(feature = "server")]
+fn resolve_tenant_layout(
+    tenant_id: &str,
+    data_dir: Option<PathBuf>,
+) -> Result<TenantLayout, String> {
+    let base_dir = data_dir.unwrap_or_else(ServerConfig::default_data_dir);
+    TenantLayout::new(base_dir, tenant_id).map_err(|err| err.to_string())
+}
+
+#[cfg(feature = "server")]
+fn emit_api_key_issue(issued: &ApiKeyIssueResult, json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(issued).unwrap_or_default()
+        );
+        return;
+    }
+    println!("id: {}", issued.id);
+    println!("prefix: {}", issued.prefix);
+    println!("key: {}", issued.key);
+    if let Some(label) = issued.label.as_ref() {
+        println!("label: {}", label);
+    }
+    println!("created_at: {}", issued.created_at);
+}
+
+#[cfg(feature = "server")]
+fn emit_api_key_list(keys: &[ApiKeyInfo], json: bool) {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(keys).unwrap_or_else(|_| "[]".to_string())
+        );
+        return;
+    }
+    if keys.is_empty() {
+        println!("no api keys");
+        return;
+    }
+    for key in keys {
+        println!("id: {}", key.id);
+        println!("prefix: {}", key.prefix);
+        println!("created_at: {}", key.created_at);
+        if let Some(revoked) = key.revoked_at.as_ref() {
+            println!("revoked_at: {}", revoked);
+        }
+        if let Some(label) = key.label.as_ref() {
+            println!("label: {}", label);
+        }
+        println!("---");
+    }
+}
 fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     let yaml = match fs::read_to_string(path) {
         Ok(data) => data,

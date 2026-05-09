@@ -24,6 +24,7 @@ use crate::v2_parser::{
 };
 
 const REGEX_CACHE_CAPACITY: usize = 128;
+const BRANCH_MAX_DEPTH: usize = 64;
 
 fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
     static REGEX_CACHE: OnceLock<Mutex<LruCache<String, Regex>>> = OnceLock::new();
@@ -138,12 +139,14 @@ impl<'a> Iterator for TransformStream<'a> {
             };
 
             let mut warnings = Vec::new();
+            let mut branch_context = BranchContext::default();
             match apply_rule_to_record(
                 self.rule,
                 &record,
                 self.context,
                 &mut warnings,
                 self.base_dir,
+                &mut branch_context,
             ) {
                 Ok(output) => {
                     if output.is_none() && warnings.is_empty() {
@@ -219,9 +222,15 @@ fn transform_with_warnings_inner(
         while let Some(record) = records.next() {
             let record = record?;
             let mut record_warnings = Vec::new();
-            if let Some(output) =
-                apply_rule_to_record(rule, &record, context, &mut record_warnings, base_dir)?
-            {
+            let mut branch_context = BranchContext::default();
+            if let Some(output) = apply_rule_to_record(
+                rule,
+                &record,
+                context,
+                &mut record_warnings,
+                base_dir,
+                &mut branch_context,
+            )? {
                 output_records.push(output);
             }
             warnings.extend(record_warnings);
@@ -273,7 +282,8 @@ pub fn transform_record_with_warnings(
     record: &JsonValue,
     context: Option<&JsonValue>,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
-    transform_record_with_warnings_inner(rule, record, context, None)
+    let mut branch_context = BranchContext::default();
+    transform_record_with_warnings_inner(rule, record, context, None, &mut branch_context)
 }
 
 pub fn transform_record_with_warnings_with_base_dir(
@@ -282,7 +292,8 @@ pub fn transform_record_with_warnings_with_base_dir(
     context: Option<&JsonValue>,
     base_dir: &Path,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
-    transform_record_with_warnings_inner(rule, record, context, Some(base_dir))
+    let mut branch_context = BranchContext::default();
+    transform_record_with_warnings_inner(rule, record, context, Some(base_dir), &mut branch_context)
 }
 
 fn transform_record_with_warnings_inner(
@@ -290,9 +301,17 @@ fn transform_record_with_warnings_inner(
     record: &JsonValue,
     context: Option<&JsonValue>,
     base_dir: Option<&Path>,
+    branch_context: &mut BranchContext,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
-    let output = apply_rule_to_record(rule, record, context, &mut warnings, base_dir)?;
+    let output = apply_rule_to_record(
+        rule,
+        record,
+        context,
+        &mut warnings,
+        base_dir,
+        branch_context,
+    )?;
     if output.is_none() {
         return Ok((None, warnings));
     }
@@ -337,9 +356,15 @@ fn preflight_validate_with_warnings_inner(
         while let Some(record) = records.next() {
             let record = record?;
             let mut record_warnings = Vec::new();
-            if let Some(output) =
-                apply_rule_to_record(rule, &record, context, &mut record_warnings, base_dir)?
-            {
+            let mut branch_context = BranchContext::default();
+            if let Some(output) = apply_rule_to_record(
+                rule,
+                &record,
+                context,
+                &mut record_warnings,
+                base_dir,
+                &mut branch_context,
+            )? {
                 output_records.push(output);
             }
             warnings.extend(record_warnings);
@@ -415,9 +440,18 @@ fn apply_rule_to_record(
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
     base_dir: Option<&Path>,
+    branch_context: &mut BranchContext,
 ) -> Result<Option<JsonValue>, TransformError> {
     if let Some(steps) = &rule.steps {
-        return apply_steps(steps, record, context, warnings, rule.version, base_dir);
+        return apply_steps(
+            steps,
+            record,
+            context,
+            warnings,
+            rule.version,
+            base_dir,
+            branch_context,
+        );
     }
 
     if !eval_record_when(rule, record, context, warnings) {
@@ -435,6 +469,7 @@ fn apply_steps(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     base_dir: Option<&Path>,
+    branch_context: &mut BranchContext,
 ) -> Result<Option<JsonValue>, TransformError> {
     let mut out = JsonValue::Object(Map::new());
 
@@ -504,15 +539,22 @@ fn apply_steps(
                 (branch.r#else.as_deref(), "else")
             };
             if let Some(target) = target {
-                let (branch_rule, branch_base_dir) = load_rule_from_path(base_dir, target)
+                let branch_path_guard = branch_context
+                    .enter(base_dir, target)
                     .map_err(|err| err.with_path(format!("{}.{}", branch_path, target_field)))?;
+                let (branch_rule, branch_base_dir) =
+                    load_rule_from_path(base_dir, target, branch_context.allowed_root()).map_err(
+                        |err| err.with_path(format!("{}.{}", branch_path, target_field)),
+                    )?;
                 let branch_input = out.clone();
                 let (branch_output, branch_warnings) = transform_record_with_warnings_inner(
                     &branch_rule,
                     &branch_input,
                     context,
                     Some(&branch_base_dir),
+                    branch_context,
                 )?;
+                branch_context.exit(branch_path_guard);
                 warnings.extend(branch_warnings);
                 let Some(branch_output) = branch_output else {
                     return Ok(None);
@@ -550,6 +592,73 @@ fn merge_branch_output(
     Ok(())
 }
 
+#[derive(Default)]
+struct BranchContext {
+    stack: Vec<PathBuf>,
+    allowed_root: Option<PathBuf>,
+}
+
+impl BranchContext {
+    fn enter(
+        &mut self,
+        base_dir: Option<&Path>,
+        target: &str,
+    ) -> Result<BranchPathGuard, TransformError> {
+        if self.stack.len() >= BRANCH_MAX_DEPTH {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "branch rule depth limit exceeded",
+            ));
+        }
+        let resolved = resolve_rule_path(base_dir, target);
+        let canonical = resolved.canonicalize().map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::InvalidInput,
+                format!("failed to resolve branch rule: {}", err),
+            )
+        })?;
+        let allowed_root = match (&self.allowed_root, base_dir) {
+            (Some(root), _) => Some(root.clone()),
+            (None, Some(base_dir)) => Some(base_dir.canonicalize().map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to resolve branch base directory: {}", err),
+                )
+            })?),
+            (None, None) => None,
+        };
+        if let Some(root) = &allowed_root {
+            if !canonical.starts_with(root) {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    "branch rule path must stay under the base directory",
+                ));
+            }
+        }
+        if self.stack.iter().any(|path| path == &canonical) {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "branch rule cycle detected",
+            ));
+        }
+        if self.allowed_root.is_none() {
+            self.allowed_root = allowed_root;
+        }
+        self.stack.push(canonical);
+        Ok(BranchPathGuard)
+    }
+
+    fn allowed_root(&self) -> Option<&Path> {
+        self.allowed_root.as_deref()
+    }
+
+    fn exit(&mut self, _guard: BranchPathGuard) {
+        self.stack.pop();
+    }
+}
+
+struct BranchPathGuard;
+
 fn merge_object_maps(out_map: &mut Map<String, JsonValue>, other_map: &Map<String, JsonValue>) {
     for (key, other_value) in other_map {
         match (out_map.get_mut(key), other_value) {
@@ -566,8 +675,25 @@ fn merge_object_maps(out_map: &mut Map<String, JsonValue>, other_map: &Map<Strin
 fn load_rule_from_path(
     base_dir: Option<&Path>,
     path: &str,
+    allowed_root: Option<&Path>,
 ) -> Result<(RuleFile, PathBuf), TransformError> {
     let resolved = resolve_rule_path(base_dir, path);
+    if let Some(allowed_root) = allowed_root {
+        let canonical_resolved = resolved.canonicalize().map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::InvalidInput,
+                format!("failed to resolve branch rule: {}", err),
+            )
+            .with_path(path)
+        })?;
+        if !canonical_resolved.starts_with(allowed_root) {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "branch rule path must stay under the base directory",
+            )
+            .with_path(path));
+        }
+    }
     let yaml = std::fs::read_to_string(&resolved).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,

@@ -16,6 +16,14 @@ import "reactflow/dist/style.css";
 import clsx from "clsx";
 import dagre from "dagre";
 import { shouldResetInitialCenter } from "./view_mode";
+type TraceSummary = {
+  record_total?: number;
+  record_success?: number;
+  record_failed?: number;
+  duration_us?: number;
+  duration_ms?: number;
+};
+
 type TraceListItem = {
   trace_id: string;
   status?: string;
@@ -23,7 +31,7 @@ type TraceListItem = {
   duration_us?: number;
   duration_ms?: number;
   rule?: { name?: string; path?: string; type?: string; version?: number };
-  summary?: { record_total?: number; record_success?: number; record_failed?: number };
+  summary?: TraceSummary;
 };
 
 export type TraceNode = {
@@ -56,6 +64,7 @@ export type TraceRecord = {
 };
 
 type DurationUnit = "us" | "ms";
+type TimeRange = "all" | "1h" | "24h" | "7d" | "30d";
 
 export type EndpointSpec = {
   method: string;
@@ -68,6 +77,45 @@ export type EndpointRule = {
   version: number;
   type: "endpoint";
   endpoints: EndpointSpec[];
+};
+
+type TraceChunkRef = {
+  path: string;
+  format: string;
+  compression: string;
+  record_start?: number;
+  record_end?: number;
+  node_start?: number;
+  node_end?: number;
+  bytes?: number;
+};
+
+type TraceDetailRef = {
+  layout: string;
+  status: string;
+  reason?: string[];
+  records?: TraceChunkRef[];
+  nodes?: TraceChunkRef[];
+  finalize?: TraceChunkRef;
+};
+
+type TraceManifest = {
+  trace_schema_version: number;
+  trace_id: string;
+  timestamp?: string;
+  status?: string;
+  rule?: { name?: string; path?: string; type?: string; version?: number };
+  input_format?: string;
+  summary?: TraceSummary;
+  max_chunk_bytes_uncompressed?: number;
+  detail?: TraceDetailRef;
+  masking?: { enabled: boolean; rules?: string[] };
+  rule_source?: EndpointRule;
+};
+
+type TraceNodeChunkEntry = {
+  record_index: number;
+  node: TraceNode;
 };
 
 type TraceNodeData = {
@@ -88,10 +136,21 @@ function DetailNode({ data }: { data: TraceNodeData }) {
 export type TracePayload = {
   trace_id?: string;
   timestamp?: string;
+  status?: string;
   rule?: { name?: string; path?: string; type?: string; version?: number };
   rule_source?: EndpointRule;
+  detail?: TraceDetailRef;
   records?: TraceRecord[];
-  finalize?: { nodes?: TraceNode[]; input?: unknown; output?: unknown; status?: string };
+  finalize?: {
+    nodes?: TraceNode[];
+    input?: unknown;
+    output?: unknown;
+    status?: string;
+    duration_us?: number;
+    duration_ms?: number;
+  };
+  summary?: TraceSummary;
+  input_format?: string;
 };
 
 type ApiGraphOp = {
@@ -120,7 +179,295 @@ type ApiGraphResponse = {
   edges: ApiGraphEdge[];
 };
 
-const API_BASE = "/internal";
+const API_BASE = "/api";
+const INTERNAL_BASE = "/internal";
+const API_KEY_STORAGE = "rulemorph_api_key";
+const INTERNAL_KEY_STORAGE = "rulemorph_internal_key";
+const TENANT_ID_STORAGE = "rulemorph_tenant_id";
+let cachedApiKey: string | null | undefined;
+let cachedInternalKey: string | null | undefined;
+let cachedTenantId: string | null | undefined;
+let pendingApiKeyFromUrl: string | null | undefined;
+let pendingInternalKeyFromUrl: string | null | undefined;
+let capturedAuthLocation: string | undefined;
+
+function captureAuthSecretsFromLocation(): void {
+  if (typeof window === "undefined") return;
+  const currentLocation = window.location.href;
+  if (capturedAuthLocation === currentLocation) {
+    return;
+  }
+  capturedAuthLocation = currentLocation;
+
+  const apiKey = getSecretParam(["api_key"]);
+  const internalKey = getSecretParam(["internal_key", "internal_api_key"]);
+  if (apiKey) {
+    pendingApiKeyFromUrl = apiKey;
+    cachedApiKey = apiKey;
+  } else if (pendingApiKeyFromUrl === undefined) {
+    pendingApiKeyFromUrl = null;
+  }
+  if (internalKey) {
+    pendingInternalKeyFromUrl = internalKey;
+    cachedInternalKey = internalKey;
+  } else if (pendingInternalKeyFromUrl === undefined) {
+    pendingInternalKeyFromUrl = null;
+  }
+
+  if (apiKey || internalKey) {
+    removeSecretParams(["api_key", "internal_key", "internal_api_key"]);
+  }
+}
+
+function getSecretParam(names: string[]): string | null {
+  if (typeof window === "undefined") return null;
+  const sources = [
+    ...secretParamSourcesFromHash(window.location.hash),
+    window.location.search
+  ];
+  for (const source of sources) {
+    const params = new URLSearchParams(source.startsWith("?") ? source : `?${source}`);
+    for (const name of names) {
+      const trimmed = params.get(name)?.trim();
+      if (trimmed) return trimmed;
+    }
+  }
+  return null;
+}
+
+function secretParamSourcesFromHash(hash: string): string[] {
+  if (!hash) return [];
+  const raw = hash.replace(/^#/, "");
+  if (!raw) return [];
+  if (raw.startsWith("/")) {
+    const queryIndex = raw.indexOf("?");
+    return queryIndex === -1 ? [] : [raw.slice(queryIndex + 1)];
+  }
+  if (raw.startsWith("?")) {
+    return [raw.slice(1)];
+  }
+  return raw.includes("=") ? [raw] : [];
+}
+
+function removeSecretParams(names: string[]): void {
+  if (typeof window === "undefined") return;
+  try {
+    const url = new URL(window.location.href);
+    let changed = false;
+    for (const name of names) {
+      if (url.searchParams.has(name)) {
+        url.searchParams.delete(name);
+        changed = true;
+      }
+    }
+    const hashResult = removeSecretParamsFromHash(url.hash, names);
+    if (hashResult.changed) {
+      url.hash = hashResult.hash;
+      changed = true;
+    }
+    if (changed) {
+      window.history.replaceState(null, "", url.toString());
+    }
+  } catch {
+    // ignore history failures
+  }
+}
+
+function removeSecretParamsFromHash(hash: string, names: string[]): { hash: string; changed: boolean } {
+  if (!hash) return { hash, changed: false };
+  const raw = hash.replace(/^#/, "");
+  if (!raw) return { hash, changed: false };
+
+  if (raw.startsWith("/")) {
+    const queryIndex = raw.indexOf("?");
+    if (queryIndex === -1) return { hash, changed: false };
+    const route = raw.slice(0, queryIndex);
+    const query = raw.slice(queryIndex + 1);
+    const params = new URLSearchParams(query);
+    if (!deleteNamedParams(params, names)) return { hash, changed: false };
+    const nextQuery = params.toString();
+    return { hash: nextQuery ? `#${route}?${nextQuery}` : `#${route}`, changed: true };
+  }
+
+  const source = raw.startsWith("?") ? raw.slice(1) : raw;
+  if (!source.includes("=")) return { hash, changed: false };
+  const params = new URLSearchParams(source);
+  if (!deleteNamedParams(params, names)) return { hash, changed: false };
+  const next = params.toString();
+  if (raw.startsWith("?")) {
+    return { hash: next ? `#?${next}` : "", changed: true };
+  }
+  return { hash: next ? `#${next}` : "", changed: true };
+}
+
+function deleteNamedParams(params: URLSearchParams, names: string[]): boolean {
+  let changed = false;
+  for (const name of names) {
+    if (params.has(name)) {
+      params.delete(name);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export function getApiKey(): string | null {
+  if (typeof window !== "undefined") {
+    captureAuthSecretsFromLocation();
+  }
+  if (cachedApiKey !== undefined) {
+    return cachedApiKey;
+  }
+  if (typeof window === "undefined") {
+    cachedApiKey = null;
+    return cachedApiKey;
+  }
+  const trimmed = pendingApiKeyFromUrl?.trim();
+  if (trimmed) {
+    cachedApiKey = trimmed;
+    return trimmed;
+  }
+  try {
+    const stored = window.localStorage.getItem(API_KEY_STORAGE);
+    if (stored && stored.trim()) {
+      cachedApiKey = stored.trim();
+      return cachedApiKey;
+    }
+  } catch {
+    // ignore storage failures
+  }
+  cachedApiKey = null;
+  return cachedApiKey;
+}
+
+export function getInternalKey(): string | null {
+  if (typeof window !== "undefined") {
+    captureAuthSecretsFromLocation();
+  }
+  if (cachedInternalKey !== undefined) {
+    return cachedInternalKey;
+  }
+  if (typeof window === "undefined") {
+    cachedInternalKey = null;
+    return cachedInternalKey;
+  }
+  const trimmed = pendingInternalKeyFromUrl?.trim();
+  if (trimmed) {
+    cachedInternalKey = trimmed;
+    return trimmed;
+  }
+  try {
+    const stored = window.localStorage.getItem(INTERNAL_KEY_STORAGE);
+    if (stored && stored.trim()) {
+      cachedInternalKey = stored.trim();
+      return cachedInternalKey;
+    }
+  } catch {
+    // ignore storage failures
+  }
+  cachedInternalKey = null;
+  return cachedInternalKey;
+}
+
+export function __resetAuthCachesForTest(): void {
+  cachedApiKey = undefined;
+  cachedInternalKey = undefined;
+  cachedTenantId = undefined;
+  pendingApiKeyFromUrl = undefined;
+  pendingInternalKeyFromUrl = undefined;
+  capturedAuthLocation = undefined;
+}
+
+function normalizeTenantId(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  if (!/^[A-Za-z0-9_-]+$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function getTenantIdFromApiKey(apiKey: string | null): string | null {
+  if (!apiKey) return null;
+  const trimmed = apiKey.trim();
+  if (!trimmed.startsWith("rmk_")) {
+    return null;
+  }
+  const rest = trimmed.slice("rmk_".length);
+  const [tenantId] = rest.split(".", 2);
+  if (!tenantId || !tenantId.trim()) {
+    return null;
+  }
+  return normalizeTenantId(tenantId);
+}
+
+function getTenantIdFromQueryOrStorage(): string | null {
+  if (typeof window === "undefined") {
+    cachedTenantId = null;
+    return cachedTenantId;
+  }
+
+  const params = new URLSearchParams(window.location.search);
+  const tenantParam = normalizeTenantId(params.get("tenant_id"));
+  if (tenantParam) {
+    try {
+      window.localStorage.setItem(TENANT_ID_STORAGE, tenantParam);
+    } catch {
+      // ignore storage failures
+    }
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("tenant_id");
+      if (url.toString() !== window.location.href) {
+        window.history.replaceState(null, "", url.toString());
+      }
+    } catch {
+      // ignore history failures
+    }
+    cachedTenantId = tenantParam;
+    return tenantParam;
+  }
+
+  if (cachedTenantId !== undefined) {
+    return cachedTenantId;
+  }
+
+  try {
+    const stored = normalizeTenantId(window.localStorage.getItem(TENANT_ID_STORAGE));
+    if (stored) {
+      cachedTenantId = stored;
+      return stored;
+    }
+  } catch {
+    // ignore storage failures
+  }
+
+  cachedTenantId = null;
+  return cachedTenantId;
+}
+
+export function resolveTenantId(
+  apiKey: string | null,
+  tenantFromQueryOrStorage: string | null
+): string | null {
+  const tenantFromApiKey = getTenantIdFromApiKey(apiKey);
+  if (tenantFromApiKey) {
+    return tenantFromApiKey;
+  }
+  if (tenantFromQueryOrStorage) {
+    return tenantFromQueryOrStorage;
+  }
+  return null;
+}
+
+export function __getTenantIdFromQueryOrStorageForTest(): string | null {
+  return getTenantIdFromQueryOrStorage();
+}
+
+function getTenantId(): string | null {
+  const apiKey = getApiKey();
+  const tenantFromQuery = getTenantIdFromQueryOrStorage();
+  return resolveTenantId(apiKey, tenantFromQuery);
+}
 
 const graphDefaults = {
   rankdir: "LR",
@@ -131,14 +478,171 @@ const graphDefaults = {
 const INITIAL_CENTER_X_RATIO = 0.45;
 const INITIAL_CENTER_PADDING = 0.22;
 
-async function fetchJson<T>(path: string): Promise<T | null> {
+type FetchAuth = "api" | "internal";
+
+function buildHeaders(auth: FetchAuth): Record<string, string> {
+  const headers: Record<string, string> = { "x-rulemorph-ui": "1" };
+  if (auth === "internal") {
+    const internalKey = getInternalKey();
+    if (internalKey) {
+      headers["x-api-key"] = internalKey;
+    }
+    const tenantId = getTenantId();
+    if (tenantId) {
+      headers["x-tenant-id"] = tenantId;
+    }
+    return headers;
+  }
+  const apiKey = getApiKey();
+  if (apiKey) {
+    headers["x-api-key"] = apiKey;
+  }
+  return headers;
+}
+
+async function fetchJson<T>(path: string, auth: FetchAuth = "api"): Promise<T | null> {
   try {
-    const res = await fetch(path);
+    const headers = buildHeaders(auth);
+    const res = await fetch(path, { headers });
     if (!res.ok) return null;
     return (await res.json()) as T;
-  } catch {
+  } catch (err) {
+    console.error("fetch failed", err);
     return null;
   }
+}
+
+function parseNumericIndex(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (!Number.isNaN(parsed)) return parsed;
+  }
+  return null;
+}
+
+function normalizeRecordIndex(value: unknown, fallback: number) {
+  const parsed = parseNumericIndex(value);
+  return parsed ?? fallback;
+}
+
+function normalizeInlineNodeValue(value: unknown, fallbackId: string): TraceNode {
+  const node =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? { ...(value as Record<string, unknown>) }
+      : { value };
+  if (typeof node.id !== "string" || node.id.length === 0) {
+    node.id = fallbackId;
+  }
+  if (typeof node.kind !== "string" || node.kind.length === 0) {
+    node.kind = "value";
+  }
+  if (typeof node.label !== "string" || node.label.length === 0) {
+    node.label =
+      typeof node.value === "string" ? node.value : node.kind ?? "value";
+  }
+  return node as TraceNode;
+}
+
+function normalizeInlineNodes(value: unknown, prefix: string): TraceNode[] {
+  if (Array.isArray(value)) {
+    return value.map((node, index) =>
+      normalizeInlineNodeValue(node, `${prefix}-${index}`)
+    );
+  }
+  if (value === null || value === undefined) {
+    return [];
+  }
+  return [normalizeInlineNodeValue(value, `${prefix}-0`)];
+}
+
+function normalizeRecord(record: TraceRecord, fallbackIndex: number): TraceRecord {
+  const index = normalizeRecordIndex(record.index, fallbackIndex);
+  const nodes =
+    record.nodes === undefined
+      ? undefined
+      : normalizeInlineNodes(record.nodes as unknown, `record-${index}`);
+  return { ...record, index, nodes };
+}
+
+function normalizeTracePayload(trace: TracePayload | null): TracePayload | null {
+  if (!trace?.records) return trace;
+  return {
+    ...trace,
+    records: trace.records.map((record, index) => normalizeRecord(record, index))
+  };
+}
+
+function mergeNodesIntoRecords(
+  records: TraceRecord[],
+  nodesByRecord: Map<number, TraceNode[]>
+) {
+  return records.map((record, position) => {
+    const recordIndex = normalizeRecordIndex(record.index, position);
+    const nodes = nodesByRecord.get(recordIndex);
+    if (!nodes || nodes.length === 0) {
+      return { ...record, index: recordIndex };
+    }
+    const existing = normalizeInlineNodes(record.nodes as unknown, `record-${recordIndex}`);
+    return {
+      ...record,
+      index: recordIndex,
+      nodes: [...existing, ...nodes]
+    };
+  });
+}
+
+async function loadRecordChunks(traceId: string, detail: TraceDetailRef): Promise<TraceRecord[]> {
+  const chunks = detail.records ?? [];
+  const records: TraceRecord[] = [];
+  for (let i = 0; i < chunks.length; i += 1) {
+    const payload = await fetchJson<{ records: TraceRecord[] }>(
+      `${API_BASE}/traces/${traceId}/records/${i}`
+    );
+    if (!payload) {
+      throw new Error(`record chunk ${i} load failed`);
+    }
+    const offset = records.length;
+    const normalized = payload.records.map((record, index) =>
+      normalizeRecord(record, offset + index)
+    );
+    records.push(...normalized);
+  }
+  return records;
+}
+
+async function loadNodeChunks(
+  traceId: string,
+  detail: TraceDetailRef
+): Promise<Map<number, TraceNode[]>> {
+  const chunks = detail.nodes ?? [];
+  const nodesByRecord = new Map<number, TraceNode[]>();
+  for (let i = 0; i < chunks.length; i += 1) {
+    const payload = await fetchJson<{ nodes: TraceNodeChunkEntry[] }>(
+      `${API_BASE}/traces/${traceId}/nodes/${i}`
+    );
+    if (!payload) {
+      throw new Error(`node chunk ${i} load failed`);
+    }
+    payload.nodes.forEach((entry) => {
+      const recordIndex = parseNumericIndex(entry.record_index);
+      if (recordIndex == null) return;
+      const list = nodesByRecord.get(recordIndex) ?? [];
+      list.push(entry.node);
+      nodesByRecord.set(recordIndex, list);
+    });
+  }
+  return nodesByRecord;
+}
+
+async function loadFinalize(traceId: string) {
+  const payload = await fetchJson<{ finalize: TracePayload["finalize"] }>(
+    `${API_BASE}/traces/${traceId}/finalize`
+  );
+  if (!payload) {
+    throw new Error("finalize chunk load failed");
+  }
+  return payload.finalize ?? null;
 }
 
 function formatTime(value?: string) {
@@ -172,13 +676,84 @@ function resolveDurationUs(durationUs?: number, durationMs?: number) {
 
 function resolveTraceDurationUs(trace?: TracePayload) {
   if (!trace) return undefined;
-  const summary = (trace as TracePayload & {
-    summary?: { duration_us?: number; duration_ms?: number };
-  }).summary;
-  const fromSummary = resolveDurationUs(summary?.duration_us, summary?.duration_ms);
+  const fromSummary = resolveDurationUs(trace.summary?.duration_us, trace.summary?.duration_ms);
   if (fromSummary !== undefined) return fromSummary;
   const record = trace.records?.[0];
   return resolveDurationUs(record?.duration_us, record?.duration_ms);
+}
+
+const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; ms: number | null }[] = [
+  { value: "all", label: "全期間", ms: null },
+  { value: "1h", label: "1時間", ms: 60 * 60 * 1000 },
+  { value: "24h", label: "24時間", ms: 24 * 60 * 60 * 1000 },
+  { value: "7d", label: "7日", ms: 7 * 24 * 60 * 60 * 1000 },
+  { value: "30d", label: "30日", ms: 30 * 24 * 60 * 60 * 1000 }
+];
+
+function resolveTraceStatus(item: TraceListItem) {
+  return (item.status ?? "ok").toLowerCase();
+}
+
+function resolveRuleLabel(item: TraceListItem) {
+  return item.rule?.path ?? item.rule?.name ?? null;
+}
+
+function matchesTraceQuery(item: TraceListItem, query: string) {
+  if (!query) return true;
+  const lowered = query.trim().toLowerCase();
+  if (!lowered) return true;
+  const haystack = [
+    item.trace_id,
+    item.rule?.name,
+    item.rule?.path,
+    item.status
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return haystack.includes(lowered);
+}
+
+function isWithinTimeRange(item: TraceListItem, range: TimeRange) {
+  if (range === "all") return true;
+  const threshold = TIME_RANGE_OPTIONS.find((opt) => opt.value === range)?.ms;
+  if (!threshold) return true;
+  if (!item.timestamp) return false;
+  const parsed = Date.parse(item.timestamp);
+  if (Number.isNaN(parsed)) return false;
+  const now = Date.now();
+  const diff = now - parsed;
+  if (diff < 0) return true;
+  return diff <= threshold;
+}
+
+function applyTraceFilters(
+  items: TraceListItem[],
+  filters: {
+    status: string;
+    rule: string;
+    query: string;
+    range: TimeRange;
+  }
+) {
+  return items.filter((item) => {
+    if (filters.status !== "all" && resolveTraceStatus(item) !== filters.status) {
+      return false;
+    }
+    if (filters.rule !== "all") {
+      const ruleLabel = resolveRuleLabel(item);
+      if (!ruleLabel || ruleLabel !== filters.rule) {
+        return false;
+      }
+    }
+    if (!matchesTraceQuery(item, filters.query)) {
+      return false;
+    }
+    if (!isWithinTimeRange(item, filters.range)) {
+      return false;
+    }
+    return true;
+  });
 }
 
 function isErrorStatus(status?: string) {
@@ -1007,6 +1582,17 @@ function buildMergedApiGraph(
 }
 
 export default function App() {
+  captureAuthSecretsFromLocation();
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const capture = () => captureAuthSecretsFromLocation();
+    window.addEventListener("hashchange", capture);
+    window.addEventListener("popstate", capture);
+    return () => {
+      window.removeEventListener("hashchange", capture);
+      window.removeEventListener("popstate", capture);
+    };
+  }, []);
   const [viewMode, setViewMode] = useState<"trace" | "api">("trace");
   const [durationUnit, setDurationUnit] = useState<DurationUnit>(() => {
     if (typeof window === "undefined") return "us";
@@ -1014,8 +1600,15 @@ export default function App() {
     return stored === "ms" ? "ms" : "us";
   });
   const [traces, setTraces] = useState<TraceListItem[]>([]);
+  const [traceFilterStatus, setTraceFilterStatus] = useState("all");
+  const [traceFilterRule, setTraceFilterRule] = useState("all");
+  const [traceFilterQuery, setTraceFilterQuery] = useState("");
+  const [traceFilterRange, setTraceFilterRange] = useState<TimeRange>("all");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [trace, setTrace] = useState<TracePayload | null>(null);
+  const [traceManifest, setTraceManifest] = useState<TraceManifest | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [expandedRuleIds, setExpandedRuleIds] = useState<string[]>([]);
   const [focusedRuleId, setFocusedRuleId] = useState<string | null>(null);
   const [recordIndex, setRecordIndex] = useState(0);
@@ -1023,7 +1616,12 @@ export default function App() {
   const [selectedOp, setSelectedOp] = useState<TraceNode | null>(null);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [traceListOpen, setTraceListOpen] = useState(true);
+  const [zipModalOpen, setZipModalOpen] = useState(false);
+  const [zipFile, setZipFile] = useState<File | null>(null);
+  const [zipMessage, setZipMessage] = useState<string | null>(null);
+  const [zipUploading, setZipUploading] = useState(false);
   const [traceInspectorSections, setTraceInspectorSections] = useState(() => ({
+    finalize: true,
     step: true,
     opList: false,
     opResult: false
@@ -1043,6 +1641,38 @@ export default function App() {
   const [pinnedPositions, setPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [apiPinnedPositions, setApiPinnedPositions] = useState<Record<string, { x: number; y: number }>>({});
   const nodeTypes = useMemo(() => ({ detail: DetailNode }), []);
+  const internalKey = getInternalKey();
+  const tenantId = getTenantId();
+
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>();
+    traces.forEach((item) => {
+      set.add(resolveTraceStatus(item));
+    });
+    return Array.from(set).sort();
+  }, [traces]);
+
+  const ruleOptions = useMemo(() => {
+    const set = new Set<string>();
+    traces.forEach((item) => {
+      const label = resolveRuleLabel(item);
+      if (label) {
+        set.add(label);
+      }
+    });
+    return Array.from(set).sort();
+  }, [traces]);
+
+  const filteredTraces = useMemo(
+    () =>
+      applyTraceFilters(traces, {
+        status: traceFilterStatus,
+        rule: traceFilterRule,
+        query: traceFilterQuery,
+        range: traceFilterRange
+      }),
+    [traces, traceFilterStatus, traceFilterRule, traceFilterQuery, traceFilterRange]
+  );
 
   const loadTraces = useCallback(
     async (preserveSelection: boolean) => {
@@ -1050,21 +1680,82 @@ export default function App() {
       const data = list?.traces?.length ? list.traces : [];
       setTraces(data);
       setSelectedId((prev) => {
-        if (!preserveSelection || !prev) {
-          return data[0]?.trace_id ?? null;
+        if (preserveSelection && prev && data.some((item) => item.trace_id === prev)) {
+          return prev;
         }
-        return data.some((item) => item.trace_id === prev) ? prev : data[0]?.trace_id ?? null;
+        return data[0]?.trace_id ?? null;
       });
     },
     []
   );
+
+  const handleZipImport = useCallback(async () => {
+    if (!zipFile) {
+      setZipMessage("ZIPファイルを選択してください。");
+      return;
+    }
+    setZipUploading(true);
+    if (!internalKey) {
+      setZipMessage("internal_key が未設定です。認証が必要な場合は失敗します。");
+    } else {
+      setZipMessage(null);
+    }
+    try {
+      const formData = new FormData();
+      formData.append("bundle", zipFile);
+      const headers = { ...buildHeaders("internal"), "x-rulemorph-import": "zip" };
+      const res = await fetch(`${API_BASE}/import`, {
+        method: "POST",
+        headers,
+        body: formData
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => null);
+        const message = payload?.error ?? "ZIPインポートに失敗しました。";
+        setZipMessage(message);
+        return;
+      }
+      const payload = await res.json();
+      const imported = typeof payload?.imported === "number" ? payload.imported : 0;
+      const rulesImported = typeof payload?.rules_imported === "number" ? payload.rules_imported : 0;
+      setZipMessage(`imported ${imported} traces / ${rulesImported} rules`);
+      setZipFile(null);
+      await loadTraces(true);
+    } catch (err) {
+      console.error("zip import failed", err);
+      setZipMessage("ZIPインポートに失敗しました。");
+    } finally {
+      setZipUploading(false);
+    }
+  }, [zipFile, internalKey, loadTraces]);
 
   useEffect(() => {
     loadTraces(false);
   }, [loadTraces]);
 
   useEffect(() => {
-    const source = new EventSource(`${API_BASE}/stream`);
+    if (!selectedId) {
+      if (filteredTraces.length > 0) {
+        setSelectedId(filteredTraces[0].trace_id ?? null);
+      }
+      return;
+    }
+    if (!filteredTraces.some((item) => item.trace_id === selectedId)) {
+      setSelectedId(filteredTraces[0]?.trace_id ?? null);
+    }
+  }, [filteredTraces, selectedId]);
+
+  useEffect(() => {
+    const usePolling = API_BASE.startsWith("/api");
+    if (usePolling || internalKey) {
+      const timer = window.setInterval(() => {
+        loadTraces(true);
+      }, 5000);
+      return () => {
+        window.clearInterval(timer);
+      };
+    }
+    const source = new EventSource(`${INTERNAL_BASE}/stream`);
     const onUpdate = () => {
       loadTraces(true);
     };
@@ -1076,7 +1767,7 @@ export default function App() {
       source.removeEventListener("traces", onUpdate);
       source.close();
     };
-  }, [loadTraces]);
+  }, [loadTraces, internalKey]);
 
   useEffect(() => {
     if (viewMode !== "api") return;
@@ -1106,23 +1797,89 @@ export default function App() {
   useEffect(() => {
     if (!selectedId) {
       setTrace(null);
+      setTraceManifest(null);
+      setDetailLoading(false);
+      setDetailError(null);
       initialCenterAppliedRef.current = false;
       return;
     }
     let mounted = true;
+    setTrace(null);
+    setTraceManifest(null);
+    setDetailLoading(false);
+    setDetailError(null);
+    setRecordIndex(0);
+    setSelectedNode(null);
+    setSelectedOp(null);
+    setExpandedRuleIds([]);
+    setFocusedRuleId(null);
+    setInspectorOpen(false);
+    setPinnedPositions({});
+    initialCenterAppliedRef.current = false;
     (async () => {
-      const result = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
-      const data = result?.trace ?? null;
-      if (mounted) {
-        setTrace(data);
-        setRecordIndex(0);
-        setSelectedNode(null);
-        setSelectedOp(null);
-        setExpandedRuleIds([]);
-        setFocusedRuleId(null);
-        setInspectorOpen(false);
-        setPinnedPositions({});
-        initialCenterAppliedRef.current = false;
+      const manifestResult = await fetchJson<{ manifest: TraceManifest }>(
+        `${API_BASE}/traces/${selectedId}/manifest`
+      );
+      if (!mounted) return;
+      if (!manifestResult?.manifest) {
+        const result = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
+        if (!mounted) return;
+        setTrace(normalizeTracePayload(result?.trace ?? null));
+        return;
+      }
+      const manifest = manifestResult.manifest;
+      setTraceManifest(manifest);
+      const baseTrace: TracePayload = {
+        trace_id: manifest.trace_id,
+        timestamp: manifest.timestamp,
+        status: manifest.status,
+        rule: manifest.rule,
+        rule_source: manifest.rule_source,
+        records: [],
+        finalize: undefined,
+        summary: manifest.summary,
+        input_format: manifest.input_format
+      };
+      setTrace(baseTrace);
+      const detail = manifest.detail;
+      if (!detail || detail.status !== "full") {
+        return;
+      }
+      setDetailLoading(true);
+      try {
+        const records = await loadRecordChunks(selectedId, detail);
+        if (!mounted) return;
+        let nextTrace: TracePayload = { ...baseTrace, records };
+        setTrace(nextTrace);
+        if (detail.layout === "records_nodes_split" && (detail.nodes?.length ?? 0) > 0) {
+          const nodesByRecord = await loadNodeChunks(selectedId, detail);
+          if (!mounted) return;
+          const mergedRecords = mergeNodesIntoRecords(records, nodesByRecord);
+          nextTrace = { ...nextTrace, records: mergedRecords };
+          setTrace(nextTrace);
+        }
+        if (detail.finalize) {
+          const finalize = await loadFinalize(selectedId);
+          if (!mounted) return;
+          if (finalize) {
+            setTrace((prev) => (prev ? { ...prev, finalize } : { ...nextTrace, finalize }));
+          }
+        }
+      } catch (err) {
+        if (!mounted) return;
+        const fallback = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
+        if (!mounted) return;
+        if (fallback?.trace) {
+          setTraceManifest(null);
+          setTrace(normalizeTracePayload(fallback.trace));
+          setDetailError(null);
+          return;
+        }
+        setDetailError("trace detail load failed");
+      } finally {
+        if (mounted) {
+          setDetailLoading(false);
+        }
       }
     })();
     return () => {
@@ -1150,7 +1907,9 @@ export default function App() {
   const currentTrace = effectiveFocusedRuleId
     ? overviewGraph.traceMap.get(effectiveFocusedRuleId) ?? trace
     : trace;
-  const currentRecord = currentTrace?.records?.[recordIndex];
+  const isFinalizeSelected = recordIndex < 0;
+  const currentRecord = recordIndex >= 0 ? currentTrace?.records?.[recordIndex] : undefined;
+  const finalizePayload = currentTrace?.finalize ?? null;
   const bundles = useMemo(() => {
     const map = new Map<string, DetailBundle>();
     expandedRuleIds.forEach((ruleId) => {
@@ -1316,8 +2075,21 @@ export default function App() {
     });
     return map;
   }, [apiBundles]);
-  const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0;
+  const detailStatus = traceManifest
+    ? traceManifest.detail?.status ?? "basic"
+    : trace?.detail?.status;
+  const detailReason = traceManifest
+    ? traceManifest.detail?.reason ?? []
+    : trace?.detail?.reason ?? [];
+  const detailAvailable = detailStatus ? detailStatus === "full" : true;
+  const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0 && detailAvailable;
   const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;
+  const finalizeDuration = resolveDurationUs(
+    finalizePayload?.duration_us,
+    finalizePayload?.duration_ms
+  );
+  const finalizeDurationParts = formatDurationParts(finalizeDuration, durationUnit);
+  const finalizeNodes = finalizePayload?.nodes ?? [];
   const selectedMeta = (selectedNode?.meta ?? {}) as Record<string, unknown>;
   const stepRecordWhen =
     typeof selectedMeta["record_when"] === "boolean" ? selectedMeta["record_when"] : undefined;
@@ -1327,11 +2099,26 @@ export default function App() {
     typeof selectedMeta["branch_taken"] === "string" ? String(selectedMeta["branch_taken"]) : undefined;
   const stepDuration = resolveDurationUs(selectedNode?.duration_us, selectedNode?.duration_ms);
   const stepDurationParts = formatDurationParts(stepDuration, durationUnit);
+  const traceFinalizeOpen = traceInspectorSections.finalize;
   const traceStepOpen = traceInspectorSections.step;
   const traceOpListOpen = traceInspectorSections.opList;
   const traceOpResultOpen = traceInspectorSections.opResult;
   const apiOpListOpen = apiInspectorSections.opList;
   const apiMemoOpen = apiInspectorSections.memo;
+  const recordLabel = isFinalizeSelected
+    ? "finalize"
+    : `record #${currentRecord?.index ?? 0}`;
+  const detailLabel = detailStatus
+    ? detailStatus === "full"
+      ? detailLoading
+        ? "loading"
+        : hasDetail
+          ? "detail"
+          : "overview"
+      : detailStatus
+    : hasDetail
+      ? "detail"
+      : "overview";
 
   const renderJsonBlock = (label: string, value: unknown) => {
     const hasValue = !(value === null || value === undefined);
@@ -1382,9 +2169,11 @@ export default function App() {
           </div>
           {viewMode === "trace" ? (
             <>
-              <span className="meta-pill">{hasDetail ? "detail" : "overview"}</span>
-              <span className="meta-pill">{traces.length} traces</span>
-              <span className="meta-pill">record #{currentRecord?.index ?? 0}</span>
+              <span className="meta-pill">{detailLabel}</span>
+              <span className="meta-pill">
+                {filteredTraces.length} / {traces.length} traces
+              </span>
+              <span className="meta-pill">{recordLabel}</span>
             </>
           ) : (
             <>
@@ -1492,6 +2281,21 @@ export default function App() {
                     <p>最新順</p>
                   </div>
                   <div className="trace-panel__actions">
+                    <button
+                      className="trace-panel__import"
+                      data-testid="zip-import-button"
+                      title={
+                        internalKey
+                          ? "ZIPインポート"
+                          : "internal_key 未設定でも試行できます"
+                      }
+                      onClick={() => {
+                        setZipMessage(null);
+                        setZipModalOpen(true);
+                      }}
+                    >
+                      ZIPインポート
+                    </button>
                     <div className="unit-toggle" role="group" aria-label="Duration unit">
                       <button
                         className={clsx("unit-toggle__button", durationUnit === "us" && "is-active")}
@@ -1515,7 +2319,87 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+                <div className="trace-panel__filters">
+                  <input
+                    className="trace-filter__search"
+                    type="search"
+                    aria-label="Trace検索"
+                    placeholder="trace / rule を検索"
+                    value={traceFilterQuery}
+                    onChange={(event) => setTraceFilterQuery(event.target.value)}
+                  />
+                  <select
+                    className="trace-filter__select"
+                    aria-label="ステータス"
+                    value={traceFilterStatus}
+                    onChange={(event) => setTraceFilterStatus(event.target.value)}
+                  >
+                    <option value="all">status: all</option>
+                    {statusOptions.map((status) => (
+                      <option key={status} value={status}>
+                        {status}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="trace-filter__select"
+                    aria-label="ルール"
+                    value={traceFilterRule}
+                    onChange={(event) => setTraceFilterRule(event.target.value)}
+                  >
+                    <option value="all">rule: all</option>
+                    {ruleOptions.map((rule) => (
+                      <option key={rule} value={rule}>
+                        {rule}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="trace-filter__select"
+                    aria-label="期間"
+                    value={traceFilterRange}
+                    onChange={(event) => setTraceFilterRange(event.target.value as TimeRange)}
+                  >
+                    {TIME_RANGE_OPTIONS.map((range) => (
+                      <option key={range.value} value={range.value}>
+                        {range.label}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="trace-filter__reset"
+                    type="button"
+                    onClick={() => {
+                      setTraceFilterStatus("all");
+                      setTraceFilterRule("all");
+                      setTraceFilterQuery("");
+                      setTraceFilterRange("all");
+                    }}
+                  >
+                    リセット
+                  </button>
+                  <span className="trace-filter__count">
+                    {filteredTraces.length} / {traces.length}
+                  </span>
+                </div>
               <div className="trace-list">
+                {(detailStatus && detailStatus !== "full") || detailError ? (
+                  <div className="trace-panel__note">
+                    {detailError ? (
+                      <>
+                        <p>detail の読み込みに失敗しました。</p>
+                        <p className="muted">manifest または chunk の取得に失敗しています。</p>
+                      </>
+                    ) : (
+                      <>
+                        <p>detail は {detailStatus} です。</p>
+                        {detailReason.length > 0 && (
+                          <p className="muted">reason: {detailReason.join(", ")}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                ) : null}
                 {traces.length === 0 && (
                   <div className="empty-trace">
                     <p>traces が見つかりません。</p>
@@ -1524,7 +2408,13 @@ export default function App() {
                     </p>
                   </div>
                 )}
-                {traces.map((item) => (
+                {traces.length > 0 && filteredTraces.length === 0 && (
+                  <div className="empty-trace">
+                    <p>フィルタ条件に一致するトレースがありません。</p>
+                    <p className="muted">検索語や期間を調整してください。</p>
+                  </div>
+                )}
+                {filteredTraces.map((item) => (
                   <button
                     key={item.trace_id}
                     className={clsx("trace-card", selectedId === item.trace_id && "is-active")}
@@ -1559,7 +2449,7 @@ export default function App() {
             ) : (
               <button className="trace-panel__chip" onClick={() => setTraceListOpen(true)}>
                 <span>Trace一覧</span>
-                <span className="trace-panel__chip-count">{traces.length}</span>
+                <span className="trace-panel__chip-count">{filteredTraces.length}</span>
               </button>
             )}
           </aside>
@@ -1598,6 +2488,35 @@ export default function App() {
                     </span>
                   </button>
                 ))}
+                {finalizePayload && (
+                  <button
+                    key="finalize"
+                    data-testid="record-finalize"
+                    className={clsx("record-card record-card--finalize", isFinalizeSelected && "is-active")}
+                    onClick={() => {
+                      setRecordIndex(-1);
+                      setSelectedNode(null);
+                      setSelectedOp(null);
+                      setInspectorOpen(true);
+                    }}
+                  >
+                    <span>Finalize</span>
+                    <span
+                      className={clsx(
+                        "record-status",
+                        isErrorStatus(finalizePayload.status) && "record-status--error"
+                      )}
+                    >
+                      {finalizePayload.status ?? "ok"}
+                    </span>
+                    <span>
+                      {formatDuration(
+                        resolveDurationUs(finalizePayload.duration_us, finalizePayload.duration_ms),
+                        durationUnit
+                      )}
+                    </span>
+                  </button>
+                )}
               </div>
             </aside>
           </>
@@ -1689,6 +2608,83 @@ export default function App() {
             </>
           ) : (
             <>
+              {isFinalizeSelected && (
+                <div
+                  className={clsx(
+                    "inspector__section inspector__section--finalize",
+                    !traceFinalizeOpen && "is-collapsed"
+                  )}
+                >
+                  <button
+                    className="inspector__section-toggle"
+                    aria-expanded={traceFinalizeOpen}
+                    onClick={() =>
+                      setTraceInspectorSections((prev) => ({ ...prev, finalize: !prev.finalize }))
+                    }
+                  >
+                    <h3>Finalize</h3>
+                    <span className="inspector__chevron">{traceFinalizeOpen ? "v" : ">"}</span>
+                  </button>
+                  {traceFinalizeOpen && (
+                    <div className="inspector__content">
+                      {!finalizePayload ? (
+                        <p className="muted">finalize のデータがありません。</p>
+                      ) : (
+                        <>
+                          <div className="step-badges">
+                            <span
+                              className={clsx(
+                                "chip",
+                                isErrorStatus(finalizePayload.status) && "chip--error"
+                              )}
+                            >
+                              {finalizePayload.status ?? "ok"}
+                            </span>
+                            {finalizeDurationParts && (
+                              <span className="chip">
+                                duration: {finalizeDurationParts.value}{" "}
+                                <span className="chip__unit">{finalizeDurationParts.unit}</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="inspector-grid">
+                            {renderJsonBlock("input", finalizePayload.input ?? null)}
+                            {renderJsonBlock("output", finalizePayload.output ?? null)}
+                          </div>
+                          <div className="op-list">
+                            {finalizeNodes.length === 0 ? (
+                              <p className="muted">finalize ノードがありません。</p>
+                            ) : (
+                              finalizeNodes.map((node, index) => (
+                                <div
+                                  key={node.id ?? `finalize-${index}`}
+                                  className="op-item is-static"
+                                >
+                                  <span>{node.label ?? node.kind}</span>
+                                  <span className="op-item__meta">
+                                    <span className="muted">{node.kind}</span>
+                                    {resolveDurationUs(node.duration_us, node.duration_ms) !==
+                                      undefined && (
+                                      <span className="op-item__duration">
+                                        {formatDuration(
+                                          resolveDurationUs(node.duration_us, node.duration_ms),
+                                          durationUnit
+                                        )}
+                                      </span>
+                                    )}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+              {!isFinalizeSelected && (
+                <>
               <div
                 className={clsx(
                   "inspector__section inspector__section--opresult",
@@ -1882,9 +2878,74 @@ export default function App() {
                   </div>
                 )}
               </div>
+                </>
+              )}
             </>
           )}
         </aside>
+        {zipModalOpen && (
+          <div className="modal-overlay" role="dialog" aria-modal="true">
+            <div className="modal">
+              <div className="modal__header">
+                <div>
+                  <h3>ZIPインポート</h3>
+                  <p className="muted">
+                    traces/ と rules/ を含むZIPをアップロードしてください。
+                  </p>
+                </div>
+                <button
+                  className="icon-button"
+                  onClick={() => {
+                    setZipModalOpen(false);
+                    setZipFile(null);
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+              <div className="modal__body">
+                {tenantId && <p className="muted">tenant: {tenantId}</p>}
+                <input
+                  className="modal__file"
+                  data-testid="zip-import-file"
+                  type="file"
+                  accept=".zip"
+                  onChange={(event) => {
+                    const file = event.currentTarget.files?.[0] ?? null;
+                    setZipFile(file);
+                    setZipMessage(null);
+                  }}
+                />
+                {zipMessage && (
+                  <div className="modal__message" data-testid="zip-import-message">
+                    {zipMessage}
+                  </div>
+                )}
+              </div>
+              <div className="modal__actions">
+                <button
+                  className="modal__button"
+                  type="button"
+                  onClick={() => {
+                    setZipModalOpen(false);
+                    setZipFile(null);
+                  }}
+                >
+                  閉じる
+                </button>
+                <button
+                  className="modal__button modal__button--primary"
+                  data-testid="zip-import-submit"
+                  type="button"
+                  disabled={zipUploading || !zipFile}
+                  onClick={handleZipImport}
+                >
+                  {zipUploading ? "アップロード中..." : "インポート"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );

@@ -117,6 +117,46 @@ body_rule: bad_rule.yaml
 }
 
 #[test]
+fn validate_rules_dir_network_header_expr_error() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let rules_dir = temp.path();
+    write_file(
+        rules_dir,
+        "endpoint.yaml",
+        r#"
+version: 2
+type: endpoint
+endpoints:
+  - method: GET
+    path: /api/test
+    steps:
+      - rule: network.yaml
+    reply:
+      status: 200
+"#,
+    );
+    write_file(
+        rules_dir,
+        "network.yaml",
+        r#"
+version: 2
+type: network
+request:
+  method: GET
+  url: "https://example.com"
+  headers:
+    x-test: "@foo-bar"
+timeout: 5s
+"#,
+    );
+
+    let result = validate_rules_dir(rules_dir).unwrap_err();
+    assert!(result.errors.iter().any(|err| {
+        err.code == "InvalidExpr" && err.path.as_deref() == Some("request.headers.x-test")
+    }));
+}
+
+#[test]
 fn validate_rules_dir_catch_rejects_network_rule() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();

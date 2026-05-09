@@ -1,0 +1,9 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "status"
+    value: 200
+  - target: "body"
+    expr: "@input"

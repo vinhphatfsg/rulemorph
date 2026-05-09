@@ -1,0 +1,14 @@
+version: 2
+type: network
+request:
+  method: POST
+  url:
+    - "@context.config.internal_base"
+    - concat: ["/internal/import"]
+  headers:
+    x-tenant-id: "@context.tenant_id"
+timeout: 30s
+internal_auth: true
+body_map:
+  - target: "bundle_path"
+    source: "input.body.bundle_path"

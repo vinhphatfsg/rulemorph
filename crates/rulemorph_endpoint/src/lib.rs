@@ -1,5 +1,7 @@
 mod endpoint_engine;
+mod ssrf;
 
 pub use endpoint_engine::{
-    ApiMode, EndpointEngine, EngineConfig, RulesDirError, RulesDirErrors, validate_rules_dir,
+    ApiMode, EndpointEngine, EngineConfig, RequestContext, RulesDirError, RulesDirErrors,
+    validate_rules_dir,
 };

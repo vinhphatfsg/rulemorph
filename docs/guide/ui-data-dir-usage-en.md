@@ -8,16 +8,27 @@ The default data directory is `./.rulemorph`.
 
 ```
 ./.rulemorph/
-├── traces/          # Trace files (JSON)
+├── traces/          # Trace manifests and chunks (JSON/NDJSON)
 ├── rules/           # Rules referenced by traces (YAML)
-└── api_rules/       # Custom API rules (YAML)
+├── api_rules/       # Custom API rules (YAML)
+├── auth/            # API key store for the default/non-tenant layout
+│   └── api_keys.json
+└── tenants/         # Tenant-separated layout when tenant auth is enabled
+    └── <tenant_id>/
+        ├── traces/
+        ├── rules/
+        ├── api_rules/
+        └── auth/
+            └── api_keys.json
 ```
 
 | Directory | Purpose |
 |-----------|---------|
-| `traces/` | Transformation execution trace logs (1 file = 1 trace) |
+| `traces/` | Transformation execution traces (`trace.json` manifest + chunks, legacy single JSON also supported) |
 | `rules/` | Rule files referenced within traces |
 | `api_rules/` | Rules defining `/api/*` endpoints |
+| `auth/api_keys.json` | API key store for the default/non-tenant layout |
+| `tenants/<tenant_id>/` | Per-tenant data root when tenant separation is enabled |
 
 > Adding `.rulemorph/` to `.gitignore` is recommended.
 
@@ -25,16 +36,30 @@ The default data directory is `./.rulemorph`.
 
 ### traces/
 
-Place trace files under `traces/`. Subdirectories are optional, but organizing by date is recommended.
+Place trace manifests and chunks under `traces/`. Subdirectories are optional, but organizing by date is recommended.
 
 ```
 ./.rulemorph/traces/
 ├── 2025/01/01/
-│   ├── trace-users-001.json
-│   └── trace-users-002.json
+│   ├── trace-users-001/
+│   │   ├── trace.json
+│   │   ├── records-0001.ndjson.zst
+│   │   ├── nodes-0001.ndjson.zst
+│   │   ├── finalize.json.zst
+│   │   └── blobs/
+│   │       └── sha256-<hash>.json.zst
+│   └── trace-users-002/
+│       └── trace.json
 └── 2025/01/02/
-    └── trace-orders-001.json
+    └── trace-orders-001/
+        └── trace.json
 ```
+
+`trace.json` is the trace manifest and can reference chunk files such as `records-*.ndjson`, `nodes-*.ndjson`, or `finalize.json`. If you want to tell the loader the expansion limit, set `max_chunk_bytes_uncompressed` (bytes). When omitted, the loader falls back to the hard cap (16MB), and the value is clamped to 16MB. The writer applies the same clamp and records the clamped value in the manifest. The loader also enforces total chunk count/byte/record/node budgets (records 200k / nodes 500k); if exceeded it downgrades detail to `basic` and adds `budget_exceeded` to `reason`. If a chunk fails I/O/parse/decode it also downgrades detail to `basic` and adds `chunk_error` to `reason`. If a single record/node/finalize exceeds `max_chunk_bytes_uncompressed`, detail is downgraded to `basic` and `chunk_too_large` is added to `reason`. `trace.json`/legacy JSON are capped at 20MB; oversized files are skipped (the writer retries after dropping `rule_source`, and fails the write if it is still over 20MB). Detail downgrade for `summary.record_total` overflow is applied consistently to both `/internal/traces/{id}` and `/internal/traces/{id}/manifest`.
+If `bytes_uncompressed` is missing, the loader estimates total bytes using `max_chunk_bytes_uncompressed` (or the 16MB hard cap when omitted). For compressed chunks without `max_chunk_bytes_uncompressed`, it falls back to `bytes`. If required metadata is missing for estimation, it conservatively downgrades detail to `basic`. The same conservative downgrade applies when `record_start`/`record_end` or `node_start`/`node_end` are missing and `summary.record_total` is unavailable.
+`nodes` chunk compatibility: when a node object already has its own `record_index`, the writer stores it as `{ "record_index": ..., "node": {...} }` to avoid overwriting node data. The reader only treats this as a wrapper when top-level keys are limited to `node` plus optional `record_index`; if `node` has sibling fields, it is preserved as a normal node object.
+Legacy single JSON files under `traces/` are still supported.
+By default, chunks are Zstd-compressed with a `.zst` suffix, and large payloads are externalized under `blobs/`.
 
 ### rules/
 
@@ -67,7 +92,7 @@ Place rules that provide `/api/*` endpoints in rules mode.
 If traces are not appearing:
 
 1. Verify `--data-dir` is set correctly
-2. Check that JSON files exist in `traces/`
+2. Check that `trace.json` manifests (or legacy JSON files) exist in `traces/`
 3. Ensure no old processes are holding the port
 
 ```sh

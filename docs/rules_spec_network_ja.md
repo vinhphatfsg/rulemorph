@@ -16,7 +16,7 @@ type: network
 request:
   method: GET
   url:
-    - "@context.config.api_base"
+    - "@context.config.internal_base"
     - concat: ["/users/", "@input.user_id"]
   headers:
     Authorization: "Bearer TOKEN"
@@ -35,13 +35,14 @@ select: "data"
 - `timeout`: 例 `5s`, `500ms`
 
 ### 任意
-- `request.headers`: 文字列のマップ（MVPではリテラルのみ）
+- `request.headers`: 文字列 or v2 expr のマップ（`missing` はヘッダを送らない）
 - `body`: v2 expr
 - `body_map`: v2 `mappings`（入力からボディを組み立てる）
 - `body_rule`: 外部ルール参照
 - `retry`: リトライ設定
 - `select`: レスポンス抽出パス
 - `catch`: エラー分岐
+- `internal_auth`: `true` の場合のみ internal_base 宛てリクエストに `x-api-key`/`x-tenant-id` を自動付与（internal_base 宛てのみ有効。内部認証が有効な環境に限る。サーバ設定で許可パスが制限される場合あり）
 
 ### 保留（MVP外）
 - 高度な認証（OIDC/SAML）
@@ -55,12 +56,20 @@ select: "data"
 `missing` や非文字列はエラーとして `catch` に渡します。
 
 ### headers
-`headers` は固定文字列のみ（MVPでは expr 非対応）。
+`headers` は **固定文字列または v2 expr** を指定できます。
+`expr` の評価結果が `missing` の場合は **そのヘッダを送信しません**。
+`Host` / `Forwarded` / `X-Forwarded-*` は SSRF 対策のため指定不可です。
+`validate-rules-dir` の事前検証でも `request.headers` の各値は v2 expr として構文検証されます。
+
+### context
+- `@context.config.internal_api_key` は internal_auth が有効で internal_base 宛てのネットワークルールでのみ提供されます（未設定時は `missing`）。
 
 ```yaml
 request:
   method: GET
   url: "https://api.example.com/users"
+  headers:
+    Authorization: "Bearer TOKEN"
 ```
 
 ```yaml
@@ -69,6 +78,8 @@ request:
   url:
     - "https://api.example.com/users/"
     - concat: ["@input.user_id"]
+  headers:
+    x-tenant-id: "@context.tenant_id"
 ```
 
 ## body
@@ -170,3 +181,30 @@ catch:
 - `headers` は固定値のみ
 - `url` 内でテンプレート展開は行わない（expr を使う）
 - 高度な認証やキャッシュは後続フェーズ
+
+## 運用向けメモ（SSRF対策）
+network ルールのリクエストは SSRF 対策のバリデーションを通過する必要があります。
+
+- 許可スキーム: `http` / `https` のみ
+- IPリテラル（例: `http://127.0.0.1` / `http://[::1]`）は拒否
+- allowlist 未設定時は **ホスト名は許可**（ただし IP リテラルは拒否）
+- Cloud/APIキー運用では allowlist の指定を必須とし、例外的に許可する場合は `--ssrf-allow-any` を明示
+- allowlist 設定時は **完全一致 or サブドメイン一致** のみ許可
+- リダイレクトは無効化（外部への誘導を防止）
+
+allowlist はサーバ起動時に指定します。
+
+```sh
+rulemorph ui --ssrf-allowlist api.example.com --ssrf-allowlist auth.example.com
+# もしくは
+rulemorph-server --ssrf-allowlist api.example.com
+# allowlist を明示的に不要とする場合
+rulemorph-server --ssrf-allow-any
+```
+
+ローカル検証を行う場合は `localhost` を使用してください（`127.0.0.1` など IP リテラルは拒否されます）。
+内部IP/localhost を許可したい場合は明示的に `--ssrf-allow-private` を指定してください（本番では非推奨）。
+
+### SSRF監査ログ
+SSRF判定でブロックされた場合は `rulemorph_endpoint::ssrf` ターゲットで警告ログを出力します。
+ログには `tenant_id` / `rule_ref` / `method` / `url` / `reason` が含まれます。
