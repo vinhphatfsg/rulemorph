@@ -18,13 +18,13 @@ jobs:
       # actions/checkout@v4 pinned 2026-05-09.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ github.ref_name }}
+          ref: refs/tags/${{ github.event.release.tag_name }}
           persist-credentials: false
 
       - name: Extract version from tag
         id: version
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ github.event.release.tag_name }}
         run: |
           VERSION="${TAG#v}"
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
@@ -62,7 +62,7 @@ jobs:
       # actions/checkout@v4 pinned 2026-05-09.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ github.ref_name }}
+          ref: refs/tags/${{ github.event.release.tag_name }}
           persist-credentials: false
 
       - name: Install Rust
@@ -98,7 +98,7 @@ jobs:
       # actions/checkout@v4 pinned 2026-05-09.
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
-          ref: ${{ github.ref_name }}
+          ref: refs/tags/${{ github.event.release.tag_name }}
           persist-credentials: false
 
       - name: Install Rust
