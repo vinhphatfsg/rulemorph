@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
     DtoLanguage, InputData, InputFormat, NormalizationOptions, RuleError, RuleFile, RuleFormat,
     TransformError, TransformErrorKind, TransformWarning, generate_dto,
-    parse_rule_file_with_format, preflight_validate_with_warnings_with_base_dir,
+    parse_rule_file_with_format, preflight_validate_input_with_warnings_with_base_dir,
     transform_input_with_warnings_with_base_dir_and_options,
     transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
 };
@@ -332,7 +332,10 @@ fn run_preflight(args: PreflightArgs) -> i32 {
 
     apply_format_override(&mut rule, args.format);
 
-    let input = match load_input(&args.input) {
+    let input = match load_input_bytes_with_limit(
+        &args.input,
+        NormalizationOptions::default().max_input_bytes,
+    ) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -343,9 +346,9 @@ fn run_preflight(args: PreflightArgs) -> i32 {
     };
 
     let base_dir = rule_base_dir(&args.rules);
-    let warnings = match preflight_validate_with_warnings_with_base_dir(
+    let warnings = match preflight_validate_input_with_warnings_with_base_dir(
         &rule,
-        &input,
+        InputData::Bytes(&input),
         context_value.as_ref(),
         &base_dir,
     ) {
@@ -928,20 +931,6 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {
     }
 }
 
-fn load_input(path: &PathBuf) -> Result<String, i32> {
-    load_text_input_with_limit(path, NormalizationOptions::default().max_input_bytes)
-}
-
-fn load_text_input_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<String, i32> {
-    match read_text_file_with_limit(path, max_input_bytes) {
-        Ok(value) => Ok(value),
-        Err(message) => {
-            eprintln!("failed to read input: {}", message);
-            Err(1)
-        }
-    }
-}
-
 fn load_input_bytes_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<Vec<u8>, i32> {
     match read_file_with_limit(path, max_input_bytes) {
         Ok(value) => Ok(value),
@@ -950,11 +939,6 @@ fn load_input_bytes_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result
             Err(1)
         }
     }
-}
-
-fn read_text_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<String, String> {
-    let bytes = read_file_with_limit(path, max_bytes)?;
-    String::from_utf8(bytes).map_err(|err| err.to_string())
 }
 
 fn read_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, String> {

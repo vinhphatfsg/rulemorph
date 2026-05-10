@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use rulemorph::{
     InputData, NormalizationOptions, RuleFormat, TransformErrorKind,
-    normalize_records_with_options, parse_rule_file, parse_rule_file_with_format, transform,
-    transform_input,
+    normalize_records_with_options, parse_rule_file, parse_rule_file_with_format,
+    preflight_validate_input, transform, transform_input,
 };
 use zip::{CompressionMethod, ZipWriter, write::FileOptions};
 
@@ -48,6 +48,7 @@ fn assert_text_fixture(case: &str, input_file: &str) {
 #[derive(Default)]
 struct XlsxFixtureOptions {
     duplicate_header: bool,
+    empty_sheet: bool,
     formula_without_cache: bool,
     shared_formula: bool,
     sparse_far_cell: bool,
@@ -134,7 +135,13 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>"#,
         file_options,
     );
-    let sheet = if options.formula_without_cache {
+    let sheet = if options.empty_sheet {
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData></sheetData>
+</worksheet>"#
+            .to_string()
+    } else if options.formula_without_cache {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <sheetData>
@@ -451,6 +458,28 @@ fn excel_rejects_input_over_byte_limit() {
 }
 
 #[test]
+fn excel_preflight_accepts_byte_input() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input =
+        fs::read(fixtures_dir().join("t34_excel_input").join("input.xlsx")).expect("read xlsx");
+    preflight_validate_input(&rule, InputData::Bytes(&input), None)
+        .expect("excel preflight should accept byte input");
+}
+
+#[test]
+fn excel_rejects_empty_selected_range_with_clear_error() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        empty_sheet: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = transform_input(&rule, InputData::Bytes(&input), None)
+        .expect_err("empty sheet should fail before header lookup");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("selected range has no columns"));
+}
+
+#[test]
 fn excel_rejects_duplicate_header() {
     let rule = parse_rule_file(
         r#"
@@ -605,6 +634,25 @@ mappings:
         output,
         serde_json::json!([{ "id": "1", "name": "Alice", "first_role": "admin" }])
     );
+}
+
+#[test]
+fn xml_mixed_content_preserves_token_separators_before_normalization() {
+    let yaml = r##"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: root
+    text_key: "#text"
+mappings:
+  - target: "text"
+    source: 'input.["#text"]'
+"##;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"<root>hello <b>ignored</b> world</root>"#;
+    let output = transform(&rule, input, None).expect("transform");
+    assert_eq!(output, serde_json::json!([{ "text": "hello world" }]));
 }
 
 #[test]
@@ -1086,6 +1134,37 @@ mappings:
 }
 
 #[test]
+fn html_inner_html_preserves_raw_spacing() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: html
+  html:
+    records_selector: ".article"
+    fields:
+      body:
+        selector: ".body"
+        value: html
+mappings:
+  - target: "body"
+    source: "body"
+"#,
+    )
+    .expect("parse rule");
+    let output = transform(
+        &rule,
+        r#"<article class="article"><div class="body"><span> Alice   Smith </span></div></article>"#,
+        None,
+    )
+    .expect("transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "body": "<span> Alice   Smith </span>" }])
+    );
+}
+
+#[test]
 fn html_multiple_missing_attrs_are_excluded() {
     let rule = parse_rule_file(
         r#"
@@ -1364,6 +1443,44 @@ mappings:
     let rule = parse_rule_file(yaml).expect("parse rule");
     let err = transform(&rule, "1: value\n", None).expect_err("non-string key should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn yaml_alias_limit_ignores_asterisks_in_scalars() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: yaml
+  yaml:
+    records_path: users
+mappings:
+  - target: "name"
+    source: "name"
+  - target: "note"
+    source: "note"
+"#,
+    )
+    .expect("parse rule");
+    let input = r#"
+users:
+  - name: Alice
+    note: "**********"
+    block: |
+      **********
+"#;
+    let options = NormalizationOptions {
+        max_yaml_aliases: 1,
+        ..NormalizationOptions::default()
+    };
+    let records = normalize_records_with_options(&rule, InputData::Text(input), &options)
+        .expect("asterisks in scalar values should not count as aliases")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("normalized records");
+    assert_eq!(
+        records,
+        vec![serde_json::json!({ "name": "Alice", "note": "**********", "block": "**********\n" })]
+    );
 }
 
 #[test]

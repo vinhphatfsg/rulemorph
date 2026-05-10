@@ -124,6 +124,14 @@ pub fn preflight_validate(
     preflight_validate_with_warnings(rule, input, context).map(|_| ())
 }
 
+pub fn preflight_validate_input(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+) -> Result<(), TransformError> {
+    preflight_validate_input_with_warnings(rule, input, context).map(|_| ())
+}
+
 pub fn preflight_validate_with_base_dir(
     rule: &RuleFile,
     input: &str,
@@ -133,12 +141,26 @@ pub fn preflight_validate_with_base_dir(
     preflight_validate_with_warnings_with_base_dir(rule, input, context, base_dir).map(|_| ())
 }
 
+pub fn preflight_validate_input_with_base_dir(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<(), TransformError> {
+    preflight_validate_input_with_warnings_with_base_dir(rule, input, context, base_dir).map(|_| ())
+}
+
 #[derive(Debug)]
 pub struct TransformStreamItem {
     pub output: Option<JsonValue>,
     pub warnings: Vec<TransformWarning>,
 }
 
+/// Output iterator for `transform_stream*` APIs.
+///
+/// The iterator emits transformed records incrementally, but input normalization
+/// is bounded by `NormalizationOptions` and may materialize records internally
+/// for formats that require whole-document parsing.
 pub struct TransformStream<'a> {
     rule: &'a RuleFile,
     context: Option<&'a JsonValue>,
@@ -584,7 +606,21 @@ pub fn preflight_validate_with_warnings(
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<Vec<TransformWarning>, TransformError> {
-    preflight_validate_with_warnings_inner(rule, input, context, None)
+    preflight_validate_input_with_warnings(rule, InputData::Text(input), context)
+}
+
+pub fn preflight_validate_input_with_warnings(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_input_with_warnings_inner(
+        rule,
+        input,
+        context,
+        None,
+        &NormalizationOptions::default(),
+    )
 }
 
 pub fn preflight_validate_with_warnings_with_base_dir(
@@ -593,19 +629,40 @@ pub fn preflight_validate_with_warnings_with_base_dir(
     context: Option<&JsonValue>,
     base_dir: &Path,
 ) -> Result<Vec<TransformWarning>, TransformError> {
-    preflight_validate_with_warnings_inner(rule, input, context, Some(base_dir))
+    preflight_validate_input_with_warnings_with_base_dir(
+        rule,
+        InputData::Text(input),
+        context,
+        base_dir,
+    )
 }
 
-fn preflight_validate_with_warnings_inner(
+pub fn preflight_validate_input_with_warnings_with_base_dir(
     rule: &RuleFile,
-    input: &str,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_input_with_warnings_inner(
+        rule,
+        input,
+        context,
+        Some(base_dir),
+        &NormalizationOptions::default(),
+    )
+}
+
+fn preflight_validate_input_with_warnings_inner(
+    rule: &RuleFile,
+    input: InputData<'_>,
     context: Option<&JsonValue>,
     base_dir: Option<&Path>,
+    options: &NormalizationOptions,
 ) -> Result<Vec<TransformWarning>, TransformError> {
     let mut warnings = Vec::new();
     if rule.finalize.is_some() {
         let mut output_records = Vec::new();
-        let mut records = input_records_iter(rule, input)?;
+        let mut records = input_records_iter_with_options(rule, input, options)?;
         while let Some(record) = records.next() {
             let record = record?;
             let mut record_warnings = Vec::new();
@@ -627,8 +684,10 @@ fn preflight_validate_with_warnings_inner(
         }
     } else {
         let stream = match base_dir {
-            Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir)?,
-            None => transform_stream(rule, input, context)?,
+            Some(base_dir) => transform_stream_input_with_base_dir_and_options(
+                rule, input, context, base_dir, options,
+            )?,
+            None => transform_stream_input_with_options(rule, input, context, options)?,
         };
         for item in stream {
             let item = item?;
@@ -1145,17 +1204,6 @@ fn sort_key_from_value(value: &JsonValue, path: &str) -> Result<SortKey, Transfo
         )
         .with_path(path)),
     }
-}
-
-fn input_records_iter<'a>(
-    rule: &RuleFile,
-    input: &'a str,
-) -> Result<InputRecordsIter, TransformError> {
-    input_records_iter_with_options(
-        rule,
-        InputData::Text(input),
-        &NormalizationOptions::default(),
-    )
 }
 
 fn input_records_iter_with_options<'a>(

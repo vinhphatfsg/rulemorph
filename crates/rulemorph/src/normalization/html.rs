@@ -143,7 +143,7 @@ fn extract_value(
     options: &NormalizationOptions,
 ) -> Result<Option<String>, TransformError> {
     let value = match field.value {
-        HtmlValueKind::Text => element.text().collect::<Vec<_>>().join(""),
+        HtmlValueKind::Text => normalize_text(&element.text().collect::<Vec<_>>().join(""), html),
         HtmlValueKind::Html => element.inner_html(),
         HtmlValueKind::Attr => {
             let attr = field.attr.as_deref().ok_or_else(|| {
@@ -155,10 +155,9 @@ fn extract_value(
             let Some(value) = element.attr(attr) else {
                 return Ok(None);
             };
-            value.to_string()
+            normalize_text(value, html)
         }
     };
-    let value = normalize_text(&value, html);
     if value.len() > options.max_text_bytes {
         return Err(invalid("input exceeds max_text_bytes"));
     }

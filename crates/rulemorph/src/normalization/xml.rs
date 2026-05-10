@@ -114,7 +114,7 @@ fn parse_xml_tree(
             }
             Ok(Event::Text(event)) => {
                 let text = event.unescape().map_err(xml_err)?.into_owned();
-                append_text(&mut stack, text, xml, options)?;
+                append_text(&mut stack, text, options)?;
             }
             Ok(Event::CData(event)) => {
                 let text = String::from_utf8(event.into_inner().into_owned()).map_err(|err| {
@@ -123,7 +123,7 @@ fn parse_xml_tree(
                         format!("failed to parse XML CDATA: {}", err),
                     )
                 })?;
-                append_text(&mut stack, text, xml, options)?;
+                append_text(&mut stack, text, options)?;
             }
             Ok(Event::End(_)) => {
                 let node = stack
@@ -304,16 +304,14 @@ fn raw_name(raw: &[u8]) -> Result<String, TransformError> {
 fn append_text(
     stack: &mut [XmlNode],
     text: String,
-    xml: &XmlInput,
     options: &NormalizationOptions,
 ) -> Result<(), TransformError> {
-    let text = normalize_text(&text, xml);
-    if text.is_empty() {
-        return Ok(());
-    }
-    let current = stack
-        .last_mut()
-        .ok_or_else(|| invalid("XML text outside root element"))?;
+    let Some(current) = stack.last_mut() else {
+        if text.trim().is_empty() {
+            return Ok(());
+        }
+        return Err(invalid("XML text outside root element"));
+    };
     if current
         .text
         .len()
@@ -392,12 +390,9 @@ fn xml_node_to_json(
             JsonValue::String(attribute.value.clone()),
         )?;
     }
-    if !node.text.is_empty() {
-        checked_insert(
-            &mut object,
-            xml.text_key.clone(),
-            JsonValue::String(node.text.clone()),
-        )?;
+    let text = normalize_text(&node.text, xml);
+    if !text.is_empty() {
+        checked_insert(&mut object, xml.text_key.clone(), JsonValue::String(text))?;
     }
     let mut child_groups = BTreeMap::<String, (String, Vec<JsonValue>)>::new();
     for child in &node.children {

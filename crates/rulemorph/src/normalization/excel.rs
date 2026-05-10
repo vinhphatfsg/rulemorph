@@ -511,6 +511,9 @@ fn selected_column_indexes(
     window: CellWindow,
     max_width: usize,
 ) -> Result<Vec<usize>, TransformError> {
+    if max_width == 0 {
+        return Err(invalid("Excel selected range has no columns"));
+    }
     if !excel.has_header {
         let columns = excel
             .columns
@@ -527,6 +530,9 @@ fn selected_column_indexes(
     let header_row = rows
         .get(header_row_index)
         .ok_or_else(|| invalid("Excel header row was not found"))?;
+    if header_row.is_empty() {
+        return Err(invalid("Excel header row has no columns"));
+    }
     let end_col = window
         .end_col
         .unwrap_or_else(|| max_width.saturating_sub(1))
