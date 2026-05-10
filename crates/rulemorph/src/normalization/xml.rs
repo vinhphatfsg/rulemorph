@@ -93,7 +93,6 @@ fn parse_xml_tree(
     let mut stack = Vec::new();
     let mut root = None;
     let mut node_count = 0usize;
-    let mut namespace_bindings = HashMap::new();
     loop {
         match reader.read_event() {
             Ok(Event::Start(event)) => {
@@ -102,13 +101,13 @@ fn parse_xml_tree(
                 if stack.len() >= options.max_depth {
                     return Err(invalid("input exceeds max_depth"));
                 }
-                enforce_namespace_rebinding(&event, &reader, &mut namespace_bindings)?;
+                enforce_namespace_rebinding(&event, &reader)?;
                 stack.push(start_node(&event, xml, &reader)?);
             }
             Ok(Event::Empty(event)) => {
                 node_count = node_count.saturating_add(1);
                 enforce_xml_node_count(node_count, options)?;
-                enforce_namespace_rebinding(&event, &reader, &mut namespace_bindings)?;
+                enforce_namespace_rebinding(&event, &reader)?;
                 let node = start_node(&event, xml, &reader)?;
                 attach_node(node, &mut stack, &mut root)?;
             }
@@ -252,8 +251,8 @@ fn canonical_name(namespace: Option<&str>, local: &str) -> String {
 fn enforce_namespace_rebinding(
     event: &BytesStart<'_>,
     reader: &XmlReader<&[u8]>,
-    namespace_bindings: &mut HashMap<String, String>,
 ) -> Result<(), TransformError> {
+    let mut namespace_bindings = HashMap::new();
     for attr in event.attributes() {
         let attr = attr.map_err(|err| {
             TransformError::new(
@@ -273,7 +272,9 @@ fn enforce_namespace_rebinding(
         if let Some(previous) = namespace_bindings.insert(prefix.clone(), value.clone())
             && previous != value
         {
-            return Err(invalid("XML namespace prefix rebinding is not supported"));
+            return Err(invalid(
+                "XML namespace declaration conflicts on the same element",
+            ));
         }
     }
     Ok(())

@@ -496,10 +496,10 @@ fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
     if let InputFormat::Csv = rule.input.format {
         if let Some(csv) = &rule.input.csv {
-            if csv.delimiter.chars().count() != 1 {
+            if csv.delimiter.len() != 1 {
                 ctx.push(
                     ErrorCode::InvalidDelimiterLength,
-                    "csv.delimiter must be a single character",
+                    "csv.delimiter must be a single-byte character",
                     "input.csv.delimiter",
                 );
             }

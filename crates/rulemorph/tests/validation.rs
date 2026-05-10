@@ -258,6 +258,28 @@ mappings:
 }
 
 #[test]
+fn csv_rejects_multibyte_delimiter() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    delimiter: "，"
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("multibyte delimiter should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code == ErrorCode::InvalidDelimiterLength
+                && err.path.as_deref() == Some("input.csv.delimiter"))
+    );
+}
+
+#[test]
 fn unselected_input_sections_are_ignored_by_normal_validation() {
     let yaml = r#"
 version: 2
@@ -360,6 +382,24 @@ mappings:
 "#;
     let err = parse_rule_file(source).expect_err("duplicate YAML keys must fail");
     assert!(err.to_string().contains("duplicate key"));
+}
+
+#[test]
+fn yaml_rule_rejects_trailing_document() {
+    let source = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+---
+version: 2
+"#;
+    let err = parse_rule_file(source).expect_err("trailing YAML document must fail");
+    assert!(err.to_string().contains("exactly one document"));
 }
 
 #[test]

@@ -2237,6 +2237,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "toml",
+ "toml_edit",
  "zip 0.6.6",
 ]
 

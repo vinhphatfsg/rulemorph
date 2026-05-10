@@ -16,6 +16,7 @@ csv = "1.3"
 regex = "1.12"
 chrono = "0.4"
 toml = "0.8"
+toml_edit = "0.22"
 calamine = { version = "0.26", features = ["dates"] }
 zip = "0.6"
 quick-xml = "0.31"

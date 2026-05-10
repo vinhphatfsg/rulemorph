@@ -19,16 +19,15 @@ pub fn normalize_csv_records(
             "input.csv is required when format=csv",
         )
     })?;
-    let delimiter_chars: Vec<char> = csv_spec.delimiter.chars().collect();
-    if delimiter_chars.len() != 1 {
+    if csv_spec.delimiter.len() != 1 {
         return Err(TransformError::new(
             TransformErrorKind::InvalidInput,
-            "csv.delimiter must be a single character",
+            "csv.delimiter must be a single-byte character",
         ));
     }
 
     let mut reader = ReaderBuilder::new()
-        .delimiter(delimiter_chars[0] as u8)
+        .delimiter(csv_spec.delimiter.as_bytes()[0])
         .has_headers(csv_spec.has_header)
         .flexible(true)
         .from_reader(input.as_bytes());

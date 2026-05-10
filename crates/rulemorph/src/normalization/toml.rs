@@ -1,9 +1,5 @@
-use std::collections::HashSet;
-use std::fmt;
-
-use serde::Deserializer;
-use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number as JsonNumber, Value as JsonValue};
+use toml_edit::{DocumentMut, Item as TomlItem, Value as TomlValue};
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::RuleFile;
@@ -39,133 +35,108 @@ pub fn normalize_toml_records(
 fn parse_toml_json_with_limits(
     input: &str,
     options: &NormalizationOptions,
-) -> Result<JsonValue, toml::de::Error> {
-    TomlJsonSeed { options, depth: 0 }.deserialize(toml::Deserializer::new(input))
+) -> Result<JsonValue, String> {
+    let document = input
+        .parse::<DocumentMut>()
+        .map_err(|err| err.to_string())?;
+    toml_item_to_json(document.as_item(), options, 0)
 }
 
-#[derive(Clone, Copy)]
-struct TomlJsonSeed<'a> {
-    options: &'a NormalizationOptions,
+fn toml_item_to_json(
+    item: &TomlItem,
+    options: &NormalizationOptions,
     depth: usize,
-}
-
-impl<'a> TomlJsonSeed<'a> {
-    fn child(self) -> Self {
-        Self {
-            options: self.options,
-            depth: self.depth + 1,
+) -> Result<JsonValue, String> {
+    if depth > options.max_depth {
+        return Err("input exceeds max_depth".to_string());
+    }
+    match item {
+        TomlItem::None => Ok(JsonValue::Null),
+        TomlItem::Value(value) => toml_value_to_json(value, options, depth),
+        TomlItem::Table(values) => toml_table_to_json(values, options, depth + 1),
+        TomlItem::ArrayOfTables(values) => {
+            let mut output = Vec::new();
+            for value in values.iter() {
+                output.push(toml_table_to_json(value, options, depth + 1)?);
+                if output.len() > options.max_array_len {
+                    return Err("input exceeds max_array_len".to_string());
+                }
+            }
+            Ok(JsonValue::Array(output))
         }
     }
 }
 
-impl<'de> DeserializeSeed<'de> for TomlJsonSeed<'_> {
-    type Value = JsonValue;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        if self.depth > self.options.max_depth {
-            return Err(de::Error::custom("input exceeds max_depth"));
+fn toml_value_to_json(
+    value: &TomlValue,
+    options: &NormalizationOptions,
+    depth: usize,
+) -> Result<JsonValue, String> {
+    if depth > options.max_depth {
+        return Err("input exceeds max_depth".to_string());
+    }
+    match value {
+        TomlValue::String(value) => {
+            if value.value().len() > options.max_text_bytes {
+                return Err("input exceeds max_text_bytes".to_string());
+            }
+            Ok(JsonValue::String(value.value().clone()))
         }
-        deserializer.deserialize_any(TomlJsonVisitor { seed: self })
-    }
-}
-
-struct TomlJsonVisitor<'a> {
-    seed: TomlJsonSeed<'a>,
-}
-
-impl<'de> Visitor<'de> for TomlJsonVisitor<'_> {
-    type Value = JsonValue;
-
-    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a TOML value")
-    }
-
-    fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
-        Ok(JsonValue::Bool(value))
-    }
-
-    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
-        Ok(JsonValue::Number(value.into()))
-    }
-
-    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
-        Ok(JsonValue::Number(value.into()))
-    }
-
-    fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        JsonNumber::from_f64(value)
+        TomlValue::Integer(value) => Ok(JsonValue::Number((*value.value()).into())),
+        TomlValue::Float(value) => JsonNumber::from_f64(*value.value())
             .map(JsonValue::Number)
-            .ok_or_else(|| E::custom("TOML float is not JSON-compatible"))
-    }
-
-    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        if value.len() > self.seed.options.max_text_bytes {
-            return Err(E::custom("input exceeds max_text_bytes"));
-        }
-        Ok(JsonValue::String(value.to_string()))
-    }
-
-    fn visit_string<E>(self, value: String) -> Result<Self::Value, E>
-    where
-        E: de::Error,
-    {
-        if value.len() > self.seed.options.max_text_bytes {
-            return Err(E::custom("input exceeds max_text_bytes"));
-        }
-        Ok(JsonValue::String(value))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        if seq
-            .size_hint()
-            .is_some_and(|hint| hint > self.seed.options.max_array_len)
-        {
-            return Err(de::Error::custom("input exceeds max_array_len"));
-        }
-        let capacity = seq
-            .size_hint()
-            .map(|hint| hint.min(self.seed.options.max_array_len))
-            .unwrap_or(0);
-        let mut values = Vec::with_capacity(capacity);
-        while let Some(value) = seq.next_element_seed(self.seed.child())? {
-            values.push(value);
-            if values.len() > self.seed.options.max_array_len {
-                return Err(de::Error::custom("input exceeds max_array_len"));
+            .ok_or_else(|| "TOML float is not JSON-compatible".to_string()),
+        TomlValue::Boolean(value) => Ok(JsonValue::Bool(*value.value())),
+        TomlValue::Datetime(value) => {
+            let value = value.value().to_string();
+            if value.len() > options.max_text_bytes {
+                return Err("input exceeds max_text_bytes".to_string());
             }
+            Ok(JsonValue::String(value))
         }
-        Ok(JsonValue::Array(values))
-    }
-
-    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-    where
-        A: MapAccess<'de>,
-    {
-        let mut values = Map::new();
-        let mut keys = HashSet::new();
-        while let Some(key) = map.next_key::<String>()? {
-            if !keys.insert(key.clone()) {
-                return Err(de::Error::custom(format!("duplicate key `{}`", key)));
+        TomlValue::Array(values) => {
+            if values.len() > options.max_array_len {
+                return Err("input exceeds max_array_len".to_string());
             }
-            let value = map.next_value_seed(self.seed.child())?;
-            values.insert(key, value);
+            let mut output = Vec::with_capacity(values.len());
+            for value in values.iter() {
+                output.push(toml_value_to_json(value, options, depth + 1)?);
+            }
+            Ok(JsonValue::Array(output))
         }
-        if values.len() == 1
-            && let Some(JsonValue::String(value)) = values.remove("$__toml_private_datetime")
-        {
-            return Ok(JsonValue::String(value));
-        }
-        Ok(JsonValue::Object(values))
+        TomlValue::InlineTable(values) => toml_inline_table_to_json(values, options, depth + 1),
     }
+}
+
+fn toml_table_to_json(
+    values: &toml_edit::Table,
+    options: &NormalizationOptions,
+    depth: usize,
+) -> Result<JsonValue, String> {
+    let mut output = Map::new();
+    for (key, value) in values.iter() {
+        if value.is_none() {
+            continue;
+        }
+        output.insert(
+            key.to_string(),
+            toml_item_to_json(value, options, depth + 1)?,
+        );
+    }
+    Ok(JsonValue::Object(output))
+}
+
+fn toml_inline_table_to_json(
+    values: &toml_edit::InlineTable,
+    options: &NormalizationOptions,
+    depth: usize,
+) -> Result<JsonValue, String> {
+    let mut output = Map::new();
+    for (key, value) in values.iter() {
+        output.insert(
+            key.to_string(),
+            toml_value_to_json(value, options, depth + 1)?,
+        );
+    }
+    Ok(JsonValue::Object(output))
 }

@@ -746,51 +746,61 @@ mappings:
 }
 
 #[test]
-fn xml_rejects_namespace_prefix_rebinding() {
+fn xml_allows_scoped_namespace_prefix_shadowing() {
     let rule = parse_rule_file(
-        r#"
+        r##"
 version: 2
 input:
   format: xml
   xml:
     records_path: users.user
 mappings:
-  - target: "name"
-    source: "name"
-"#,
+  - target: "outer_name"
+    source: 'input.["a:name"][0]["#text"]'
+  - target: "inner_name"
+    source: 'input.group[0]["a:name"][0]["#text"]'
+"##,
     )
     .expect("parse rule");
-    let err = transform(
+    let output = transform(
         &rule,
-        r#"<users xmlns:a="urn:trusted"><user xmlns:a="urn:evil"><a:name>Alice</a:name></user></users>"#,
+        r#"<users xmlns:a="urn:outer"><user><a:name>Outer</a:name><group xmlns:a="urn:inner"><a:name>Inner</a:name></group></user></users>"#,
         None,
     )
-    .expect_err("namespace prefix rebinding should fail");
-    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    .expect("scoped namespace shadowing should be valid");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "outer_name": "Outer", "inner_name": "Inner" }])
+    );
 }
 
 #[test]
-fn xml_rejects_default_namespace_rebinding() {
+fn xml_allows_scoped_default_namespace_shadowing() {
     let rule = parse_rule_file(
-        r#"
+        r##"
 version: 2
 input:
   format: xml
   xml:
     records_path: users.user
 mappings:
-  - target: "name"
-    source: "name"
-"#,
+  - target: "outer_name"
+    source: 'input.name[0]["#text"]'
+  - target: "inner_name"
+    source: 'input.group[0].name[0]["#text"]'
+"##,
     )
     .expect("parse rule");
-    let err = transform(
+    let output = transform(
         &rule,
-        r#"<users xmlns="urn:trusted"><user xmlns="urn:evil"><name>Alice</name></user></users>"#,
+        r#"<users xmlns="urn:outer"><user><name>Outer</name><group xmlns="urn:inner"><name>Inner</name></group></user></users>"#,
         None,
     )
-    .expect_err("default namespace rebinding should fail");
-    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    .expect("scoped default namespace shadowing should be valid");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "outer_name": "Outer", "inner_name": "Inner" }])
+    );
 }
 
 #[test]
@@ -1410,6 +1420,31 @@ mappings:
 }
 
 #[test]
+fn csv_rejects_non_byte_delimiter() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+    delimiter: "，"
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("id，name\n1，Alice\n"),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("non-byte delimiter should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
 fn yaml_input_uses_records_path() {
     let yaml = r#"
 version: 2
@@ -1442,6 +1477,24 @@ mappings:
 "#;
     let rule = parse_rule_file(yaml).expect("parse rule");
     let err = transform(&rule, "1: value\n", None).expect_err("non-string key should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn yaml_rejects_trailing_document() {
+    let yaml = r#"
+version: 2
+input:
+  format: yaml
+  yaml:
+    records_path: users
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, "users:\n  - id: 1\n---\nusers:\n  - id: 2\n", None)
+        .expect_err("multi-document YAML should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
 
@@ -1526,6 +1579,36 @@ mappings:
     assert_eq!(
         output,
         serde_json::json!([{ "created_at": "2026-05-08T12:00:00Z" }])
+    );
+}
+
+#[test]
+fn toml_quoted_private_datetime_key_stays_object() {
+    let yaml = r#"
+version: 2
+input:
+  format: toml
+  toml:
+    records_path: users
+mappings:
+  - target: "metadata"
+    source: "metadata"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = "[[users]]\n[users.metadata]\n'$__toml_private_datetime' = 2026-05-08T12:00:00Z\n";
+    let records = normalize_records_with_options(
+        &rule,
+        InputData::Text(input),
+        &NormalizationOptions::default(),
+    )
+    .expect("normalize toml")
+    .collect::<Result<Vec<_>, _>>()
+    .expect("normalized records");
+    assert_eq!(
+        records,
+        vec![serde_json::json!({
+            "metadata": { "$__toml_private_datetime": "2026-05-08T12:00:00Z" }
+        })]
     );
 }
 
