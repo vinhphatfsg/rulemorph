@@ -483,6 +483,399 @@ fn excel_rejects_sparse_far_cell_dense_range_limit() {
 }
 
 #[test]
+fn xml_input_normalizes_attributes_text_and_repeated_children() {
+    let yaml = r##"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+    attr_prefix: "@"
+    text_key: "#text"
+    child_policy: array
+mappings:
+  - target: "id"
+    source: 'input.["@id"]'
+  - target: "name"
+    source: 'input.name[0]["#text"]'
+  - target: "first_role"
+    source: 'input.role[0]["#text"]'
+"##;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"<users><user id="1"><name>Alice</name><role>admin</role><role>editor</role></user></users>"#;
+    let output = transform(&rule, input, None).expect("transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "id": "1", "name": "Alice", "first_role": "admin" }])
+    );
+}
+
+#[test]
+fn xml_dtd_is_rejected() {
+    let yaml = r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, r#"<!DOCTYPE users><users><user /></users>"#, None)
+        .expect_err("DTD should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_external_entity_dtd_is_rejected() {
+    let yaml = r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<!DOCTYPE users [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><users><user>&xxe;</user></users>"#,
+        None,
+    )
+    .expect_err("external entity DTD should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_node_limit_exceeded() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_xml_nodes: 1,
+        ..NormalizationOptions::default()
+    };
+    let err =
+        normalize_records_with_options(&rule, InputData::Text("<users><user /></users>"), &options)
+            .expect_err("node limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_namespace_strip_collision() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+    namespaces: strip
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<users xmlns:a="urn:a" xmlns:b="urn:b"><user><a:name>Alice</a:name><b:name>Bob</b:name></user></users>"#,
+        None,
+    )
+    .expect_err("namespace strip collision should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_namespace_prefix_rebinding() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<users xmlns:a="urn:trusted"><user xmlns:a="urn:evil"><a:name>Alice</a:name></user></users>"#,
+        None,
+    )
+    .expect_err("namespace prefix rebinding should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_default_namespace_rebinding() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<users xmlns="urn:trusted"><user xmlns="urn:evil"><name>Alice</name></user></users>"#,
+        None,
+    )
+    .expect_err("default namespace rebinding should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_invalid_records_path_at_runtime() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users[0].user
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(&rule, "<users><user /></users>", None)
+        .expect_err("invalid XML records_path should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidRecordsPath);
+}
+
+#[test]
+fn xml_processing_instruction_is_rejected() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<?xml-stylesheet href="file:///tmp/x" type="text/xsl"?><users><user /></users>"#,
+        None,
+    )
+    .expect_err("processing instruction should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_undefined_entity_is_rejected() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(&rule, "<users><user>&xxe;</user></users>", None)
+        .expect_err("undefined entity should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_depth_limit_exceeded() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_depth: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("<users><user><name>Alice</name></user></users>"),
+        &options,
+    )
+    .expect_err("depth limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_text_limit_exceeded() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 3,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("<users><user>Alice</user></users>"),
+        &options,
+    )
+    .expect_err("text limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_array_limit_exceeded() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "roles"
+    source: "role"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_array_len: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("<users><user><role>a</role><role>b</role></user></users>"),
+        &options,
+    )
+    .expect_err("array limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_records_limit_exceeded() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_records: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("<users><user /><user /></users>"),
+        &options,
+    )
+    .expect_err("record limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_attribute_namespace_strip_collision() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+    namespaces: strip
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<users xmlns:a="urn:a" xmlns:b="urn:b"><user a:id="1" b:id="2" /></users>"#,
+        None,
+    )
+    .expect_err("attribute namespace strip collision should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_attr_text_key_collision() {
+    let rule = parse_rule_file(
+        r##"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+    attr_prefix: "#"
+    text_key: "#text"
+mappings:
+  - target: "id"
+    source: "id"
+"##,
+    )
+    .expect("parse rule");
+    let err = transform(
+        &rule,
+        r#"<users><user text="attr">body</user></users>"#,
+        None,
+    )
+    .expect_err("attr/text key collision should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
 fn excel_rejects_zip_entry_count_limit_exceeded() {
     let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
     let input =

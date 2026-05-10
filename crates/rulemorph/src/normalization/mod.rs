@@ -3,6 +3,7 @@ mod excel;
 mod json;
 mod options;
 mod toml;
+mod xml;
 mod yaml;
 
 pub use options::NormalizationOptions;
@@ -57,8 +58,9 @@ pub fn normalize_records_with_options(
         InputFormat::Toml => {
             toml::normalize_toml_records(rule, text_input(input, options)?, options)?
         }
+        InputFormat::Xml => xml::normalize_xml_records(rule, text_input(input, options)?, options)?,
         InputFormat::Excel => excel::normalize_excel_records(rule, input, options)?,
-        InputFormat::Xml | InputFormat::Html => {
+        InputFormat::Html => {
             return Err(TransformError::new(
                 TransformErrorKind::InvalidInput,
                 "input format is not supported yet",
