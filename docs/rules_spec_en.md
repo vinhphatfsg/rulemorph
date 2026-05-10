@@ -3,6 +3,42 @@
 This document describes the current v2 rule spec, references, expression syntax, and evaluation rules.
 For the Japanese version, see `docs/rules_spec_ja.md`.
 
+## How to read this spec
+
+A normal Rulemorph transformation first normalizes raw input into an array of **JSON records**.
+Mappings or steps then build output objects from those records, and `finalize` may optionally transform the whole output array.
+
+```text
+raw input
+  -> input normalization
+  -> records: [JSON object, ...]
+  -> mappings or steps
+  -> output records
+  -> finalize
+  -> JSON output
+```
+
+For a first rule, read the sections in this order:
+
+1. Choose an `input` format and decide how records are selected.
+2. Use `mappings` to create output fields.
+3. Add `expr` and `conditions` for value transformations and conditional behavior.
+4. Use `steps` only when you need ordered mapping/filter/assert/branch behavior.
+5. Use `finalize` only when the whole output array needs post-processing.
+
+## Conceptual model
+
+| Area | Purpose | Main keys |
+| --- | --- | --- |
+| Input normalization | Convert CSV/JSON/YAML/TOML/XML/HTML/Excel into JSON records | `input` |
+| Record filtering | Decide whether a record should be processed | `record_when` |
+| Output mapping | Build one output object from one input record | `mappings` |
+| Ordered execution | Run mappings, filters, asserts, and branches in sequence | `steps` |
+| Array post-processing | Apply filter/sort/limit/wrap to the output array | `finalize` |
+| References and expressions | Read input, context, and intermediate output values | `@input`, `@context`, `@out`, `expr` |
+
+Use `mappings` for straightforward transformations. Use `steps` when the rule needs validation, branching, or multiple ordered phases.
+
 ## Rule File Structure
 
 ```yaml
@@ -35,11 +71,35 @@ mappings:
 - `mappings` (required): transformation rules (evaluated in order)
 - `output` (optional): metadata (e.g., DTO name)
 - `record_when` (optional): condition to include/exclude records
+- `steps` (optional): ordered execution. Cannot be combined with top-level `mappings` or `record_when`
+- `finalize` (optional): post-process the output array. Works with either `mappings` or `steps`
 
 ## Input
 
+`input` converts raw input into Rulemorph's common data model: an array of JSON records.
+`mappings`, `steps`, and `finalize` run against normalized JSON records, not against the original file format.
+
 ### Common
 - `input.format` (required): `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+
+| format | Record selection | Typical use |
+| --- | --- | --- |
+| `json` | root or `records_path` | API responses, JSON exports |
+| `csv` | one record per row | CSV imports, business data |
+| `yaml` | root or `records_path` | config files, YAML exports |
+| `toml` | root or `records_path` | dependency and inventory data |
+| `xml` | element path via `records_path` | XML feeds, legacy APIs |
+| `html` | `records_selector` plus field selectors | extracting tables or lists |
+| `excel` | rows from a sheet | `.xlsx` imports |
+
+### Normalization contract
+
+- Records are JSON objects.
+- If `records_path` points to an array, each element becomes a record.
+- If `records_path` points to an object, it becomes a single record.
+- Scalars cannot be records.
+- A missing reference is `missing`, which is distinct from `null`.
+- Format-specific differences are absorbed by the parser layer before mappings, steps, and finalize run.
 
 Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/entity/processing instruction input, HTML JavaScript execution/URL fetching, and Excel macro/external relationship/formula evaluation are not allowed. CLI resource limit overrides cannot relax these invariants.
 
@@ -62,7 +122,10 @@ input:
 
 ### JSON
 - `input.json` is required when `format=json`
-- `records_path` (optional): dot path to a record array. If omitted, use the root value.
+- `records_path` (optional): dot path to a record array or single record. If omitted, use the root value.
+- If the root or `records_path` is an array, each element becomes a record.
+- If the root or `records_path` is an object, it becomes a single record.
+- Scalars cannot be records.
 
 ```yaml
 input:
@@ -75,6 +138,7 @@ input:
 - `input.yaml` / `input.toml` is required for the matching `format`
 - `records_path` (optional): dot path to a record array or single record
 - YAML/TOML input is normalized to JSON records before mappings, steps, and finalize run.
+- Format-specific values such as YAML aliases/anchors and TOML datetimes are normalized by the parser layer into JSON values.
 
 ```yaml
 input:
@@ -126,6 +190,8 @@ input:
 - `input.excel` is required when `format=excel`
 - Only `.xlsx` is supported. Macros, external relationships, and formula evaluation are rejected or not executed.
 - With `has_header=true`, the header row provides field names.
+- Empty cells are treated as `missing`. Empty strings are real values and remain distinct from `missing`.
+- Formula cells are never evaluated. The default `formula` policy is `cached`; formula cells without cached values are errors. `formula: formula` reads the formula string, and `formula: error` rejects formula cells.
 
 ```yaml
 input:
@@ -140,6 +206,18 @@ input:
 - Default output is a JSON array of records
 - CLI `transform --ndjson` outputs one JSON object per line (streaming)
 - If `records_path` points to an object, a single record is produced
+
+## Resource limits
+
+The CLI can relax finite resource limits for large local inputs:
+
+```sh
+rulemorph transform -r rules.yaml -i huge.csv --limit records=500000 --limit input-bytes=536870912
+rulemorph transform -r rules.yaml -i huge.csv --limits-profile large
+rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
+```
+
+These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, and MCP pathless branch guard are not configurable.
 
 ## Record filter (`record_when`)
 
@@ -187,6 +265,93 @@ Fields:
 ### `target` constraints
 - `target` must be object keys only (no array indexes)
 - If an intermediate path is not an object, it is an error
+
+## Steps
+
+`steps` controls evaluation order explicitly.
+If `steps` is present, top-level `mappings` and top-level `record_when` cannot be used.
+
+```yaml
+version: 2
+input: { format: json, json: { records_path: "items" } }
+
+steps:
+  - mappings:
+      - target: "total"
+        expr: ["@input.a", { "+": ["@input.b"] }]
+  - record_when:
+      gt: ["@out.total", 0]
+  - asserts:
+      - when: { gt: ["@out.total", 10] }
+        error:
+          code: "INVALID_TOTAL"
+          message: "total must be > 10"
+  - branch:
+      when: { eq: ["@input.type", "premium"] }
+      then: ./rules/premium.yaml
+      else: ./rules/basic.yaml
+      return: true
+
+finalize:
+  sort: { by: "total", order: "desc" }
+```
+
+Each step has exactly one step key, except for optional metadata such as `name`.
+
+| Step | Description |
+| --- | --- |
+| `mappings` | Same syntax as v2 mappings |
+| `record_when` | v2 condition. Excludes the record when false |
+| `asserts` | Validation conditions. False raises an error |
+| `branch` | Conditional transition to another rule |
+
+Data flow:
+
+- `@input` is the original normalized input record.
+- `@out` is the accumulated output for the current record.
+- `mappings` results are merged into `@out`.
+- A branch target receives the current `@out` as its `@input`.
+
+`branch.then` and `branch.else` are rule references only; inline rules are not supported.
+If `return: true`, the branch output becomes the final output and later steps are skipped.
+If `return` is omitted or false, the branch output is merged into `@out` and execution continues.
+
+## Finalize
+
+`finalize` runs after all records have been processed.
+It post-processes the output array and can be used with either top-level `mappings` or `steps`.
+`finalize` is not available with streaming output.
+
+Supported keys:
+
+- `filter`: v2 condition using `@item`
+- `sort`: sort the output array
+- `limit` / `offset`: pagination
+- `wrap`: wrap the final array in an object
+
+Examples:
+
+```yaml
+finalize:
+  filter:
+    eq: ["@item.status", "active"]
+  sort:
+    by: "created_at"
+    order: "desc"
+  limit: 10
+```
+
+`wrap` uses v2 expressions. `@out` is the current output array.
+
+```yaml
+finalize:
+  wrap:
+    data: "@out"
+    meta:
+      total:
+        - "@out"
+        - len
+```
 
 ## Reference
 
