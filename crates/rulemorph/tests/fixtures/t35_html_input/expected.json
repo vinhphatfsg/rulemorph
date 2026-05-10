@@ -1,0 +1,19 @@
+[
+  {
+    "id": "1",
+    "name": "Alice",
+    "profile_url": "/users/1",
+    "tags": [
+      "admin",
+      "ops"
+    ]
+  },
+  {
+    "id": "2",
+    "name": "Bob",
+    "profile_url": "/users/2",
+    "tags": [
+      "viewer"
+    ]
+  }
+]

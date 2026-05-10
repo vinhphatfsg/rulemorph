@@ -87,6 +87,11 @@ fn valid_rules_should_pass_validation() {
         "t27_json_ops_from_entries",
         "t28_expr_chain_nested",
         "t29_json_ops_len",
+        "t31_yaml_input",
+        "t32_toml_input",
+        "t33_xml_input",
+        "t34_excel_input",
+        "t35_html_input",
     ];
 
     for case in cases {
@@ -297,6 +302,15 @@ fn parse_json_rule_file_with_explicit_format() {
     }"#;
     let rule = parse_rule_file_with_format(source, RuleFormat::Json).expect("parse json rule");
     assert_eq!(rule.version, 2);
+}
+
+#[test]
+fn json_rule_file_fixture_should_pass_validation() {
+    let rules_path = fixtures_dir().join("t30_json_rule_file").join("rules.json");
+    let source = fs::read_to_string(&rules_path)
+        .unwrap_or_else(|_| panic!("failed to read {}", rules_path.display()));
+    let rule = parse_rule_file_with_format(&source, RuleFormat::Json).expect("parse json rule");
+    validate_rule_file(&rule).expect("json rule fixture should validate");
 }
 
 #[test]

@@ -3,8 +3,9 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 
 use rulemorph::{
-    InputData, NormalizationOptions, TransformErrorKind, normalize_records_with_options,
-    parse_rule_file, transform, transform_input,
+    InputData, NormalizationOptions, RuleFormat, TransformErrorKind,
+    normalize_records_with_options, parse_rule_file, parse_rule_file_with_format, transform,
+    transform_input,
 };
 use zip::{CompressionMethod, ZipWriter, write::FileOptions};
 
@@ -25,6 +26,23 @@ fn load_rule(path: &Path) -> rulemorph::RuleFile {
         fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
     parse_rule_file(&yaml)
         .unwrap_or_else(|err| panic!("failed to parse {}: {}", path.display(), err))
+}
+
+fn load_rule_with_format(path: &Path, format: RuleFormat) -> rulemorph::RuleFile {
+    let source =
+        fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
+    parse_rule_file_with_format(&source, format)
+        .unwrap_or_else(|err| panic!("failed to parse {}: {}", path.display(), err))
+}
+
+fn assert_text_fixture(case: &str, input_file: &str) {
+    let base = fixtures_dir().join(case);
+    let rule = load_rule(&base.join("rules.yaml"));
+    let input = fs::read_to_string(base.join(input_file))
+        .unwrap_or_else(|_| panic!("failed to read {}", input_file));
+    let expected = load_json(&base.join("expected.json"));
+    let output = transform(&rule, &input, None).expect("transform failed");
+    assert_eq!(output, expected);
 }
 
 #[derive(Default)]
@@ -352,6 +370,31 @@ mappings:
 }
 
 #[test]
+fn t30_json_rule_file_transform_golden() {
+    let base = fixtures_dir().join("t30_json_rule_file");
+    let rule = load_rule_with_format(&base.join("rules.json"), RuleFormat::Json);
+    let input = fs::read_to_string(base.join("input.json")).expect("read input.json");
+    let expected = load_json(&base.join("expected.json"));
+    let output = transform(&rule, &input, None).expect("transform failed");
+    assert_eq!(output, expected);
+}
+
+#[test]
+fn t31_yaml_input_transform_golden() {
+    assert_text_fixture("t31_yaml_input", "input.yaml");
+}
+
+#[test]
+fn t32_toml_input_transform_golden() {
+    assert_text_fixture("t32_toml_input", "input.toml");
+}
+
+#[test]
+fn t33_xml_input_transform_golden() {
+    assert_text_fixture("t33_xml_input", "input.xml");
+}
+
+#[test]
 fn excel_input_with_header_normalizes_rows() {
     let base = fixtures_dir().join("t34_excel_input");
     let rule = load_rule(&base.join("rules.yaml"));
@@ -360,6 +403,11 @@ fn excel_input_with_header_normalizes_rows() {
         transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
     let expected = load_json(&base.join("expected.json"));
     assert_eq!(output, expected);
+}
+
+#[test]
+fn t35_html_input_transform_golden() {
+    assert_text_fixture("t35_html_input", "input.html");
 }
 
 #[test]

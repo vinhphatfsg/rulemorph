@@ -1,0 +1,14 @@
+version: 2
+input:
+  format: yaml
+  yaml:
+    records_path: users
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+  - target: "active"
+    source: "active"
+  - target: "tags"
+    source: "tags"
