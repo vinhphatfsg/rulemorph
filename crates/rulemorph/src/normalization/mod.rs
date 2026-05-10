@@ -9,6 +9,8 @@ mod yaml;
 
 pub use options::NormalizationOptions;
 
+use std::fmt;
+
 use serde_json::Value as JsonValue;
 
 use crate::error::{TransformError, TransformErrorKind};
@@ -21,9 +23,23 @@ pub enum InputData<'a> {
     Bytes(&'a [u8]),
 }
 
-#[derive(Debug)]
+/// Normalized input records.
+///
+/// Streaming formats can report record-level parse or limit errors while the
+/// iterator is consumed, so callers must drain or collect the iterator when
+/// they need full input validation.
 pub enum NormalizedRecords {
     Materialized(std::vec::IntoIter<JsonValue>),
+    Streaming(Box<dyn Iterator<Item = Result<JsonValue, TransformError>>>),
+}
+
+impl fmt::Debug for NormalizedRecords {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NormalizedRecords::Materialized(_) => formatter.write_str("Materialized(..)"),
+            NormalizedRecords::Streaming(_) => formatter.write_str("Streaming(..)"),
+        }
+    }
 }
 
 impl Iterator for NormalizedRecords {
@@ -32,6 +48,7 @@ impl Iterator for NormalizedRecords {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             NormalizedRecords::Materialized(iter) => iter.next().map(Ok),
+            NormalizedRecords::Streaming(iter) => iter.next(),
         }
     }
 }
@@ -48,8 +65,14 @@ pub fn normalize_records_with_options(
     input: InputData<'_>,
     options: &NormalizationOptions,
 ) -> Result<NormalizedRecords, TransformError> {
+    if rule.input.format == InputFormat::Csv {
+        return Ok(NormalizedRecords::Streaming(Box::new(
+            csv::normalize_csv_records_iter(rule, text_input(input, options)?, options)?,
+        )));
+    }
+
     let records = match rule.input.format {
-        InputFormat::Csv => csv::normalize_csv_records(rule, text_input(input, options)?, options)?,
+        InputFormat::Csv => unreachable!("CSV records are returned as a streaming iterator"),
         InputFormat::Json => {
             json::normalize_json_records(rule, text_input(input, options)?, options)?
         }
@@ -156,6 +179,7 @@ pub(crate) fn select_records_from_document(
     value: &JsonValue,
     records_path: Option<&str>,
     path_for_error: &'static str,
+    options: &NormalizationOptions,
 ) -> Result<Vec<JsonValue>, TransformError> {
     let records_value = match records_path {
         Some(path) => {
@@ -175,8 +199,14 @@ pub(crate) fn select_records_from_document(
     };
 
     match records_value {
-        JsonValue::Array(items) => Ok(items.clone()),
-        JsonValue::Object(_) => Ok(vec![records_value.clone()]),
+        JsonValue::Array(items) => {
+            enforce_records_limit(items.len(), options)?;
+            Ok(items.clone())
+        }
+        JsonValue::Object(_) => {
+            enforce_records_limit(1, options)?;
+            Ok(vec![records_value.clone()])
+        }
         _ => Err(TransformError::new(
             TransformErrorKind::InvalidInput,
             "records_path must point to an array or object",

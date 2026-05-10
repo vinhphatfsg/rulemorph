@@ -5,9 +5,7 @@ use crate::error::{TransformError, TransformErrorKind};
 use crate::model::RuleFile;
 use crate::serde_guard::parse_yaml_value_strict_with_limits;
 
-use super::{
-    NormalizationOptions, enforce_json_limits, enforce_records_limit, select_records_from_document,
-};
+use super::{NormalizationOptions, enforce_json_limits, select_records_from_document};
 
 pub fn normalize_yaml_records(
     rule: &RuleFile,
@@ -38,8 +36,8 @@ pub fn normalize_yaml_records(
             .as_ref()
             .and_then(|yaml| yaml.records_path.as_deref()),
         "input.yaml.records_path",
+        options,
     )?;
-    enforce_records_limit(records.len(), options)?;
     Ok(records)
 }
 
