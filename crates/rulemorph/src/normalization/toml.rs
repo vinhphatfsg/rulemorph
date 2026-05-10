@@ -161,10 +161,10 @@ impl<'de> Visitor<'de> for TomlJsonVisitor<'_> {
             let value = map.next_value_seed(self.seed.child())?;
             values.insert(key, value);
         }
-        if values.len() == 1 {
-            if let Some(JsonValue::String(value)) = values.remove("$__toml_private_datetime") {
-                return Ok(JsonValue::String(value));
-            }
+        if values.len() == 1
+            && let Some(JsonValue::String(value)) = values.remove("$__toml_private_datetime")
+        {
+            return Ok(JsonValue::String(value));
         }
         Ok(JsonValue::Object(values))
     }

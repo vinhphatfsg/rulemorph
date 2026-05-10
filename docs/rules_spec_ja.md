@@ -45,7 +45,9 @@ mappings:
 ## Input
 
 ### 共通
-- `input.format`（必須）: `csv` または `json`
+- `input.format`（必須）: `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+
+安全性 invariant として、JSON/YAML の duplicate key、XML DTD/entity/processing instruction、HTML の JavaScript 実行/URL 取得、Excel macro/external relationship/formula evaluation は許可されません。これらは CLI の resource limit override では緩和できません。
 
 ### CSV
 - `input.csv` は `format=csv` のとき必須
@@ -73,6 +75,70 @@ input:
   format: json
   json:
     records_path: "items"
+```
+
+### YAML / TOML
+- `input.yaml` / `input.toml` は対応する `format` のとき必須
+- `records_path`（任意）: レコード配列または単一レコードを指すドットパス
+- YAML/TOML は JSON record に正規化されてから mapping / steps / finalize に渡されます。
+
+```yaml
+input:
+  format: yaml
+  yaml:
+    records_path: "users"
+```
+
+```yaml
+input:
+  format: toml
+  toml:
+    records_path: "users"
+```
+
+### XML
+- `input.xml` は `format=xml` のとき必須
+- `records_path`（必須）: root element を含むドット区切り element path
+- attributes は `attr_prefix` 付き string field、direct text は `text_key` に格納
+- child elements は常に array
+- DTD/entity/processing instruction は拒否されます。
+
+```yaml
+input:
+  format: xml
+  xml:
+    records_path: "users.user"
+    attr_prefix: "@"
+    text_key: "#text"
+```
+
+### HTML
+- `input.html` は `format=html` のとき必須
+- `records_selector` で record element を選択し、`fields` の CSS selector で field を抽出
+- `value: text` / `html` / `attr` を指定可能。`html` は raw inner HTML string であり sanitize も実行もしません。
+- HTML parser は JavaScript 実行や URL 取得を行いません。
+
+```yaml
+input:
+  format: html
+  html:
+    records_selector: "table#users tbody tr"
+    fields:
+      id: { selector: "td:nth-child(1)", value: text }
+      name: { selector: "td:nth-child(2)", value: text }
+```
+
+### Excel
+- `input.excel` は `format=excel` のとき必須
+- `.xlsx` のみ対応。macro / external relationship / formula evaluation は拒否または非実行です。
+- `has_header=true` では header row を field name として使います。
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: "Users"
+    has_header: true
 ```
 
 ## Output

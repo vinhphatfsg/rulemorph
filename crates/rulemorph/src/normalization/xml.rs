@@ -270,10 +270,10 @@ fn enforce_namespace_rebinding(
             .decode_and_unescape_value(reader)
             .map_err(xml_err)?
             .into_owned();
-        if let Some(previous) = namespace_bindings.insert(prefix.clone(), value.clone()) {
-            if previous != value {
-                return Err(invalid("XML namespace prefix rebinding is not supported"));
-            }
+        if let Some(previous) = namespace_bindings.insert(prefix.clone(), value.clone())
+            && previous != value
+        {
+            return Err(invalid("XML namespace prefix rebinding is not supported"));
         }
     }
     Ok(())
@@ -382,10 +382,9 @@ fn xml_node_to_json(
     for attribute in &node.attributes {
         if let Some(previous) =
             inserted_attributes.insert(attribute.key.clone(), attribute.canonical_name.clone())
+            && previous != attribute.canonical_name
         {
-            if previous != attribute.canonical_name {
-                return Err(invalid("XML attribute namespace collision"));
-            }
+            return Err(invalid("XML attribute namespace collision"));
         }
         checked_insert(
             &mut object,

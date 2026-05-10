@@ -677,10 +677,10 @@ fn parse_cell_window(range: Option<&str>) -> Result<CellWindow, TransformError> 
     if start.col > end.col {
         return Err(invalid("Excel range start column is after end column"));
     }
-    if let (Some(start_row), Some(end_row)) = (start.row, end.row) {
-        if start_row > end_row {
-            return Err(invalid("Excel range start row is after end row"));
-        }
+    if let (Some(start_row), Some(end_row)) = (start.row, end.row)
+        && start_row > end_row
+    {
+        return Err(invalid("Excel range start row is after end row"));
     }
     Ok(CellWindow {
         start_row: start.row.unwrap_or(0),

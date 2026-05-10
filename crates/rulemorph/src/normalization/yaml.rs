@@ -125,10 +125,10 @@ fn yaml_number_to_json(value: &serde_yaml::Number) -> Result<JsonValue, Transfor
     if let Some(value) = value.as_u64() {
         return Ok(JsonValue::Number(value.into()));
     }
-    if let Some(value) = value.as_f64() {
-        if let Some(value) = JsonNumber::from_f64(value) {
-            return Ok(JsonValue::Number(value));
-        }
+    if let Some(value) = value.as_f64()
+        && let Some(value) = JsonNumber::from_f64(value)
+    {
+        return Ok(JsonValue::Number(value));
     }
     Err(TransformError::new(
         TransformErrorKind::InvalidInput,

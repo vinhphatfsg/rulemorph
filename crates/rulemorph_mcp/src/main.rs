@@ -360,7 +360,7 @@ fn prompts_list_result() -> Value {
                 "arguments": [
                     { "name": "rules_text", "description": "Base rules YAML.", "required": true },
                     { "name": "input_sample", "description": "Input sample (JSON/CSV).", "required": true },
-                    { "name": "format", "description": "Input format (json or csv).", "required": false },
+                    { "name": "format", "description": "Sample format for rule generation (json or csv).", "required": false },
                     { "name": "records_path", "description": "Records path for JSON input.", "required": false }
                 ]
             },
@@ -371,7 +371,7 @@ fn prompts_list_result() -> Value {
                     { "name": "dto_text", "description": "DTO source text.", "required": true },
                     { "name": "dto_language", "description": "DTO language (rust/typescript).", "required": true },
                     { "name": "input_sample", "description": "Input sample (JSON/CSV).", "required": true },
-                    { "name": "format", "description": "Input format (json or csv).", "required": false },
+                    { "name": "format", "description": "Sample format for rule generation (json or csv).", "required": false },
                     { "name": "records_path", "description": "Records path for JSON input.", "required": false }
                 ]
             },
@@ -490,12 +490,12 @@ fn transform_input_schema() -> Value {
             "rules_format": rules_format_schema(),
             "input_path": {
                 "type": "string",
-                "description": "Path to the input CSV/JSON file. Mutually exclusive with input_text and input_json.",
+                "description": "Path to the input file. Mutually exclusive with input_text and input_json.",
                 "examples": ["input.json"]
             },
             "input_text": {
                 "type": "string",
-                "description": "Inline input text (CSV or JSON). Mutually exclusive with input_path and input_json.",
+                "description": "Inline text input. Mutually exclusive with input_path and input_json.",
                 "examples": ["{\"items\":[{\"id\":1}]}"]
             },
             "input_json": {
@@ -515,7 +515,7 @@ fn transform_input_schema() -> Value {
             },
             "format": {
                 "type": "string",
-                "enum": ["csv", "json"],
+                "enum": ["csv", "json", "yaml", "toml", "xml", "html", "excel"],
                 "description": "Override input format from the rule file.",
                 "examples": ["json"]
             },
@@ -862,19 +862,13 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     if input_json.is_some()
         && format
             .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case("csv"))
+            .is_some_and(|value| !value.eq_ignore_ascii_case("json"))
     {
         return Err(CallError::InvalidParams(
             "format must be json when input_json is provided".to_string(),
         ));
     }
-    if format.as_deref().is_some_and(|value| {
-        !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json")
-    }) {
-        return Err(CallError::InvalidParams(
-            "format must be csv or json".to_string(),
-        ));
-    }
+    validate_transform_format(format.as_deref())?;
 
     let (mut rule, yaml, base_dir) = load_rule_from_source(
         rules_path.as_deref(),
@@ -2049,6 +2043,21 @@ fn parse_rules_format(value: Option<&str>) -> Result<Option<RuleFormat>, CallErr
             "rules_format must be yaml or json".to_string(),
         )),
     }
+}
+
+fn validate_transform_format(value: Option<&str>) -> Result<(), CallError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if matches!(
+        value.to_ascii_lowercase().as_str(),
+        "csv" | "json" | "yaml" | "toml" | "xml" | "html" | "excel"
+    ) {
+        return Ok(());
+    }
+    Err(CallError::InvalidParams(
+        "format must be csv, json, yaml, toml, xml, html, or excel".to_string(),
+    ))
 }
 
 fn read_allowed_to_string(path: &str, label: &str) -> Result<String, CallError> {
@@ -4765,6 +4774,11 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<&str>) -> Result<()
     rule.input.format = match normalized.as_str() {
         "csv" => InputFormat::Csv,
         "json" => InputFormat::Json,
+        "yaml" => InputFormat::Yaml,
+        "toml" => InputFormat::Toml,
+        "xml" => InputFormat::Xml,
+        "html" => InputFormat::Html,
+        "excel" => InputFormat::Excel,
         _ => return Err(format!("unknown format: {}", format)),
     };
     Ok(())
