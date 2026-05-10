@@ -74,7 +74,7 @@ fn read_message(
 ) -> io::Result<Option<String>> {
     let mut line: String;
     loop {
-        line = match read_line_bounded(reader, MCP_MAX_MESSAGE_BYTES)? {
+        line = match read_line_bounded(reader, MCP_MAX_HEADER_LINE_BYTES)? {
             Some(line) => line,
             None => return Ok(None),
         };
@@ -5134,6 +5134,18 @@ mod tests {
             .expect("read line")
             .expect("line");
         assert_eq!(line, "{\"jsonrpc\":\"2.0\"}\n");
+    }
+
+    #[test]
+    fn read_message_rejects_oversized_initial_header_line() {
+        let mut input = b"Content-Length: ".to_vec();
+        input.extend(std::iter::repeat_n(b'1', MCP_MAX_HEADER_LINE_BYTES));
+        input.extend_from_slice(b"\r\n\r\n{}");
+        let mut reader = BufReader::new(Cursor::new(input));
+        let mut output_mode = OutputMode::Line;
+        let err = read_message(&mut reader, &mut output_mode)
+            .expect_err("oversized initial header should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

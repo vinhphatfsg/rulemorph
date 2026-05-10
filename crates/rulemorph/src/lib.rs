@@ -12,6 +12,7 @@ pub mod v2_model;
 pub mod v2_parser;
 pub mod v2_validator;
 mod validator;
+mod xml_name;
 
 /// Library version from Cargo.toml
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -30,9 +31,11 @@ pub use path::{PathError, PathToken, get_path, parse_path};
 pub use transform::{
     TransformStream, TransformStreamItem, preflight_validate, preflight_validate_input,
     preflight_validate_input_with_base_dir, preflight_validate_input_with_warnings,
-    preflight_validate_input_with_warnings_with_base_dir, preflight_validate_with_base_dir,
-    preflight_validate_with_warnings, preflight_validate_with_warnings_with_base_dir, transform,
-    transform_input, transform_input_with_base_dir, transform_input_with_base_dir_and_options,
+    preflight_validate_input_with_warnings_with_base_dir,
+    preflight_validate_input_with_warnings_with_base_dir_and_options,
+    preflight_validate_with_base_dir, preflight_validate_with_warnings,
+    preflight_validate_with_warnings_with_base_dir, transform, transform_input,
+    transform_input_with_base_dir, transform_input_with_base_dir_and_options,
     transform_input_with_options, transform_input_with_warnings,
     transform_input_with_warnings_with_base_dir,
     transform_input_with_warnings_with_base_dir_and_options,

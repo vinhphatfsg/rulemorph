@@ -6,6 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::{RuleFile, XmlInput, XmlNamespacePolicy};
+use crate::xml_name::is_xml_name;
 
 use super::{NormalizationOptions, enforce_json_limits, enforce_records_limit};
 
@@ -64,23 +65,6 @@ fn parse_xml_records_path(path: &str) -> Result<Vec<&str>, TransformError> {
         .with_path("input.xml.records_path"));
     }
     Ok(path.split('.').collect())
-}
-
-fn is_xml_name(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !(first == '_' || first == ':' || first.is_ascii_alphabetic()) {
-        return false;
-    }
-    chars.all(|value| {
-        value == '_'
-            || value == ':'
-            || value == '-'
-            || value == '.'
-            || value.is_ascii_alphanumeric()
-    })
 }
 
 fn parse_xml_tree(

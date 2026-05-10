@@ -164,7 +164,7 @@ pub struct TransformStreamItem {
 pub struct TransformStream<'a> {
     rule: &'a RuleFile,
     context: Option<&'a JsonValue>,
-    records: InputRecordsIter,
+    records: InputRecordsIter<'a>,
     base_dir: Option<&'a Path>,
     done: bool,
 }
@@ -643,13 +643,23 @@ pub fn preflight_validate_input_with_warnings_with_base_dir(
     context: Option<&JsonValue>,
     base_dir: &Path,
 ) -> Result<Vec<TransformWarning>, TransformError> {
-    preflight_validate_input_with_warnings_inner(
+    preflight_validate_input_with_warnings_with_base_dir_and_options(
         rule,
         input,
         context,
-        Some(base_dir),
+        base_dir,
         &NormalizationOptions::default(),
     )
+}
+
+pub fn preflight_validate_input_with_warnings_with_base_dir_and_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+    options: &NormalizationOptions,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_input_with_warnings_inner(rule, input, context, Some(base_dir), options)
 }
 
 fn preflight_validate_input_with_warnings_inner(
@@ -1210,17 +1220,17 @@ fn input_records_iter_with_options<'a>(
     rule: &RuleFile,
     input: InputData<'a>,
     options: &NormalizationOptions,
-) -> Result<InputRecordsIter, TransformError> {
+) -> Result<InputRecordsIter<'a>, TransformError> {
     Ok(InputRecordsIter::Normalized(
         normalize_records_with_options(rule, input, options)?,
     ))
 }
 
-enum InputRecordsIter {
-    Normalized(NormalizedRecords),
+enum InputRecordsIter<'a> {
+    Normalized(NormalizedRecords<'a>),
 }
 
-impl Iterator for InputRecordsIter {
+impl Iterator for InputRecordsIter<'_> {
     type Item = Result<JsonValue, TransformError>;
 
     fn next(&mut self) -> Option<Self::Item> {

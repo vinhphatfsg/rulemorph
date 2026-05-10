@@ -12,6 +12,7 @@ use crate::v2_validator::{
     V2Scope, V2ValidationCtx, collect_out_references, validate_no_cyclic_dependencies,
     validate_v2_condition, validate_v2_expr,
 };
+use crate::xml_name::is_xml_name;
 use serde_json::Value as JsonValue;
 
 pub fn validate_rule_file(rule: &RuleFile) -> ValidationResult {
@@ -662,25 +663,6 @@ fn is_valid_xml_records_path(path: &str) -> bool {
         return false;
     }
     path.split('.').all(is_xml_name)
-}
-
-fn is_xml_name(segment: &str) -> bool {
-    let mut chars = segment.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    if !is_xml_name_start_char(first) {
-        return false;
-    }
-    chars.all(is_xml_name_char)
-}
-
-fn is_xml_name_start_char(value: char) -> bool {
-    value == '_' || value == ':' || value.is_ascii_alphabetic()
-}
-
-fn is_xml_name_char(value: char) -> bool {
-    is_xml_name_start_char(value) || value == '-' || value == '.' || value.is_ascii_digit()
 }
 
 fn validate_html_input(html: &HtmlInput, ctx: &mut ValidationCtx<'_>) {

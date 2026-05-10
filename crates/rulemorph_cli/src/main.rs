@@ -10,7 +10,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
     DtoLanguage, InputData, InputFormat, NormalizationOptions, RuleError, RuleFile, RuleFormat,
     TransformError, TransformErrorKind, TransformWarning, generate_dto,
-    parse_rule_file_with_format, preflight_validate_input_with_warnings_with_base_dir,
+    parse_rule_file_with_format, preflight_validate_input_with_warnings_with_base_dir_and_options,
     transform_input_with_warnings_with_base_dir_and_options,
     transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
 };
@@ -80,6 +80,12 @@ struct PreflightArgs {
     context: Option<PathBuf>,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
+    #[arg(long = "limit")]
+    limits: Vec<String>,
+    #[arg(long, value_enum)]
+    limits_profile: Option<LimitsProfileArg>,
+    #[arg(long)]
+    limits_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -332,10 +338,19 @@ fn run_preflight(args: PreflightArgs) -> i32 {
 
     apply_format_override(&mut rule, args.format);
 
-    let input = match load_input_bytes_with_limit(
-        &args.input,
-        NormalizationOptions::default().max_input_bytes,
+    let options = match load_normalization_options(
+        args.limits_profile,
+        args.limits_file.as_ref(),
+        &args.limits,
     ) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{}", message);
+            return 2;
+        }
+    };
+
+    let input = match load_input_bytes_with_limit(&args.input, options.max_input_bytes) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -346,11 +361,12 @@ fn run_preflight(args: PreflightArgs) -> i32 {
     };
 
     let base_dir = rule_base_dir(&args.rules);
-    let warnings = match preflight_validate_input_with_warnings_with_base_dir(
+    let warnings = match preflight_validate_input_with_warnings_with_base_dir_and_options(
         &rule,
         InputData::Bytes(&input),
         context_value.as_ref(),
         &base_dir,
+        &options,
     ) {
         Ok(warnings) => warnings,
         Err(err) => {

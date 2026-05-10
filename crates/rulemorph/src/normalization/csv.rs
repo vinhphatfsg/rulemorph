@@ -1,19 +1,17 @@
-use std::collections::HashSet;
-use std::io::Cursor;
-
 use csv::{ReaderBuilder, StringRecordsIntoIter};
 use serde_json::{Map, Value as JsonValue};
+use std::collections::HashSet;
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::RuleFile;
 
 use super::{NormalizationOptions, enforce_records_limit};
 
-pub(crate) fn normalize_csv_records_iter(
+pub(crate) fn normalize_csv_records_iter<'a>(
     rule: &RuleFile,
-    input: &str,
+    input: &'a str,
     options: &NormalizationOptions,
-) -> Result<CsvRecords, TransformError> {
+) -> Result<CsvRecords<'a>, TransformError> {
     let csv_spec = rule.input.csv.as_ref().ok_or_else(|| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
@@ -31,7 +29,7 @@ pub(crate) fn normalize_csv_records_iter(
         .delimiter(csv_spec.delimiter.as_bytes()[0])
         .has_headers(csv_spec.has_header)
         .flexible(true)
-        .from_reader(Cursor::new(input.as_bytes().to_vec()));
+        .from_reader(input.as_bytes());
 
     let headers = if csv_spec.has_header {
         let header_record = reader.headers().map_err(|err| {
@@ -74,14 +72,14 @@ pub(crate) fn normalize_csv_records_iter(
     })
 }
 
-pub(crate) struct CsvRecords {
-    records: StringRecordsIntoIter<Cursor<Vec<u8>>>,
+pub(crate) struct CsvRecords<'a> {
+    records: StringRecordsIntoIter<&'a [u8]>,
     headers: Vec<String>,
     options: NormalizationOptions,
     count: usize,
 }
 
-impl Iterator for CsvRecords {
+impl Iterator for CsvRecords<'_> {
     type Item = Result<JsonValue, TransformError>;
 
     fn next(&mut self) -> Option<Self::Item> {

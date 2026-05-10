@@ -66,6 +66,63 @@ fn preflight_success_returns_zero() {
 }
 
 #[test]
+fn preflight_rejects_input_over_limit_override_before_transform() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .arg("--limit")
+        .arg("input-bytes=4")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("max_input_bytes"));
+}
+
+#[test]
+fn preflight_limits_profile_large_is_accepted() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .arg("--limits-profile")
+        .arg("large")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn preflight_limits_file_is_accepted() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let limits_path = temp_dir.path().join("limits.toml");
+    fs::write(&limits_path, "input-bytes = 1000000\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .arg("--limits-file")
+        .arg(limits_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
 fn preflight_json_errors() {
     let base = fixtures_dir().join("p03_preflight_type_cast_failed");
     let rules = base.join("rules.yaml");

@@ -28,12 +28,12 @@ pub enum InputData<'a> {
 /// Streaming formats can report record-level parse or limit errors while the
 /// iterator is consumed, so callers must drain or collect the iterator when
 /// they need full input validation.
-pub enum NormalizedRecords {
+pub enum NormalizedRecords<'a> {
     Materialized(std::vec::IntoIter<JsonValue>),
-    Streaming(Box<dyn Iterator<Item = Result<JsonValue, TransformError>>>),
+    Streaming(Box<dyn Iterator<Item = Result<JsonValue, TransformError>> + 'a>),
 }
 
-impl fmt::Debug for NormalizedRecords {
+impl fmt::Debug for NormalizedRecords<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NormalizedRecords::Materialized(_) => formatter.write_str("Materialized(..)"),
@@ -42,7 +42,7 @@ impl fmt::Debug for NormalizedRecords {
     }
 }
 
-impl Iterator for NormalizedRecords {
+impl Iterator for NormalizedRecords<'_> {
     type Item = Result<JsonValue, TransformError>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -53,18 +53,18 @@ impl Iterator for NormalizedRecords {
     }
 }
 
-pub fn normalize_records(
+pub fn normalize_records<'a>(
     rule: &RuleFile,
-    input: InputData<'_>,
-) -> Result<NormalizedRecords, TransformError> {
+    input: InputData<'a>,
+) -> Result<NormalizedRecords<'a>, TransformError> {
     normalize_records_with_options(rule, input, &NormalizationOptions::default())
 }
 
-pub fn normalize_records_with_options(
+pub fn normalize_records_with_options<'a>(
     rule: &RuleFile,
-    input: InputData<'_>,
+    input: InputData<'a>,
     options: &NormalizationOptions,
-) -> Result<NormalizedRecords, TransformError> {
+) -> Result<NormalizedRecords<'a>, TransformError> {
     if rule.input.format == InputFormat::Csv {
         return Ok(NormalizedRecords::Streaming(Box::new(
             csv::normalize_csv_records_iter(rule, text_input(input, options)?, options)?,

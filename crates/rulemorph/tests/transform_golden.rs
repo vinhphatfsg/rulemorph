@@ -1005,6 +1005,24 @@ mappings:
 }
 
 #[test]
+fn xml_records_path_accepts_non_ascii_element_names() {
+    let yaml = r##"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: 利用者.名前
+mappings:
+  - target: "name"
+    source: "#text"
+"##;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"<利用者><名前>太郎</名前></利用者>"#;
+    let output = transform(&rule, input, None).expect("transform");
+    assert_eq!(output, serde_json::json!([{ "name": "太郎" }]));
+}
+
+#[test]
 fn xml_rejects_attr_text_key_collision() {
     let rule = parse_rule_file(
         r##"
