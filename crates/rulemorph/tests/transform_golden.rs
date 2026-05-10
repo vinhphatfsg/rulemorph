@@ -45,6 +45,17 @@ fn assert_text_fixture(case: &str, input_file: &str) {
     assert_eq!(output, expected);
 }
 
+fn assert_xlsx_fixture(case: &str) {
+    let base = fixtures_dir().join(case);
+    let rule = load_rule(&base.join("rules.yaml"));
+    let input =
+        fs::read(base.join("input.xlsx")).unwrap_or_else(|_| panic!("failed to read input.xlsx"));
+    let expected = load_json(&base.join("expected.json"));
+    let output =
+        transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
+    assert_eq!(output, expected);
+}
+
 #[derive(Default)]
 struct XlsxFixtureOptions {
     duplicate_header: bool,
@@ -374,6 +385,145 @@ fn build_dynamodb_users_xlsx() -> Vec<u8> {
         file_options,
     );
     zip.finish().expect("finish dynamodb xlsx").into_inner()
+}
+
+fn build_string_table_xlsx(sheet_name: &str, headers: &[&str], rows: &[Vec<&str>]) -> Vec<u8> {
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let file_options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+
+    write_zip_file(
+        &mut zip,
+        "[Content_Types].xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "_rels/.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/workbook.xml",
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="{}" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#,
+            escape_xml_text(sheet_name)
+        ),
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/_rels/workbook.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#,
+        file_options,
+    );
+
+    let mut shared_strings = Vec::new();
+    shared_strings.extend(headers.iter().copied());
+    for row in rows {
+        shared_strings.extend(row.iter().copied());
+    }
+    let shared_string_items = shared_strings
+        .iter()
+        .map(|value| format!("<si><t>{}</t></si>", escape_xml_text(value)))
+        .collect::<String>();
+    write_zip_file(
+        &mut zip,
+        "xl/sharedStrings.xml",
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{count}" uniqueCount="{count}">
+  {shared_string_items}
+</sst>"#,
+            count = shared_strings.len()
+        ),
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/styles.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>"#,
+        file_options,
+    );
+
+    let mut next_shared_index = 0usize;
+    let mut sheet_rows = String::new();
+    sheet_rows.push_str(&xlsx_row(1, headers.len(), &mut next_shared_index));
+    for (row_index, row) in rows.iter().enumerate() {
+        assert_eq!(row.len(), headers.len());
+        sheet_rows.push_str(&xlsx_row(row_index + 2, row.len(), &mut next_shared_index));
+    }
+    write_zip_file(
+        &mut zip,
+        "xl/worksheets/sheet1.xml",
+        &format!(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>{sheet_rows}</sheetData>
+</worksheet>"#
+        ),
+        file_options,
+    );
+
+    zip.finish().expect("finish string table xlsx").into_inner()
+}
+
+fn xlsx_row(row_number: usize, width: usize, next_shared_index: &mut usize) -> String {
+    let mut row = format!(r#"<row r="{row_number}">"#);
+    for col_index in 0..width {
+        let cell = format!("{}{}", excel_col_name(col_index), row_number);
+        row.push_str(&format!(
+            r#"<c r="{cell}" t="s"><v>{}</v></c>"#,
+            *next_shared_index
+        ));
+        *next_shared_index += 1;
+    }
+    row.push_str("</row>");
+    row
+}
+
+fn excel_col_name(mut index: usize) -> String {
+    let mut chars = Vec::new();
+    loop {
+        let rem = index % 26;
+        chars.push((b'A' + rem as u8) as char);
+        index /= 26;
+        if index == 0 {
+            break;
+        }
+        index -= 1;
+    }
+    chars.iter().rev().collect()
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn write_zip_file(
@@ -721,8 +871,283 @@ finalize:
 }
 
 #[test]
+fn excel_rows_transform_to_dynamodb_extended_attribute_values() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Products
+mappings:
+  - target: "Item.PK.S"
+    expr:
+      - "PRODUCT#"
+      - concat: ["@input.sku"]
+  - target: "Item.SK.S"
+    value: "METADATA"
+  - target: "Item.name.S"
+    source: "name"
+    type: "string"
+  - target: "Item.price.N"
+    source: "price"
+    type: "string"
+  - target: "Item.active.BOOL"
+    source: "active"
+    type: "bool"
+  - target: "Item.tags.SS"
+    expr:
+      - "@input.tags"
+      - split: [","]
+  - target: "Item.dimensions.M.width.N"
+    source: 'input.["dimensions.width"]'
+    type: "string"
+  - target: "Item.dimensions.M.height.N"
+    source: 'input.["dimensions.height"]'
+    type: "string"
+  - target: "Item.archived.NULL"
+    value: false
+"#,
+    )
+    .expect("parse rule");
+    let input = build_string_table_xlsx(
+        "Products",
+        &[
+            "sku",
+            "name",
+            "price",
+            "active",
+            "tags",
+            "dimensions.width",
+            "dimensions.height",
+        ],
+        &[
+            vec![
+                "p001",
+                "Notebook",
+                "1299",
+                "true",
+                "stationery,paper",
+                "148",
+                "210",
+            ],
+            vec!["p002", "Pen", "199", "false", "stationery,ink", "10", "140"],
+        ],
+    );
+    let output =
+        transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
+    assert_eq!(
+        output,
+        serde_json::json!([
+            {
+                "Item": {
+                    "PK": { "S": "PRODUCT#p001" },
+                    "SK": { "S": "METADATA" },
+                    "name": { "S": "Notebook" },
+                    "price": { "N": "1299" },
+                    "active": { "BOOL": true },
+                    "tags": { "SS": ["stationery", "paper"] },
+                    "dimensions": { "M": { "width": { "N": "148" }, "height": { "N": "210" } } },
+                    "archived": { "NULL": false }
+                }
+            },
+            {
+                "Item": {
+                    "PK": { "S": "PRODUCT#p002" },
+                    "SK": { "S": "METADATA" },
+                    "name": { "S": "Pen" },
+                    "price": { "N": "199" },
+                    "active": { "BOOL": false },
+                    "tags": { "SS": ["stationery", "ink"] },
+                    "dimensions": { "M": { "width": { "N": "10" }, "height": { "N": "140" } } },
+                    "archived": { "NULL": false }
+                }
+            }
+        ])
+    );
+}
+
+#[test]
+fn excel_flat_spreadsheet_columns_transform_to_nested_json_document() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Orders
+mappings:
+  - target: "document"
+    expr:
+      - "@input"
+      - object_unflatten: []
+"#,
+    )
+    .expect("parse rule");
+    let input = build_string_table_xlsx(
+        "Orders",
+        &[
+            "order.id",
+            "buyer.name",
+            "buyer.email",
+            "shipping.address.city",
+            "items.primary.sku",
+            "items.primary.qty",
+            "items.secondary.sku",
+            "items.secondary.qty",
+        ],
+        &[
+            vec![
+                "o001",
+                "Alice",
+                "alice@example.com",
+                "Tokyo",
+                "p001",
+                "2",
+                "p002",
+                "1",
+            ],
+            vec![
+                "o002",
+                "Bob",
+                "bob@example.com",
+                "Osaka",
+                "p003",
+                "4",
+                "p004",
+                "3",
+            ],
+        ],
+    );
+    let output =
+        transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
+    assert_eq!(
+        output,
+        serde_json::json!([
+            {
+                "document": {
+                    "order": { "id": "o001" },
+                    "buyer": { "name": "Alice", "email": "alice@example.com" },
+                    "shipping": { "address": { "city": "Tokyo" } },
+                    "items": {
+                        "primary": { "sku": "p001", "qty": "2" },
+                        "secondary": { "sku": "p002", "qty": "1" }
+                    }
+                }
+            },
+            {
+                "document": {
+                    "order": { "id": "o002" },
+                    "buyer": { "name": "Bob", "email": "bob@example.com" },
+                    "shipping": { "address": { "city": "Osaka" } },
+                    "items": {
+                        "primary": { "sku": "p003", "qty": "4" },
+                        "secondary": { "sku": "p004", "qty": "3" }
+                    }
+                }
+            }
+        ])
+    );
+}
+
+#[test]
+fn xlsform_survey_sheet_transforms_to_question_schema() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: survey
+mappings:
+  - target: "name"
+    source: "name"
+  - target: "kind"
+    source: "type"
+  - target: "label"
+    source: "label"
+  - target: "required"
+    source: "required"
+    type: "bool"
+  - target: "relevance"
+    source: "relevant"
+"#,
+    )
+    .expect("parse rule");
+    let input = build_string_table_xlsx(
+        "survey",
+        &["type", "name", "label", "required", "relevant"],
+        &[
+            vec!["text", "respondent_name", "Respondent name", "true", ""],
+            vec!["integer", "age", "Age", "false", "${respondent_name} != ''"],
+        ],
+    );
+    let output =
+        transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
+    assert_eq!(
+        output,
+        serde_json::json!([
+            {
+                "name": "respondent_name",
+                "kind": "text",
+                "label": "Respondent name",
+                "required": true,
+                "relevance": ""
+            },
+            {
+                "name": "age",
+                "kind": "integer",
+                "label": "Age",
+                "required": false,
+                "relevance": "${respondent_name} != ''"
+            }
+        ])
+    );
+}
+
+#[test]
 fn t35_html_input_transform_golden() {
     assert_text_fixture("t35_html_input", "input.html");
+}
+
+#[test]
+fn t36_spreadsheets_plugin_products() {
+    assert_xlsx_fixture("t36_spreadsheets_plugin_products");
+}
+
+#[test]
+fn t37_spreadsheets_plugin_orders() {
+    assert_xlsx_fixture("t37_spreadsheets_plugin_orders");
+}
+
+#[test]
+fn t38_spreadsheets_plugin_survey() {
+    assert_xlsx_fixture("t38_spreadsheets_plugin_survey");
+}
+
+#[test]
+fn t39_pyproject_dependency_inventory() {
+    assert_text_fixture("t39_pyproject_dependency_inventory", "input.toml");
+}
+
+#[test]
+fn t40_cargo_dependency_feature_inventory() {
+    assert_text_fixture("t40_cargo_dependency_feature_inventory", "input.toml");
+}
+
+#[test]
+fn t41_github_actions_matrix() {
+    assert_text_fixture("t41_github_actions_matrix", "input.yaml");
+}
+
+#[test]
+fn t42_openapi_endpoint_catalog() {
+    assert_text_fixture("t42_openapi_endpoint_catalog", "input.yaml");
+}
+
+#[test]
+fn t43_mongodb_schema_summary() {
+    assert_text_fixture("t43_mongodb_schema_summary", "input.json");
 }
 
 #[test]

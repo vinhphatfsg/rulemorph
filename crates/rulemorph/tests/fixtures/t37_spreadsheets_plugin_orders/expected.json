@@ -1,0 +1,46 @@
+[
+  {
+    "document": {
+      "order": { "id": "o001" },
+      "buyer": {
+        "name": "Alice",
+        "email": "alice@example.com"
+      },
+      "shipping": {
+        "address": { "city": "Tokyo" }
+      },
+      "items": {
+        "primary": {
+          "sku": "p001",
+          "qty": 2
+        },
+        "secondary": {
+          "sku": "p002",
+          "qty": 1
+        }
+      }
+    }
+  },
+  {
+    "document": {
+      "order": { "id": "o002" },
+      "buyer": {
+        "name": "Bob",
+        "email": "bob@example.com"
+      },
+      "shipping": {
+        "address": { "city": "Osaka" }
+      },
+      "items": {
+        "primary": {
+          "sku": "p003",
+          "qty": 4
+        },
+        "secondary": {
+          "sku": "p004",
+          "qty": 3
+        }
+      }
+    }
+  }
+]

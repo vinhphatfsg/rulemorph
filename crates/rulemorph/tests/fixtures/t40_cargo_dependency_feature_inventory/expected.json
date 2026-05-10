@@ -1,0 +1,21 @@
+[
+  {
+    "package": {
+      "name": "rulemorph-fixture",
+      "edition": "2024"
+    },
+    "dependencies": {
+      "serde": {
+        "version": "1",
+        "features": ["derive"]
+      },
+      "anyhow": {
+        "version": "1"
+      }
+    },
+    "features": {
+      "default": ["cli"],
+      "cli": ["serde/derive"]
+    }
+  }
+]

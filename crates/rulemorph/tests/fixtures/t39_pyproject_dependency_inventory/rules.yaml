@@ -1,0 +1,15 @@
+version: 2
+input:
+  format: toml
+  toml: {}
+mappings:
+  - target: "package.name"
+    source: "input.project.name"
+  - target: "package.version"
+    source: "input.project.version"
+  - target: "dependency_groups.default"
+    source: "input.project.dependencies"
+  - target: "dependency_groups.dev"
+    source: "input.project.optional-dependencies.dev"
+  - target: "dependency_groups.docs"
+    source: "input.project.optional-dependencies.docs"

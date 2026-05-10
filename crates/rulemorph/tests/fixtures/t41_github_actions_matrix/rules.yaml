@@ -1,0 +1,15 @@
+version: 2
+input:
+  format: yaml
+  yaml:
+    records_path: jobs.build.strategy.matrix.include
+mappings:
+  - target: "os"
+    source: "os"
+  - target: "rust"
+    source: "rust"
+  - target: "target"
+    source: "target"
+  - target: "release"
+    source: "release"
+    type: "bool"

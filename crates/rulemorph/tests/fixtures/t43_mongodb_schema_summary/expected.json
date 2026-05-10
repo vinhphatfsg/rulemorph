@@ -1,0 +1,21 @@
+[
+  {
+    "collection": {
+      "required": ["_id", "email"]
+    },
+    "fields": {
+      "_id": { "type": "objectId" },
+      "email": {
+        "type": "string",
+        "required": true
+      },
+      "profile": {
+        "type": "object",
+        "age": {
+          "type": "int",
+          "description": "Age in years"
+        }
+      }
+    }
+  }
+]

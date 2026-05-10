@@ -1,0 +1,10 @@
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Orders
+mappings:
+  - target: "document"
+    expr:
+      - "@input"
+      - object_unflatten: []

@@ -1,0 +1,19 @@
+version: 2
+input:
+  format: toml
+  toml: {}
+mappings:
+  - target: "package.name"
+    source: "input.package.name"
+  - target: "package.edition"
+    source: "input.package.edition"
+  - target: "dependencies.serde.version"
+    source: "input.dependencies.serde.version"
+  - target: "dependencies.serde.features"
+    source: "input.dependencies.serde.features"
+  - target: "dependencies.anyhow.version"
+    source: "input.dependencies.anyhow"
+  - target: "features.default"
+    source: "input.features.default"
+  - target: "features.cli"
+    source: "input.features.cli"

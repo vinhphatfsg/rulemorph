@@ -1,0 +1,16 @@
+[
+  {
+    "name": "respondent_name",
+    "kind": "text",
+    "label": "Respondent name",
+    "required": true,
+    "relevance": ""
+  },
+  {
+    "name": "age",
+    "kind": "integer",
+    "label": "Age",
+    "required": false,
+    "relevance": "${respondent_name} != ''"
+  }
+]

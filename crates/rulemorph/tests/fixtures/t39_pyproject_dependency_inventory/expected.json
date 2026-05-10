@@ -1,0 +1,13 @@
+[
+  {
+    "package": {
+      "name": "rulemorph-example",
+      "version": "1.2.3"
+    },
+    "dependency_groups": {
+      "default": ["fastapi>=0.110", "pydantic>=2"],
+      "dev": ["pytest>=8", "ruff>=0.4"],
+      "docs": ["mkdocs>=1.6"]
+    }
+  }
+]
