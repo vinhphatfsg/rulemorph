@@ -1,0 +1,13 @@
+openapi: 3.1.0
+info:
+  title: Users API
+  version: 1.0.0
+paths:
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [users, detail]

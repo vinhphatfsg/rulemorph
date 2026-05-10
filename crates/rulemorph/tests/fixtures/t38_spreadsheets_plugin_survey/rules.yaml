@@ -1,0 +1,18 @@
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: survey
+mappings:
+  - target: "name"
+    source: "name"
+  - target: "kind"
+    source: "type"
+  - target: "label"
+    source: "label"
+  - target: "required"
+    source: "required"
+    type: "bool"
+  - target: "relevance"
+    source: "relevant"
+    default: ""

@@ -1,0 +1,47 @@
+{
+  "version": 2,
+  "input": {
+    "format": "html",
+    "html": {
+      "records_selector": "table#users tbody tr",
+      "fields": {
+        "id": {
+          "selector": "td:nth-child(1)",
+          "value": "text"
+        },
+        "name": {
+          "selector": "td:nth-child(2)",
+          "value": "text"
+        },
+        "profile_url": {
+          "selector": "a.profile",
+          "value": "attr",
+          "attr": "href"
+        },
+        "tags": {
+          "selector": ".tag",
+          "value": "text",
+          "multiple": true
+        }
+      }
+    }
+  },
+  "mappings": [
+    {
+      "target": "id",
+      "source": "id"
+    },
+    {
+      "target": "name",
+      "source": "name"
+    },
+    {
+      "target": "profile_url",
+      "source": "profile_url"
+    },
+    {
+      "target": "tags",
+      "source": "tags"
+    }
+  ]
+}

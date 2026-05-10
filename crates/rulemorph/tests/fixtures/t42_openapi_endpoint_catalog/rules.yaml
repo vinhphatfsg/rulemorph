@@ -1,0 +1,21 @@
+version: 2
+input:
+  format: yaml
+  yaml: {}
+mappings:
+  - target: "endpoints.list_users.path"
+    value: "/users"
+  - target: "endpoints.list_users.method"
+    value: "GET"
+  - target: "endpoints.list_users.operation_id"
+    source: 'input.paths.["/users"].get.operationId'
+  - target: "endpoints.list_users.tags"
+    source: 'input.paths.["/users"].get.tags'
+  - target: "endpoints.get_user.path"
+    value: "/users/{id}"
+  - target: "endpoints.get_user.method"
+    value: "GET"
+  - target: "endpoints.get_user.operation_id"
+    source: 'input.paths.["/users/{id}"].get.operationId'
+  - target: "endpoints.get_user.tags"
+    source: 'input.paths.["/users/{id}"].get.tags'

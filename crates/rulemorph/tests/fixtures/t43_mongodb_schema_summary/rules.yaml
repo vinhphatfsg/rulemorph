@@ -1,0 +1,19 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "collection.required"
+    source: "required"
+  - target: "fields._id.type"
+    source: "input.properties._id.bsonType"
+  - target: "fields.email.type"
+    source: "input.properties.email.bsonType"
+  - target: "fields.email.required"
+    value: true
+  - target: "fields.profile.type"
+    source: "input.properties.profile.bsonType"
+  - target: "fields.profile.age.type"
+    source: "input.properties.profile.properties.age.bsonType"
+  - target: "fields.profile.age.description"
+    source: "input.properties.profile.properties.age.description"

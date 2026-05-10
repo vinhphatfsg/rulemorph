@@ -1,0 +1,18 @@
+[
+  {
+    "endpoints": {
+      "list_users": {
+        "path": "/users",
+        "method": "GET",
+        "operation_id": "listUsers",
+        "tags": ["users"]
+      },
+      "get_user": {
+        "path": "/users/{id}",
+        "method": "GET",
+        "operation_id": "getUser",
+        "tags": ["users", "detail"]
+      }
+    }
+  }
+]

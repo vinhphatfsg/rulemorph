@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rulemorph::{
-    ErrorCode, RuleError, parse_rule_file, validate_rule_file, validate_rule_file_with_source,
+    ErrorCode, RuleError, RuleFormat, parse_rule_file, parse_rule_file_with_format,
+    validate_rule_file, validate_rule_file_with_source,
 };
 use serde::Deserialize;
 
@@ -86,6 +87,11 @@ fn valid_rules_should_pass_validation() {
         "t27_json_ops_from_entries",
         "t28_expr_chain_nested",
         "t29_json_ops_len",
+        "t31_yaml_input",
+        "t32_toml_input",
+        "t33_xml_input",
+        "t34_excel_input",
+        "t35_html_input",
     ];
 
     for case in cases {
@@ -128,6 +134,301 @@ fn invalid_rules_report_error_codes() {
     let errors = validate_rule_file(&rule).unwrap_err();
     let codes: Vec<ErrorCode> = errors.iter().map(|e| e.code.clone()).collect();
     assert!(codes.contains(&ErrorCode::MissingMappingValue));
+}
+
+#[test]
+fn extended_input_sections_are_validated() {
+    let yaml = r#"
+version: 2
+input:
+  format: yaml
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("missing yaml section should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code.as_str() == "MissingYamlSection")
+    );
+}
+
+#[test]
+fn html_attr_value_requires_attr_name() {
+    let yaml = r#"
+version: 2
+input:
+  format: html
+  html:
+    records_selector: ".item"
+    fields:
+      url:
+        selector: "a"
+        value: attr
+mappings:
+  - target: "url"
+    source: "url"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("missing attr should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.path.as_deref() == Some("input.html.fields.url.attr"))
+    );
+}
+
+#[test]
+fn excel_without_headers_requires_columns() {
+    let yaml = r#"
+version: 2
+input:
+  format: excel
+  excel:
+    has_header: false
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("missing columns should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code.as_str() == "MissingExcelColumns"
+                && err.path.as_deref() == Some("input.excel.columns"))
+    );
+}
+
+#[test]
+fn csv_columns_must_be_non_empty_and_unique() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: false
+    columns:
+      - name: ""
+      - name: id
+      - name: id
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("invalid columns should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code.as_str() == "InvalidInputOption"
+                && err.path.as_deref() == Some("input.csv.columns[0].name"))
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code.as_str() == "DuplicateInputField"
+                && err.path.as_deref() == Some("input.csv.columns[2].name"))
+    );
+}
+
+#[test]
+fn csv_without_header_rejects_empty_columns() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: false
+    columns: []
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("empty columns should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code.as_str() == "MissingCsvColumns"
+                && err.path.as_deref() == Some("input.csv.columns"))
+    );
+}
+
+#[test]
+fn csv_rejects_multibyte_delimiter() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    delimiter: "，"
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("multibyte delimiter should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code == ErrorCode::InvalidDelimiterLength
+                && err.path.as_deref() == Some("input.csv.delimiter"))
+    );
+}
+
+#[test]
+fn unselected_input_sections_are_ignored_by_normal_validation() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+  html:
+    records_selector: ""
+    fields: {}
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    validate_rule_file(&rule).expect("unselected html section should be ignored");
+}
+
+#[test]
+fn xml_records_path_rejects_non_element_path_syntax() {
+    let yaml = r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: "users/user"
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("invalid XML path should fail");
+    assert!(errors.iter().any(|err| err.code.as_str() == "InvalidPath"
+        && err.path.as_deref() == Some("input.xml.records_path")));
+}
+
+#[test]
+fn xml_records_path_accepts_non_ascii_element_names() {
+    let yaml = r##"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: 利用者.名前
+mappings:
+  - target: "name"
+    source: "#text"
+"##;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    validate_rule_file(&rule).expect("valid Unicode XML names should pass validation");
+}
+
+#[test]
+fn parse_json_rule_file_with_explicit_format() {
+    let source = r#"{
+      "version": 2,
+      "input": { "format": "json", "json": { "records_path": "items" } },
+      "mappings": [{ "target": "id", "source": "id" }]
+    }"#;
+    let rule = parse_rule_file_with_format(source, RuleFormat::Json).expect("parse json rule");
+    assert_eq!(rule.version, 2);
+}
+
+#[test]
+fn json_rule_file_fixture_should_pass_validation() {
+    let rules_path = fixtures_dir().join("t30_json_rule_file").join("rules.json");
+    let source = fs::read_to_string(&rules_path)
+        .unwrap_or_else(|_| panic!("failed to read {}", rules_path.display()));
+    let rule = parse_rule_file_with_format(&source, RuleFormat::Json).expect("parse json rule");
+    validate_rule_file(&rule).expect("json rule fixture should validate");
+}
+
+#[test]
+fn json_rule_rejects_duplicate_key() {
+    let source = r#"{
+      "version": 2,
+      "version": 1,
+      "input": { "format": "json", "json": {} },
+      "mappings": []
+    }"#;
+    let err = parse_rule_file_with_format(source, RuleFormat::Json)
+        .expect_err("duplicate JSON keys must fail");
+    assert!(err.message.contains("duplicate key"));
+}
+
+#[test]
+fn json_rule_rejects_trailing_comma() {
+    let source = r#"{ "version": 2, }"#;
+    let err =
+        parse_rule_file_with_format(source, RuleFormat::Json).expect_err("trailing comma fails");
+    assert!(err.message.contains("trailing comma") || err.message.contains("expected"));
+}
+
+#[test]
+fn json_rule_rejects_trailing_garbage() {
+    let source = r#"{
+      "version": 2,
+      "input": { "format": "json", "json": {} },
+      "mappings": []
+    } trailing"#;
+    let err =
+        parse_rule_file_with_format(source, RuleFormat::Json).expect_err("trailing garbage fails");
+    assert!(err.message.contains("trailing characters") || err.message.contains("expected"));
+}
+
+#[test]
+fn yaml_rule_rejects_duplicate_key() {
+    let source = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: id
+    source: id
+    source: other_id
+"#;
+    let err = parse_rule_file_with_format(source, RuleFormat::Yaml)
+        .expect_err("duplicate YAML keys must fail");
+    assert!(err.message.contains("duplicate key"));
+    assert!(err.line_column().is_some());
+}
+
+#[test]
+fn yaml_rule_parse_error_preserves_location() {
+    let source = "version: 2\ninput: [\n";
+    let err = parse_rule_file(source).expect_err("malformed YAML must fail");
+    assert!(err.location().is_some());
+
+    let err = parse_rule_file_with_format(source, RuleFormat::Yaml)
+        .expect_err("malformed YAML must fail");
+    assert!(err.line_column().is_some());
+}
+
+#[test]
+fn yaml_rule_rejects_trailing_document() {
+    let source = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+---
+version: 2
+"#;
+    let err = parse_rule_file(source).expect_err("trailing YAML document must fail");
+    assert!(err.to_string().contains("exactly one document"));
 }
 
 #[test]

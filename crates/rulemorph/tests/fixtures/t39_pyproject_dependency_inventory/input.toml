@@ -1,0 +1,11 @@
+[project]
+name = "rulemorph-example"
+version = "1.2.3"
+dependencies = [
+  "fastapi>=0.110",
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.4"]
+docs = ["mkdocs>=1.6"]

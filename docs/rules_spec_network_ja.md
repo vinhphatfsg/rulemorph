@@ -7,6 +7,17 @@
 `network` ルールは外部 HTTP API を呼び出し、
 レスポンスを入力として次のステップへ渡します。
 
+```text
+@input / @context
+  -> request URL, headers, body を v2 expr で組み立てる
+  -> HTTP request
+  -> response body
+  -> select
+  -> next step input
+```
+
+通常の変換ルールとの違いは、出力を作る前に HTTP request という副作用を持つ点です。参照構文、条件、v2 expr は [変換ルール仕様](rules_spec_ja.md) と同じです。
+
 ## ルール構成（最小）
 
 ```yaml

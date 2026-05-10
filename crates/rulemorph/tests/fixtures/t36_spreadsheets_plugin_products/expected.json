@@ -1,0 +1,36 @@
+[
+  {
+    "Item": {
+      "PK": { "S": "PRODUCT#p001" },
+      "SK": { "S": "METADATA" },
+      "name": { "S": "Notebook" },
+      "price": { "N": "1299" },
+      "active": { "BOOL": true },
+      "tags": { "SS": ["stationery", "paper"] },
+      "dimensions": {
+        "M": {
+          "width": { "N": "148" },
+          "height": { "N": "210" }
+        }
+      },
+      "archived": { "NULL": false }
+    }
+  },
+  {
+    "Item": {
+      "PK": { "S": "PRODUCT#p002" },
+      "SK": { "S": "METADATA" },
+      "name": { "S": "Pen" },
+      "price": { "N": "199" },
+      "active": { "BOOL": false },
+      "tags": { "SS": ["stationery", "ink"] },
+      "dimensions": {
+        "M": {
+          "width": { "N": "10" },
+          "height": { "N": "140" }
+        }
+      },
+      "archived": { "NULL": false }
+    }
+  }
+]

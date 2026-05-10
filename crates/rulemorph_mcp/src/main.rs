@@ -1,14 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
 use csv::ReaderBuilder;
+use rulemorph::serde_guard::parse_json_value_strict;
 use rulemorph::{
-    DtoLanguage, Expr, ExprChain, ExprOp, InputFormat, RuleError, RuleFile, TransformError,
-    TransformErrorKind, TransformWarning, generate_dto, parse_rule_file, transform_stream,
-    transform_stream_with_base_dir, transform_with_warnings, transform_with_warnings_with_base_dir,
-    validate_rule_file_with_source,
+    DtoLanguage, Expr, ExprChain, ExprOp, InputData, InputFormat, RuleError, RuleFile, RuleFormat,
+    TransformError, TransformErrorKind, TransformWarning, generate_dto,
+    parse_rule_file_with_format, transform_input_with_warnings,
+    transform_input_with_warnings_with_base_dir, transform_stream_input,
+    transform_stream_input_with_base_dir, validate_rule_file_with_source,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -20,6 +22,9 @@ const RESOURCE_URI_README: &str = "rulemorph://docs/readme";
 const RESOURCE_RULES_SPEC_EN: &str = include_str!("../../../docs/rules_spec_en.md");
 const RESOURCE_RULES_SPEC_JA: &str = include_str!("../../../docs/rules_spec_ja.md");
 const RESOURCE_README: &str = include_str!("../../../README.md");
+const MCP_MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
+const MCP_MAX_HEADER_LINE_BYTES: usize = 8 * 1024;
+const MCP_MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 
 fn main() {
     if let Err(err) = run() {
@@ -68,25 +73,29 @@ fn read_message(
     reader: &mut impl BufRead,
     output_mode: &mut OutputMode,
 ) -> io::Result<Option<String>> {
-    let mut line = String::new();
+    let mut line: String;
     loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
-            return Ok(None);
-        }
+        line = match read_line_bounded(reader, MCP_MAX_HEADER_LINE_BYTES)? {
+            Some(line) => line,
+            None => return Ok(None),
+        };
 
         if let Some(length) = line.strip_prefix("Content-Length:") {
             let length = length.trim().parse::<usize>().map_err(|_| {
                 io::Error::new(io::ErrorKind::InvalidData, "invalid Content-Length")
             })?;
+            if length > MCP_MAX_MESSAGE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "Content-Length exceeds MCP message limit",
+                ));
+            }
 
             loop {
-                line.clear();
-                let bytes = reader.read_line(&mut line)?;
-                if bytes == 0 {
-                    return Ok(None);
-                }
+                line = match read_line_bounded(reader, MCP_MAX_HEADER_LINE_BYTES)? {
+                    Some(line) => line,
+                    None => return Ok(None),
+                };
                 if line == "\r\n" || line == "\n" {
                     break;
                 }
@@ -105,6 +114,39 @@ fn read_message(
         *output_mode = OutputMode::Line;
         return Ok(Some(trimmed.to_string()));
     }
+}
+
+fn read_line_bounded(reader: &mut impl BufRead, max_bytes: usize) -> io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            break;
+        }
+
+        let take_len = match available.iter().position(|byte| *byte == b'\n') {
+            Some(index) => index + 1,
+            None => available.len(),
+        };
+        if bytes.len().saturating_add(take_len) > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "line exceeds MCP message limit",
+            ));
+        }
+        bytes.extend_from_slice(&available[..take_len]);
+        reader.consume(take_len);
+        if bytes.last() == Some(&b'\n') {
+            break;
+        }
+    }
+
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err))
 }
 
 fn write_message(
@@ -319,7 +361,7 @@ fn prompts_list_result() -> Value {
                 "arguments": [
                     { "name": "rules_text", "description": "Base rules YAML.", "required": true },
                     { "name": "input_sample", "description": "Input sample (JSON/CSV).", "required": true },
-                    { "name": "format", "description": "Input format (json or csv).", "required": false },
+                    { "name": "format", "description": "Sample format for rule generation (json or csv).", "required": false },
                     { "name": "records_path", "description": "Records path for JSON input.", "required": false }
                 ]
             },
@@ -330,7 +372,7 @@ fn prompts_list_result() -> Value {
                     { "name": "dto_text", "description": "DTO source text.", "required": true },
                     { "name": "dto_language", "description": "DTO language (rust/typescript).", "required": true },
                     { "name": "input_sample", "description": "Input sample (JSON/CSV).", "required": true },
-                    { "name": "format", "description": "Input format (json or csv).", "required": false },
+                    { "name": "format", "description": "Sample format for rule generation (json or csv).", "required": false },
                     { "name": "records_path", "description": "Records path for JSON input.", "required": false }
                 ]
             },
@@ -438,27 +480,28 @@ fn transform_input_schema() -> Value {
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
+            "rules_format": rules_format_schema(),
             "input_path": {
                 "type": "string",
-                "description": "Path to the input CSV/JSON file. Mutually exclusive with input_text and input_json.",
+                "description": "Path to the input file. Mutually exclusive with input_text and input_json.",
                 "examples": ["input.json"]
             },
             "input_text": {
                 "type": "string",
-                "description": "Inline input text (CSV or JSON). Mutually exclusive with input_path and input_json.",
+                "description": "Inline text input. Mutually exclusive with input_path and input_json.",
                 "examples": ["{\"items\":[{\"id\":1}]}"]
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "context_path": {
@@ -473,7 +516,7 @@ fn transform_input_schema() -> Value {
             },
             "format": {
                 "type": "string",
-                "enum": ["csv", "json"],
+                "enum": ["csv", "json", "yaml", "toml", "xml", "html", "excel"],
                 "description": "Override input format from the rule file.",
                 "examples": ["json"]
             },
@@ -513,20 +556,30 @@ fn transform_input_schema() -> Value {
     })
 }
 
+fn rules_format_schema() -> Value {
+    json!({
+        "type": "string",
+        "enum": ["yaml", "json"],
+        "description": "Rule parser format. Defaults to file extension for rules_path and yaml for rules_text.",
+        "examples": ["json"]
+    })
+}
+
 fn validate_rules_input_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
-            }
+            },
+            "rules_format": rules_format_schema()
         }
     })
 }
@@ -537,14 +590,15 @@ fn generate_dto_input_schema() -> Value {
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
+            "rules_format": rules_format_schema(),
             "language": {
                 "type": "string",
                 "enum": ["rust", "typescript", "python", "go", "java", "kotlin", "swift"],
@@ -584,7 +638,7 @@ fn analyze_input_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "format": {
@@ -614,14 +668,15 @@ fn generate_rules_from_base_input_schema() -> Value {
         "properties": {
             "rules_path": {
                 "type": "string",
-                "description": "Path to the YAML rules file. Mutually exclusive with rules_text.",
+                "description": "Path to the YAML or JSON rules file. Mutually exclusive with rules_text.",
                 "examples": ["rules.yaml"]
             },
             "rules_text": {
                 "type": "string",
-                "description": "Inline YAML rules content. Mutually exclusive with rules_path.",
+                "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
                 "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
+            "rules_format": rules_format_schema(),
             "input_path": {
                 "type": "string",
                 "description": "Path to the input CSV/JSON file. Mutually exclusive with input_text and input_json.",
@@ -634,7 +689,7 @@ fn generate_rules_from_base_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "format": {
@@ -685,7 +740,7 @@ fn generate_rules_from_dto_input_schema() -> Value {
             },
             "input_json": {
                 "type": ["object", "array"],
-                "description": "Inline input JSON value. Mutually exclusive with input_path and input_text.",
+                "description": "Inline typed JSON value. Mutually exclusive with input_path and input_text. Duplicate-key validation applies to raw JSON input_text/input_path, not to input_json after JSON-RPC decoding.",
                 "examples": [[{"id": 1}]]
             },
             "format": {
@@ -748,6 +803,8 @@ fn handle_tools_call(params: &Value) -> Result<Value, CallError> {
 fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
     let input_json =
@@ -806,22 +863,19 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     if input_json.is_some()
         && format
             .as_deref()
-            .is_some_and(|value| value.eq_ignore_ascii_case("csv"))
+            .is_some_and(|value| !value.eq_ignore_ascii_case("json"))
     {
         return Err(CallError::InvalidParams(
             "format must be json when input_json is provided".to_string(),
         ));
     }
-    if format.as_deref().is_some_and(|value| {
-        !value.eq_ignore_ascii_case("csv") && !value.eq_ignore_ascii_case("json")
-    }) {
-        return Err(CallError::InvalidParams(
-            "format must be csv or json".to_string(),
-        ));
-    }
+    validate_transform_format(format.as_deref())?;
 
-    let (mut rule, yaml, base_dir) =
-        load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (mut rule, yaml, base_dir) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     if rules_text.is_some() && rule_has_file_branch(&rule) {
         return Err(CallError::InvalidParams(
             "rules_text cannot use branch file references; use rules_path under an allowed root"
@@ -834,15 +888,17 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
         input_text.as_deref(),
         input_json.as_ref(),
     ) {
-        (Some(path), None, None) => read_allowed_to_string(path, "input")?,
-        (None, Some(text), None) => text.to_string(),
-        (None, None, Some(value)) => serde_json::to_string(value).map_err(|err| {
-            let message = format!("failed to serialize input JSON: {}", err);
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![parse_error_json(&message, None)]),
-            }
-        })?,
+        (Some(path), None, None) => OwnedInput::Bytes(read_allowed_bytes(path, "input")?),
+        (None, Some(text), None) => OwnedInput::Text(text.to_string()),
+        (None, None, Some(value)) => serde_json::to_string(value)
+            .map_err(|err| {
+                let message = format!("failed to serialize input JSON: {}", err);
+                CallError::Tool {
+                    message: message.clone(),
+                    errors: Some(vec![parse_error_json(&message, None)]),
+                }
+            })
+            .map(OwnedInput::Text)?,
         _ => {
             return Err(CallError::InvalidParams(
                 "input_path, input_text, or input_json is required".to_string(),
@@ -886,18 +942,24 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     }
 
     let (output_value, output_text, warnings) = if ndjson {
-        let (output_text, warnings) =
-            transform_to_ndjson(&rule, &input, context_value.as_ref(), base_dir.as_deref())?;
+        let (output_text, warnings) = transform_to_ndjson(
+            &rule,
+            input.as_input_data(),
+            context_value.as_ref(),
+            base_dir.as_deref(),
+        )?;
         (None, output_text, warnings)
     } else {
         let (output, warnings) = match base_dir.as_deref() {
-            Some(base_dir) => transform_with_warnings_with_base_dir(
+            Some(base_dir) => transform_input_with_warnings_with_base_dir(
                 &rule,
-                &input,
+                input.as_input_data(),
                 context_value.as_ref(),
                 base_dir,
             ),
-            None => transform_with_warnings(&rule, &input, context_value.as_ref()),
+            None => {
+                transform_input_with_warnings(&rule, input.as_input_data(), context_value.as_ref())
+            }
         }
         .map_err(|err| CallError::Tool {
             message: transform_error_to_text(&err),
@@ -983,6 +1045,8 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
 fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
 
     let rule_source_count = rules_path.is_some() as u8 + rules_text.is_some() as u8;
     if rule_source_count == 0 {
@@ -996,7 +1060,11 @@ fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError
         ));
     }
 
-    let (rule, yaml, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, yaml, _) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     match validate_rule_file_with_source(&rule, &yaml) {
         Ok(_) => {
             let warnings = collect_rule_warnings(&rule);
@@ -1036,6 +1104,8 @@ fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError
 fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
     let language = get_optional_string(args, "language").map_err(CallError::InvalidParams)?;
     let name = get_optional_string(args, "name").map_err(CallError::InvalidParams)?;
 
@@ -1055,7 +1125,11 @@ fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> 
         language.ok_or_else(|| CallError::InvalidParams("language is required".to_string()))?;
     let language = parse_dto_language(&language).map_err(CallError::InvalidParams)?;
 
-    let (rule, _, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, _, _) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     let dto = generate_dto(&rule, language, name.as_deref()).map_err(|err| {
         let message = format!("failed to generate dto: {}", err);
         CallError::Tool {
@@ -1347,16 +1421,11 @@ fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError>
         json_records_from_value(&value, records_path.as_deref())?
     } else {
         match normalize_format(format.as_deref(), &input_text) {
-            InputDataFormat::Json => {
-                let value = serde_json::from_str(&input_text).map_err(|err| {
-                    let message = format!("failed to parse input JSON: {}", err);
-                    CallError::Tool {
-                        message: message.clone(),
-                        errors: Some(vec![parse_error_json(&message, input_path.as_deref())]),
-                    }
-                })?;
-                json_records_from_value(&value, records_path.as_deref())?
-            }
+            InputDataFormat::Json => parse_json_records_strict(
+                &input_text,
+                records_path.as_deref(),
+                input_path.as_deref(),
+            )?,
             InputDataFormat::Csv => parse_csv_records(&input_text).map_err(|err| {
                 let message = format!("failed to parse input CSV: {}", err);
                 CallError::Tool {
@@ -1396,6 +1465,8 @@ fn run_analyze_input_tool(args: &Map<String, Value>) -> Result<Value, CallError>
 fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
     let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
+    let rules_format =
+        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
     let input_path = get_optional_string(args, "input_path").map_err(CallError::InvalidParams)?;
     let input_text = get_optional_string(args, "input_text").map_err(CallError::InvalidParams)?;
     let input_json =
@@ -1448,7 +1519,11 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
         ));
     }
 
-    let (rule, yaml, _) = load_rule_from_source(rules_path.as_deref(), rules_text.as_deref())?;
+    let (rule, yaml, _) = load_rule_from_source(
+        rules_path.as_deref(),
+        rules_text.as_deref(),
+        rules_format.as_deref(),
+    )?;
     let mut yaml_value: YamlValue = serde_yaml::from_str(&yaml).map_err(|err| {
         let message = format!("failed to parse rules yaml: {}", err);
         CallError::Tool {
@@ -1487,6 +1562,11 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
         match rule.input.format {
             InputFormat::Csv => InputDataFormat::Csv,
             InputFormat::Json => InputDataFormat::Json,
+            InputFormat::Yaml
+            | InputFormat::Toml
+            | InputFormat::Xml
+            | InputFormat::Html
+            | InputFormat::Excel => InputDataFormat::Json,
         }
     };
 
@@ -1496,14 +1576,7 @@ fn run_generate_rules_from_base_tool(args: &Map<String, Value>) -> Result<Value,
             json_records_from_value(&value, records_path.as_deref())?
         }
         (InputDataFormat::Json, None) => {
-            let value = serde_json::from_str(&input_text).map_err(|err| {
-                let message = format!("failed to parse input JSON: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![parse_error_json(&message, input_path.as_deref())]),
-                }
-            })?;
-            json_records_from_value(&value, records_path.as_deref())?
+            parse_json_records_strict(&input_text, records_path.as_deref(), input_path.as_deref())?
         }
         (InputDataFormat::Csv, _) => parse_csv_records(&input_text).map_err(|err| {
             let message = format!("failed to parse input CSV: {}", err);
@@ -1720,14 +1793,7 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
             json_records_from_value(&value, records_path.as_deref())?
         }
         (InputDataFormat::Json, None) => {
-            let value = serde_json::from_str(&input_text).map_err(|err| {
-                let message = format!("failed to parse input JSON: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![parse_error_json(&message, input_path.as_deref())]),
-                }
-            })?;
-            json_records_from_value(&value, records_path.as_deref())?
+            parse_json_records_strict(&input_text, records_path.as_deref(), input_path.as_deref())?
         }
         (InputDataFormat::Csv, _) => parse_csv_records(&input_text).map_err(|err| {
             let message = format!("failed to parse input CSV: {}", err);
@@ -1943,11 +2009,14 @@ fn get_optional_object(args: &Map<String, Value>, key: &str) -> Result<Option<Va
 fn load_rule_from_source(
     rules_path: Option<&str>,
     rules_text: Option<&str>,
+    rules_format: Option<&str>,
 ) -> Result<(RuleFile, String, Option<PathBuf>), CallError> {
+    let format_override = parse_rules_format(rules_format)?;
     match (rules_path, rules_text) {
         (Some(path), None) => {
             let (resolved_path, yaml) = read_allowed_file(path, "rules")?;
-            let rule = parse_rule_file(&yaml).map_err(|err| {
+            let format = format_override.unwrap_or_else(|| RuleFormat::from_path(&resolved_path));
+            let rule = parse_rule_file_with_format(&yaml, format).map_err(|err| {
                 let message = format!("failed to parse rules: {}", err);
                 CallError::Tool {
                     message: message.clone(),
@@ -1958,7 +2027,8 @@ fn load_rule_from_source(
             Ok((rule, yaml, base_dir))
         }
         (None, Some(text)) => {
-            let rule = parse_rule_file(text).map_err(|err| {
+            let format = format_override.unwrap_or(RuleFormat::Yaml);
+            let rule = parse_rule_file_with_format(text, format).map_err(|err| {
                 let message = format!("failed to parse rules: {}", err);
                 CallError::Tool {
                     message: message.clone(),
@@ -1973,19 +2043,57 @@ fn load_rule_from_source(
     }
 }
 
+fn parse_rules_format(value: Option<&str>) -> Result<Option<RuleFormat>, CallError> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.eq_ignore_ascii_case("yaml") => Ok(Some(RuleFormat::Yaml)),
+        Some(value) if value.eq_ignore_ascii_case("json") => Ok(Some(RuleFormat::Json)),
+        Some(_) => Err(CallError::InvalidParams(
+            "rules_format must be yaml or json".to_string(),
+        )),
+    }
+}
+
+fn validate_transform_format(value: Option<&str>) -> Result<(), CallError> {
+    let Some(value) = value else {
+        return Ok(());
+    };
+    if matches!(
+        value.to_ascii_lowercase().as_str(),
+        "csv" | "json" | "yaml" | "toml" | "xml" | "html" | "excel"
+    ) {
+        return Ok(());
+    }
+    Err(CallError::InvalidParams(
+        "format must be csv, json, yaml, toml, xml, html, or excel".to_string(),
+    ))
+}
+
+enum OwnedInput {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl OwnedInput {
+    fn as_input_data(&self) -> InputData<'_> {
+        match self {
+            OwnedInput::Text(value) => InputData::Text(value),
+            OwnedInput::Bytes(value) => InputData::Bytes(value),
+        }
+    }
+}
+
 fn read_allowed_to_string(path: &str, label: &str) -> Result<String, CallError> {
     read_allowed_file(path, label).map(|(_, data)| data)
 }
 
+fn read_allowed_bytes(path: &str, label: &str) -> Result<Vec<u8>, CallError> {
+    read_allowed_file_bytes(path, label).map(|(_, data)| data)
+}
+
 fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallError> {
-    let path = allowed_existing_path(path).map_err(|err| {
-        let message = format!("failed to read {}: {}", label, err);
-        CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![io_error_json(&message, Some(path))]),
-        }
-    })?;
-    let data = fs::read_to_string(&path).map_err(|err| {
+    let (path, bytes) = read_allowed_file_bytes(path, label)?;
+    let data = String::from_utf8(bytes).map_err(|err| {
         let message = format!("failed to read {}: {}", label, err);
         CallError::Tool {
             message: message.clone(),
@@ -1996,6 +2104,44 @@ fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallE
         }
     })?;
     Ok((path, data))
+}
+
+fn read_allowed_file_bytes(path: &str, label: &str) -> Result<(PathBuf, Vec<u8>), CallError> {
+    let path = allowed_existing_path(path).map_err(|err| {
+        let message = format!("failed to read {}: {}", label, err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![io_error_json(&message, Some(path))]),
+        }
+    })?;
+    let data = read_file_with_limit(&path, MCP_MAX_FILE_BYTES).map_err(|err| {
+        let message = format!("failed to read {}: {}", label, err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![io_error_json(
+                &message,
+                Some(path.to_string_lossy().as_ref()),
+            )]),
+        }
+    })?;
+    Ok((path, data))
+}
+
+fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
+    if metadata.len() > max_bytes as u64 {
+        return Err(format!("file exceeds maximum size ({})", max_bytes));
+    }
+    let mut file = fs::File::open(path).map_err(|err| err.to_string())?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    if bytes.len() > max_bytes {
+        return Err(format!("file exceeds maximum size ({})", max_bytes));
+    }
+    Ok(bytes)
 }
 
 fn rule_has_file_branch(rule: &RuleFile) -> bool {
@@ -2248,6 +2394,21 @@ fn json_records_from_value(
             )]),
         }),
     }
+}
+
+fn parse_json_records_strict(
+    input_text: &str,
+    records_path: Option<&str>,
+    input_path: Option<&str>,
+) -> Result<Vec<Value>, CallError> {
+    let value = parse_json_value_strict(input_text).map_err(|err| {
+        let message = format!("failed to parse input JSON: {}", err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![parse_error_json(&message, input_path)]),
+        }
+    })?;
+    json_records_from_value(&value, records_path)
 }
 
 fn parse_csv_records(text: &str) -> Result<Vec<Value>, String> {
@@ -4688,6 +4849,11 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<&str>) -> Result<()
     rule.input.format = match normalized.as_str() {
         "csv" => InputFormat::Csv,
         "json" => InputFormat::Json,
+        "yaml" => InputFormat::Yaml,
+        "toml" => InputFormat::Toml,
+        "xml" => InputFormat::Xml,
+        "html" => InputFormat::Html,
+        "excel" => InputFormat::Excel,
         _ => return Err(format!("unknown format: {}", format)),
     };
     Ok(())
@@ -4695,13 +4861,13 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<&str>) -> Result<()
 
 fn transform_to_ndjson(
     rule: &RuleFile,
-    input: &str,
+    input: InputData<'_>,
     context: Option<&serde_json::Value>,
     base_dir: Option<&Path>,
 ) -> Result<(String, Vec<TransformWarning>), CallError> {
     let stream = match base_dir {
-        Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir),
-        None => transform_stream(rule, input, context),
+        Some(base_dir) => transform_stream_input_with_base_dir(rule, input, context, base_dir),
+        None => transform_stream_input(rule, input, context),
     }
     .map_err(|err| CallError::Tool {
         message: transform_error_to_text(&err),
@@ -4980,11 +5146,40 @@ fn transform_kind_to_str(kind: &TransformErrorKind) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use std::sync::{Mutex, OnceLock};
 
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    #[test]
+    fn bounded_line_reader_rejects_oversized_line() {
+        let mut reader = BufReader::new(Cursor::new(b"{\"jsonrpc\":\"2.0\"}\n".to_vec()));
+        let err = read_line_bounded(&mut reader, 8).expect_err("oversized line should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn bounded_line_reader_reads_complete_line() {
+        let mut reader = BufReader::new(Cursor::new(b"{\"jsonrpc\":\"2.0\"}\n".to_vec()));
+        let line = read_line_bounded(&mut reader, 64)
+            .expect("read line")
+            .expect("line");
+        assert_eq!(line, "{\"jsonrpc\":\"2.0\"}\n");
+    }
+
+    #[test]
+    fn read_message_rejects_oversized_initial_header_line() {
+        let mut input = b"Content-Length: ".to_vec();
+        input.extend(std::iter::repeat_n(b'1', MCP_MAX_HEADER_LINE_BYTES));
+        input.extend_from_slice(b"\r\n\r\n{}");
+        let mut reader = BufReader::new(Cursor::new(input));
+        let mut output_mode = OutputMode::Line;
+        let err = read_message(&mut reader, &mut output_mode)
+            .expect_err("oversized initial header should fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

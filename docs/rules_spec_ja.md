@@ -7,6 +7,41 @@
 - `docs/rules_spec_endpoint_ja.md`
 - `docs/rules_spec_network_ja.md`
 
+## この仕様の読み方
+
+Rulemorph の通常変換（`normal` ルール）は、入力をまず **JSON record の配列**に正規化し、その各 record に対して出力 JSON を組み立てます。
+
+```text
+raw input
+  -> input normalization
+  -> records: [JSON object, ...]
+  -> mappings または steps
+  -> output records
+  -> finalize
+  -> JSON output
+```
+
+初めてルールを書く場合は、以下の順で読むと理解しやすくなります。
+
+1. `input` で入力形式と record の切り出し方を決める
+2. `mappings` で出力フィールドを作る
+3. `expr` と `conditions` で値の加工や条件分岐を足す
+4. 複数段階の処理が必要になったら `steps` を使う
+5. 出力配列全体を加工したい場合だけ `finalize` を使う
+
+## 仕様の全体像
+
+| 領域 | 役割 | 主なキー |
+| --- | --- | --- |
+| 入力正規化 | CSV/JSON/YAML/TOML/XML/HTML/Excel を JSON record にそろえる | `input` |
+| レコード単位の除外 | record を処理するか決める | `record_when` |
+| 出力生成 | 1 record から 1 output object を作る | `mappings` |
+| 段階実行 | mapping、filter、assert、branch を順序付きで実行する | `steps` |
+| 配列全体の後処理 | filter/sort/limit/wrap を出力配列へ適用する | `finalize` |
+| 参照と式 | 入力、context、途中出力を参照し、値を加工する | `@input`, `@context`, `@out`, `expr` |
+
+`mappings` と `steps` はどちらも出力を作るための構文です。単純な変換では `mappings` を使い、途中で assert や branch を挟みたい場合に `steps` を使います。
+
 ## ルールファイル構成
 
 ```yaml
@@ -44,8 +79,32 @@ mappings:
 
 ## Input
 
+`input` は raw input を Rulemorph の共通データモデルである JSON record 配列へ変換します。
+以降の `mappings` / `steps` / `finalize` は、元のファイル形式ではなく、正規化後の JSON record に対して動作します。
+
 ### 共通
-- `input.format`（必須）: `csv` または `json`
+- `input.format`（必須）: `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+
+| format | record の切り出し方 | 主な用途 |
+| --- | --- | --- |
+| `json` | root または `records_path` | API response、JSON export |
+| `csv` | 行ごとに record | CSV import、業務データ |
+| `yaml` | root または `records_path` | 設定ファイル、YAML export |
+| `toml` | root または `records_path` | dependency / inventory data |
+| `xml` | `records_path` で element を選択 | XML feed、legacy API |
+| `html` | `records_selector` と field selector | table や list からの抽出 |
+| `excel` | sheet の行を record | `.xlsx` import |
+
+### 入力正規化の共通契約
+
+- record は JSON object として扱います。
+- `records_path` が配列を指す場合は、各要素が record になります。
+- `records_path` が object を指す場合は、単一 record として扱います。
+- scalar を record として扱うことはできません。
+- 参照先が存在しない場合は `missing` として扱います。`null` とは区別されます。
+- `mappings` / `steps` / `finalize` は、入力形式ごとの差異を直接扱いません。差異は parser 層で JSON record に正規化されます。
+
+安全性 invariant として、JSON/YAML の duplicate key、XML DTD/entity/processing instruction、HTML の JavaScript 実行/URL 取得、Excel macro/external relationship/formula evaluation は許可されません。これらは CLI の resource limit override では緩和できません。
 
 ### CSV
 - `input.csv` は `format=csv` のとき必須
@@ -66,7 +125,10 @@ input:
 
 ### JSON
 - `input.json` は `format=json` のとき必須
-- `records_path`（任意）: レコード配列のドットパス。省略時はルート。
+- `records_path`（任意）: レコード配列または単一レコードのドットパス。省略時はルート。
+- root / `records_path` が配列の場合、各要素を record として扱います。
+- root / `records_path` が object の場合、単一 record として扱います。
+- scalar は record として扱えません。
 
 ```yaml
 input:
@@ -75,11 +137,90 @@ input:
     records_path: "items"
 ```
 
+### YAML / TOML
+- `input.yaml` / `input.toml` は対応する `format` のとき必須
+- `records_path`（任意）: レコード配列または単一レコードを指すドットパス
+- YAML/TOML は JSON record に正規化されてから mapping / steps / finalize に渡されます。
+- YAML alias / anchor、TOML datetime など、形式固有の表現は parser が JSON value へ正規化します。
+
+```yaml
+input:
+  format: yaml
+  yaml:
+    records_path: "users"
+```
+
+```yaml
+input:
+  format: toml
+  toml:
+    records_path: "users"
+```
+
+### XML
+- `input.xml` は `format=xml` のとき必須
+- `records_path`（必須）: root element を含むドット区切り element path
+- attributes は `attr_prefix` 付き string field、direct text は `text_key` に格納
+- child elements は常に array
+- DTD/entity/processing instruction は拒否されます。
+
+```yaml
+input:
+  format: xml
+  xml:
+    records_path: "users.user"
+    attr_prefix: "@"
+    text_key: "#text"
+```
+
+### HTML
+- `input.html` は `format=html` のとき必須
+- `records_selector` で record element を選択し、`fields` の CSS selector で field を抽出
+- `value: text` / `html` / `attr` を指定可能。`html` は raw inner HTML string であり sanitize も実行もしません。
+- HTML parser は JavaScript 実行や URL 取得を行いません。
+
+```yaml
+input:
+  format: html
+  html:
+    records_selector: "table#users tbody tr"
+    fields:
+      id: { selector: "td:nth-child(1)", value: text }
+      name: { selector: "td:nth-child(2)", value: text }
+```
+
+### Excel
+- `input.excel` は `format=excel` のとき必須
+- `.xlsx` のみ対応。macro / external relationship / formula evaluation は拒否または非実行です。
+- `has_header=true` では header row を field name として使います。
+- 空 cell は `missing` として扱います。空文字列が実値として存在する場合は `""` として扱い、`missing` とは区別します。
+- formula cell は計算しません。`formula` の既定は `cached` で、cached value がない formula cell はエラーです。`formula: formula` では式文字列を値として読み、`formula: error` では formula cell を拒否します。
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: "Users"
+    has_header: true
+```
+
 ## Output
 
 - 出力は JSON 配列が既定
 - CLI `transform --ndjson` は 1 行 1 JSON（ストリーミング）
 - `records_path` がオブジェクトを指す場合は単一レコード
+
+## Resource limits
+
+CLI は大きなローカル入力向けに有限の resource limit を緩和できます。
+
+```sh
+rulemorph transform -r rules.yaml -i huge.csv --limit records=500000 --limit input-bytes=536870912
+rulemorph transform -r rules.yaml -i huge.csv --limits-profile large
+rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
+```
+
+これらは処理量の上限を広げるだけです。duplicate key rejection、XML DTD/entity rejection、HTML no-network/no-JS、Excel no-macro/no-formula-evaluation、MCP pathless branch guard などの安全性 invariant は変更できません。
 
 ## Record filter（`record_when`）
 

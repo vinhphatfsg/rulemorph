@@ -117,9 +117,7 @@ async fn resolve_target_addr(
     allow_private: bool,
 ) -> Result<SocketAddr, String> {
     let mut found = false;
-    let addrs = lookup_host((host, port))
-        .await
-        .map_err(|err| format!("dns lookup failed: {err}"))?;
+    let addrs = lookup_host_addrs(host, port).await?;
     let mut selected_v4: Option<SocketAddr> = None;
     let mut selected_v6: Option<SocketAddr> = None;
     for addr in addrs {
@@ -141,6 +139,24 @@ async fn resolve_target_addr(
     selected_v4
         .or(selected_v6)
         .ok_or_else(|| "dns lookup returned no addresses".to_string())
+}
+
+async fn lookup_host_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    #[cfg(test)]
+    {
+        // Unit tests should not depend on external DNS.
+        if host == "example.com" || host == "www.example.com" {
+            return Ok(vec![SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::new(93, 184, 216, 34)),
+                port,
+            )]);
+        }
+    }
+
+    lookup_host((host, port))
+        .await
+        .map(|iter| iter.collect())
+        .map_err(|err| format!("dns lookup failed: {err}"))
 }
 
 fn is_private_ip(ip: IpAddr) -> bool {

@@ -1,0 +1,16 @@
+{
+  "required": ["_id", "email"],
+  "properties": {
+    "_id": { "bsonType": "objectId" },
+    "email": { "bsonType": "string" },
+    "profile": {
+      "bsonType": "object",
+      "properties": {
+        "age": {
+          "bsonType": "int",
+          "description": "Age in years"
+        }
+      }
+    }
+  }
+}

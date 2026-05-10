@@ -8,6 +8,17 @@
 `input` → `steps` → `reply` の順で処理を行います。
 `steps` の各ルールは順に実行され、出力が次ステップの入力になります。
 
+```text
+HTTP request
+  -> virtual @input
+  -> input mappings
+  -> steps: rule calls
+  -> reply
+  -> HTTP response
+```
+
+通常の変換ルールとの違いは、入力がファイルではなく HTTP request であり、最後に `reply` で HTTP response を組み立てる点です。参照構文、条件、v2 expr は [変換ルール仕様](rules_spec_ja.md) と同じです。
+
 ## ルール構成（最小）
 
 ```yaml
@@ -191,7 +202,7 @@ reply:
 # hello.yaml
 finalize: {}
 # input: { "name": "test" }
-# ouput: [{ "name": "test" }]
+# output: [{ "name": "test" }]
 
 # または
 finalize:

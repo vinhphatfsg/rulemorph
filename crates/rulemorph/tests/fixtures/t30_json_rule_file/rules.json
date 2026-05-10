@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "input": {
+    "format": "json",
+    "json": {
+      "records_path": "items"
+    }
+  },
+  "mappings": [
+    {
+      "target": "id",
+      "source": "id"
+    },
+    {
+      "target": "name",
+      "source": "name"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Products
+mappings:
+  - target: "Item.PK.S"
+    expr:
+      - "PRODUCT#"
+      - concat: ["@input.sku"]
+  - target: "Item.SK.S"
+    value: "METADATA"
+  - target: "Item.name.S"
+    source: "name"
+    type: "string"
+  - target: "Item.price.N"
+    source: "price"
+    type: "string"
+  - target: "Item.active.BOOL"
+    source: "active"
+    type: "bool"
+  - target: "Item.tags.SS"
+    expr:
+      - "@input.tags"
+      - split: [","]
+  - target: "Item.dimensions.M.width.N"
+    source: 'input.["dimensions.width"]'
+    type: "string"
+  - target: "Item.dimensions.M.height.N"
+    source: 'input.["dimensions.height"]'
+    type: "string"
+  - target: "Item.archived.NULL"
+    value: false
