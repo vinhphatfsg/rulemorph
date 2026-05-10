@@ -29,7 +29,14 @@ pub fn normalize_html_records(
     let fields = compile_fields(html)?;
     enforce_html_structural_preflight(input, options)?;
     let document = Html::parse_fragment(input);
-    enforce_html_node_count(document.tree.nodes().count(), options)?;
+    // The preflight is a source scan; this check catches parser-created DOM nodes
+    // without walking past the configured limit.
+    let parsed_nodes = document
+        .tree
+        .nodes()
+        .take(options.max_html_nodes + 1)
+        .count();
+    enforce_html_node_count(parsed_nodes, options)?;
 
     let mut records = Vec::new();
     for record_element in document.select(&records_selector) {

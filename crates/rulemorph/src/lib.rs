@@ -76,8 +76,35 @@ fn parse_rule_file_yaml(yaml: &str) -> Result<RuleFile, serde_yaml::Error> {
         return Ok(rule);
     }
 
-    let value = serde_guard::parse_yaml_value_strict(yaml).map_err(serde_yaml::Error::custom)?;
+    let value = serde_guard::parse_yaml_value_strict(yaml).map_err(|err| {
+        if err.location().is_some()
+            && let Err(original) = serde_yaml::from_str::<serde_yaml::Value>(yaml)
+        {
+            return original;
+        }
+        serde_yaml::Error::custom(err.to_string())
+    })?;
     let rule: RuleFile = serde_yaml::from_value(value)?;
+    {
+        let mut cache = rule_cache().lock().unwrap_or_else(|err| err.into_inner());
+        cache.insert(key, rule.clone());
+    }
+    Ok(rule)
+}
+
+fn parse_rule_file_yaml_with_error(yaml: &str) -> Result<RuleFile, RuleParseError> {
+    let key = rule_cache_key(RuleFormat::Yaml, yaml);
+    if let Some(rule) = {
+        let mut cache = rule_cache().lock().unwrap_or_else(|err| err.into_inner());
+        cache.get_cloned(&key)
+    } {
+        return Ok(rule);
+    }
+
+    let value = serde_guard::parse_yaml_value_strict(yaml)
+        .map_err(|err| RuleParseError::from_yaml_error(err.to_string(), err.location()))?;
+    let rule: RuleFile = serde_yaml::from_value(value)
+        .map_err(|err| RuleParseError::from_serde_yaml(RuleFormat::Yaml, err))?;
     {
         let mut cache = rule_cache().lock().unwrap_or_else(|err| err.into_inner());
         cache.insert(key, rule.clone());
@@ -140,6 +167,7 @@ impl RuleFormat {
 pub struct RuleParseError {
     pub format: RuleFormat,
     pub message: String,
+    pub location: Option<YamlLocation>,
 }
 
 impl RuleParseError {
@@ -147,7 +175,34 @@ impl RuleParseError {
         Self {
             format,
             message: message.into(),
+            location: None,
         }
+    }
+
+    fn from_yaml_error(message: impl Into<String>, location: Option<(usize, usize)>) -> Self {
+        let mut err = Self::new(RuleFormat::Yaml, message);
+        if let Some((line, column)) = location {
+            err.location = Some(YamlLocation { line, column });
+        }
+        err
+    }
+
+    fn from_serde_yaml(format: RuleFormat, err: serde_yaml::Error) -> Self {
+        let location = err.location().map(|loc| YamlLocation {
+            line: loc.line(),
+            column: loc.column(),
+        });
+        Self {
+            format,
+            message: err.to_string(),
+            location,
+        }
+    }
+
+    pub fn line_column(&self) -> Option<(usize, usize)> {
+        self.location
+            .as_ref()
+            .map(|location| (location.line, location.column))
     }
 }
 
@@ -169,9 +224,7 @@ pub fn parse_rule_file_with_format(
     format: RuleFormat,
 ) -> Result<RuleFile, RuleParseError> {
     match format {
-        RuleFormat::Yaml => {
-            parse_rule_file_yaml(source).map_err(|err| RuleParseError::new(format, err.to_string()))
-        }
+        RuleFormat::Yaml => parse_rule_file_yaml_with_error(source),
         RuleFormat::Json => parse_rule_file_json(source),
     }
 }

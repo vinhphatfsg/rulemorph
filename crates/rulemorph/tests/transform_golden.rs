@@ -586,7 +586,7 @@ fn t02_csv_no_header() {
 }
 
 #[test]
-fn csv_trailing_missing_field_is_missing_not_error() {
+fn csv_trailing_missing_field_is_invalid_input() {
     let yaml = r#"
 version: 2
 input:
@@ -601,11 +601,75 @@ mappings:
     default: "missing-name"
 "#;
     let rule = parse_rule_file(yaml).expect("parse rule");
-    let output = transform(&rule, "id,name\n1\n", None).expect("transform");
-    assert_eq!(
-        output,
-        serde_json::json!([{ "id": "1", "name": "missing-name" }])
+    let err = transform(&rule, "id,name\n1\n", None).expect_err("short csv row should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("CSV error"), "{}", err.message);
+}
+
+#[test]
+fn csv_extra_field_is_invalid_input() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: true
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, "id\n1,extra\n", None).expect_err("wide csv row should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("CSV error"), "{}", err.message);
+}
+
+#[test]
+fn csv_no_header_short_row_is_invalid_input() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: false
+    columns:
+      - name: id
+      - name: name
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, "1\n", None).expect_err("short csv row should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(
+        err.message.contains("expected 2")
+            || err.message.contains("expected 2 fields")
+            || err.message.contains("expected 2"),
+        "{}",
+        err.message
     );
+}
+
+#[test]
+fn csv_no_header_extra_field_is_invalid_input() {
+    let yaml = r#"
+version: 2
+input:
+  format: csv
+  csv:
+    has_header: false
+    columns:
+      - name: id
+      - name: name
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let err = transform(&rule, "1,Ada,extra\n", None).expect_err("wide csv row should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("expected 2"), "{}", err.message);
 }
 
 #[test]
@@ -2272,6 +2336,37 @@ mappings:
         &options,
     )
     .expect_err("node limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn html_rejects_parser_created_node_limit_exceeded() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: html
+  html:
+    records_selector: ".item"
+    fields:
+      name:
+        value: text
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_html_nodes: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text(r#"<p class="item">Alice</p>"#),
+        &options,
+    )
+    .expect_err("parsed DOM node limit should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
 

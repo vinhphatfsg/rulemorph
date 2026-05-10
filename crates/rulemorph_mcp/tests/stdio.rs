@@ -1168,7 +1168,7 @@ fn analyze_input_csv_success() {
         "params": {
             "name": "analyze_input",
             "arguments": {
-                "input_text": "id,name\n1,Ada\n2,Bob\n",
+                "input_text": "id,active,name,score,empty\n1,true,Ada,3.5,\n2,false,Bob,4,\n",
                 "format": "csv"
             }
         }
@@ -1179,6 +1179,87 @@ fn analyze_input_csv_success() {
         .as_array()
         .expect("paths array");
     assert!(paths.iter().any(|item| item["path"] == "id"));
+    let id_path = paths
+        .iter()
+        .find(|item| item["path"] == "id")
+        .expect("id path");
+    assert_eq!(id_path["types"]["number"], json!(2));
+    let active_path = paths
+        .iter()
+        .find(|item| item["path"] == "active")
+        .expect("active path");
+    assert_eq!(active_path["types"]["bool"], json!(2));
+    let empty_path = paths
+        .iter()
+        .find(|item| item["path"] == "empty")
+        .expect("empty path");
+    assert_eq!(empty_path["types"]["null"], json!(2));
+
+    server.shutdown();
+}
+
+#[test]
+fn analyze_input_csv_rejects_mismatched_field_count() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 131,
+        "method": "tools/call",
+        "params": {
+            "name": "analyze_input",
+            "arguments": {
+                "input_text": "id,name\n1,Ada,extra\n",
+                "format": "csv"
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert_eq!(response["result"]["isError"], true);
+    let message = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("error text");
+    assert!(message.contains("failed to parse input CSV"), "{message}");
+
+    server.shutdown();
+}
+
+#[test]
+fn analyze_input_csv_allows_more_than_default_normalization_record_limit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let input_path = dir.path().join("large.csv");
+    let mut input_text = String::from("id\n");
+    for index in 0..100_001 {
+        input_text.push_str(&index.to_string());
+        input_text.push('\n');
+    }
+    std::fs::write(&input_path, input_text).expect("write csv");
+
+    let mut server = McpServer::start_with_allowed_root(dir.path());
+    initialize(&mut server);
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 132,
+        "method": "tools/call",
+        "params": {
+            "name": "analyze_input",
+            "arguments": {
+                "input_path": input_path.to_string_lossy(),
+                "format": "csv",
+                "max_paths": 1
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert_ne!(response["result"]["isError"], json!(true));
+    assert_eq!(
+        response["result"]["meta"]["summary"]["records"],
+        json!(100_001)
+    );
 
     server.shutdown();
 }
@@ -1227,6 +1308,45 @@ mappings:
 }
 
 #[test]
+fn generate_rules_from_base_csv_uses_scalar_type_boost() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let rules_text = r#"version: 1
+input:
+  format: csv
+  csv: {}
+mappings:
+  - target: "price"
+    source: "old_price"
+    type: float
+"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 141,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_base",
+            "arguments": {
+                "rules_text": rules_text,
+                "input_text": "price_text,price_value\nabc,12.5\n",
+                "format": "csv"
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let rule = parse_rule_file(output_text).expect("parse output rules");
+    assert_eq!(rule.mappings[0].source.as_deref(), Some("price_value"));
+
+    server.shutdown();
+}
+
+#[test]
 fn generate_rules_from_dto_success() {
     let mut server = McpServer::start();
     initialize(&mut server);
@@ -1260,6 +1380,46 @@ fn generate_rules_from_dto_success() {
     let rule = parse_rule_file(output_text).expect("parse output rules");
     assert_eq!(rule.mappings[0].source.as_deref(), Some("id"));
     assert_eq!(rule.mappings[1].source.as_deref(), Some("name"));
+
+    server.shutdown();
+}
+
+#[test]
+fn generate_rules_from_dto_csv_uses_scalar_type_boost() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dto_text = r#"
+interface Product {
+  price: number;
+}
+"#;
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 151,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_dto",
+            "arguments": {
+                "dto_text": dto_text,
+                "dto_language": "typescript",
+                "input_text": "price_text,price_value\nabc,12.5\n",
+                "format": "csv"
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let rule = parse_rule_file(output_text).expect("parse output rules");
+    let price_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "price")
+        .expect("price mapping");
+    assert_eq!(price_mapping.source.as_deref(), Some("price_value"));
 
     server.shutdown();
 }

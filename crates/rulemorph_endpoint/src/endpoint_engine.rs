@@ -2415,12 +2415,18 @@ fn parse_yaml<T: DeserializeOwned>(
     source: &str,
     errors: &mut Vec<RulesDirError>,
 ) -> Option<T> {
-    match parse_yaml_value_strict(source)
-        .and_then(|value| serde_yaml::from_value(value).map_err(|err| err.to_string()))
-    {
+    let value = match parse_yaml_value_strict(source) {
+        Ok(value) => value,
+        Err(err) => {
+            push_parse_error(errors, path, &err.to_string(), err.location());
+            return None;
+        }
+    };
+    match serde_yaml::from_value(value) {
         Ok(value) => Some(value),
         Err(err) => {
-            push_parse_error(errors, path, &err);
+            let location = err.location().map(|loc| (loc.line(), loc.column()));
+            push_parse_error(errors, path, &err.to_string(), location);
             None
         }
     }
@@ -2430,7 +2436,7 @@ fn parse_rule_type(path: &Path, source: &str, errors: &mut Vec<RulesDirError>) -
     let meta: serde_yaml::Value = match parse_yaml_value_strict(source) {
         Ok(value) => value,
         Err(err) => {
-            push_parse_error(errors, path, &err);
+            push_parse_error(errors, path, &err.to_string(), err.location());
             return None;
         }
     };
@@ -2442,14 +2448,19 @@ fn parse_rule_type(path: &Path, source: &str, errors: &mut Vec<RulesDirError>) -
     )
 }
 
-fn push_parse_error(errors: &mut Vec<RulesDirError>, path: &Path, message: &str) {
+fn push_parse_error(
+    errors: &mut Vec<RulesDirError>,
+    path: &Path,
+    message: &str,
+    location: Option<(usize, usize)>,
+) {
     push_error(
         errors,
         "RuleParseFailed",
         path,
         message.to_string(),
         None,
-        None,
+        location,
     );
 }
 
@@ -2562,7 +2573,7 @@ fn validate_normal_rule(
     let rule = match parse_rule_file_with_format(source, RuleFormat::from_path(path)) {
         Ok(rule) => rule,
         Err(err) => {
-            push_parse_error(errors, path, &err.to_string());
+            push_parse_error(errors, path, &err.to_string(), err.line_column());
             return;
         }
     };

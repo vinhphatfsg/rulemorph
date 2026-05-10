@@ -7,6 +7,44 @@ use serde::de::{self, DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map as JsonMap, Number as JsonNumber, Value as JsonValue};
 use serde_yaml::{Mapping as YamlMapping, Number as YamlNumber, Value as YamlValue};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictYamlError {
+    message: String,
+    line: Option<usize>,
+    column: Option<usize>,
+}
+
+impl StrictYamlError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            line: None,
+            column: None,
+        }
+    }
+
+    fn from_serde_yaml(err: serde_yaml::Error) -> Self {
+        let location = err.location();
+        Self {
+            message: err.to_string(),
+            line: location.as_ref().map(|loc| loc.line()),
+            column: location.as_ref().map(|loc| loc.column()),
+        }
+    }
+
+    pub fn location(&self) -> Option<(usize, usize)> {
+        self.line.zip(self.column)
+    }
+}
+
+impl fmt::Display for StrictYamlError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StrictYamlError {}
+
 pub fn parse_json_value_strict(source: &str) -> Result<JsonValue, String> {
     let mut deserializer = serde_json::Deserializer::from_str(source);
     let value = JsonValueSeed
@@ -16,14 +54,14 @@ pub fn parse_json_value_strict(source: &str) -> Result<JsonValue, String> {
     Ok(value)
 }
 
-pub fn parse_yaml_value_strict(source: &str) -> Result<YamlValue, String> {
+pub fn parse_yaml_value_strict(source: &str) -> Result<YamlValue, StrictYamlError> {
     let mut documents = serde_yaml::Deserializer::from_str(source);
     let deserializer = documents
         .next()
-        .ok_or_else(|| "YAML stream must contain one document".to_string())?;
+        .ok_or_else(|| StrictYamlError::new("YAML stream must contain one document"))?;
     YamlValueSeed::unbounded()
         .deserialize(deserializer)
-        .map_err(|err| err.to_string())
+        .map_err(StrictYamlError::from_serde_yaml)
         .and_then(|value| reject_trailing_yaml_documents(documents).map(|_| value))
 }
 
@@ -33,11 +71,11 @@ pub fn parse_yaml_value_strict_with_limits(
     max_nodes: usize,
     max_array_len: usize,
     max_text_bytes: usize,
-) -> Result<YamlValue, String> {
+) -> Result<YamlValue, StrictYamlError> {
     let mut documents = serde_yaml::Deserializer::from_str(source);
     let deserializer = documents
         .next()
-        .ok_or_else(|| "YAML stream must contain one document".to_string())?;
+        .ok_or_else(|| StrictYamlError::new("YAML stream must contain one document"))?;
     let node_count = Cell::new(0usize);
     YamlValueSeed::bounded(
         max_depth,
@@ -47,16 +85,18 @@ pub fn parse_yaml_value_strict_with_limits(
         &node_count,
     )
     .deserialize(deserializer)
-    .map_err(|err| err.to_string())
+    .map_err(StrictYamlError::from_serde_yaml)
     .and_then(|value| reject_trailing_yaml_documents(documents).map(|_| value))
 }
 
-fn reject_trailing_yaml_documents<'de, I>(documents: I) -> Result<(), String>
+fn reject_trailing_yaml_documents<'de, I>(documents: I) -> Result<(), StrictYamlError>
 where
     I: IntoIterator<Item = serde_yaml::Deserializer<'de>>,
 {
     if documents.into_iter().next().is_some() {
-        return Err("YAML stream must contain exactly one document".to_string());
+        return Err(StrictYamlError::new(
+            "YAML stream must contain exactly one document",
+        ));
     }
     Ok(())
 }

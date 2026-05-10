@@ -724,7 +724,7 @@ fn validate_excel_input(excel: &ExcelInput, ctx: &mut ValidationCtx<'_>) {
     }
     if !excel.has_header && excel.columns.as_ref().is_none_or(Vec::is_empty) {
         ctx.push(
-            ErrorCode::MissingCsvColumns,
+            ErrorCode::MissingExcelColumns,
             "excel.columns is required when has_header=false",
             "input.excel.columns",
         );

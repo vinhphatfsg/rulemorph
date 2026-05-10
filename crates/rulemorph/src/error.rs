@@ -12,6 +12,7 @@ pub enum ErrorCode {
     MissingExcelSection,
     InvalidDelimiterLength,
     MissingCsvColumns,
+    MissingExcelColumns,
     InvalidInputOption,
     DuplicateInputField,
 
@@ -60,6 +61,7 @@ impl ErrorCode {
             ErrorCode::MissingExcelSection => "MissingExcelSection",
             ErrorCode::InvalidDelimiterLength => "InvalidDelimiterLength",
             ErrorCode::MissingCsvColumns => "MissingCsvColumns",
+            ErrorCode::MissingExcelColumns => "MissingExcelColumns",
             ErrorCode::InvalidInputOption => "InvalidInputOption",
             ErrorCode::DuplicateInputField => "DuplicateInputField",
             ErrorCode::MissingTarget => "MissingTarget",

@@ -28,7 +28,6 @@ pub(crate) fn normalize_csv_records_iter<'a>(
     let mut reader = ReaderBuilder::new()
         .delimiter(csv_spec.delimiter.as_bytes()[0])
         .has_headers(csv_spec.has_header)
-        .flexible(true)
         .from_reader(input.as_bytes());
 
     let headers = if csv_spec.has_header {
@@ -92,6 +91,16 @@ impl Iterator for CsvRecords<'_> {
                 )));
             }
         };
+        if record.len() != self.headers.len() {
+            return Some(Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                format!(
+                    "csv record has {} fields but expected {}",
+                    record.len(),
+                    self.headers.len()
+                ),
+            )));
+        }
 
         let mut obj = Map::new();
         for (index, name) in self.headers.iter().enumerate() {

@@ -3,11 +3,12 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 
+use csv::ReaderBuilder;
 use rulemorph::serde_guard::parse_json_value_strict;
 use rulemorph::{
-    DtoLanguage, Expr, ExprChain, ExprOp, InputData, InputFormat, NormalizationOptions, RuleError,
-    RuleFile, RuleFormat, TransformError, TransformErrorKind, TransformWarning, generate_dto,
-    normalize_records_with_options, parse_rule_file_with_format, transform_input_with_warnings,
+    DtoLanguage, Expr, ExprChain, ExprOp, InputData, InputFormat, RuleError, RuleFile, RuleFormat,
+    TransformError, TransformErrorKind, TransformWarning, generate_dto,
+    parse_rule_file_with_format, transform_input_with_warnings,
     transform_input_with_warnings_with_base_dir, transform_stream_input,
     transform_stream_input_with_base_dir, validate_rule_file_with_source,
 };
@@ -2411,26 +2412,59 @@ fn parse_json_records_strict(
 }
 
 fn parse_csv_records(text: &str) -> Result<Vec<Value>, String> {
-    let rule = parse_rule_file_with_format(
-        r#"version: 2
-input:
-  format: csv
-  csv:
-    has_header: true
-mappings: []
-"#,
-        RuleFormat::Yaml,
-    )
-    .map_err(|err| err.to_string())?;
-    let records = normalize_records_with_options(
-        &rule,
-        InputData::Text(text),
-        &NormalizationOptions::default(),
-    )
-    .map_err(|err| err.to_string())?;
-    records
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|err| err.to_string())
+    let mut reader = ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(text.as_bytes());
+    let headers = reader
+        .headers()
+        .map_err(|err| err.to_string())?
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                format!("column_{}", index + 1)
+            } else {
+                trimmed.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut records = Vec::new();
+    for result in reader.records() {
+        let record = result.map_err(|err| err.to_string())?;
+        let mut obj = Map::new();
+        for (index, value) in record.iter().enumerate() {
+            if let Some(key) = headers.get(index) {
+                obj.insert(key.clone(), csv_cell_to_value(value));
+            }
+        }
+        records.push(Value::Object(obj));
+    }
+    Ok(records)
+}
+
+fn csv_cell_to_value(value: &str) -> Value {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Value::Null;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "true" {
+        return Value::Bool(true);
+    }
+    if lower == "false" {
+        return Value::Bool(false);
+    }
+    if let Ok(number) = trimmed.parse::<i64>() {
+        return Value::Number(number.into());
+    }
+    if let Ok(number) = trimmed.parse::<f64>() {
+        if let Some(number) = serde_json::Number::from_f64(number) {
+            return Value::Number(number);
+        }
+    }
+    Value::String(trimmed.to_string())
 }
 
 #[derive(Default)]

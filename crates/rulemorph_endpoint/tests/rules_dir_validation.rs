@@ -142,12 +142,13 @@ body_rule: bad_rule.yaml
     write_file(rules_dir, "bad_rule.yaml", "version: 2\ninput: [\n");
 
     let result = validate_rules_dir(rules_dir).unwrap_err();
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|err| err.code == "RuleParseFailed")
-    );
+    let error = result
+        .errors
+        .iter()
+        .find(|err| err.code == "RuleParseFailed")
+        .expect("expected RuleParseFailed");
+    assert!(error.line.is_some(), "expected parse error line");
+    assert!(error.column.is_some(), "expected parse error column");
 }
 
 #[test]
