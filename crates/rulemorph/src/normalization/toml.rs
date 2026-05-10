@@ -131,10 +131,7 @@ fn toml_inline_table_to_json(
 ) -> Result<JsonValue, String> {
     let mut output = Map::new();
     for (key, value) in values.iter() {
-        output.insert(
-            key.to_string(),
-            toml_value_to_json(value, options, depth + 1)?,
-        );
+        output.insert(key.to_string(), toml_value_to_json(value, options, depth)?);
     }
     Ok(JsonValue::Object(output))
 }

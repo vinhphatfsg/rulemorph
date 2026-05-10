@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read};
 
 use calamine::{Data, ExcelDateTime, Range, Reader, open_workbook_auto_from_rs};
@@ -81,8 +81,7 @@ pub fn normalize_excel_records(
         return Err(invalid("input exceeds max_excel_rows"));
     }
     let selected_columns = selected_column_indexes(excel, &rows, window, max_width)?;
-    let cell_count = rows
-        .len()
+    let cell_count = row_count
         .checked_mul(selected_columns.len())
         .ok_or_else(|| invalid("input exceeds max_excel_cells"))?;
     if cell_count > options.max_excel_cells {
@@ -168,9 +167,10 @@ fn preflight_xlsx_package(
 
     let mut total_uncompressed = 0usize;
     let mut content_types = None;
+    let mut workbook_xml = None;
+    let mut workbook_rels = None;
     let mut worksheet_count = 0usize;
-    let mut total_rows = 0usize;
-    let mut total_cells = 0usize;
+    let mut seen_entry_names = HashSet::new();
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index).map_err(|err| {
             TransformError::new(
@@ -180,6 +180,9 @@ fn preflight_xlsx_package(
         })?;
         let name = entry.name().to_string();
         let lower_name = name.to_ascii_lowercase();
+        if !seen_entry_names.insert(lower_name.clone()) {
+            return Err(invalid("Excel ZIP entry names must be unique"));
+        }
         let size =
             usize::try_from(entry.size()).map_err(|_| invalid("Excel ZIP entry too large"))?;
         if size > options.max_excel_entry_uncompressed_bytes {
@@ -196,34 +199,16 @@ fn preflight_xlsx_package(
         }
         if lower_name == "[content_types].xml" {
             content_types = Some(read_zip_text(&mut entry)?);
+        } else if lower_name == "xl/workbook.xml" {
+            workbook_xml = Some(read_zip_text(&mut entry)?);
+        } else if lower_name == "xl/_rels/workbook.xml.rels" {
+            let rels = read_zip_text(&mut entry)?;
+            reject_external_relationships(&rels)?;
+            workbook_rels = Some(rels);
         } else if lower_name.starts_with("xl/worksheets/") && lower_name.ends_with(".xml") {
-            let worksheet = read_zip_text(&mut entry)?;
             worksheet_count = worksheet_count.saturating_add(1);
             if worksheet_count > options.max_excel_sheets {
                 return Err(invalid("input exceeds max_excel_sheets"));
-            }
-            let counts = inspect_worksheet_xml(&worksheet, excel.formula)?;
-            total_rows = total_rows
-                .checked_add(counts.rows)
-                .ok_or_else(|| invalid("input exceeds max_excel_rows"))?;
-            total_cells = total_cells
-                .checked_add(counts.cells)
-                .ok_or_else(|| invalid("input exceeds max_excel_cells"))?;
-            if total_rows > options.max_excel_rows {
-                return Err(invalid("input exceeds max_excel_rows"));
-            }
-            if total_cells > options.max_excel_cells {
-                return Err(invalid("input exceeds max_excel_cells"));
-            }
-            if counts.max_row > options.max_excel_rows {
-                return Err(invalid("input exceeds max_excel_rows"));
-            }
-            let dense_cells = counts
-                .max_row
-                .checked_mul(counts.max_col)
-                .ok_or_else(|| invalid("input exceeds max_excel_cells"))?;
-            if dense_cells > options.max_excel_cells {
-                return Err(invalid("input exceeds max_excel_cells"));
             }
         } else if lower_name.ends_with(".rels") {
             let rels = read_zip_text(&mut entry)?;
@@ -257,7 +242,194 @@ fn preflight_xlsx_package(
     {
         return Err(invalid("only .xlsx workbooks are supported"));
     }
+    let workbook_xml =
+        workbook_xml.ok_or_else(|| invalid("Excel package is missing workbook.xml"))?;
+    let workbook_rels =
+        workbook_rels.ok_or_else(|| invalid("Excel package is missing workbook relationships"))?;
+    let selected_worksheet_path = selected_worksheet_path(&workbook_xml, &workbook_rels, excel)?;
+    let mut selected_sheet = archive.by_name(&selected_worksheet_path).map_err(|err| {
+        TransformError::new(
+            TransformErrorKind::InvalidInput,
+            format!("failed to inspect selected Excel worksheet: {}", err),
+        )
+    })?;
+    let selected_sheet = read_zip_text(&mut selected_sheet)?;
+    let counts = inspect_worksheet_xml(&selected_sheet, excel.formula)?;
+    if counts.rows > options.max_excel_rows || counts.max_row > options.max_excel_rows {
+        return Err(invalid("input exceeds max_excel_rows"));
+    }
+    if counts.cells > options.max_excel_cells {
+        return Err(invalid("input exceeds max_excel_cells"));
+    }
+    let dense_cells = counts
+        .max_row
+        .checked_mul(counts.max_col)
+        .ok_or_else(|| invalid("input exceeds max_excel_cells"))?;
+    if dense_cells > options.max_excel_cells {
+        return Err(invalid("input exceeds max_excel_cells"));
+    }
     Ok(())
+}
+
+struct WorkbookSheet {
+    name: String,
+    relationship_id: String,
+}
+
+fn selected_worksheet_path(
+    workbook_xml: &str,
+    workbook_rels: &str,
+    excel: &ExcelInput,
+) -> Result<String, TransformError> {
+    let sheets = parse_workbook_sheets(workbook_xml)?;
+    let relationships = parse_workbook_relationships(workbook_rels)?;
+    let selected = match &excel.sheet {
+        Some(ExcelSheetRef::Name(name)) => sheets
+            .iter()
+            .find(|sheet| sheet.name == *name)
+            .ok_or_else(|| invalid("Excel sheet was not found"))?,
+        Some(ExcelSheetRef::Index(index)) => sheets
+            .get(*index)
+            .ok_or_else(|| invalid("Excel sheet index is out of range"))?,
+        None => sheets
+            .first()
+            .ok_or_else(|| invalid("Excel workbook has no sheets"))?,
+    };
+    relationships
+        .get(&selected.relationship_id)
+        .cloned()
+        .ok_or_else(|| invalid("Excel selected sheet relationship was not found"))
+}
+
+fn parse_workbook_sheets(workbook_xml: &str) -> Result<Vec<WorkbookSheet>, TransformError> {
+    let mut reader = XmlReader::from_str(workbook_xml);
+    reader.trim_text(false);
+    let mut sheets = Vec::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event))
+                if local_name(event.name().as_ref()) == b"sheet" =>
+            {
+                let mut name = None;
+                let mut relationship_id = None;
+                for attr in event.attributes() {
+                    let attr = attr.map_err(|err| {
+                        TransformError::new(
+                            TransformErrorKind::InvalidInput,
+                            format!("failed to parse Excel workbook XML attribute: {}", err),
+                        )
+                    })?;
+                    let key = attr.key.as_ref();
+                    match key {
+                        b"name" => {
+                            name = Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        }
+                        b"r:id" | b"relationships:id" => {
+                            relationship_id =
+                                Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        }
+                        _ => {}
+                    }
+                }
+                let name = name.ok_or_else(|| invalid("Excel workbook sheet is missing name"))?;
+                let relationship_id = relationship_id
+                    .ok_or_else(|| invalid("Excel workbook sheet is missing relationship"))?;
+                sheets.push(WorkbookSheet {
+                    name,
+                    relationship_id,
+                });
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(err) => {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to parse Excel workbook XML: {}", err),
+                ));
+            }
+        }
+    }
+    Ok(sheets)
+}
+
+fn parse_workbook_relationships(
+    workbook_rels: &str,
+) -> Result<HashMap<String, String>, TransformError> {
+    let mut reader = XmlReader::from_str(workbook_rels);
+    reader.trim_text(false);
+    let mut relationships = HashMap::new();
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event))
+                if local_name(event.name().as_ref()) == b"Relationship" =>
+            {
+                let mut id = None;
+                let mut target = None;
+                let mut relationship_type = None;
+                for attr in event.attributes() {
+                    let attr = attr.map_err(|err| {
+                        TransformError::new(
+                            TransformErrorKind::InvalidInput,
+                            format!("failed to parse Excel workbook relationship: {}", err),
+                        )
+                    })?;
+                    match local_name(attr.key.as_ref()) {
+                        b"Id" => {
+                            id = Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        }
+                        b"Target" => {
+                            target = Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        }
+                        b"Type" => {
+                            relationship_type =
+                                Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        }
+                        _ => {}
+                    }
+                }
+                if relationship_type
+                    .as_deref()
+                    .is_some_and(|value| value.ends_with("/worksheet"))
+                {
+                    let id =
+                        id.ok_or_else(|| invalid("Excel worksheet relationship is missing id"))?;
+                    let target = target
+                        .ok_or_else(|| invalid("Excel worksheet relationship is missing target"))?;
+                    relationships.insert(id, resolve_workbook_relationship_target(&target)?);
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(err) => {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to parse Excel workbook relationships: {}", err),
+                ));
+            }
+        }
+    }
+    Ok(relationships)
+}
+
+fn resolve_workbook_relationship_target(target: &str) -> Result<String, TransformError> {
+    if target.contains("..") || target.contains('\\') {
+        return Err(invalid("Excel worksheet relationship target is invalid"));
+    }
+    let target = target.trim_start_matches('/');
+    if target.is_empty() {
+        return Err(invalid("Excel worksheet relationship target is invalid"));
+    }
+    if target.starts_with("xl/") {
+        if target.starts_with("xl/worksheets/") && target.ends_with(".xml") {
+            Ok(target.to_string())
+        } else {
+            Err(invalid("Excel worksheet relationship target is invalid"))
+        }
+    } else if target.starts_with("worksheets/") && target.ends_with(".xml") {
+        Ok(format!("xl/{target}"))
+    } else {
+        Err(invalid("Excel worksheet relationship target is invalid"))
+    }
 }
 
 #[derive(Default)]

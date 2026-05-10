@@ -50,10 +50,14 @@ struct XlsxFixtureOptions {
     duplicate_header: bool,
     empty_sheet: bool,
     formula_without_cache: bool,
+    far_formula_without_cache: bool,
     shared_formula: bool,
     sparse_far_cell: bool,
     macro_enabled: bool,
     external_relationship: bool,
+    extra_sheet: bool,
+    conflicting_sheet_relationship: bool,
+    case_variant_duplicate_sheet: bool,
 }
 
 fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
@@ -64,6 +68,12 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
     } else {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
     };
+    let include_second_sheet = options.extra_sheet || options.conflicting_sheet_relationship;
+    let sheet2_content_type = if include_second_sheet {
+        r#"<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>"#
+    } else {
+        ""
+    };
     let content_types = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -71,6 +81,7 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
   <Default Extension="xml" ContentType="application/xml"/>
   <Override PartName="/xl/workbook.xml" ContentType="{workbook_content_type}"/>
   <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  {sheet2_content_type}
   <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
   <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
 </Types>"#
@@ -90,17 +101,30 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
 </Relationships>"#,
         file_options,
     );
-    write_zip_file(
-        &mut zip,
-        "xl/workbook.xml",
+    let users_relationship_attrs = if options.conflicting_sheet_relationship {
+        r#"r:id="rId4" id="rId1""#
+    } else {
+        r#"r:id="rId1""#
+    };
+    let sheet2_workbook_entry = if options.extra_sheet {
+        r#"<sheet name="Archive" sheetId="2" r:id="rId4"/>"#
+    } else {
+        ""
+    };
+    let workbook = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="Users" sheetId="1" r:id="rId1"/></sheets>
-</workbook>"#,
-        file_options,
+  <sheets><sheet name="Users" sheetId="1" {users_relationship_attrs}/>{sheet2_workbook_entry}</sheets>
+</workbook>"#
     );
+    write_zip_file(&mut zip, "xl/workbook.xml", &workbook, file_options);
     let external_relationship = if options.external_relationship {
         r#"<Relationship Id="rId99" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.test/" TargetMode="External"/>"#
+    } else {
+        ""
+    };
+    let sheet2_relationship = if include_second_sheet {
+        r#"<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>"#
     } else {
         ""
     };
@@ -110,6 +134,7 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
   <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
   <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+  {sheet2_relationship}
   {external_relationship}
 </Relationships>"#
     );
@@ -150,6 +175,14 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
   </sheetData>
 </worksheet>"#
             .to_string()
+    } else if options.far_formula_without_cache {
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="200"><c r="A200"><f>1+1</f></c></row>
+  </sheetData>
+</worksheet>"#
+            .to_string()
     } else if options.shared_formula {
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
@@ -181,6 +214,41 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
         )
     };
     write_zip_file(&mut zip, "xl/worksheets/sheet1.xml", &sheet, file_options);
+    if options.case_variant_duplicate_sheet {
+        write_zip_file(
+            &mut zip,
+            "xl/worksheets/SHEET1.XML",
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1"><v>1</v></c></row>
+    <row r="1048576"><c r="XFD1048576"><v>1</v></c></row>
+  </sheetData>
+</worksheet>"#,
+            file_options,
+        );
+    }
+    if include_second_sheet {
+        let sheet2 = if options.conflicting_sheet_relationship {
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1"><v>1</v></c></row>
+    <row r="1048576"><c r="XFD1048576"><v>1</v></c></row>
+  </sheetData>
+</worksheet>"#
+        } else {
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1"><v>1</v></c><c r="B1"><v>2</v></c></row>
+    <row r="2"><c r="A2"><v>3</v></c><c r="B2"><v>4</v></c></row>
+    <row r="3"><c r="A3"><v>5</v></c><c r="B3"><v>6</v></c></row>
+  </sheetData>
+</worksheet>"#
+        };
+        write_zip_file(&mut zip, "xl/worksheets/sheet2.xml", sheet2, file_options);
+    }
     if options.macro_enabled {
         write_zip_file(
             &mut zip,
@@ -467,6 +535,28 @@ fn excel_preflight_accepts_byte_input() {
 }
 
 #[test]
+fn excel_applies_row_and_cell_limits_to_selected_sheet_only() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        extra_sheet: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let options = NormalizationOptions {
+        max_excel_rows: 2,
+        max_excel_cells: 4,
+        ..NormalizationOptions::default()
+    };
+    let records = normalize_records_with_options(&rule, InputData::Bytes(&input), &options)
+        .expect("unselected sheet should not count toward row/cell limits")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("records should normalize");
+    assert_eq!(
+        records,
+        vec![serde_json::json!({ "id": 1, "name": "Alice" })]
+    );
+}
+
+#[test]
 fn excel_rejects_empty_selected_range_with_clear_error() {
     let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
     let input = build_test_xlsx(XlsxFixtureOptions {
@@ -577,6 +667,43 @@ mappings:
 }
 
 #[test]
+fn excel_rejects_formula_extent_over_cell_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Users
+    has_header: false
+    formula: formula
+    columns:
+      - name: "a"
+        column: "A"
+      - name: "b"
+        column: "B"
+mappings:
+  - target: "a"
+    source: "a"
+"#,
+    )
+    .expect("parse rule");
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        far_formula_without_cache: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let options = NormalizationOptions {
+        max_excel_rows: 200,
+        max_excel_cells: 250,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(&rule, InputData::Bytes(&input), &options)
+        .expect_err("formula extent should count toward effective cells");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "input exceeds max_excel_cells");
+}
+
+#[test]
 fn excel_rejects_shared_formula_metadata() {
     let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
     let input = build_test_xlsx(XlsxFixtureOptions {
@@ -606,6 +733,40 @@ fn excel_rejects_sparse_far_cell_dense_range_limit() {
     )
     .expect_err("sparse far cell should fail before calamine range allocation");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn excel_preflight_ignores_unqualified_sheet_id_attribute() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        conflicting_sheet_relationship: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Bytes(&input),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("preflight must inspect the r:id worksheet, not an unqualified id");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "input exceeds max_excel_rows");
+}
+
+#[test]
+fn excel_preflight_rejects_case_variant_duplicate_sheet_part() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        case_variant_duplicate_sheet: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Bytes(&input),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("case-variant duplicate sheet parts should be rejected before parsing");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "Excel ZIP entry names must be unique");
 }
 
 #[test]
@@ -1851,6 +2012,61 @@ mappings:
         record,
         serde_json::json!({ "a": { "b": { "c": { "value": 1 } } } })
     );
+}
+
+#[test]
+fn toml_allows_inline_table_at_equivalent_depth_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: toml
+  toml: {}
+mappings:
+  - target: "value"
+    source: "record.value"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_depth: 2,
+        ..NormalizationOptions::default()
+    };
+    let mut records = normalize_records_with_options(
+        &rule,
+        InputData::Text("record = { value = 1 }\n"),
+        &options,
+    )
+    .expect("inline TOML table should fit within equivalent JSON depth");
+    let record = records.next().expect("record").expect("record ok");
+    assert_eq!(record, serde_json::json!({ "record": { "value": 1 } }));
+}
+
+#[test]
+fn toml_rejects_nested_inline_table_over_depth_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: toml
+  toml: {}
+mappings:
+  - target: "value"
+    source: "record.inner.value"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_depth: 2,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("record = { inner = { value = 1 } }\n"),
+        &options,
+    )
+    .expect_err("nested inline table should exceed depth limit");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
 
 #[test]
