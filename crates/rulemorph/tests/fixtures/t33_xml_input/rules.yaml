@@ -1,0 +1,16 @@
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+    attr_prefix: "@"
+    text_key: "#text"
+    child_policy: array
+    namespaces: strip
+mappings:
+  - target: "id"
+    source: 'input.["@id"]'
+  - target: "name"
+    source: 'input.name[0]["#text"]'
+  - target: "first_role"
+    source: 'input.role[0]["#text"]'

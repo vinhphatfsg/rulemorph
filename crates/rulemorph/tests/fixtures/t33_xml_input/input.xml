@@ -1,0 +1,11 @@
+<users xmlns="urn:example:users">
+  <user id="1">
+    <name>Alice</name>
+    <role>admin</role>
+    <role>ops</role>
+  </user>
+  <user id="2">
+    <name>Bob</name>
+    <role>viewer</role>
+  </user>
+</users>

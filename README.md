@@ -8,11 +8,11 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-A Rust CLI and library to transform CSV/JSON data into JSON using declarative YAML rules. Ideal for normalizing API responses, converting between data formats, and building consistent data pipelines.
+A Rust CLI and library to transform CSV/JSON/YAML/TOML/XML/HTML/Excel data into JSON using declarative YAML or JSON rules. Ideal for normalizing API responses, converting between data formats, and building consistent data pipelines.
 
 ## Features
 
-- **Input formats**: CSV and JSON with nested record extraction
+- **Input formats**: CSV, JSON, YAML, TOML, XML, HTML, and `.xlsx` Excel with normalized JSON records
 - **Rule-based mapping**: Declarative YAML rules with static validation
 - **Expressions (v2 pipe syntax)**: trim/lowercase/uppercase/concat, add/multiply, coalesce, lookup/lookup_first, plus `let`/`if`/`map` steps
 - **Lookups**: Array lookups from external context data (lookup, lookup_first)
@@ -150,7 +150,7 @@ rulemorph transform -r rules.yaml -i input.json
 ```yaml
 version: 2
 input:
-  format: json|csv
+  format: json # csv | json | yaml | toml | xml | html | excel
   json:
     records_path: "path.to.array"  # Optional
 mappings:
@@ -164,6 +164,56 @@ mappings:
 Note: v2 condition comparisons are type-sensitive (`"1"` != `1`). Ordering (`gt/gte/lt/lte`) compares numerically when possible, otherwise compares strings lexicographically.
 
 For the full rule specification, see [Rule Specification](docs/rules_spec_en.md).
+
+## Input Normalization
+
+Supported `input.format` values are `csv`, `json`, `yaml`, `toml`, `xml`, `html`, and `excel`.
+
+Parser safety invariants are always enforced: duplicate JSON/YAML keys are rejected, XML DTD/entity/processing-instruction inputs are rejected, HTML is parsed without JavaScript execution or URL fetching, Excel macros/external relationships/formula evaluation are rejected or not executed, and MCP inline `rules_text` cannot use branch file references.
+
+Compact examples:
+
+```yaml
+input: { format: yaml, yaml: { records_path: users } }
+```
+
+```yaml
+input: { format: toml, toml: { records_path: users } }
+```
+
+```yaml
+input:
+  format: xml
+  xml: { records_path: users.user, attr_prefix: "@", text_key: "#text" }
+```
+
+```yaml
+input:
+  format: html
+  html:
+    records_selector: "table#users tbody tr"
+    fields:
+      id: { selector: "td:nth-child(1)", value: text }
+      name: { selector: "td:nth-child(2)", value: text }
+```
+
+```yaml
+input:
+  format: excel
+  excel: { sheet: "Users", has_header: true }
+```
+
+### Resource Limits
+
+Large local inputs can opt into higher finite resource limits:
+
+```sh
+rulemorph transform -r rules.yaml -i huge.csv --limit records=500000 --limit input-bytes=536870912
+rulemorph transform -r rules.yaml -i huge.csv --limits-profile large
+rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
+```
+
+These options only relax resource limits. Parser security invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, and MCP pathless branch guard are not configurable.
 
 ## DTO Generation
 

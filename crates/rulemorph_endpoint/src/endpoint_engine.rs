@@ -14,6 +14,7 @@ use futures_util::TryStreamExt;
 use http_body_util::{BodyExt, LengthLimitError, Limited};
 use reqwest::Client;
 use rulemorph::PathToken;
+use rulemorph::serde_guard::parse_yaml_value_strict;
 use rulemorph::v2_eval::{
     EvalValue, V2EvalContext, eval_v2_condition, eval_v2_expr, eval_v2_if_step, eval_v2_let_step,
     eval_v2_map_step, eval_v2_op_step, eval_v2_pipe, eval_v2_ref, eval_v2_start,
@@ -24,8 +25,8 @@ use rulemorph::v2_parser::{
     parse_v2_pipe_from_value,
 };
 use rulemorph::{
-    Expr, Mapping, RuleError, RuleFile, TransformError, TransformErrorKind, get_path, parse_path,
-    parse_rule_file, transform_record, transform_record_with_base_dir,
+    Expr, Mapping, RuleError, RuleFile, RuleFormat, TransformError, TransformErrorKind, get_path,
+    parse_path, parse_rule_file_with_format, transform_record, transform_record_with_base_dir,
     validate_rule_file_with_source,
 };
 use rulemorph_trace::{TraceWriteOptions, TraceWriter, TraceWriterConfig};
@@ -405,10 +406,12 @@ impl EndpointEngine {
         let endpoint_path = rules_dir.join("endpoint.yaml");
         let source = std::fs::read_to_string(&endpoint_path)
             .with_context(|| format!("failed to read {}", endpoint_path.display()))?;
-        let raw_source: serde_yaml::Value = serde_yaml::from_str(&source)
+        let raw_source = parse_yaml_value_strict(&source)
+            .map_err(|err| anyhow!(err))
             .with_context(|| format!("failed to parse {}", endpoint_path.display()))?;
-        let raw_rule_source = serde_json::to_value(raw_source).unwrap_or_else(|_| json!({}));
-        let raw: EndpointRuleFile = serde_yaml::from_str(&source)
+        let raw_rule_source =
+            serde_json::to_value(raw_source.clone()).unwrap_or_else(|_| json!({}));
+        let raw: EndpointRuleFile = serde_yaml::from_value(raw_source)
             .with_context(|| format!("failed to parse {}", endpoint_path.display()))?;
         if raw.version != 2 {
             return Err(anyhow!("endpoint rule version must be 2"));
@@ -2344,6 +2347,11 @@ fn apply_mappings_via_rule(
             format: rulemorph::InputFormat::Json,
             csv: None,
             json: None,
+            yaml: None,
+            toml: None,
+            xml: None,
+            html: None,
+            excel: None,
         },
         output: None,
         record_when: None,
@@ -2407,20 +2415,22 @@ fn parse_yaml<T: DeserializeOwned>(
     source: &str,
     errors: &mut Vec<RulesDirError>,
 ) -> Option<T> {
-    match serde_yaml::from_str(source) {
+    match parse_yaml_value_strict(source)
+        .and_then(|value| serde_yaml::from_value(value).map_err(|err| err.to_string()))
+    {
         Ok(value) => Some(value),
         Err(err) => {
-            push_yaml_error(errors, path, &err);
+            push_parse_error(errors, path, &err);
             None
         }
     }
 }
 
 fn parse_rule_type(path: &Path, source: &str, errors: &mut Vec<RulesDirError>) -> Option<String> {
-    let meta: serde_yaml::Value = match serde_yaml::from_str(source) {
+    let meta: serde_yaml::Value = match parse_yaml_value_strict(source) {
         Ok(value) => value,
         Err(err) => {
-            push_yaml_error(errors, path, &err);
+            push_parse_error(errors, path, &err);
             return None;
         }
     };
@@ -2432,15 +2442,14 @@ fn parse_rule_type(path: &Path, source: &str, errors: &mut Vec<RulesDirError>) -
     )
 }
 
-fn push_yaml_error(errors: &mut Vec<RulesDirError>, path: &Path, err: &serde_yaml::Error) {
-    let location = err.location().map(|loc| (loc.line(), loc.column()));
+fn push_parse_error(errors: &mut Vec<RulesDirError>, path: &Path, message: &str) {
     push_error(
         errors,
-        "YamlParseFailed",
+        "RuleParseFailed",
         path,
-        err.to_string(),
+        message.to_string(),
         None,
-        location,
+        None,
     );
 }
 
@@ -2550,10 +2559,10 @@ fn validate_normal_rule(
     state: &mut ValidationState,
     errors: &mut Vec<RulesDirError>,
 ) {
-    let rule = match parse_rule_file(source) {
+    let rule = match parse_rule_file_with_format(source, RuleFormat::from_path(path)) {
         Ok(rule) => rule,
         Err(err) => {
-            push_yaml_error(errors, path, &err);
+            push_parse_error(errors, path, &err.to_string());
             return;
         }
     };
@@ -2772,7 +2781,8 @@ fn resolve_rule_path(base_dir: &Path, rule: &str) -> PathBuf {
 fn load_rule_kind(path: &Path) -> Result<RuleKind> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let meta: serde_yaml::Value = serde_yaml::from_str(&source)
+    let meta = parse_yaml_value_strict(&source)
+        .map_err(|err| anyhow!(err))
         .with_context(|| format!("failed to parse {}", path.display()))?;
     let rule_type = meta
         .get("type")
@@ -2780,14 +2790,14 @@ fn load_rule_kind(path: &Path) -> Result<RuleKind> {
         .unwrap_or("normal");
     match rule_type {
         "network" => {
-            let raw: NetworkRuleFile = serde_yaml::from_str(&source)
+            let raw: NetworkRuleFile = serde_yaml::from_value(meta)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
             let compiled = compile_network_rule(raw, path)?;
             Ok(RuleKind::Network(compiled))
         }
         "endpoint" => Err(anyhow!("endpoint rule not allowed as step")),
         _ => {
-            let rule = parse_rule_file(&source)
+            let rule = parse_rule_file_with_format(&source, RuleFormat::from_path(path))
                 .with_context(|| format!("failed to parse {}", path.display()))?;
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", path.display(), err))?;
@@ -2844,7 +2854,7 @@ fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNet
                 resolve_rule_path(path.parent().unwrap_or_else(|| Path::new(".")), path_str);
             let source = std::fs::read_to_string(&resolved)
                 .with_context(|| format!("failed to read {}", resolved.display()))?;
-            let rule = parse_rule_file(&source)
+            let rule = parse_rule_file_with_format(&source, RuleFormat::from_path(&resolved))
                 .with_context(|| format!("failed to parse {}", resolved.display()))?;
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", resolved.display(), err))?;
@@ -2991,7 +3001,7 @@ fn rule_display_name(path: &Path) -> String {
 }
 
 fn yaml_source_to_json(source: &str) -> Option<JsonValue> {
-    let raw: serde_yaml::Value = serde_yaml::from_str(source).ok()?;
+    let raw = parse_yaml_value_strict(source).ok()?;
     serde_json::to_value(raw).ok()
 }
 
@@ -4135,6 +4145,7 @@ enum RuleKind {
 mod tests {
     use super::*;
     use futures_util::stream;
+    use rulemorph::parse_rule_file;
     use rulemorph_trace::TraceStore;
     use serde_json::json;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -66,6 +66,63 @@ fn preflight_success_returns_zero() {
 }
 
 #[test]
+fn preflight_rejects_input_over_limit_override_before_transform() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .arg("--limit")
+        .arg("input-bytes=4")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("max_input_bytes"));
+}
+
+#[test]
+fn preflight_limits_profile_large_is_accepted() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .arg("--limits-profile")
+        .arg("large")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn preflight_limits_file_is_accepted() {
+    let base = fixtures_dir().join("p01_preflight_ok");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let limits_path = temp_dir.path().join("limits.toml");
+    fs::write(&limits_path, "input-bytes = 1000000\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .arg("--limits-file")
+        .arg(limits_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
 fn preflight_json_errors() {
     let base = fixtures_dir().join("p03_preflight_type_cast_failed");
     let rules = base.join("rules.yaml");
@@ -115,6 +172,344 @@ fn transform_outputs_json() {
     let actual: serde_json::Value =
         serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn transform_accepts_json_rule_file_by_extension() {
+    let base = fixtures_dir().join("t30_json_rule_file");
+    let expected = read_json(&base.join("expected.json"));
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.json"))
+        .arg("-i")
+        .arg(base.join("input.json"))
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let actual: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn cli_limit_override_allows_more_records() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("records=1000000")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_rejects_unknown_limit_override() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("formula-eval=1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn cli_limits_profile_large_is_accepted() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limits-profile")
+        .arg("large")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_rejects_limit_override_overflow() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("records=999999999999999999999999999999")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn cli_rejects_input_over_byte_limit_before_transform() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("input-bytes=4")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("max_input_bytes"));
+}
+
+#[test]
+fn cli_reports_invalid_utf8_as_transform_error() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let input = temp_dir.path().join("bad.csv");
+    fs::write(&input, [0xff, 0xfe, b'\n']).unwrap();
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(input)
+        .arg("-e")
+        .arg("json")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let value: serde_json::Value =
+        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    assert_eq!(value[0]["type"], "transform");
+    assert_eq!(value[0]["kind"], "InvalidInput");
+    assert!(value[0]["message"].as_str().unwrap().contains("UTF-8"));
+}
+
+#[test]
+fn cli_limits_file_is_accepted() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let limits_path = temp_dir.path().join("limits.toml");
+    fs::write(&limits_path, "records = 1000000\n").unwrap();
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limits-file")
+        .arg(limits_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_transform_excel_input() {
+    let base = fixtures_dir().join("t34_excel_input");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.xlsx"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_preflight_excel_input() {
+    let base = fixtures_dir().join("t34_excel_input");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("preflight")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.xlsx"))
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_transform_yaml_input() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let rules = temp_dir.path().join("rules.yaml");
+    let input = temp_dir.path().join("input.yaml");
+    fs::write(
+        &rules,
+        r#"
+version: 2
+input:
+  format: yaml
+  yaml:
+    records_path: users
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &input,
+        r#"
+users:
+  - id: "1"
+    name: Alice
+"#,
+    )
+    .unwrap();
+    assert_simple_transform(&rules, &input);
+}
+
+#[test]
+fn cli_transform_toml_input() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let rules = temp_dir.path().join("rules.yaml");
+    let input = temp_dir.path().join("input.toml");
+    fs::write(
+        &rules,
+        r#"
+version: 2
+input:
+  format: toml
+  toml:
+    records_path: users
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &input,
+        r#"
+[[users]]
+id = "1"
+name = "Alice"
+"#,
+    )
+    .unwrap();
+    assert_simple_transform(&rules, &input);
+}
+
+#[test]
+fn cli_transform_xml_input() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let rules = temp_dir.path().join("rules.yaml");
+    let input = temp_dir.path().join("input.xml");
+    fs::write(
+        &rules,
+        r##"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+    attr_prefix: "@"
+    text_key: "#text"
+mappings:
+  - target: "id"
+    source: 'input.["@id"]'
+  - target: "name"
+    source: 'input.name[0]["#text"]'
+"##,
+    )
+    .unwrap();
+    fs::write(
+        &input,
+        r#"<users><user id="1"><name>Alice</name></user></users>"#,
+    )
+    .unwrap();
+    assert_simple_transform(&rules, &input);
+}
+
+#[test]
+fn cli_transform_html_input() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let rules = temp_dir.path().join("rules.yaml");
+    let input = temp_dir.path().join("input.html");
+    fs::write(
+        &rules,
+        r#"
+version: 2
+input:
+  format: html
+  html:
+    records_selector: "table#users tbody tr"
+    fields:
+      id:
+        selector: "td:nth-child(1)"
+        value: text
+      name:
+        selector: "td:nth-child(2)"
+        value: text
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        &input,
+        r#"<table id="users"><tbody><tr><td>1</td><td>Alice</td></tr></tbody></table>"#,
+    )
+    .unwrap();
+    assert_simple_transform(&rules, &input);
+}
+
+fn assert_simple_transform(rules: &std::path::Path, input: &std::path::Path) {
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(rules)
+        .arg("-i")
+        .arg(input)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let actual: serde_json::Value =
+        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
+    assert_eq!(actual, serde_json::json!([{ "id": "1", "name": "Alice" }]));
 }
 
 #[test]

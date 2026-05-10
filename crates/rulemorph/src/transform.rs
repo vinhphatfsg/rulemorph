@@ -1,6 +1,5 @@
 use chrono::offset::TimeZone;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
-use csv::ReaderBuilder;
 use regex::Regex;
 use serde_json::{Map, Value as JsonValue};
 use std::cmp::Ordering;
@@ -10,8 +9,9 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::cache::LruCache;
 use crate::error::{TransformError, TransformErrorKind, TransformWarning};
-use crate::model::{
-    Expr, ExprChain, ExprOp, ExprRef, FinalizeSpec, InputFormat, Mapping, RuleFile, V2RuleStep,
+use crate::model::{Expr, ExprChain, ExprOp, ExprRef, FinalizeSpec, Mapping, RuleFile, V2RuleStep};
+use crate::normalization::{
+    InputData, NormalizationOptions, NormalizedRecords, normalize_records_with_options,
 };
 use crate::path::{PathToken, get_path, parse_path};
 use crate::v2_eval::{
@@ -59,6 +59,33 @@ pub fn transform(
     transform_with_warnings(rule, input, context).map(|(output, _)| output)
 }
 
+pub fn transform_input(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+) -> Result<JsonValue, TransformError> {
+    transform_input_with_warnings(rule, input, context).map(|(output, _)| output)
+}
+
+pub fn transform_with_options(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    options: &NormalizationOptions,
+) -> Result<JsonValue, TransformError> {
+    transform_with_warnings_with_options(rule, input, context, options).map(|(output, _)| output)
+}
+
+pub fn transform_input_with_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    options: &NormalizationOptions,
+) -> Result<JsonValue, TransformError> {
+    transform_input_with_warnings_with_options(rule, input, context, options)
+        .map(|(output, _)| output)
+}
+
 pub fn transform_with_base_dir(
     rule: &RuleFile,
     input: &str,
@@ -68,12 +95,41 @@ pub fn transform_with_base_dir(
     transform_with_warnings_with_base_dir(rule, input, context, base_dir).map(|(output, _)| output)
 }
 
+pub fn transform_input_with_base_dir(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<JsonValue, TransformError> {
+    transform_input_with_warnings_with_base_dir(rule, input, context, base_dir)
+        .map(|(output, _)| output)
+}
+
+pub fn transform_input_with_base_dir_and_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+    options: &NormalizationOptions,
+) -> Result<JsonValue, TransformError> {
+    transform_input_with_warnings_with_base_dir_and_options(rule, input, context, base_dir, options)
+        .map(|(output, _)| output)
+}
+
 pub fn preflight_validate(
     rule: &RuleFile,
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<(), TransformError> {
     preflight_validate_with_warnings(rule, input, context).map(|_| ())
+}
+
+pub fn preflight_validate_input(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+) -> Result<(), TransformError> {
+    preflight_validate_input_with_warnings(rule, input, context).map(|_| ())
 }
 
 pub fn preflight_validate_with_base_dir(
@@ -85,12 +141,26 @@ pub fn preflight_validate_with_base_dir(
     preflight_validate_with_warnings_with_base_dir(rule, input, context, base_dir).map(|_| ())
 }
 
+pub fn preflight_validate_input_with_base_dir(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<(), TransformError> {
+    preflight_validate_input_with_warnings_with_base_dir(rule, input, context, base_dir).map(|_| ())
+}
+
 #[derive(Debug)]
 pub struct TransformStreamItem {
     pub output: Option<JsonValue>,
     pub warnings: Vec<TransformWarning>,
 }
 
+/// Output iterator for `transform_stream*` APIs.
+///
+/// The iterator emits transformed records incrementally, but input normalization
+/// is bounded by `NormalizationOptions` and may materialize records internally
+/// for formats that require whole-document parsing.
 pub struct TransformStream<'a> {
     rule: &'a RuleFile,
     context: Option<&'a JsonValue>,
@@ -106,7 +176,33 @@ impl<'a> TransformStream<'a> {
         context: Option<&'a JsonValue>,
         base_dir: Option<&'a Path>,
     ) -> Result<Self, TransformError> {
-        let records = input_records_iter(rule, input)?;
+        Self::new_with_input_and_options(
+            rule,
+            InputData::Text(input),
+            context,
+            base_dir,
+            &NormalizationOptions::default(),
+        )
+    }
+
+    fn new_with_options(
+        rule: &'a RuleFile,
+        input: &'a str,
+        context: Option<&'a JsonValue>,
+        base_dir: Option<&'a Path>,
+        options: &NormalizationOptions,
+    ) -> Result<Self, TransformError> {
+        Self::new_with_input_and_options(rule, InputData::Text(input), context, base_dir, options)
+    }
+
+    fn new_with_input_and_options(
+        rule: &'a RuleFile,
+        input: InputData<'a>,
+        context: Option<&'a JsonValue>,
+        base_dir: Option<&'a Path>,
+        options: &NormalizationOptions,
+    ) -> Result<Self, TransformError> {
+        let records = input_records_iter_with_options(rule, input, options)?;
         Ok(Self {
             rule,
             context,
@@ -177,6 +273,26 @@ pub fn transform_stream<'a>(
     TransformStream::new(rule, input, context, None)
 }
 
+pub fn transform_stream_input<'a>(
+    rule: &'a RuleFile,
+    input: InputData<'a>,
+    context: Option<&'a JsonValue>,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new_with_input_and_options(
+        rule,
+        input,
+        context,
+        None,
+        &NormalizationOptions::default(),
+    )
+}
+
 pub fn transform_stream_with_base_dir<'a>(
     rule: &'a RuleFile,
     input: &'a str,
@@ -192,12 +308,121 @@ pub fn transform_stream_with_base_dir<'a>(
     TransformStream::new(rule, input, context, Some(base_dir))
 }
 
+pub fn transform_stream_input_with_base_dir<'a>(
+    rule: &'a RuleFile,
+    input: InputData<'a>,
+    context: Option<&'a JsonValue>,
+    base_dir: &'a Path,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new_with_input_and_options(
+        rule,
+        input,
+        context,
+        Some(base_dir),
+        &NormalizationOptions::default(),
+    )
+}
+
+pub fn transform_stream_with_options<'a>(
+    rule: &'a RuleFile,
+    input: &'a str,
+    context: Option<&'a JsonValue>,
+    options: &NormalizationOptions,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new_with_options(rule, input, context, None, options)
+}
+
+pub fn transform_stream_input_with_options<'a>(
+    rule: &'a RuleFile,
+    input: InputData<'a>,
+    context: Option<&'a JsonValue>,
+    options: &NormalizationOptions,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new_with_input_and_options(rule, input, context, None, options)
+}
+
+pub fn transform_stream_with_base_dir_and_options<'a>(
+    rule: &'a RuleFile,
+    input: &'a str,
+    context: Option<&'a JsonValue>,
+    base_dir: &'a Path,
+    options: &NormalizationOptions,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new_with_options(rule, input, context, Some(base_dir), options)
+}
+
+pub fn transform_stream_input_with_base_dir_and_options<'a>(
+    rule: &'a RuleFile,
+    input: InputData<'a>,
+    context: Option<&'a JsonValue>,
+    base_dir: &'a Path,
+    options: &NormalizationOptions,
+) -> Result<TransformStream<'a>, TransformError> {
+    if rule.finalize.is_some() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "finalize is not supported in stream mode",
+        ));
+    }
+    TransformStream::new_with_input_and_options(rule, input, context, Some(base_dir), options)
+}
+
 pub fn transform_with_warnings(
     rule: &RuleFile,
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
-    transform_with_warnings_inner(rule, input, context, None)
+    transform_input_with_warnings(rule, InputData::Text(input), context)
+}
+
+pub fn transform_input_with_warnings(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_with_warnings_inner(rule, input, context, None, &NormalizationOptions::default())
+}
+
+pub fn transform_with_warnings_with_options(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    options: &NormalizationOptions,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_input_with_warnings_with_options(rule, InputData::Text(input), context, options)
+}
+
+pub fn transform_input_with_warnings_with_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    options: &NormalizationOptions,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_with_warnings_inner(rule, input, context, None, options)
 }
 
 pub fn transform_with_warnings_with_base_dir(
@@ -206,19 +431,67 @@ pub fn transform_with_warnings_with_base_dir(
     context: Option<&JsonValue>,
     base_dir: &Path,
 ) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
-    transform_with_warnings_inner(rule, input, context, Some(base_dir))
+    transform_with_warnings_with_base_dir_and_options(
+        rule,
+        input,
+        context,
+        base_dir,
+        &NormalizationOptions::default(),
+    )
+}
+
+pub fn transform_input_with_warnings_with_base_dir(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_input_with_warnings_with_base_dir_and_options(
+        rule,
+        input,
+        context,
+        base_dir,
+        &NormalizationOptions::default(),
+    )
+}
+
+pub fn transform_with_warnings_with_base_dir_and_options(
+    rule: &RuleFile,
+    input: &str,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+    options: &NormalizationOptions,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_input_with_warnings_with_base_dir_and_options(
+        rule,
+        InputData::Text(input),
+        context,
+        base_dir,
+        options,
+    )
+}
+
+pub fn transform_input_with_warnings_with_base_dir_and_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+    options: &NormalizationOptions,
+) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
+    transform_with_warnings_inner(rule, input, context, Some(base_dir), options)
 }
 
 fn transform_with_warnings_inner(
     rule: &RuleFile,
-    input: &str,
+    input: InputData<'_>,
     context: Option<&JsonValue>,
     base_dir: Option<&Path>,
+    options: &NormalizationOptions,
 ) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let mut output_records = Vec::new();
     if rule.finalize.is_some() {
-        let mut records = input_records_iter(rule, input)?;
+        let mut records = input_records_iter_with_options(rule, input, options)?;
         while let Some(record) = records.next() {
             let record = record?;
             let mut record_warnings = Vec::new();
@@ -237,8 +510,10 @@ fn transform_with_warnings_inner(
         }
     } else {
         let stream = match base_dir {
-            Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir)?,
-            None => transform_stream(rule, input, context)?,
+            Some(base_dir) => transform_stream_input_with_base_dir_and_options(
+                rule, input, context, base_dir, options,
+            )?,
+            None => transform_stream_input_with_options(rule, input, context, options)?,
         };
         for item in stream {
             let item = item?;
@@ -331,7 +606,21 @@ pub fn preflight_validate_with_warnings(
     input: &str,
     context: Option<&JsonValue>,
 ) -> Result<Vec<TransformWarning>, TransformError> {
-    preflight_validate_with_warnings_inner(rule, input, context, None)
+    preflight_validate_input_with_warnings(rule, InputData::Text(input), context)
+}
+
+pub fn preflight_validate_input_with_warnings(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_input_with_warnings_inner(
+        rule,
+        input,
+        context,
+        None,
+        &NormalizationOptions::default(),
+    )
 }
 
 pub fn preflight_validate_with_warnings_with_base_dir(
@@ -340,19 +629,50 @@ pub fn preflight_validate_with_warnings_with_base_dir(
     context: Option<&JsonValue>,
     base_dir: &Path,
 ) -> Result<Vec<TransformWarning>, TransformError> {
-    preflight_validate_with_warnings_inner(rule, input, context, Some(base_dir))
+    preflight_validate_input_with_warnings_with_base_dir(
+        rule,
+        InputData::Text(input),
+        context,
+        base_dir,
+    )
 }
 
-fn preflight_validate_with_warnings_inner(
+pub fn preflight_validate_input_with_warnings_with_base_dir(
     rule: &RuleFile,
-    input: &str,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_input_with_warnings_with_base_dir_and_options(
+        rule,
+        input,
+        context,
+        base_dir,
+        &NormalizationOptions::default(),
+    )
+}
+
+pub fn preflight_validate_input_with_warnings_with_base_dir_and_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: &Path,
+    options: &NormalizationOptions,
+) -> Result<Vec<TransformWarning>, TransformError> {
+    preflight_validate_input_with_warnings_inner(rule, input, context, Some(base_dir), options)
+}
+
+fn preflight_validate_input_with_warnings_inner(
+    rule: &RuleFile,
+    input: InputData<'_>,
     context: Option<&JsonValue>,
     base_dir: Option<&Path>,
+    options: &NormalizationOptions,
 ) -> Result<Vec<TransformWarning>, TransformError> {
     let mut warnings = Vec::new();
     if rule.finalize.is_some() {
         let mut output_records = Vec::new();
-        let mut records = input_records_iter(rule, input)?;
+        let mut records = input_records_iter_with_options(rule, input, options)?;
         while let Some(record) = records.next() {
             let record = record?;
             let mut record_warnings = Vec::new();
@@ -374,8 +694,10 @@ fn preflight_validate_with_warnings_inner(
         }
     } else {
         let stream = match base_dir {
-            Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir)?,
-            None => transform_stream(rule, input, context)?,
+            Some(base_dir) => transform_stream_input_with_base_dir_and_options(
+                rule, input, context, base_dir, options,
+            )?,
+            None => transform_stream_input_with_options(rule, input, context, options)?,
         };
         for item in stream {
             let item = item?;
@@ -701,7 +1023,8 @@ fn load_rule_from_path(
         )
         .with_path(path)
     })?;
-    let rule = crate::parse_rule_file(&yaml).map_err(|err| {
+    let format = crate::RuleFormat::from_path(&resolved);
+    let rule = crate::parse_rule_file_with_format(&yaml, format).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
             format!("failed to parse rule: {}", err),
@@ -893,187 +1216,28 @@ fn sort_key_from_value(value: &JsonValue, path: &str) -> Result<SortKey, Transfo
     }
 }
 
-fn input_records_iter<'a>(
+fn input_records_iter_with_options<'a>(
     rule: &RuleFile,
-    input: &'a str,
+    input: InputData<'a>,
+    options: &NormalizationOptions,
 ) -> Result<InputRecordsIter<'a>, TransformError> {
-    match rule.input.format {
-        InputFormat::Csv => Ok(InputRecordsIter::Csv(CsvRecordIter::new(rule, input)?)),
-        InputFormat::Json => Ok(InputRecordsIter::Json(JsonRecordIter::new(parse_json(
-            rule, input,
-        )?))),
-    }
+    Ok(InputRecordsIter::Normalized(
+        normalize_records_with_options(rule, input, options)?,
+    ))
 }
 
 enum InputRecordsIter<'a> {
-    Csv(CsvRecordIter<'a>),
-    Json(JsonRecordIter),
+    Normalized(NormalizedRecords<'a>),
 }
 
-impl<'a> Iterator for InputRecordsIter<'a> {
+impl Iterator for InputRecordsIter<'_> {
     type Item = Result<JsonValue, TransformError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            InputRecordsIter::Csv(iter) => iter.next(),
-            InputRecordsIter::Json(iter) => iter.next(),
+            InputRecordsIter::Normalized(iter) => iter.next(),
         }
     }
-}
-
-struct CsvRecordIter<'a> {
-    reader: csv::Reader<&'a [u8]>,
-    headers: Vec<String>,
-    done: bool,
-}
-
-impl<'a> CsvRecordIter<'a> {
-    fn new(rule: &RuleFile, input: &'a str) -> Result<Self, TransformError> {
-        let csv_spec = rule.input.csv.as_ref().ok_or_else(|| {
-            TransformError::new(
-                TransformErrorKind::InvalidInput,
-                "input.csv is required when format=csv",
-            )
-        })?;
-
-        let delimiter_chars: Vec<char> = csv_spec.delimiter.chars().collect();
-        if delimiter_chars.len() != 1 {
-            return Err(TransformError::new(
-                TransformErrorKind::InvalidInput,
-                "csv.delimiter must be a single character",
-            ));
-        }
-        let delimiter = delimiter_chars[0] as u8;
-
-        let mut reader = ReaderBuilder::new()
-            .delimiter(delimiter)
-            .has_headers(csv_spec.has_header)
-            .from_reader(input.as_bytes());
-
-        let headers: Vec<String> = if csv_spec.has_header {
-            let header_record = reader.headers().map_err(|err| {
-                TransformError::new(
-                    TransformErrorKind::InvalidInput,
-                    format!("failed to read csv header: {}", err),
-                )
-            })?;
-            header_record.iter().map(|s| s.to_string()).collect()
-        } else {
-            let columns = csv_spec.columns.as_ref().ok_or_else(|| {
-                TransformError::new(
-                    TransformErrorKind::InvalidInput,
-                    "csv.columns is required when has_header=false",
-                )
-            })?;
-            columns.iter().map(|col| col.name.clone()).collect()
-        };
-
-        Ok(Self {
-            reader,
-            headers,
-            done: false,
-        })
-    }
-}
-
-impl<'a> Iterator for CsvRecordIter<'a> {
-    type Item = Result<JsonValue, TransformError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.done {
-            return None;
-        }
-
-        let mut record = csv::StringRecord::new();
-        match self.reader.read_record(&mut record) {
-            Ok(has_data) => {
-                if !has_data {
-                    self.done = true;
-                    return None;
-                }
-                let obj = record_to_object(&self.headers, &record);
-                Some(Ok(JsonValue::Object(obj)))
-            }
-            Err(err) => {
-                self.done = true;
-                Some(Err(TransformError::new(
-                    TransformErrorKind::InvalidInput,
-                    format!("failed to read csv record: {}", err),
-                )))
-            }
-        }
-    }
-}
-
-struct JsonRecordIter {
-    iter: std::vec::IntoIter<JsonValue>,
-}
-
-impl JsonRecordIter {
-    fn new(records: Vec<JsonValue>) -> Self {
-        Self {
-            iter: records.into_iter(),
-        }
-    }
-}
-
-impl Iterator for JsonRecordIter {
-    type Item = Result<JsonValue, TransformError>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(Ok)
-    }
-}
-
-fn parse_json(rule: &RuleFile, input: &str) -> Result<Vec<JsonValue>, TransformError> {
-    let value: JsonValue = serde_json::from_str(input).map_err(|err| {
-        TransformError::new(
-            TransformErrorKind::InvalidInput,
-            format!("failed to parse JSON input: {}", err),
-        )
-    })?;
-
-    let records_value = match rule
-        .input
-        .json
-        .as_ref()
-        .and_then(|j| j.records_path.as_deref())
-    {
-        Some(path) => {
-            let tokens = parse_path(path).map_err(|err| {
-                TransformError::new(TransformErrorKind::InvalidRecordsPath, err.message())
-                    .with_path("input.json.records_path")
-            })?;
-            let found = get_path(&value, &tokens).ok_or_else(|| {
-                TransformError::new(
-                    TransformErrorKind::InvalidRecordsPath,
-                    "records_path does not exist",
-                )
-                .with_path("input.json.records_path")
-            })?;
-            found
-        }
-        None => &value,
-    };
-
-    match records_value {
-        JsonValue::Array(items) => Ok(items.clone()),
-        JsonValue::Object(_) => Ok(vec![records_value.clone()]),
-        _ => Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "records_path must point to an array or object",
-        )),
-    }
-}
-
-fn record_to_object(headers: &[String], record: &csv::StringRecord) -> Map<String, JsonValue> {
-    let mut obj = Map::new();
-    for (index, name) in headers.iter().enumerate() {
-        if let Some(value) = record.get(index) {
-            obj.insert(name.clone(), JsonValue::String(value.to_string()));
-        }
-    }
-    obj
 }
 
 fn eval_mapping(

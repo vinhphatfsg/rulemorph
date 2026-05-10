@@ -39,7 +39,9 @@ mappings:
 ## Input
 
 ### Common
-- `input.format` (required): `csv` or `json`
+- `input.format` (required): `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+
+Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/entity/processing instruction input, HTML JavaScript execution/URL fetching, and Excel macro/external relationship/formula evaluation are not allowed. CLI resource limit overrides cannot relax these invariants.
 
 ### CSV
 - `input.csv` is required when `format=csv`
@@ -67,6 +69,70 @@ input:
   format: json
   json:
     records_path: "items"
+```
+
+### YAML / TOML
+- `input.yaml` / `input.toml` is required for the matching `format`
+- `records_path` (optional): dot path to a record array or single record
+- YAML/TOML input is normalized to JSON records before mappings, steps, and finalize run.
+
+```yaml
+input:
+  format: yaml
+  yaml:
+    records_path: "users"
+```
+
+```yaml
+input:
+  format: toml
+  toml:
+    records_path: "users"
+```
+
+### XML
+- `input.xml` is required when `format=xml`
+- `records_path` (required): dot-separated element path including the root element
+- Attributes become string fields with `attr_prefix`; direct text is stored under `text_key`
+- Child elements are always arrays
+- DTDs, entities, and processing instructions are rejected.
+
+```yaml
+input:
+  format: xml
+  xml:
+    records_path: "users.user"
+    attr_prefix: "@"
+    text_key: "#text"
+```
+
+### HTML
+- `input.html` is required when `format=html`
+- `records_selector` selects record elements; each field uses a CSS selector relative to the record
+- `value: text` / `html` / `attr` are supported. `html` is raw inner HTML string extraction; it is not sanitized or executed.
+- The HTML parser does not execute JavaScript or fetch URLs.
+
+```yaml
+input:
+  format: html
+  html:
+    records_selector: "table#users tbody tr"
+    fields:
+      id: { selector: "td:nth-child(1)", value: text }
+      name: { selector: "td:nth-child(2)", value: text }
+```
+
+### Excel
+- `input.excel` is required when `format=excel`
+- Only `.xlsx` is supported. Macros, external relationships, and formula evaluation are rejected or not executed.
+- With `has_header=true`, the header row provides field names.
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: "Users"
+    has_header: true
 ```
 
 ## Output

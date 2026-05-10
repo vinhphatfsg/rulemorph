@@ -345,6 +345,31 @@ async fn wait_for_trace_id(app: &Router) -> String {
     panic!("trace not found after waiting");
 }
 
+async fn wait_for_tenant_trace_list(app: &Router, tenant_id: &str) -> Value {
+    for _ in 0..40 {
+        let (status, list) = request_json_with_headers(
+            app,
+            "/internal/traces".to_string(),
+            &[
+                ("authorization", "Bearer internal-key"),
+                ("x-tenant-id", tenant_id),
+            ],
+        )
+        .await;
+        if status == StatusCode::OK {
+            if list
+                .get("traces")
+                .and_then(|value| value.as_array())
+                .is_some_and(|values| !values.is_empty())
+            {
+                return list;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("tenant trace not found after waiting: {tenant_id}");
+}
+
 struct StaticTenantResolver {
     api_key: String,
     tenant_id: String,
@@ -1211,16 +1236,7 @@ finalize:
     .await;
     assert_eq!(status_a, StatusCode::UNAUTHORIZED);
 
-    let (status_a, list_a) = request_json_with_headers(
-        &app,
-        "/internal/traces".to_string(),
-        &[
-            ("authorization", "Bearer internal-key"),
-            ("x-tenant-id", "tenant-a"),
-        ],
-    )
-    .await;
-    assert_eq!(status_a, StatusCode::OK);
+    let list_a = wait_for_tenant_trace_list(&app, "tenant-a").await;
     let count_a = list_a
         .get("traces")
         .and_then(|value| value.as_array())
@@ -1228,16 +1244,7 @@ finalize:
         .unwrap_or(0);
     assert_eq!(count_a, 1);
 
-    let (status_b, list_b) = request_json_with_headers(
-        &app,
-        "/internal/traces".to_string(),
-        &[
-            ("authorization", "Bearer internal-key"),
-            ("x-tenant-id", "tenant-b"),
-        ],
-    )
-    .await;
-    assert_eq!(status_b, StatusCode::OK);
+    let list_b = wait_for_tenant_trace_list(&app, "tenant-b").await;
     let count_b = list_b
         .get("traces")
         .and_then(|value| value.as_array())

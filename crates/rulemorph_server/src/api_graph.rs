@@ -2,7 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
-use rulemorph::{Expr, ExprChain, ExprOp, ExprRef, Mapping, RuleFile, parse_rule_file};
+use rulemorph::serde_guard::parse_yaml_value_strict;
+use rulemorph::{
+    Expr, ExprChain, ExprOp, ExprRef, Mapping, RuleFile, RuleFormat, parse_rule_file_with_format,
+};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
@@ -83,14 +86,14 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
     let mut edges: Vec<ApiGraphEdge> = Vec::new();
     let mut edge_keys: HashSet<String> = HashSet::new();
 
-    let yaml_files = collect_yaml_files(&data_dir);
+    let yaml_files = collect_rule_files(&data_dir);
     for path in yaml_files {
         let path = normalize_path(&path);
         let raw = match std::fs::read_to_string(&path) {
             Ok(value) => value,
             Err(_) => continue,
         };
-        let yaml_value: YamlValue = match serde_yaml::from_str(&raw) {
+        let yaml_value: YamlValue = match parse_yaml_value_strict(&raw) {
             Ok(value) => value,
             Err(_) => continue,
         };
@@ -99,7 +102,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
             .and_then(|value| value.as_str())
             .unwrap_or("");
         if rule_type == "endpoint" {
-            let endpoint: EndpointRuleFile = match serde_yaml::from_str(&raw) {
+            let endpoint: EndpointRuleFile = match serde_yaml::from_value(yaml_value) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
@@ -139,7 +142,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
         }
 
         if rule_type == "network" {
-            let network: NetworkRuleFile = match serde_yaml::from_str(&raw) {
+            let network: NetworkRuleFile = match serde_yaml::from_value(yaml_value) {
                 Ok(value) => value,
                 Err(_) => continue,
             };
@@ -175,7 +178,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
         }
 
         // Try normal rule (v2)
-        if let Ok(rule) = parse_rule_file(&raw) {
+        if let Ok(rule) = parse_rule_file_with_format(&raw, RuleFormat::from_path(&path)) {
             let node_id = rule_id(&data_dir, &path);
             let label = format!("normal · {}", rule_label(&path));
             nodes.insert(
@@ -233,7 +236,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
     })
 }
 
-fn collect_yaml_files(data_dir: &Path) -> Vec<PathBuf> {
+fn collect_rule_files(data_dir: &Path) -> Vec<PathBuf> {
     WalkDir::new(data_dir)
         .into_iter()
         .filter_map(|entry| entry.ok())
@@ -243,7 +246,7 @@ fn collect_yaml_files(data_dir: &Path) -> Vec<PathBuf> {
                 .path()
                 .extension()
                 .and_then(|ext| ext.to_str())
-                .map(|ext| ext == "yaml" || ext == "yml")
+                .map(|ext| ext == "yaml" || ext == "yml" || ext == "json")
                 .unwrap_or(false)
         })
         .map(|entry| entry.path().to_path_buf())
@@ -487,6 +490,7 @@ fn resolve_rule_path(base_dir: &Path, rule: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rulemorph::parse_rule_file;
     use serde_json::json;
 
     #[test]
@@ -583,5 +587,25 @@ finalize:
         let detail = finalize.detail.as_deref().unwrap_or("");
         assert!(detail.contains("filter"));
         assert!(detail.contains("limit"));
+    }
+
+    #[test]
+    fn graph_loads_json_rule_files() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let rules_dir = dir.path().join("api_rules");
+        std::fs::create_dir_all(&rules_dir).expect("create rules dir");
+        std::fs::write(
+            rules_dir.join("rule.json"),
+            r#"{
+  "version": 2,
+  "input": { "format": "json", "json": {} },
+  "mappings": [{ "target": "id", "source": "id" }]
+}
+"#,
+        )
+        .expect("write json rule");
+
+        let graph = build_api_graph(dir.path()).expect("graph");
+        assert!(graph.nodes.iter().any(|node| node.kind == "normal"));
     }
 }

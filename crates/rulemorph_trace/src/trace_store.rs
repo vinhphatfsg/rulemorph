@@ -332,16 +332,6 @@ impl FileTraceBackend {
         Ok(result.value)
     }
 
-    pub async fn seed_sample(&self) -> Result<()> {
-        // No automatic sample seeding.
-        self.refresh_index().await?;
-        Ok(())
-    }
-
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-
     async fn resolve_meta(&self, trace_id: &str) -> Result<Option<TraceMeta>> {
         if !self.index.read().await.contains_key(trace_id) {
             self.refresh_index().await?;

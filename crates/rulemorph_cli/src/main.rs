@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 #[cfg(feature = "server")]
 use std::time::Duration;
@@ -8,10 +8,11 @@ use std::time::Duration;
 use clap::ArgAction;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
-    DtoLanguage, InputFormat, RuleError, RuleFile, TransformError, TransformErrorKind,
-    TransformWarning, generate_dto, parse_rule_file,
-    preflight_validate_with_warnings_with_base_dir, transform_stream_with_base_dir,
-    transform_with_warnings_with_base_dir, validate_rule_file_with_source,
+    DtoLanguage, InputData, InputFormat, NormalizationOptions, RuleError, RuleFile, RuleFormat,
+    TransformError, TransformErrorKind, TransformWarning, generate_dto,
+    parse_rule_file_with_format, preflight_validate_input_with_warnings_with_base_dir_and_options,
+    transform_input_with_warnings_with_base_dir_and_options,
+    transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
 };
 #[cfg(feature = "server")]
 use rulemorph_server::{
@@ -50,6 +51,8 @@ enum Commands {
 struct ValidateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
 }
@@ -67,6 +70,8 @@ struct ValidateRulesDirArgs {
 struct PreflightArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'i', long)]
     input: PathBuf,
     #[arg(short = 'f', long)]
@@ -75,12 +80,20 @@ struct PreflightArgs {
     context: Option<PathBuf>,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
+    #[arg(long = "limit")]
+    limits: Vec<String>,
+    #[arg(long, value_enum)]
+    limits_profile: Option<LimitsProfileArg>,
+    #[arg(long)]
+    limits_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct TransformArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'i', long)]
     input: PathBuf,
     #[arg(short = 'f', long)]
@@ -89,18 +102,29 @@ struct TransformArgs {
     context: Option<PathBuf>,
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Emit one JSON object per line. This streams output, but input normalization is bounded by the configured limits."
+    )]
     ndjson: bool,
     #[arg(short = 'v', long)]
     validate: bool,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
+    #[arg(long = "limit")]
+    limits: Vec<String>,
+    #[arg(long, value_enum)]
+    limits_profile: Option<LimitsProfileArg>,
+    #[arg(long)]
+    limits_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
 struct GenerateArgs {
     #[arg(short = 'r', long)]
     rules: PathBuf,
+    #[arg(long)]
+    rules_format: Option<RulesFormatArg>,
     #[arg(short = 'l', long)]
     lang: DtoLanguageArg,
     #[arg(short = 'n', long)]
@@ -230,6 +254,18 @@ enum FormatOverride {
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
+enum RulesFormatArg {
+    Yaml,
+    Json,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LimitsProfileArg {
+    Default,
+    Large,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum DtoLanguageArg {
     Rust,
     #[value(alias = "ts")]
@@ -269,7 +305,7 @@ fn main() {
 }
 
 fn run_validate(args: ValidateArgs) -> i32 {
-    let (rule, yaml) = match load_rule(&args.rules) {
+    let (rule, yaml) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -295,14 +331,26 @@ fn run_validate_rules_dir(args: ValidateRulesDirArgs) -> i32 {
 }
 
 fn run_preflight(args: PreflightArgs) -> i32 {
-    let (mut rule, _) = match load_rule(&args.rules) {
+    let (mut rule, _) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
 
     apply_format_override(&mut rule, args.format);
 
-    let input = match load_input(&args.input) {
+    let options = match load_normalization_options(
+        args.limits_profile,
+        args.limits_file.as_ref(),
+        &args.limits,
+    ) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{}", message);
+            return 2;
+        }
+    };
+
+    let input = match load_input_bytes_with_limit(&args.input, options.max_input_bytes) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -313,11 +361,12 @@ fn run_preflight(args: PreflightArgs) -> i32 {
     };
 
     let base_dir = rule_base_dir(&args.rules);
-    let warnings = match preflight_validate_with_warnings_with_base_dir(
+    let warnings = match preflight_validate_input_with_warnings_with_base_dir_and_options(
         &rule,
-        &input,
+        InputData::Bytes(&input),
         context_value.as_ref(),
         &base_dir,
+        &options,
     ) {
         Ok(warnings) => warnings,
         Err(err) => {
@@ -332,7 +381,7 @@ fn run_preflight(args: PreflightArgs) -> i32 {
 }
 
 fn run_transform(args: TransformArgs) -> i32 {
-    let (mut rule, yaml) = match load_rule(&args.rules) {
+    let (mut rule, yaml) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -346,7 +395,19 @@ fn run_transform(args: TransformArgs) -> i32 {
         }
     }
 
-    let input = match load_input(&args.input) {
+    let options = match load_normalization_options(
+        args.limits_profile,
+        args.limits_file.as_ref(),
+        &args.limits,
+    ) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("{}", message);
+            return 2;
+        }
+    };
+
+    let input = match load_input_bytes_with_limit(&args.input, options.max_input_bytes) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -364,15 +425,17 @@ fn run_transform(args: TransformArgs) -> i32 {
             args.output,
             args.error_format,
             &args.rules,
+            &options,
         );
     }
 
     let base_dir = rule_base_dir(&args.rules);
-    let (output, warnings) = match transform_with_warnings_with_base_dir(
+    let (output, warnings) = match transform_input_with_warnings_with_base_dir_and_options(
         &rule,
-        &input,
+        InputData::Bytes(&input),
         context_value.as_ref(),
         &base_dir,
+        &options,
     ) {
         Ok(result) => result,
         Err(err) => {
@@ -413,14 +476,21 @@ fn run_transform(args: TransformArgs) -> i32 {
 
 fn run_transform_ndjson(
     rule: &RuleFile,
-    input: &str,
+    input: &[u8],
     context: Option<&serde_json::Value>,
     output: Option<PathBuf>,
     error_format: ErrorFormat,
     rules_path: &PathBuf,
+    options: &NormalizationOptions,
 ) -> i32 {
     let base_dir = rule_base_dir(rules_path);
-    let stream = match transform_stream_with_base_dir(rule, input, context, &base_dir) {
+    let stream = match transform_stream_input_with_base_dir_and_options(
+        rule,
+        InputData::Bytes(input),
+        context,
+        &base_dir,
+        options,
+    ) {
         Ok(stream) => stream,
         Err(err) => {
             emit_transform_error(&err, error_format);
@@ -489,7 +559,7 @@ fn run_transform_ndjson(
 }
 
 fn run_generate(args: GenerateArgs) -> i32 {
-    let (rule, _) = match load_rule(&args.rules) {
+    let (rule, _) = match load_rule(&args.rules, args.rules_format) {
         Ok(value) => value,
         Err(code) => return code,
     };
@@ -830,7 +900,10 @@ fn emit_api_key_list(keys: &[ApiKeyInfo], json: bool) {
         println!("---");
     }
 }
-fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
+fn load_rule(
+    path: &PathBuf,
+    override_format: Option<RulesFormatArg>,
+) -> Result<(RuleFile, String), i32> {
     let yaml = match fs::read_to_string(path) {
         Ok(data) => data,
         Err(err) => {
@@ -839,7 +912,8 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
         }
     };
 
-    let rule = match parse_rule_file(&yaml) {
+    let format = detect_rule_format(path, override_format);
+    let rule = match parse_rule_file_with_format(&yaml, format) {
         Ok(rule) => rule,
         Err(err) => {
             eprintln!("failed to parse rules: {}", err);
@@ -848,6 +922,14 @@ fn load_rule(path: &PathBuf) -> Result<(RuleFile, String), i32> {
     };
 
     Ok((rule, yaml))
+}
+
+fn detect_rule_format(path: &PathBuf, override_format: Option<RulesFormatArg>) -> RuleFormat {
+    match override_format {
+        Some(RulesFormatArg::Yaml) => RuleFormat::Yaml,
+        Some(RulesFormatArg::Json) => RuleFormat::Json,
+        None => RuleFormat::from_path(path),
+    }
 }
 
 fn rule_base_dir(path: &PathBuf) -> PathBuf {
@@ -865,14 +947,31 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {
     }
 }
 
-fn load_input(path: &PathBuf) -> Result<String, i32> {
-    match fs::read_to_string(path) {
+fn load_input_bytes_with_limit(path: &PathBuf, max_input_bytes: usize) -> Result<Vec<u8>, i32> {
+    match read_file_with_limit(path, max_input_bytes) {
         Ok(value) => Ok(value),
-        Err(err) => {
-            eprintln!("failed to read input: {}", err);
+        Err(message) => {
+            eprintln!("failed to read input: {}", message);
             Err(1)
         }
     }
+}
+
+fn read_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
+    if metadata.len() > max_bytes as u64 {
+        return Err(format!("input exceeds max_input_bytes ({})", max_bytes));
+    }
+    let mut file = fs::File::open(path).map_err(|err| err.to_string())?;
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut file)
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|err| err.to_string())?;
+    if bytes.len() > max_bytes {
+        return Err(format!("input exceeds max_input_bytes ({})", max_bytes));
+    }
+    Ok(bytes)
 }
 
 fn load_context(path: &Option<PathBuf>) -> Result<Option<serde_json::Value>, i32> {
@@ -892,6 +991,80 @@ fn load_context(path: &Option<PathBuf>) -> Result<Option<serde_json::Value>, i32
         },
         None => Ok(None),
     }
+}
+
+fn load_normalization_options(
+    profile: Option<LimitsProfileArg>,
+    file: Option<&PathBuf>,
+    overrides: &[String],
+) -> Result<NormalizationOptions, String> {
+    let mut options = match profile.unwrap_or(LimitsProfileArg::Default) {
+        LimitsProfileArg::Default => NormalizationOptions::default(),
+        LimitsProfileArg::Large => NormalizationOptions::large(),
+    };
+    if let Some(file) = file {
+        let raw = fs::read_to_string(file)
+            .map_err(|err| format!("failed to read limits file: {}", err))?;
+        let value = raw
+            .parse::<toml::Value>()
+            .map_err(|err| format!("failed to parse limits file: {}", err))?;
+        let table = value
+            .as_table()
+            .ok_or_else(|| "limits file must contain a TOML table".to_string())?;
+        for (name, value) in table {
+            let value = value
+                .as_integer()
+                .ok_or_else(|| format!("limit `{}` must be an integer", name))?;
+            apply_limit_override(&mut options, name, value.into())?;
+        }
+    }
+    for item in overrides {
+        let (name, value) = item
+            .split_once('=')
+            .ok_or_else(|| "limit override must use name=value".to_string())?;
+        let value = value
+            .parse::<i128>()
+            .map_err(|_| format!("limit `{}` must be a positive integer", name))?;
+        apply_limit_override(&mut options, name, value)?;
+    }
+    Ok(options)
+}
+
+fn apply_limit_override(
+    options: &mut NormalizationOptions,
+    name: &str,
+    value: i128,
+) -> Result<(), String> {
+    if value <= 0 {
+        return Err(format!("limit `{}` must be a positive integer", name));
+    }
+    let value = usize::try_from(value)
+        .map_err(|_| format!("limit `{}` is too large for this platform", name))?;
+    if value == usize::MAX {
+        return Err(format!("limit `{}` is too large", name));
+    }
+    match name {
+        "input-bytes" => options.max_input_bytes = value,
+        "records" => options.max_records = value,
+        "depth" => options.max_depth = value,
+        "array-len" => options.max_array_len = value,
+        "text-bytes" => options.max_text_bytes = value,
+        "yaml-aliases" => options.max_yaml_aliases = value,
+        "yaml-expanded-nodes" => options.max_yaml_expanded_nodes = value,
+        "xml-nodes" => options.max_xml_nodes = value,
+        "html-nodes" => options.max_html_nodes = value,
+        "excel-zip-entries" => options.max_excel_zip_entries = value,
+        "excel-uncompressed-bytes" => options.max_excel_uncompressed_bytes = value,
+        "excel-entry-uncompressed-bytes" => options.max_excel_entry_uncompressed_bytes = value,
+        "excel-sheets" => options.max_excel_sheets = value,
+        "excel-rows" => options.max_excel_rows = value,
+        "excel-cells" => options.max_excel_cells = value,
+        "excel-shared-strings" => options.max_excel_shared_strings = value,
+        "excel-shared-string-bytes" => options.max_excel_shared_string_bytes = value,
+        "excel-styles" => options.max_excel_styles = value,
+        _ => return Err(format!("unknown limit `{}`", name)),
+    }
+    Ok(())
 }
 
 fn emit_validation_errors(errors: &[RuleError], format: ErrorFormat) {
