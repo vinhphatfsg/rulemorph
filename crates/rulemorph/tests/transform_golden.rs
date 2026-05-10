@@ -58,6 +58,12 @@ struct XlsxFixtureOptions {
     extra_sheet: bool,
     conflicting_sheet_relationship: bool,
     case_variant_duplicate_sheet: bool,
+    escaped_sheet_name: bool,
+    custom_relationship_prefix: bool,
+    unqualified_sheet_relationship_only: bool,
+    wrong_relationship_namespace: bool,
+    duplicate_qualified_sheet_relationships: bool,
+    conflicting_wrong_literal_relationship: bool,
 }
 
 fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
@@ -101,20 +107,51 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
 </Relationships>"#,
         file_options,
     );
-    let users_relationship_attrs = if options.conflicting_sheet_relationship {
-        r#"r:id="rId4" id="rId1""#
+    let relationship_prefix =
+        if options.custom_relationship_prefix || options.wrong_relationship_namespace {
+            "rel"
+        } else {
+            "r"
+        };
+    let users_relationship_attrs = if options.conflicting_wrong_literal_relationship {
+        r#"r:id="rId4" rel:id="rId1""#.to_string()
+    } else if options.duplicate_qualified_sheet_relationships {
+        r#"r:id="rId4" relationships:id="rId1""#.to_string()
+    } else if options.unqualified_sheet_relationship_only {
+        r#"id="rId1""#.to_string()
+    } else if options.conflicting_sheet_relationship {
+        format!(r#"{relationship_prefix}:id="rId4" id="rId1""#)
     } else {
-        r#"r:id="rId1""#
+        format!(r#"{relationship_prefix}:id="rId1""#)
+    };
+    let relationship_namespace = if options.wrong_relationship_namespace {
+        "urn:wrong"
+    } else {
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    };
+    let workbook_namespace_attrs = if options.conflicting_wrong_literal_relationship {
+        format!(r#"xmlns:r="urn:wrong" xmlns:rel="{relationship_namespace}""#)
+    } else if options.duplicate_qualified_sheet_relationships {
+        format!(
+            r#"xmlns:r="{relationship_namespace}" xmlns:relationships="{relationship_namespace}""#
+        )
+    } else {
+        format!(r#"xmlns:{relationship_prefix}="{relationship_namespace}""#)
+    };
+    let sheet_name = if options.escaped_sheet_name {
+        "Users &amp; Billing"
+    } else {
+        "Users"
     };
     let sheet2_workbook_entry = if options.extra_sheet {
-        r#"<sheet name="Archive" sheetId="2" r:id="rId4"/>"#
+        format!(r#"<sheet name="Archive" sheetId="2" {relationship_prefix}:id="rId4"/>"#)
     } else {
-        ""
+        String::new()
     };
     let workbook = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="Users" sheetId="1" {users_relationship_attrs}/>{sheet2_workbook_entry}</sheets>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" {workbook_namespace_attrs}>
+  <sheets><sheet name="{sheet_name}" sheetId="1" {users_relationship_attrs}/>{sheet2_workbook_entry}</sheets>
 </workbook>"#
     );
     write_zip_file(&mut zip, "xl/workbook.xml", &workbook, file_options);
@@ -735,6 +772,118 @@ fn excel_preflight_accepts_byte_input() {
         fs::read(fixtures_dir().join("t34_excel_input").join("input.xlsx")).expect("read xlsx");
     preflight_validate_input(&rule, InputData::Bytes(&input), None)
         .expect("excel preflight should accept byte input");
+}
+
+#[test]
+fn excel_selects_sheet_with_escaped_name() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: "Users & Billing"
+mappings:
+  - target: "id"
+    source: "id"
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        escaped_sheet_name: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let output = transform_input(&rule, InputData::Bytes(&input), None)
+        .expect("escaped sheet name should resolve");
+    assert_eq!(output, serde_json::json!([{ "id": 1, "name": "Alice" }]));
+}
+
+#[test]
+fn excel_accepts_sheet_relationship_with_custom_namespace_prefix() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        custom_relationship_prefix: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let output = transform_input(&rule, InputData::Bytes(&input), None)
+        .expect("custom relationship namespace prefix should resolve");
+    assert_eq!(output, serde_json::json!([{ "id": 1, "name": "Alice" }]));
+}
+
+#[test]
+fn excel_rejects_unqualified_sheet_relationship_id() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        unqualified_sheet_relationship_only: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Bytes(&input),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("unqualified sheet id must not be accepted as a relationship");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "Excel workbook sheet is missing relationship");
+}
+
+#[test]
+fn excel_rejects_relationship_id_bound_to_wrong_namespace() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        wrong_relationship_namespace: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Bytes(&input),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("relationship id with the wrong namespace must not be accepted");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "Excel workbook sheet is missing relationship");
+}
+
+#[test]
+fn excel_rejects_multiple_qualified_sheet_relationship_ids() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        duplicate_qualified_sheet_relationships: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Bytes(&input),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("multiple qualified sheet relationship ids should be rejected");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(
+        err.message,
+        "Excel workbook sheet has multiple relationships"
+    );
+}
+
+#[test]
+fn excel_rejects_literal_relationship_id_bound_to_wrong_namespace() {
+    let rule = load_rule(&fixtures_dir().join("t34_excel_input").join("rules.yaml"));
+    let input = build_test_xlsx(XlsxFixtureOptions {
+        conflicting_wrong_literal_relationship: true,
+        ..XlsxFixtureOptions::default()
+    });
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Bytes(&input),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("literal relationship id with wrong namespace should be rejected");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(
+        err.message,
+        "Excel workbook sheet relationship uses an invalid namespace"
+    );
 }
 
 #[test]
@@ -1699,6 +1848,40 @@ mappings:
     )
     .expect_err("node limit should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn html_allows_literal_less_than_sequences_when_dom_nodes_within_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: html
+  html:
+    records_selector: ".item"
+    fields:
+      name:
+        selector: ".name"
+        value: text
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_html_nodes: 20,
+        ..NormalizationOptions::default()
+    };
+    let literal_tags = "<article><aside><a><address><abbr><area><audio><bdi><bdo><base><button>";
+    let input = format!(
+        r#"<article class="item"><script>const sample = "{literal_tags}";</script><span class="name">Alice</span></article>"#
+    );
+    let output = normalize_records_with_options(&rule, InputData::Text(&input), &options)
+        .expect("literal less-than sequences should not count as parsed DOM nodes")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("records should normalize");
+    assert_eq!(output, vec![serde_json::json!({ "name": "Alice" })]);
 }
 
 #[test]

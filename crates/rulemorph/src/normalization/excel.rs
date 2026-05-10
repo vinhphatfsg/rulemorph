@@ -1,16 +1,22 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 
 use calamine::{Data, ExcelDateTime, Range, Reader, open_workbook_auto_from_rs};
-use quick_xml::Reader as XmlReader;
+use quick_xml::Writer as XmlWriter;
 use quick_xml::events::Event;
+use quick_xml::name::ResolveResult;
+use quick_xml::reader::{NsReader, Reader as XmlReader};
 use serde_json::{Map, Number as JsonNumber, Value as JsonValue};
-use zip::ZipArchive;
+use zip::{ZipArchive, ZipWriter, write::FileOptions};
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::{ExcelDatePolicy, ExcelFormulaPolicy, ExcelInput, ExcelSheetRef, RuleFile};
 
 use super::{InputData, NormalizationOptions, enforce_records_limit};
+
+const OFFICE_RELATIONSHIPS_NS: &[u8] =
+    b"http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
 #[derive(Clone, Copy)]
 struct CellWindow {
@@ -34,7 +40,8 @@ pub fn normalize_excel_records(
     let bytes = excel_input_bytes(input, options)?;
     preflight_xlsx_package(bytes, excel, options)?;
 
-    let cursor = Cursor::new(bytes);
+    let calamine_bytes = xlsx_bytes_for_calamine(bytes)?;
+    let cursor = Cursor::new(calamine_bytes.as_ref());
     let mut workbook = open_workbook_auto_from_rs(cursor).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
@@ -271,6 +278,297 @@ fn preflight_xlsx_package(
     Ok(())
 }
 
+fn xlsx_bytes_for_calamine(bytes: &[u8]) -> Result<Cow<'_, [u8]>, TransformError> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|err| {
+        TransformError::new(
+            TransformErrorKind::InvalidInput,
+            format!("invalid Excel ZIP package: {}", err),
+        )
+    })?;
+    let mut workbook = archive.by_name("xl/workbook.xml").map_err(|err| {
+        TransformError::new(
+            TransformErrorKind::InvalidInput,
+            format!("failed to inspect Excel workbook XML: {}", err),
+        )
+    })?;
+    let workbook_xml = read_zip_text(&mut workbook)?;
+    drop(workbook);
+    let Some(rewritten_workbook) = rewrite_workbook_for_calamine(&workbook_xml)? else {
+        return Ok(Cow::Borrowed(bytes));
+    };
+
+    let mut output = ZipWriter::new(Cursor::new(Vec::new()));
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::InvalidInput,
+                format!("failed to rewrite Excel ZIP entry: {}", err),
+            )
+        })?;
+        let name = entry.name().to_string();
+        let options = FileOptions::default().compression_method(entry.compression());
+        if entry.is_dir() {
+            output.add_directory(&name, options).map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to rewrite Excel ZIP directory: {}", err),
+                )
+            })?;
+            continue;
+        }
+        output.start_file(&name, options).map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::InvalidInput,
+                format!("failed to rewrite Excel ZIP entry: {}", err),
+            )
+        })?;
+        if name.eq_ignore_ascii_case("xl/workbook.xml") {
+            output
+                .write_all(rewritten_workbook.as_bytes())
+                .map_err(|err| {
+                    TransformError::new(
+                        TransformErrorKind::InvalidInput,
+                        format!("failed to rewrite Excel workbook XML: {}", err),
+                    )
+                })?;
+        } else {
+            std::io::copy(&mut entry, &mut output).map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to copy Excel ZIP entry: {}", err),
+                )
+            })?;
+        }
+    }
+    let rewritten = output.finish().map_err(|err| {
+        TransformError::new(
+            TransformErrorKind::InvalidInput,
+            format!("failed to finish rewritten Excel ZIP package: {}", err),
+        )
+    })?;
+    Ok(Cow::Owned(rewritten.into_inner()))
+}
+
+enum CalamineRelationshipPrefix {
+    R,
+    Relationships,
+}
+
+impl CalamineRelationshipPrefix {
+    fn attr_name(&self) -> &'static str {
+        match self {
+            Self::R => "r:id",
+            Self::Relationships => "relationships:id",
+        }
+    }
+
+    fn namespace_attr(&self) -> &'static str {
+        match self {
+            Self::R => "xmlns:r",
+            Self::Relationships => "xmlns:relationships",
+        }
+    }
+}
+
+struct WorkbookRewritePlan {
+    prefix: CalamineRelationshipPrefix,
+    add_namespace_attr: bool,
+}
+
+fn rewrite_workbook_for_calamine(workbook_xml: &str) -> Result<Option<String>, TransformError> {
+    let Some(plan) = workbook_rewrite_plan(workbook_xml)? else {
+        return Ok(None);
+    };
+
+    let mut reader = NsReader::from_str(workbook_xml);
+    reader.trim_text(false);
+    let mut output = Vec::with_capacity(workbook_xml.len() + 128);
+    let mut writer = XmlWriter::new(&mut output);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) => {
+                let rewritten = rewrite_workbook_event(event.to_owned(), &reader, &plan)?;
+                writer.write_event(Event::Start(rewritten)).map_err(|err| {
+                    TransformError::new(
+                        TransformErrorKind::InvalidInput,
+                        format!("failed to rewrite Excel workbook XML: {}", err),
+                    )
+                })?;
+            }
+            Ok(Event::Empty(event)) => {
+                let rewritten = rewrite_workbook_event(event.to_owned(), &reader, &plan)?;
+                writer.write_event(Event::Empty(rewritten)).map_err(|err| {
+                    TransformError::new(
+                        TransformErrorKind::InvalidInput,
+                        format!("failed to rewrite Excel workbook XML: {}", err),
+                    )
+                })?;
+            }
+            Ok(Event::Eof) => break,
+            Ok(event) => {
+                writer.write_event(event).map_err(|err| {
+                    TransformError::new(
+                        TransformErrorKind::InvalidInput,
+                        format!("failed to rewrite Excel workbook XML: {}", err),
+                    )
+                })?;
+            }
+            Err(err) => {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to parse Excel workbook XML: {}", err),
+                ));
+            }
+        }
+    }
+    String::from_utf8(output).map(Some).map_err(|err| {
+        invalid(format!(
+            "failed to encode rewritten Excel workbook XML: {}",
+            err
+        ))
+    })
+}
+
+fn workbook_rewrite_plan(
+    workbook_xml: &str,
+) -> Result<Option<WorkbookRewritePlan>, TransformError> {
+    let mut reader = NsReader::from_str(workbook_xml);
+    reader.trim_text(false);
+    let mut needs_rewrite = false;
+    let mut r_namespace = None;
+    let mut relationships_namespace = None;
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event))
+                if event.local_name().as_ref() == b"workbook" =>
+            {
+                for attr in event.attributes() {
+                    let attr = attr.map_err(|err| {
+                        TransformError::new(
+                            TransformErrorKind::InvalidInput,
+                            format!("failed to parse Excel workbook XML attribute: {}", err),
+                        )
+                    })?;
+                    match attr.key.as_ref() {
+                        b"xmlns:r" => r_namespace = Some(attr.value.as_ref().to_vec()),
+                        b"xmlns:relationships" => {
+                            relationships_namespace = Some(attr.value.as_ref().to_vec())
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Ok(Event::Start(event)) | Ok(Event::Empty(event))
+                if event.local_name().as_ref() == b"sheet" =>
+            {
+                for attr in event.attributes() {
+                    let attr = attr.map_err(|err| {
+                        TransformError::new(
+                            TransformErrorKind::InvalidInput,
+                            format!("failed to parse Excel workbook XML attribute: {}", err),
+                        )
+                    })?;
+                    let (namespace, local_name) = reader.resolve_attribute(attr.key);
+                    if local_name.as_ref() == b"id"
+                        && matches!(
+                            namespace,
+                            ResolveResult::Bound(namespace)
+                                if namespace.as_ref() == OFFICE_RELATIONSHIPS_NS
+                        )
+                        && !is_calamine_relationship_attr(attr.key.as_ref())
+                    {
+                        needs_rewrite = true;
+                    }
+                }
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(err) => {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    format!("failed to parse Excel workbook XML: {}", err),
+                ));
+            }
+        }
+    }
+    if !needs_rewrite {
+        return Ok(None);
+    }
+
+    if r_namespace
+        .as_deref()
+        .is_none_or(|namespace| namespace == OFFICE_RELATIONSHIPS_NS)
+    {
+        return Ok(Some(WorkbookRewritePlan {
+            prefix: CalamineRelationshipPrefix::R,
+            add_namespace_attr: r_namespace.is_none(),
+        }));
+    }
+    if relationships_namespace
+        .as_deref()
+        .is_none_or(|namespace| namespace == OFFICE_RELATIONSHIPS_NS)
+    {
+        return Ok(Some(WorkbookRewritePlan {
+            prefix: CalamineRelationshipPrefix::Relationships,
+            add_namespace_attr: relationships_namespace.is_none(),
+        }));
+    }
+    Err(invalid(
+        "Excel workbook relationship namespace conflicts with supported prefixes",
+    ))
+}
+
+fn rewrite_workbook_event(
+    mut event: quick_xml::events::BytesStart<'static>,
+    reader: &NsReader<&[u8]>,
+    plan: &WorkbookRewritePlan,
+) -> Result<quick_xml::events::BytesStart<'static>, TransformError> {
+    if event.local_name().as_ref() == b"workbook" && plan.add_namespace_attr {
+        event.push_attribute((
+            plan.prefix.namespace_attr().as_bytes(),
+            OFFICE_RELATIONSHIPS_NS,
+        ));
+    }
+    if event.local_name().as_ref() != b"sheet" {
+        return Ok(event);
+    }
+
+    let mut relationship_value = None;
+    let mut has_calamine_relationship_attr = false;
+    for attr in event.attributes() {
+        let attr = attr.map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::InvalidInput,
+                format!("failed to parse Excel workbook XML attribute: {}", err),
+            )
+        })?;
+        let (namespace, local_name) = reader.resolve_attribute(attr.key);
+        let is_office_relationship = matches!(
+            namespace,
+            ResolveResult::Bound(namespace) if namespace.as_ref() == OFFICE_RELATIONSHIPS_NS
+        );
+        if is_calamine_relationship_attr(attr.key.as_ref()) && !is_office_relationship {
+            return Err(invalid(
+                "Excel workbook sheet relationship uses an invalid namespace",
+            ));
+        }
+        if local_name.as_ref() == b"id" && is_office_relationship {
+            if is_calamine_relationship_attr(attr.key.as_ref()) {
+                has_calamine_relationship_attr = true;
+            }
+            relationship_value = Some(attr.value.as_ref().to_vec());
+        }
+    }
+    if !has_calamine_relationship_attr && let Some(value) = relationship_value {
+        event.push_attribute((plan.prefix.attr_name().as_bytes(), value.as_slice()));
+    }
+    Ok(event)
+}
+
+fn is_calamine_relationship_attr(name: &[u8]) -> bool {
+    matches!(name, b"r:id" | b"relationships:id")
+}
+
 struct WorkbookSheet {
     name: String,
     relationship_id: String,
@@ -302,13 +600,13 @@ fn selected_worksheet_path(
 }
 
 fn parse_workbook_sheets(workbook_xml: &str) -> Result<Vec<WorkbookSheet>, TransformError> {
-    let mut reader = XmlReader::from_str(workbook_xml);
+    let mut reader = NsReader::from_str(workbook_xml);
     reader.trim_text(false);
     let mut sheets = Vec::new();
     loop {
         match reader.read_event() {
             Ok(Event::Start(event)) | Ok(Event::Empty(event))
-                if local_name(event.name().as_ref()) == b"sheet" =>
+                if event.local_name().as_ref() == b"sheet" =>
             {
                 let mut name = None;
                 let mut relationship_id = None;
@@ -319,16 +617,51 @@ fn parse_workbook_sheets(workbook_xml: &str) -> Result<Vec<WorkbookSheet>, Trans
                             format!("failed to parse Excel workbook XML attribute: {}", err),
                         )
                     })?;
-                    let key = attr.key.as_ref();
-                    match key {
+                    match attr.key.as_ref() {
                         b"name" => {
-                            name = Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                            name = Some(
+                                attr.decode_and_unescape_value(&reader)
+                                    .map_err(|err| {
+                                        TransformError::new(
+                                            TransformErrorKind::InvalidInput,
+                                            format!(
+                                                "failed to decode Excel workbook sheet name: {}",
+                                                err
+                                            ),
+                                        )
+                                    })?
+                                    .into_owned(),
+                            )
                         }
-                        b"r:id" | b"relationships:id" => {
-                            relationship_id =
-                                Some(String::from_utf8_lossy(attr.value.as_ref()).to_string())
+                        _ => {
+                            let (namespace, local_name) = reader.resolve_attribute(attr.key);
+                            if local_name.as_ref() == b"id"
+                                && matches!(
+                                    namespace,
+                                    ResolveResult::Bound(namespace)
+                                        if namespace.as_ref() == OFFICE_RELATIONSHIPS_NS
+                                )
+                            {
+                                if relationship_id.is_some() {
+                                    return Err(invalid(
+                                        "Excel workbook sheet has multiple relationships",
+                                    ));
+                                }
+                                relationship_id = Some(
+                                    attr.decode_and_unescape_value(&reader)
+                                        .map_err(|err| {
+                                            TransformError::new(
+                                                TransformErrorKind::InvalidInput,
+                                                format!(
+                                                    "failed to decode Excel workbook sheet relationship: {}",
+                                                    err
+                                                ),
+                                            )
+                                        })?
+                                        .into_owned(),
+                                )
+                            }
                         }
-                        _ => {}
                     }
                 }
                 let name = name.ok_or_else(|| invalid("Excel workbook sheet is missing name"))?;
