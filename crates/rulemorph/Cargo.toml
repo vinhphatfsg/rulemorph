@@ -19,6 +19,7 @@ toml = "0.8"
 calamine = { version = "0.26", features = ["dates"] }
 zip = "0.6"
 quick-xml = "0.31"
+scraper = "0.20"
 
 [dev-dependencies]
 criterion = "0.5"

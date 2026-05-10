@@ -1,5 +1,6 @@
 mod csv;
 mod excel;
+mod html;
 mod json;
 mod options;
 mod toml;
@@ -59,13 +60,10 @@ pub fn normalize_records_with_options(
             toml::normalize_toml_records(rule, text_input(input, options)?, options)?
         }
         InputFormat::Xml => xml::normalize_xml_records(rule, text_input(input, options)?, options)?,
-        InputFormat::Excel => excel::normalize_excel_records(rule, input, options)?,
         InputFormat::Html => {
-            return Err(TransformError::new(
-                TransformErrorKind::InvalidInput,
-                "input format is not supported yet",
-            ));
+            html::normalize_html_records(rule, text_input(input, options)?, options)?
         }
+        InputFormat::Excel => excel::normalize_excel_records(rule, input, options)?,
     };
     Ok(NormalizedRecords::Materialized(records.into_iter()))
 }
