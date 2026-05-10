@@ -824,6 +824,27 @@ mappings:
 }
 
 #[test]
+fn xml_rejects_records_path_that_matches_no_elements() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.usr
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = transform(&rule, "<users><user /></users>", None)
+        .expect_err("missing XML records_path should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidRecordsPath);
+    assert_eq!(err.path.as_deref(), Some("input.xml.records_path"));
+}
+
+#[test]
 fn xml_processing_instruction_is_rejected() {
     let rule = parse_rule_file(
         r#"
@@ -892,6 +913,34 @@ mappings:
         &options,
     )
     .expect_err("depth limit should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn xml_rejects_self_closing_element_over_depth_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: xml
+  xml:
+    records_path: users.user
+mappings:
+  - target: "name"
+    source: "name"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_depth: 2,
+        ..NormalizationOptions::default()
+    };
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("<users><user><name /></user></users>"),
+        &options,
+    )
+    .expect_err("self-closing element over depth limit should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
 
@@ -1774,6 +1823,34 @@ mappings:
         normalize_records_with_options(&rule, InputData::Text("[a.b.c]\nvalue = 1\n"), &options)
             .expect_err("depth limit should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+}
+
+#[test]
+fn toml_allows_nested_table_at_equivalent_depth_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: toml
+  toml: {}
+mappings:
+  - target: "value"
+    source: "a.b.c.value"
+"#,
+    )
+    .expect("parse rule");
+    let options = NormalizationOptions {
+        max_depth: 4,
+        ..NormalizationOptions::default()
+    };
+    let mut records =
+        normalize_records_with_options(&rule, InputData::Text("[a.b.c]\nvalue = 1\n"), &options)
+            .expect("nested TOML table should fit within equivalent JSON depth");
+    let record = records.next().expect("record").expect("record ok");
+    assert_eq!(
+        record,
+        serde_json::json!({ "a": { "b": { "c": { "value": 1 } } } })
+    );
 }
 
 #[test]

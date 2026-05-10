@@ -41,6 +41,13 @@ pub fn normalize_xml_records(
     let path = parse_xml_records_path(&xml.records_path)?;
     let mut selected = Vec::new();
     select_xml_records(&root, &path, &mut selected);
+    if selected.is_empty() {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidRecordsPath,
+            "xml.records_path does not match any elements",
+        )
+        .with_path("input.xml.records_path"));
+    }
     let mut records = Vec::with_capacity(selected.len());
     for node in selected {
         records.push(xml_node_to_json(node, xml, options, 0)?);
@@ -91,6 +98,9 @@ fn parse_xml_tree(
             Ok(Event::Empty(event)) => {
                 node_count = node_count.saturating_add(1);
                 enforce_xml_node_count(node_count, options)?;
+                if stack.len() >= options.max_depth {
+                    return Err(invalid("input exceeds max_depth"));
+                }
                 enforce_namespace_rebinding(&event, &reader)?;
                 let node = start_node(&event, xml, &reader)?;
                 attach_node(node, &mut stack, &mut root)?;

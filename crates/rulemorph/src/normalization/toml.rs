@@ -51,7 +51,7 @@ fn toml_item_to_json(
     match item {
         TomlItem::None => Ok(JsonValue::Null),
         TomlItem::Value(value) => toml_value_to_json(value, options, depth),
-        TomlItem::Table(values) => toml_table_to_json(values, options, depth + 1),
+        TomlItem::Table(values) => toml_table_to_json(values, options, depth),
         TomlItem::ArrayOfTables(values) => {
             let mut output = Vec::new();
             for value in values.iter() {
