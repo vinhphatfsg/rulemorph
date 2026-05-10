@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::io::{Cursor, Read};
 
-use calamine::{Data, ExcelDateTime, Reader, open_workbook_auto_from_rs};
+use calamine::{Data, ExcelDateTime, Range, Reader, open_workbook_auto_from_rs};
 use quick_xml::Reader as XmlReader;
 use quick_xml::events::Event;
 use serde_json::{Map, Number as JsonNumber, Value as JsonValue};
@@ -32,7 +32,7 @@ pub fn normalize_excel_records(
         )
     })?;
     let bytes = excel_input_bytes(input, options)?;
-    preflight_xlsx_package(bytes, options)?;
+    preflight_xlsx_package(bytes, excel, options)?;
 
     let cursor = Cursor::new(bytes);
     let mut workbook = open_workbook_auto_from_rs(cursor).map_err(|err| {
@@ -68,13 +68,16 @@ pub fn normalize_excel_records(
     };
 
     let rows: Vec<&[Data]> = range.rows().collect();
-    let formula_rows = formulas
+    let formula_end = formulas
         .as_ref()
-        .map(|formulas| formulas.rows().collect::<Vec<_>>())
-        .unwrap_or_default();
+        .and_then(|formulas| formulas.end())
+        .map(|(row, col)| (row as usize + 1, col as usize + 1))
+        .unwrap_or((0, 0));
+    let row_count = rows.len().max(formula_end.0);
     let window = parse_cell_window(excel.range.as_deref())?;
     let max_width = rows.iter().map(|row| row.len()).max().unwrap_or(0);
-    if rows.len() > options.max_excel_rows {
+    let max_width = max_width.max(formula_end.1);
+    if row_count > options.max_excel_rows {
         return Err(invalid("input exceeds max_excel_rows"));
     }
     let selected_columns = selected_column_indexes(excel, &rows, window, max_width)?;
@@ -107,17 +110,17 @@ pub fn normalize_excel_records(
     .max(window.start_row);
     let data_end_row = window
         .end_row
-        .unwrap_or_else(|| rows.len().saturating_sub(1));
+        .unwrap_or_else(|| row_count.saturating_sub(1));
 
     let mut records = Vec::new();
-    if data_start_row >= rows.len() || data_start_row > data_end_row {
+    if data_start_row >= row_count || data_start_row > data_end_row {
         return Ok(records);
     }
-    for row_index in data_start_row..=data_end_row.min(rows.len().saturating_sub(1)) {
+    for row_index in data_start_row..=data_end_row.min(row_count.saturating_sub(1)) {
         let mut obj = Map::new();
         for (field_index, column_index) in selected_columns.iter().enumerate() {
             let cell = cell_at(&rows, row_index, *column_index);
-            let formula = formula_at(&formula_rows, row_index, *column_index);
+            let formula = formula_at(formulas.as_ref(), row_index, *column_index);
             if let Some(value) = excel_cell_to_json(cell, formula, excel, options)? {
                 obj.insert(headers[field_index].clone(), value);
             }
@@ -150,6 +153,7 @@ fn excel_input_bytes<'a>(
 
 fn preflight_xlsx_package(
     bytes: &[u8],
+    excel: &ExcelInput,
     options: &NormalizationOptions,
 ) -> Result<(), TransformError> {
     let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|err| {
@@ -198,7 +202,7 @@ fn preflight_xlsx_package(
             if worksheet_count > options.max_excel_sheets {
                 return Err(invalid("input exceeds max_excel_sheets"));
             }
-            let counts = inspect_worksheet_xml(&worksheet)?;
+            let counts = inspect_worksheet_xml(&worksheet, excel.formula)?;
             total_rows = total_rows
                 .checked_add(counts.rows)
                 .ok_or_else(|| invalid("input exceeds max_excel_rows"))?;
@@ -264,7 +268,10 @@ struct WorksheetCounts {
     max_col: usize,
 }
 
-fn inspect_worksheet_xml(worksheet: &str) -> Result<WorksheetCounts, TransformError> {
+fn inspect_worksheet_xml(
+    worksheet: &str,
+    formula_policy: ExcelFormulaPolicy,
+) -> Result<WorksheetCounts, TransformError> {
     let mut reader = XmlReader::from_str(worksheet);
     reader.trim_text(false);
     let mut counts = WorksheetCounts::default();
@@ -309,7 +316,10 @@ fn inspect_worksheet_xml(worksheet: &str) -> Result<WorksheetCounts, TransformEr
                 _ => {}
             },
             Ok(Event::End(event)) if local_name(event.name().as_ref()) == b"c" => {
-                if cell_has_formula && !cell_has_value {
+                if formula_policy == ExcelFormulaPolicy::Cached
+                    && cell_has_formula
+                    && !cell_has_value
+                {
                     return Err(invalid("Excel formula cell is missing a cached value"));
                 }
                 in_cell = false;
@@ -656,8 +666,10 @@ fn cell_at<'a>(rows: &'a [&'a [Data]], row: usize, col: usize) -> Option<&'a Dat
     rows.get(row).and_then(|row| row.get(col))
 }
 
-fn formula_at<'a>(rows: &'a [&'a [String]], row: usize, col: usize) -> Option<&'a String> {
-    rows.get(row).and_then(|row| row.get(col))
+fn formula_at(formulas: Option<&Range<String>>, row: usize, col: usize) -> Option<&String> {
+    let row = u32::try_from(row).ok()?;
+    let col = u32::try_from(col).ok()?;
+    formulas.and_then(|formulas| formulas.get_value((row, col)))
 }
 
 fn parse_cell_window(range: Option<&str>) -> Result<CellWindow, TransformError> {

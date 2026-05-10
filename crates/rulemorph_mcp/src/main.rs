@@ -7,9 +7,9 @@ use rulemorph::serde_guard::parse_json_value_strict;
 use rulemorph::{
     DtoLanguage, Expr, ExprChain, ExprOp, InputData, InputFormat, NormalizationOptions, RuleError,
     RuleFile, RuleFormat, TransformError, TransformErrorKind, TransformWarning, generate_dto,
-    normalize_records_with_options, parse_rule_file_with_format, transform_stream,
-    transform_stream_with_base_dir, transform_with_warnings, transform_with_warnings_with_base_dir,
-    validate_rule_file_with_source,
+    normalize_records_with_options, parse_rule_file_with_format, transform_input_with_warnings,
+    transform_input_with_warnings_with_base_dir, transform_stream_input,
+    transform_stream_input_with_base_dir, validate_rule_file_with_source,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -887,15 +887,17 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
         input_text.as_deref(),
         input_json.as_ref(),
     ) {
-        (Some(path), None, None) => read_allowed_to_string(path, "input")?,
-        (None, Some(text), None) => text.to_string(),
-        (None, None, Some(value)) => serde_json::to_string(value).map_err(|err| {
-            let message = format!("failed to serialize input JSON: {}", err);
-            CallError::Tool {
-                message: message.clone(),
-                errors: Some(vec![parse_error_json(&message, None)]),
-            }
-        })?,
+        (Some(path), None, None) => OwnedInput::Bytes(read_allowed_bytes(path, "input")?),
+        (None, Some(text), None) => OwnedInput::Text(text.to_string()),
+        (None, None, Some(value)) => serde_json::to_string(value)
+            .map_err(|err| {
+                let message = format!("failed to serialize input JSON: {}", err);
+                CallError::Tool {
+                    message: message.clone(),
+                    errors: Some(vec![parse_error_json(&message, None)]),
+                }
+            })
+            .map(OwnedInput::Text)?,
         _ => {
             return Err(CallError::InvalidParams(
                 "input_path, input_text, or input_json is required".to_string(),
@@ -939,18 +941,24 @@ fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
     }
 
     let (output_value, output_text, warnings) = if ndjson {
-        let (output_text, warnings) =
-            transform_to_ndjson(&rule, &input, context_value.as_ref(), base_dir.as_deref())?;
+        let (output_text, warnings) = transform_to_ndjson(
+            &rule,
+            input.as_input_data(),
+            context_value.as_ref(),
+            base_dir.as_deref(),
+        )?;
         (None, output_text, warnings)
     } else {
         let (output, warnings) = match base_dir.as_deref() {
-            Some(base_dir) => transform_with_warnings_with_base_dir(
+            Some(base_dir) => transform_input_with_warnings_with_base_dir(
                 &rule,
-                &input,
+                input.as_input_data(),
                 context_value.as_ref(),
                 base_dir,
             ),
-            None => transform_with_warnings(&rule, &input, context_value.as_ref()),
+            None => {
+                transform_input_with_warnings(&rule, input.as_input_data(), context_value.as_ref())
+            }
         }
         .map_err(|err| CallError::Tool {
             message: transform_error_to_text(&err),
@@ -2060,19 +2068,31 @@ fn validate_transform_format(value: Option<&str>) -> Result<(), CallError> {
     ))
 }
 
+enum OwnedInput {
+    Text(String),
+    Bytes(Vec<u8>),
+}
+
+impl OwnedInput {
+    fn as_input_data(&self) -> InputData<'_> {
+        match self {
+            OwnedInput::Text(value) => InputData::Text(value),
+            OwnedInput::Bytes(value) => InputData::Bytes(value),
+        }
+    }
+}
+
 fn read_allowed_to_string(path: &str, label: &str) -> Result<String, CallError> {
     read_allowed_file(path, label).map(|(_, data)| data)
 }
 
+fn read_allowed_bytes(path: &str, label: &str) -> Result<Vec<u8>, CallError> {
+    read_allowed_file_bytes(path, label).map(|(_, data)| data)
+}
+
 fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallError> {
-    let path = allowed_existing_path(path).map_err(|err| {
-        let message = format!("failed to read {}: {}", label, err);
-        CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![io_error_json(&message, Some(path))]),
-        }
-    })?;
-    let data = read_text_file_with_limit(&path, MCP_MAX_FILE_BYTES).map_err(|err| {
+    let (path, bytes) = read_allowed_file_bytes(path, label)?;
+    let data = String::from_utf8(bytes).map_err(|err| {
         let message = format!("failed to read {}: {}", label, err);
         CallError::Tool {
             message: message.clone(),
@@ -2085,7 +2105,28 @@ fn read_allowed_file(path: &str, label: &str) -> Result<(PathBuf, String), CallE
     Ok((path, data))
 }
 
-fn read_text_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, String> {
+fn read_allowed_file_bytes(path: &str, label: &str) -> Result<(PathBuf, Vec<u8>), CallError> {
+    let path = allowed_existing_path(path).map_err(|err| {
+        let message = format!("failed to read {}: {}", label, err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![io_error_json(&message, Some(path))]),
+        }
+    })?;
+    let data = read_file_with_limit(&path, MCP_MAX_FILE_BYTES).map_err(|err| {
+        let message = format!("failed to read {}: {}", label, err);
+        CallError::Tool {
+            message: message.clone(),
+            errors: Some(vec![io_error_json(
+                &message,
+                Some(path.to_string_lossy().as_ref()),
+            )]),
+        }
+    })?;
+    Ok((path, data))
+}
+
+fn read_file_with_limit(path: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
     let metadata = fs::metadata(path).map_err(|err| err.to_string())?;
     if metadata.len() > max_bytes as u64 {
         return Err(format!("file exceeds maximum size ({})", max_bytes));
@@ -2099,7 +2140,7 @@ fn read_text_file_with_limit(path: &Path, max_bytes: usize) -> Result<String, St
     if bytes.len() > max_bytes {
         return Err(format!("file exceeds maximum size ({})", max_bytes));
     }
-    String::from_utf8(bytes).map_err(|err| err.to_string())
+    Ok(bytes)
 }
 
 fn rule_has_file_branch(rule: &RuleFile) -> bool {
@@ -4786,13 +4827,13 @@ fn apply_format_override(rule: &mut RuleFile, format: Option<&str>) -> Result<()
 
 fn transform_to_ndjson(
     rule: &RuleFile,
-    input: &str,
+    input: InputData<'_>,
     context: Option<&serde_json::Value>,
     base_dir: Option<&Path>,
 ) -> Result<(String, Vec<TransformWarning>), CallError> {
     let stream = match base_dir {
-        Some(base_dir) => transform_stream_with_base_dir(rule, input, context, base_dir),
-        None => transform_stream(rule, input, context),
+        Some(base_dir) => transform_stream_input_with_base_dir(rule, input, context, base_dir),
+        None => transform_stream_input(rule, input, context),
     }
     .map_err(|err| CallError::Tool {
         message: transform_error_to_text(&err),
