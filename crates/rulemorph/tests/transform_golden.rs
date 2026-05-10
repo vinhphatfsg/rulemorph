@@ -260,6 +260,85 @@ fn build_test_xlsx(options: XlsxFixtureOptions) -> Vec<u8> {
     zip.finish().expect("finish xlsx").into_inner()
 }
 
+fn build_dynamodb_users_xlsx() -> Vec<u8> {
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    let file_options = FileOptions::default().compression_method(CompressionMethod::Deflated);
+    write_zip_file(
+        &mut zip,
+        "[Content_Types].xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+  <Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>
+</Types>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "_rels/.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/workbook.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Users" sheetId="1" r:id="rId1"/></sheets>
+</workbook>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/_rels/workbook.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+  <Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>
+</Relationships>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/sharedStrings.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="8" uniqueCount="8">
+  <si><t>user_id</t></si><si><t>email</t></si><si><t>age</t></si><si><t>active</t></si>
+  <si><t>u001</t></si><si><t>alice@example.com</t></si><si><t>u002</t></si><si><t>bob@example.com</t></si>
+</sst>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/styles.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs></styleSheet>"#,
+        file_options,
+    );
+    write_zip_file(
+        &mut zip,
+        "xl/worksheets/sheet1.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row>
+    <row r="2"><c r="A2" t="s"><v>4</v></c><c r="B2" t="s"><v>5</v></c><c r="C2"><v>31</v></c><c r="D2" t="b"><v>1</v></c></row>
+    <row r="3"><c r="A3" t="s"><v>6</v></c><c r="B3" t="s"><v>7</v></c><c r="C3"><v>28</v></c><c r="D3" t="b"><v>0</v></c></row>
+  </sheetData>
+</worksheet>"#,
+        file_options,
+    );
+    zip.finish().expect("finish dynamodb xlsx").into_inner()
+}
+
 fn write_zip_file(
     zip: &mut ZipWriter<Cursor<Vec<u8>>>,
     name: &str,
@@ -478,6 +557,130 @@ fn excel_input_with_header_normalizes_rows() {
         transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
     let expected = load_json(&base.join("expected.json"));
     assert_eq!(output, expected);
+}
+
+#[test]
+fn excel_rows_transform_to_dynamodb_attribute_values() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Users
+mappings:
+  - target: "Item.PK.S"
+    expr:
+      op: "concat"
+      args: ["USER#", { ref: "input.user_id" }]
+  - target: "Item.SK.S"
+    value: "PROFILE"
+  - target: "Item.email.S"
+    source: "email"
+    type: "string"
+  - target: "Item.age.N"
+    source: "age"
+    type: "string"
+  - target: "Item.active.BOOL"
+    source: "active"
+    type: "bool"
+"#,
+    )
+    .expect("parse rule");
+    let input = build_dynamodb_users_xlsx();
+    let output =
+        transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
+    assert_eq!(
+        output,
+        serde_json::json!([
+            {
+                "Item": {
+                    "PK": { "S": "USER#u001" },
+                    "SK": { "S": "PROFILE" },
+                    "email": { "S": "alice@example.com" },
+                    "age": { "N": "31" },
+                    "active": { "BOOL": true }
+                }
+            },
+            {
+                "Item": {
+                    "PK": { "S": "USER#u002" },
+                    "SK": { "S": "PROFILE" },
+                    "email": { "S": "bob@example.com" },
+                    "age": { "N": "28" },
+                    "active": { "BOOL": false }
+                }
+            }
+        ])
+    );
+}
+
+#[test]
+fn excel_rows_transform_to_dynamodb_batch_write_item_payload() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: excel
+  excel:
+    sheet: Users
+mappings:
+  - target: "PutRequest.Item.PK.S"
+    expr:
+      op: "concat"
+      args: ["USER#", { ref: "input.user_id" }]
+  - target: "PutRequest.Item.SK.S"
+    value: "PROFILE"
+  - target: "PutRequest.Item.email.S"
+    source: "email"
+    type: "string"
+  - target: "PutRequest.Item.age.N"
+    source: "age"
+    type: "string"
+  - target: "PutRequest.Item.active.BOOL"
+    source: "active"
+    type: "bool"
+finalize:
+  wrap:
+    RequestItems:
+      UsersTable: "@out"
+"#,
+    )
+    .expect("parse rule");
+    let input = build_dynamodb_users_xlsx();
+    let output =
+        transform_input(&rule, InputData::Bytes(&input), None).expect("transform excel input");
+    assert_eq!(
+        output,
+        serde_json::json!({
+            "RequestItems": {
+                "UsersTable": [
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "PK": { "S": "USER#u001" },
+                                "SK": { "S": "PROFILE" },
+                                "email": { "S": "alice@example.com" },
+                                "age": { "N": "31" },
+                                "active": { "BOOL": true }
+                            }
+                        }
+                    },
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "PK": { "S": "USER#u002" },
+                                "SK": { "S": "PROFILE" },
+                                "email": { "S": "bob@example.com" },
+                                "age": { "N": "28" },
+                                "active": { "BOOL": false }
+                            }
+                        }
+                    }
+                ]
+            }
+        })
+    );
 }
 
 #[test]
