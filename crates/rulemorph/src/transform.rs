@@ -23,7 +23,7 @@ use crate::v2_eval::{
     EvalItem as V2EvalItem, EvalValue as V2EvalValue, V2EvalContext, eval_v2_condition,
     eval_v2_expr, eval_v2_let_step, eval_v2_op_step, eval_v2_pipe, eval_v2_ref, eval_v2_start,
 };
-use crate::v2_model::{V2Expr, V2Pipe, V2Ref, V2Start, V2Step};
+use crate::v2_model::{V2Pipe, V2Ref, V2Start, V2Step};
 use crate::v2_parser::{
     is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
     parse_v2_pipe_from_value,
@@ -1339,7 +1339,21 @@ fn apply_steps_traced(
                     .start_span(TraceEventKind::RecordWhenStart, TracePhase::Start)
                     .rule_path(&when_path)
                     .finish(collector);
-                let keep = eval_when_expr(expr, record, context, &out, &when_path, rule_version)?;
+                let keep =
+                    match eval_when_expr(expr, record, context, &out, &when_path, rule_version) {
+                        Ok(keep) => keep,
+                        Err(error) => {
+                            collector
+                                .error_span(
+                                    TraceEventKind::Error,
+                                    "RECORD_WHEN_ERROR",
+                                    "record_when failed",
+                                )
+                                .rule_path(&when_path)
+                                .finish(collector);
+                            return Err(error);
+                        }
+                    };
                 collector
                     .end_span(TraceEventKind::RecordWhenEnd, TracePhase::End)
                     .rule_path(&when_path)
@@ -1374,7 +1388,10 @@ fn apply_steps_traced(
                     if !ok {
                         return Err(TransformError::new(
                             TransformErrorKind::AssertionFailed,
-                            "assert failed",
+                            format!(
+                                "assert failed: {}: {}",
+                                assert.error.code, assert.error.message
+                            ),
                         )
                         .with_path(assert_path));
                     }
@@ -2220,18 +2237,11 @@ fn eval_v2_pipe_traced<'a>(
 
     for (step_index, step) in pipe.steps.iter().enumerate() {
         let step_path = format!("{}[{}]", base_path, step_index + 1);
-        current_ctx = current_ctx.clone().with_pipe_value(current.clone());
-        current = match eval_v2_step_traced(
-            step,
-            current,
-            record,
-            context,
-            out,
-            &step_path,
-            &current_ctx,
-            collector,
+        let step_ctx = current_ctx.clone().with_pipe_value(current.clone());
+        let (next, next_ctx) = match eval_v2_step_traced(
+            step, current, record, context, out, &step_path, &step_ctx, collector,
         ) {
-            Ok(value) => value,
+            Ok(result) => result,
             Err(error) => {
                 collector
                     .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
@@ -2240,6 +2250,8 @@ fn eval_v2_pipe_traced<'a>(
                 return Err(error);
             }
         };
+        current = next;
+        current_ctx = next_ctx;
     }
 
     collector
@@ -2259,7 +2271,7 @@ fn eval_v2_step_traced<'a>(
     step_path: &str,
     ctx: &V2EvalContext<'a>,
     collector: &mut TraceCollector,
-) -> Result<V2EvalValue, TransformError> {
+) -> Result<(V2EvalValue, V2EvalContext<'a>), TransformError> {
     match step {
         V2Step::Op(op) => {
             collector
@@ -2269,27 +2281,12 @@ fn eval_v2_step_traced<'a>(
                 .input_v2_eval_value(&pipe_value, collector.options(), None)
                 .attr_count("arg_count", op.args.len())
                 .finish(collector);
-            for (arg_index, _arg) in op.args.iter().enumerate() {
+            for (arg_index, _) in op.args.iter().enumerate() {
                 let arg_path = format!("{}.args[{}]", step_path, arg_index);
-                let arg_value = match eval_v2_expr_with_trace(
-                    _arg, record, context, out, &arg_path, ctx, collector,
-                ) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        collector
-                            .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
-                            .rule_path(step_path)
-                            .operator(&op.op)
-                            .input_v2_eval_value(&pipe_value, collector.options(), None)
-                            .finish(collector);
-                        return Err(error);
-                    }
-                };
                 collector
                     .emit(TraceEventKind::ArgEval, TracePhase::Instant)
                     .rule_path(&arg_path)
                     .attr_index("arg_index", arg_index)
-                    .input_v2_eval_value(&arg_value, collector.options(), None)
                     .finish(collector);
             }
             let result =
@@ -2312,7 +2309,7 @@ fn eval_v2_step_traced<'a>(
                 .operator(&op.op)
                 .input_v2_eval_value(&pipe_value, collector.options(), None)
                 .finish_with_v2_eval_output(collector, &output, None);
-            Ok(output)
+            Ok((output, ctx.clone()))
         }
         V2Step::Map(map) => {
             collector
@@ -2328,7 +2325,7 @@ fn eval_v2_step_traced<'a>(
                         .rule_path(step_path)
                         .operator("map")
                         .finish_with_v2_eval_output(collector, &V2EvalValue::Missing, None);
-                    return Ok(V2EvalValue::Missing);
+                    return Ok((V2EvalValue::Missing, ctx.clone()));
                 }
                 V2EvalValue::Value(JsonValue::Array(arr)) => arr,
                 V2EvalValue::Value(_) => {
@@ -2368,18 +2365,18 @@ fn eval_v2_step_traced<'a>(
                     .finish(collector);
 
                 for (nested_index, nested_step) in map.steps.iter().enumerate() {
-                    step_ctx = step_ctx.clone().with_pipe_value(current.clone());
-                    current = match eval_v2_step_traced(
+                    let nested_ctx = step_ctx.clone().with_pipe_value(current.clone());
+                    let (next, next_ctx) = match eval_v2_step_traced(
                         nested_step,
                         current,
                         record,
                         context,
                         out,
                         &format!("{}.step[{}]", item_path, nested_index),
-                        &step_ctx,
+                        &nested_ctx,
                         collector,
                     ) {
-                        Ok(value) => value,
+                        Ok(result) => result,
                         Err(error) => {
                             collector
                                 .error_span(
@@ -2392,6 +2389,8 @@ fn eval_v2_step_traced<'a>(
                             return Err(error);
                         }
                     };
+                    current = next;
+                    step_ctx = next_ctx;
                 }
                 collector
                     .end_span(TraceEventKind::CollectionItemEnd, TracePhase::End)
@@ -2410,7 +2409,7 @@ fn eval_v2_step_traced<'a>(
                     &V2EvalValue::Value(JsonValue::Array(results.clone())),
                     None,
                 );
-            Ok(V2EvalValue::Value(JsonValue::Array(results)))
+            Ok((V2EvalValue::Value(JsonValue::Array(results)), ctx.clone()))
         }
         V2Step::Let(let_step) => {
             let new_ctx = eval_v2_let_step(
@@ -2427,7 +2426,8 @@ fn eval_v2_step_traced<'a>(
                 .rule_path(step_path)
                 .input_v2_eval_value(&pipe_value, collector.options(), None)
                 .finish(collector);
-            Ok(new_ctx.get_pipe_value().cloned().unwrap_or(pipe_value))
+            let output = new_ctx.get_pipe_value().cloned().unwrap_or(pipe_value);
+            Ok((output, new_ctx))
         }
         V2Step::If(if_step) => {
             let cond_ctx = ctx.clone().with_pipe_value(pipe_value.clone());
@@ -2457,7 +2457,7 @@ fn eval_v2_step_traced<'a>(
                     .end_span(TraceEventKind::BranchTaken, TracePhase::End)
                     .rule_path(step_path)
                     .finish_with_v2_eval_output(collector, &result, None);
-                Ok(result)
+                Ok((result, ctx.clone()))
             } else if let Some(else_branch) = &if_step.else_branch {
                 collector
                     .start_span(TraceEventKind::BranchTaken, TracePhase::Start)
@@ -2477,9 +2477,9 @@ fn eval_v2_step_traced<'a>(
                     .end_span(TraceEventKind::BranchTaken, TracePhase::End)
                     .rule_path(step_path)
                     .finish_with_v2_eval_output(collector, &result, None);
-                Ok(result)
+                Ok((result, ctx.clone()))
             } else {
-                Ok(pipe_value)
+                Ok((pipe_value, ctx.clone()))
             }
         }
         V2Step::Ref(v2_ref) => {
@@ -2491,29 +2491,7 @@ fn eval_v2_step_traced<'a>(
                 event = event.input_path(path);
             }
             event.finish_with_v2_eval_output(collector, &result, None);
-            Ok(result)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn eval_v2_expr_with_trace<'a>(
-    expr: &V2Expr,
-    record: &'a JsonValue,
-    context: Option<&'a JsonValue>,
-    out: &'a JsonValue,
-    path: &str,
-    ctx: &V2EvalContext<'a>,
-    collector: &mut TraceCollector,
-) -> Result<V2EvalValue, TransformError> {
-    match expr {
-        V2Expr::Pipe(pipe) => eval_v2_pipe_traced(pipe, record, context, out, path, ctx, collector),
-        V2Expr::V1Fallback(expr) => {
-            let result = eval_expr_traced(expr, record, context, out, path, None, collector)?;
-            Ok(match result {
-                EvalValue::Missing => V2EvalValue::Missing,
-                EvalValue::Value(value) => V2EvalValue::Value(value),
-            })
+            Ok((result, ctx.clone()))
         }
     }
 }

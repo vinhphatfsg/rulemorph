@@ -338,6 +338,224 @@ mappings:
 }
 
 #[test]
+fn trace_v2_filter_preserves_item_scope() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "active_names"
+    expr:
+      - "@input.users"
+      - filter: ["@item.active"]
+      - map:
+          - "@item.name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"users":[{"name":"alice","active":true},{"name":"bob","active":false}]}]"#;
+
+    let normal = transform(&rule, input, None).expect("normal transform");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, normal);
+    assert_eq!(traced.output, json!([{ "active_names": ["alice"] }]));
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
+    assert_trace_paths_are_canonical(&traced.trace);
+}
+
+#[test]
+fn trace_v2_sort_by_preserves_item_scope() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "names"
+    expr:
+      - "@input.users"
+      - sort_by: ["@item.rank", "asc"]
+      - map:
+          - "@item.name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"users":[{"name":"bob","rank":2},{"name":"alice","rank":1}]}]"#;
+
+    let normal = transform(&rule, input, None).expect("normal transform");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, normal);
+    assert_eq!(traced.output, json!([{ "names": ["alice", "bob"] }]));
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
+    assert_trace_paths_are_canonical(&traced.trace);
+}
+
+#[test]
+fn trace_v2_reduce_preserves_acc_scope() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "sum"
+    expr:
+      - "@input.numbers"
+      - reduce:
+          - ["@acc", { "+": "@item" }]
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"numbers":[1,2,3]}]"#;
+
+    let normal = transform(&rule, input, None).expect("normal transform");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, normal);
+    assert_eq!(traced.output, json!([{ "sum": 6.0 }]));
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
+    assert_trace_paths_are_canonical(&traced.trace);
+}
+
+#[test]
+fn trace_v2_coalesce_preserves_short_circuit() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "name"
+    expr:
+      - "@input.name"
+      - coalesce: ["@item.name"]
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"name":"alice"}]"#;
+
+    let normal = transform(&rule, input, None).expect("normal transform");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, normal);
+    assert_eq!(traced.output, json!([{ "name": "alice" }]));
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
+    assert_trace_paths_are_canonical(&traced.trace);
+}
+
+#[test]
+fn trace_v2_let_binding_is_visible_to_following_steps() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "discounted"
+    expr:
+      - "@input.price"
+      - let: { factor: 0.9 }
+      - multiply: ["@factor"]
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"price":100}]"#;
+
+    let normal = transform(&rule, input, None).expect("normal transform");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, normal);
+    assert_eq!(traced.output, json!([{ "discounted": 90.0 }]));
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
+    assert_trace_paths_are_canonical(&traced.trace);
+}
+
+#[test]
+fn trace_step_record_when_error_closes_open_spans() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+steps:
+  - record_when: "@input.name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        transform_input_with_trace(
+            &rule,
+            InputData::Text(r#"[{"name":"alice"}]"#),
+            None,
+            &TransformTraceOptions::raw(),
+        )
+    }));
+
+    assert!(
+        result.is_ok(),
+        "record_when trace error must not leave an open span"
+    );
+    let err = result
+        .expect("no panic")
+        .expect_err("record_when should fail");
+    assert_eq!(err.error.kind, rulemorph::TransformErrorKind::ExprError);
+}
+
+#[test]
+fn trace_assert_failure_uses_configured_error_message() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+steps:
+  - asserts:
+      - when:
+          eq: ["@input.ok", true]
+        error:
+          code: "bad_input"
+          message: "expected ok"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"ok":false}]"#;
+
+    let normal = transform(&rule, input, None).expect_err("normal assertion error");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect_err("traced assertion error");
+
+    assert_eq!(traced.error, normal);
+    assert_eq!(
+        traced.error.message,
+        "assert failed: bad_input: expected ok"
+    );
+}
+
+#[test]
 fn redacted_mode_hides_secret_like_paths() {
     let yaml = r#"
 version: 2
