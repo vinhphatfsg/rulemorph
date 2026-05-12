@@ -765,10 +765,15 @@ pub fn transform_record_with_trace(
     match result {
         Ok(output) => {
             let output = if let Some(finalize) = &rule.finalize {
+                let Some(value) = output else {
+                    return Ok(TransformRecordTraceResult {
+                        output: None,
+                        warnings,
+                        trace: collector.finish(),
+                    });
+                };
                 let mut records = Vec::new();
-                if let Some(value) = output {
-                    records.push(value);
-                }
+                records.push(value);
                 let array = JsonValue::Array(records);
                 collector.start_finalize(&array);
                 match apply_finalize_traced(finalize, array, context, &mut collector) {
@@ -1243,6 +1248,56 @@ fn apply_rule_to_record_traced(
     Ok(Some(output))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn transform_record_with_warnings_inner_traced(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    base_dir: Option<&Path>,
+    branch_context: &mut BranchContext,
+    collector: &mut TraceCollector,
+) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
+    let mut warnings = Vec::new();
+    let output = apply_rule_to_record_traced(
+        rule,
+        record,
+        context,
+        &mut warnings,
+        base_dir,
+        branch_context,
+        collector,
+    )?;
+    let Some(output) = output else {
+        return Ok((None, warnings));
+    };
+
+    if let Some(finalize) = &rule.finalize {
+        let array = JsonValue::Array(vec![output]);
+        collector
+            .start_span(TraceEventKind::FinalizeStart, TracePhase::Start)
+            .rule_path("finalize")
+            .finish_with_output(collector, &array, None);
+        match apply_finalize_traced(finalize, array, context, collector) {
+            Ok(finalized) => {
+                collector
+                    .end_span(TraceEventKind::FinalizeEnd, TracePhase::End)
+                    .rule_path("finalize")
+                    .finish(collector);
+                return Ok((Some(finalized), warnings));
+            }
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "FINALIZE_ERROR", "finalize failed")
+                    .rule_path("finalize")
+                    .finish(collector);
+                return Err(error);
+            }
+        }
+    }
+
+    Ok((Some(output), warnings))
+}
+
 fn apply_rule_to_record(
     rule: &RuleFile,
     record: &JsonValue,
@@ -1381,6 +1436,12 @@ fn apply_steps(
     Ok(Some(out))
 }
 
+enum TracedStepOutcome {
+    Continue,
+    DropRecord,
+    Return(JsonValue),
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_steps_traced(
     steps: &[V2RuleStep],
@@ -1402,7 +1463,7 @@ fn apply_steps_traced(
             .attr_index("step_index", step_index)
             .finish(collector);
 
-        let step_result = (|| -> Result<Option<JsonValue>, TransformError> {
+        let step_result = (|| -> Result<TracedStepOutcome, TransformError> {
             if let Some(mappings) = &step.mappings {
                 apply_mappings_into_traced(
                     mappings,
@@ -1414,7 +1475,7 @@ fn apply_steps_traced(
                     &format!("{}.mappings", base_path),
                     collector,
                 )?;
-                return Ok(None);
+                return Ok(TracedStepOutcome::Continue);
             }
 
             if let Some(expr) = &step.record_when {
@@ -1448,9 +1509,9 @@ fn apply_steps_traced(
                     .attr_bool("kept", keep)
                     .finish(collector);
                 if !keep {
-                    return Ok(Some(JsonValue::Null));
+                    return Ok(TracedStepOutcome::DropRecord);
                 }
-                return Ok(None);
+                return Ok(TracedStepOutcome::Continue);
             }
 
             if let Some(asserts) = &step.asserts {
@@ -1480,7 +1541,7 @@ fn apply_steps_traced(
                         .with_path(assert_path));
                     }
                 }
-                return Ok(None);
+                return Ok(TracedStepOutcome::Continue);
             }
 
             if let Some(branch) = &step.branch {
@@ -1508,10 +1569,16 @@ fn apply_steps_traced(
                         .rule_path(&branch_path)
                         .attr_enum("selected_branch", target_field)
                         .finish(collector);
-                    let branch_path_guard =
-                        branch_context.enter(base_dir, target).map_err(|err| {
-                            err.with_path(format!("{}.{}", branch_path, target_field))
-                        })?;
+                    let branch_path_guard = match branch_context.enter(base_dir, target) {
+                        Ok(guard) => guard,
+                        Err(err) => {
+                            collector
+                                .error_span(TraceEventKind::Error, "BRANCH_ERROR", "branch failed")
+                                .rule_path(&branch_path)
+                                .finish(collector);
+                            return Err(err.with_path(format!("{}.{}", branch_path, target_field)));
+                        }
+                    };
                     let branch_result = (|| {
                         let (branch_rule, branch_base_dir) =
                             load_rule_from_path(base_dir, target, branch_context.allowed_root())
@@ -1519,18 +1586,17 @@ fn apply_steps_traced(
                                     err.with_path(format!("{}.{}", branch_path, target_field))
                                 })?;
                         let branch_input = out.clone();
-                        apply_rule_to_record_traced(
+                        transform_record_with_warnings_inner_traced(
                             &branch_rule,
                             &branch_input,
                             context,
-                            warnings,
                             Some(&branch_base_dir),
                             branch_context,
                             collector,
                         )
                     })();
                     branch_context.exit(branch_path_guard);
-                    let branch_output = match branch_result {
+                    let (branch_output, branch_warnings) = match branch_result {
                         Ok(output) => output,
                         Err(error) => {
                             collector
@@ -1540,12 +1606,13 @@ fn apply_steps_traced(
                             return Err(error);
                         }
                     };
+                    warnings.extend(branch_warnings);
                     let Some(branch_output) = branch_output else {
                         collector
                             .end_span(TraceEventKind::BranchTaken, TracePhase::End)
                             .rule_path(&branch_path)
                             .finish(collector);
-                        return Ok(Some(JsonValue::Null));
+                        return Ok(TracedStepOutcome::DropRecord);
                     };
 
                     if branch.return_ {
@@ -1553,9 +1620,16 @@ fn apply_steps_traced(
                             .end_span(TraceEventKind::BranchTaken, TracePhase::End)
                             .rule_path(&branch_path)
                             .finish_with_output(collector, &branch_output, None);
-                        return Ok(Some(branch_output));
+                        return Ok(TracedStepOutcome::Return(branch_output));
                     }
-                    merge_branch_output(&mut out, &branch_output, &branch_path)?;
+                    if let Err(error) = merge_branch_output(&mut out, &branch_output, &branch_path)
+                    {
+                        collector
+                            .error_span(TraceEventKind::Error, "BRANCH_ERROR", "branch failed")
+                            .rule_path(&branch_path)
+                            .finish(collector);
+                        return Err(error);
+                    }
                     collector
                         .emit(TraceEventKind::BranchMerge, TracePhase::Instant)
                         .rule_path(&branch_path)
@@ -1565,28 +1639,28 @@ fn apply_steps_traced(
                         .rule_path(&branch_path)
                         .finish(collector);
                 }
-                return Ok(None);
+                return Ok(TracedStepOutcome::Continue);
             }
 
-            Ok(None)
+            Ok(TracedStepOutcome::Continue)
         })();
 
         match step_result {
-            Ok(Some(value)) if value.is_null() => {
+            Ok(TracedStepOutcome::DropRecord) => {
                 collector
                     .end_span(TraceEventKind::StepStart, TracePhase::End)
                     .rule_path(&base_path)
                     .finish(collector);
                 return Ok(None);
             }
-            Ok(Some(value)) => {
+            Ok(TracedStepOutcome::Return(value)) => {
                 collector
                     .end_span(TraceEventKind::StepStart, TracePhase::End)
                     .rule_path(&base_path)
                     .finish_with_output(collector, &value, None);
                 return Ok(Some(value));
             }
-            Ok(None) => {
+            Ok(TracedStepOutcome::Continue) => {
                 collector
                     .end_span(TraceEventKind::StepStart, TracePhase::End)
                     .rule_path(&base_path)
@@ -2812,50 +2886,60 @@ fn eval_expr_traced(
                 .rule_path(base_path)
                 .operator(&expr_op.op)
                 .finish(collector);
-            let mut arg_error = None;
-            for (arg_index, arg) in expr_op.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", base_path, arg_index);
-                let arg_value =
-                    match eval_expr_traced(arg, record, context, out, &arg_path, locals, collector)
-                    {
-                        Ok(value) => value,
-                        Err(error) => {
-                            arg_error = Some(error);
-                            break;
-                        }
-                    };
-                collector
-                    .emit(TraceEventKind::ArgEval, TracePhase::Instant)
-                    .rule_path(&arg_path)
-                    .attr_index("arg_index", arg_index)
-                    .input_eval_value(&arg_value, collector.options(), None)
-                    .finish(collector);
-            }
-            if let Some(error) = arg_error {
-                collector
-                    .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
-                    .rule_path(base_path)
-                    .operator(&expr_op.op)
-                    .finish(collector);
-                Err(error)
-            } else {
-                match eval_op(expr_op, record, context, out, base_path, None, locals) {
-                    Ok(value) => {
-                        collector
-                            .end_span(TraceEventKind::OpEnd, TracePhase::End)
-                            .rule_path(base_path)
-                            .operator(&expr_op.op)
-                            .finish_with_eval_output(collector, &value, None);
-                        Ok(value)
-                    }
-                    Err(error) => {
-                        collector
-                            .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
-                            .rule_path(base_path)
-                            .operator(&expr_op.op)
-                            .finish(collector);
-                        Err(error)
-                    }
+            let op_result = match expr_op.op.as_str() {
+                "coalesce" => eval_coalesce_traced(
+                    &expr_op.args,
+                    None,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    locals,
+                    collector,
+                ),
+                "and" => eval_bool_and_or_traced(
+                    &expr_op.args,
+                    None,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    true,
+                    locals,
+                    collector,
+                ),
+                "or" => eval_bool_and_or_traced(
+                    &expr_op.args,
+                    None,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    false,
+                    locals,
+                    collector,
+                ),
+                _ => eval_eager_op_traced(
+                    expr_op, record, context, out, base_path, locals, collector,
+                ),
+            };
+
+            match op_result {
+                Ok(value) => {
+                    collector
+                        .end_span(TraceEventKind::OpEnd, TracePhase::End)
+                        .rule_path(base_path)
+                        .operator(&expr_op.op)
+                        .finish_with_eval_output(collector, &value, None);
+                    Ok(value)
+                }
+                Err(error) => {
+                    collector
+                        .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                        .rule_path(base_path)
+                        .operator(&expr_op.op)
+                        .finish(collector);
+                    Err(error)
                 }
             }
         }
@@ -2878,6 +2962,168 @@ fn eval_expr_traced(
     }
 
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_eager_op_traced(
+    expr_op: &ExprOp,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    for (arg_index, arg) in expr_op.args.iter().enumerate() {
+        let arg_path = format!("{}.args[{}]", base_path, arg_index);
+        let arg_value = eval_expr_traced(arg, record, context, out, &arg_path, locals, collector)?;
+        emit_arg_eval(collector, &arg_path, arg_index, &arg_value);
+    }
+    eval_op(expr_op, record, context, out, base_path, None, locals)
+}
+
+fn emit_arg_eval(
+    collector: &mut TraceCollector,
+    arg_path: &str,
+    arg_index: usize,
+    arg_value: &EvalValue,
+) {
+    collector
+        .emit(TraceEventKind::ArgEval, TracePhase::Instant)
+        .rule_path(arg_path)
+        .attr_index("arg_index", arg_index)
+        .input_eval_value(arg_value, collector.options(), None)
+        .finish(collector);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_expr_at_index_traced(
+    index: usize,
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    if let Some(injected) = injected {
+        if index == 0 {
+            return Ok(injected.clone());
+        }
+        let arg = args.get(index - 1).ok_or_else(|| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "expr.args index is out of bounds",
+            )
+            .with_path(format!("{}.args[{}]", base_path, index))
+        })?;
+        let arg_path = format!("{}.args[{}]", base_path, index);
+        return eval_expr_traced(arg, record, context, out, &arg_path, locals, collector);
+    }
+
+    let arg = args.get(index).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[{}]", base_path, index))
+    })?;
+    let arg_path = format!("{}.args[{}]", base_path, index);
+    eval_expr_traced(arg, record, context, out, &arg_path, locals, collector)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_coalesce_traced(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len == 0 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must be a non-empty array",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    for index in 0..total_len {
+        let arg_path = format!("{}.args[{}]", base_path, index);
+        let value = eval_expr_at_index_traced(
+            index, args, injected, record, context, out, base_path, locals, collector,
+        )?;
+        emit_arg_eval(collector, &arg_path, index, &value);
+        match value {
+            EvalValue::Missing => continue,
+            EvalValue::Value(value) => {
+                if value.is_null() {
+                    continue;
+                }
+                return Ok(EvalValue::Value(value));
+            }
+        }
+    }
+    Ok(EvalValue::Missing)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_bool_and_or_traced(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    is_and: bool,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len < 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain at least two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let mut saw_missing = false;
+    for index in 0..total_len {
+        let arg_path = format!("{}.args[{}]", base_path, index);
+        let value = eval_expr_at_index_traced(
+            index, args, injected, record, context, out, base_path, locals, collector,
+        )?;
+        emit_arg_eval(collector, &arg_path, index, &value);
+        match value {
+            EvalValue::Missing => {
+                saw_missing = true;
+                continue;
+            }
+            EvalValue::Value(value) => {
+                let flag = value_as_bool(&value, &arg_path)?;
+                if is_and {
+                    if !flag {
+                        return Ok(EvalValue::Value(JsonValue::Bool(false)));
+                    }
+                } else if flag {
+                    return Ok(EvalValue::Value(JsonValue::Bool(true)));
+                }
+            }
+        }
+    }
+
+    if saw_missing {
+        Ok(EvalValue::Missing)
+    } else {
+        Ok(EvalValue::Value(JsonValue::Bool(is_and)))
+    }
 }
 
 fn canonical_ref_path(ref_path: &str) -> String {

@@ -1,6 +1,12 @@
+use std::fs;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use rulemorph::{
-    InputData, TraceEvent, TraceEventKind, TransformTrace, TransformTraceOptions, parse_rule_file,
-    transform, transform_input_with_trace, transform_record, transform_record_with_trace,
+    InputData, TraceAttributeValue, TraceEvent, TraceEventKind, TransformTrace,
+    TransformTraceOptions, parse_rule_file, transform, transform_input_with_trace,
+    transform_input_with_trace_with_base_dir_and_options, transform_record,
+    transform_record_with_trace, transform_with_base_dir,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -81,6 +87,16 @@ fn assert_traced_output_matches_normal(yaml: &str, input: &str, expected: JsonVa
     assert_trace_shape(&traced.trace);
 }
 
+fn unique_temp_dir(name: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("rulemorph-trace-{name}-{nanos}"));
+    fs::create_dir_all(&path).expect("create temp dir");
+    path
+}
+
 #[test]
 fn trace_output_write_uses_output_snapshot_not_input_slot() {
     let yaml = r#"
@@ -115,6 +131,80 @@ mappings:
             .and_then(|snapshot| snapshot.value.as_ref()),
         Some(&json!("alice"))
     );
+}
+
+#[test]
+fn trace_v1_coalesce_does_not_evaluate_short_circuited_arg() {
+    let yaml = r#"
+version: 1
+input:
+  format: json
+mappings:
+  - target: "name"
+    expr:
+      op: coalesce
+      args:
+        - { ref: "input.name" }
+        - { ref: "item.value" }
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"name":"alice"}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, json!([{ "name": "alice" }]));
+    let arg_eval_indexes = iter_trace_events(&traced.trace)
+        .into_iter()
+        .filter(|event| event.kind == TraceEventKind::ArgEval)
+        .filter_map(|event| event.attributes.get("arg_index"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arg_eval_indexes,
+        vec![TraceAttributeValue::Number(0.into())]
+    );
+    assert_trace_shape(&traced.trace);
+}
+
+#[test]
+fn trace_v1_and_does_not_evaluate_short_circuited_arg() {
+    let yaml = r#"
+version: 1
+input:
+  format: json
+mappings:
+  - target: "flag"
+    expr:
+      op: and
+      args:
+        - false
+        - { ref: "item.value" }
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, json!([{ "flag": false }]));
+    let arg_eval_indexes = iter_trace_events(&traced.trace)
+        .into_iter()
+        .filter(|event| event.kind == TraceEventKind::ArgEval)
+        .filter_map(|event| event.attributes.get("arg_index"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        arg_eval_indexes,
+        vec![TraceAttributeValue::Number(0.into())]
+    );
+    assert_trace_shape(&traced.trace);
 }
 
 #[test]
@@ -283,6 +373,188 @@ finalize:
             .any(|event| event.kind == TraceEventKind::FinalizeStart),
         "single-record trace API must mirror normal finalize behavior"
     );
+}
+
+#[test]
+fn trace_record_api_skips_finalize_when_record_is_dropped() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+record_when: false
+mappings:
+  - target: "name"
+    source: "name"
+finalize:
+  wrap:
+    data: "@out"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let record = json!({"name":"alice"});
+
+    let normal = transform_record(&rule, &record, None).expect("normal record transform");
+    let traced = transform_record_with_trace(&rule, &record, None, &TransformTraceOptions::raw())
+        .expect("traced record transform");
+
+    assert_eq!(normal, None);
+    assert_eq!(traced.output, normal);
+    assert!(
+        iter_trace_events(&traced.trace)
+            .into_iter()
+            .all(|event| event.kind != TraceEventKind::FinalizeStart),
+        "dropped record must not run finalize in trace mode"
+    );
+    assert_trace_shape(&traced.trace);
+}
+
+#[test]
+fn trace_branch_return_preserves_child_finalize_null_output() {
+    let dir = unique_temp_dir("branch-null-finalize");
+    fs::write(
+        dir.join("child.yaml"),
+        r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "ignored"
+    value: true
+finalize:
+  wrap: "@context.missing"
+"#,
+    )
+    .expect("write child rule");
+    let yaml = r#"
+version: 2
+input:
+  format: json
+steps:
+  - branch:
+      when: true
+      then: child.yaml
+      return: true
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"name":"alice"}]"#;
+
+    let normal = transform_with_base_dir(&rule, input, None, &dir).expect("normal transform");
+    let traced = transform_input_with_trace_with_base_dir_and_options(
+        &rule,
+        InputData::Text(input),
+        None,
+        Some(&dir),
+        &Default::default(),
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(normal, json!([null]));
+    assert_eq!(traced.output, normal);
+    assert_trace_shape(&traced.trace);
+}
+
+#[test]
+fn trace_branch_child_rule_applies_finalize_like_normal_execution() {
+    let dir = unique_temp_dir("branch-child-finalize");
+    fs::write(
+        dir.join("child.yaml"),
+        r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "final_name"
+    source: "name"
+finalize:
+  wrap:
+    data: "@out"
+"#,
+    )
+    .expect("write child rule");
+    let yaml = r#"
+version: 2
+input:
+  format: json
+steps:
+  - mappings:
+      - target: "name"
+        source: "name"
+  - branch:
+      when: true
+      then: child.yaml
+      return: true
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let input = r#"[{"name":"alice"}]"#;
+
+    let normal = transform_with_base_dir(&rule, input, None, &dir).expect("normal transform");
+    let traced = transform_input_with_trace_with_base_dir_and_options(
+        &rule,
+        InputData::Text(input),
+        None,
+        Some(&dir),
+        &Default::default(),
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(normal, json!([{ "data": [{ "final_name": "alice" }] }]));
+    assert_eq!(traced.output, normal);
+    assert!(
+        iter_trace_events(&traced.trace)
+            .into_iter()
+            .any(|event| event.kind == TraceEventKind::FinalizeStart),
+        "branch child finalize should be visible in the record trace"
+    );
+    assert_trace_shape(&traced.trace);
+}
+
+#[test]
+fn trace_branch_merge_error_closes_branch_and_step_spans() {
+    let dir = unique_temp_dir("branch-merge-error");
+    fs::write(
+        dir.join("child.yaml"),
+        r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "ignored"
+    value: true
+finalize:
+  wrap: "@context.missing"
+"#,
+    )
+    .expect("write child rule");
+    let yaml = r#"
+version: 2
+input:
+  format: json
+steps:
+  - branch:
+      when: true
+      then: child.yaml
+      return: false
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        transform_input_with_trace_with_base_dir_and_options(
+            &rule,
+            InputData::Text(r#"[{}]"#),
+            None,
+            Some(&dir),
+            &Default::default(),
+            &TransformTraceOptions::raw(),
+        )
+    }));
+
+    assert!(
+        result.is_ok(),
+        "branch merge error must not leave open spans"
+    );
+    let err = result.expect("no panic").expect_err("traced error");
+    assert_eq!(err.error.kind, rulemorph::TransformErrorKind::InvalidTarget);
+    assert_trace_shape(&err.trace);
 }
 
 #[test]
