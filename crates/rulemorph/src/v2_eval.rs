@@ -71,6 +71,8 @@ pub struct V2EvalContext<'a> {
     item: Option<EvalItem<'a>>,
     /// Accumulator scope for reduce/fold operations (@acc)
     acc: Option<&'a JsonValue>,
+    /// Trace-mode precomputed operator args, keyed by the operator rule path.
+    precomputed_op_args: Option<(String, Vec<EvalValue>)>,
 }
 
 impl<'a> V2EvalContext<'a> {
@@ -81,6 +83,7 @@ impl<'a> V2EvalContext<'a> {
             let_bindings: HashMap::new(),
             item: None,
             acc: None,
+            precomputed_op_args: None,
         }
     }
 
@@ -116,6 +119,15 @@ impl<'a> V2EvalContext<'a> {
         self
     }
 
+    pub(crate) fn with_precomputed_op_args(
+        mut self,
+        base_path: impl Into<String>,
+        values: Vec<EvalValue>,
+    ) -> Self {
+        self.precomputed_op_args = Some((base_path.into(), values));
+        self
+    }
+
     /// Get the current pipe value
     pub fn get_pipe_value(&self) -> Option<&EvalValue> {
         self.pipe_value.as_ref()
@@ -144,6 +156,17 @@ impl<'a> V2EvalContext<'a> {
     /// Check if accumulator scope is available
     pub fn has_acc_scope(&self) -> bool {
         self.acc.is_some()
+    }
+
+    fn precomputed_arg_for_path(&self, path: &str) -> Option<EvalValue> {
+        let (base_path, values) = self.precomputed_op_args.as_ref()?;
+        let suffix = path.strip_prefix(base_path)?;
+        let index_text = suffix.strip_prefix(".args[")?.strip_suffix(']')?;
+        if index_text.contains(|ch: char| !ch.is_ascii_digit()) {
+            return None;
+        }
+        let index = index_text.parse::<usize>().ok()?;
+        values.get(index).cloned()
     }
 }
 
@@ -1243,6 +1266,9 @@ pub fn eval_v2_expr<'a>(
     path: &str,
     ctx: &V2EvalContext<'a>,
 ) -> Result<EvalValue, TransformError> {
+    if let Some(value) = ctx.precomputed_arg_for_path(path) {
+        return Ok(value);
+    }
     match expr {
         V2Expr::Pipe(pipe) => eval_v2_pipe(pipe, record, context, out, path, ctx),
         V2Expr::V1Fallback(_) => Err(TransformError::new(
@@ -1624,6 +1650,7 @@ fn eval_v2_op_with_v1_fallback<'a>(
         acc: ctx.get_acc(),
         pipe: Some(&v1_pipe),
         locals: Some(&v1_locals_map),
+        precomputed_op_args: None,
     };
 
     let result = eval_v1_op(

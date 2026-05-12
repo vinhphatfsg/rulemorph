@@ -663,106 +663,107 @@ fn validate_v2_comparison(
 // =============================================================================
 
 /// Check if an operation name is valid
+pub(crate) const VALID_V2_OPERATORS: &[&str] = &[
+    // String operations
+    "concat",
+    "to_string",
+    "trim",
+    "lowercase",
+    "uppercase",
+    "replace",
+    "split",
+    "pad_start",
+    "pad_end",
+    // Null handling
+    "coalesce",
+    // Lookup
+    "lookup",
+    "lookup_first",
+    // Arithmetic
+    "+",
+    "-",
+    "*",
+    "/",
+    "multiply",
+    "add",
+    "subtract",
+    "divide",
+    "round",
+    "to_base",
+    // Date
+    "date_format",
+    "to_unixtime",
+    // Logical
+    "and",
+    "or",
+    "not",
+    // Comparison
+    "==",
+    "!=",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "~=",
+    "eq",
+    "ne",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "match",
+    // JSON
+    "merge",
+    "deep_merge",
+    "get",
+    "pick",
+    "omit",
+    "keys",
+    "values",
+    "entries",
+    "len",
+    "from_entries",
+    "object_flatten",
+    "object_unflatten",
+    // Array
+    "map",
+    "filter",
+    "flat_map",
+    "flatten",
+    "take",
+    "drop",
+    "slice",
+    "chunk",
+    "zip",
+    "zip_with",
+    "unzip",
+    "group_by",
+    "key_by",
+    "partition",
+    "unique",
+    "distinct_by",
+    "sort_by",
+    "find",
+    "find_index",
+    "index_of",
+    "contains",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "reduce",
+    "fold",
+    "first",
+    "last",
+    // Type casts
+    "string",
+    "int",
+    "float",
+    "bool",
+];
+
 pub(crate) fn is_valid_op(op: &str) -> bool {
-    matches!(
-        op,
-        // String operations
-        "concat"
-            | "to_string"
-            | "trim"
-            | "lowercase"
-            | "uppercase"
-            | "replace"
-            | "split"
-            | "pad_start"
-            | "pad_end"
-            // Null handling
-            | "coalesce"
-            // Lookup
-            | "lookup"
-            | "lookup_first"
-            // Arithmetic
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "multiply"
-            | "add"
-            | "subtract"
-            | "divide"
-            | "round"
-            | "to_base"
-            // Date
-            | "date_format"
-            | "to_unixtime"
-            // Logical
-            | "and"
-            | "or"
-            | "not"
-            // Comparison
-            | "=="
-            | "!="
-            | "<"
-            | "<="
-            | ">"
-            | ">="
-            | "~="
-            | "eq"
-            | "ne"
-            | "lt"
-            | "lte"
-            | "gt"
-            | "gte"
-            | "match"
-            // JSON
-            | "merge"
-            | "deep_merge"
-            | "get"
-            | "pick"
-            | "omit"
-            | "keys"
-            | "values"
-            | "entries"
-            | "len"
-            | "from_entries"
-            | "object_flatten"
-            | "object_unflatten"
-            // Array
-            | "map"
-            | "filter"
-            | "flat_map"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "zip_with"
-            | "unzip"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "unique"
-            | "distinct_by"
-            | "sort_by"
-            | "find"
-            | "find_index"
-            | "index_of"
-            | "contains"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "reduce"
-            | "fold"
-            | "first"
-            | "last"
-            // Type casts
-            | "string"
-            | "int"
-            | "float"
-            | "bool"
-    )
+    VALID_V2_OPERATORS.contains(&op)
 }
 
 /// Get the appropriate scope for an operation argument
@@ -1097,34 +1098,26 @@ mod tests {
     // Op validation tests
     #[test]
     fn test_is_valid_op() {
-        assert!(is_valid_op("trim"));
-        assert!(is_valid_op("concat"));
-        assert!(is_valid_op("coalesce"));
-        assert!(is_valid_op("lookup_first"));
-        assert!(is_valid_op("add"));
-        assert!(is_valid_op("subtract"));
-        assert!(is_valid_op("multiply"));
-        assert!(is_valid_op("divide"));
-        assert!(is_valid_op("+"));
-        assert!(is_valid_op("replace"));
-        assert!(is_valid_op("split"));
-        assert!(is_valid_op("pad_start"));
-        assert!(is_valid_op("merge"));
-        assert!(is_valid_op("map"));
-        assert!(is_valid_op("filter"));
-        assert!(is_valid_op("round"));
-        assert!(is_valid_op("to_base"));
-        assert!(is_valid_op("date_format"));
-        assert!(is_valid_op("to_unixtime"));
-        assert!(is_valid_op("string"));
-        assert!(is_valid_op("gt"));
-        assert!(is_valid_op("gte"));
-        assert!(is_valid_op("lt"));
-        assert!(is_valid_op("lte"));
-        assert!(is_valid_op("eq"));
-        assert!(is_valid_op("ne"));
-        assert!(is_valid_op("match"));
+        for op in VALID_V2_OPERATORS {
+            assert!(is_valid_op(op), "{op} must be valid");
+        }
         assert!(!is_valid_op("nonexistent_op"));
+    }
+
+    #[test]
+    fn test_valid_v2_operator_inventory_matches_traced_generic_operator_inventory() {
+        let valid = VALID_V2_OPERATORS
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let traced = crate::transform::TRACE_GENERIC_V2_OPERATORS
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            traced, valid,
+            "trace generic operator inventory must drift with valid v2 operators"
+        );
     }
 
     #[test]
