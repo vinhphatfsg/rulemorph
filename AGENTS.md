@@ -1,54 +1,48 @@
 # Repository Guidelines
 
 ## Language
-- Japanese-first for docs, plans, and communication. Provide English only when explicitly requested.
-- 用語集は `docs/glossary.md` を参照。
+- 返答、docs、plans は日本語 first。英語は明示された場合だけ使う。
+- 用語は `docs/glossary.md` を優先する。
 
-## Project Structure & Module Organization
-- `crates/rulemorph`: core library (rule parsing, validation, transform engine).
-- `crates/rulemorph_cli`: CLI binary wrapping the core library.
-- `crates/rulemorph_mcp`: MCP stdio server with tools/resources/prompts.
-- `docs/`: rule specifications and documentation (`rules_spec_en.md`, `rules_spec_ja.md`).
-- `docs/roadmap/roadmap.md`: product roadmap (YAML API platform).
-- Tests live under each crate (for example, `crates/rulemorph/tests` with fixtures in `crates/rulemorph/tests/fixtures` and MCP tests in `crates/rulemorph_mcp/tests/stdio.rs`).
+## Always
+- 既存の仕様、fixtures、tests、README と矛盾する変更をしない。
+- Rust 実装を変更したら必ず `cargo fmt` と `cargo test` を実行する。
+- release workflow / packaging / version bump / embedded-ui を変更したら `scripts/verify-release-build.sh` を実行する。
+- UI を変更したら `npm --prefix crates/rulemorph_ui/ui run test` とブラウザ確認を実行する。
+- UI の end-to-end behavior / Trace Console / import flow を変更したら `npm --prefix crates/rulemorph_ui/ui run test:e2e` も実行する。
+- 大きい挙動変更では、先に該当 guide を読み、必要な invariant と tests を確認する。
+- docs-only 変更では、実装・tests・workflow の挙動を変えない。
 
-## Build, Test, and Development Commands
-- `cargo build -p rulemorph_cli --release`: build the CLI binary.
-- `cargo build -p rulemorph_mcp --release`: build the MCP server binary.
-- `cargo test`: run the full workspace test suite.
-- `cargo test -p rulemorph_mcp`: run MCP-specific tests.
-- `cargo run -p rulemorph_cli -- --help`: run the CLI in dev mode.
-- `scripts/verify-release-build.sh`: run the release preflight that mirrors the release workflow on the host target, including `cargo fmt --check`, `cargo metadata --locked`, `cargo test`, UI asset build, and release builds for CLI/MCP/server with `embedded-ui`.
-- `scripts/verify-release-build.sh <target> [...]`: run the same release preflight for explicit Rust targets when checking release matrix compatibility.
-- `cargo fmt` and `cargo clippy --workspace`: format and lint (recommended before PRs).
-- ** Rustのソースを実装/修正後 ** は必ず `cargo fmt` と `cargo test` を実行すること。
-- ** release workflow / release packaging / version bump / embedded-ui 周辺を修正した場合 ** は必ず `scripts/verify-release-build.sh` を実行すること。`cargo test` だけでは `rulemorph_server --features embedded-ui` の release build 不具合を検知できない。
-- UIを修正した場合は必ずブラウザ上で挙動を確認すること。
+## Project Map
+- `crates/rulemorph`: core library。rule parsing、validation、normalization、transform engine。
+- `crates/rulemorph_cli`: CLI binary。
+- `crates/rulemorph_mcp`: MCP stdio server。tools、resources、prompts。
+- `crates/rulemorph_server`: local/API server と UI 配信。
+- `crates/rulemorph_ui`: embedded-ui 用 frontend assets。
+- `docs/`: rule specs、design docs、roadmap、agent guides。
+- `crates/*/tests`: crate ごとの integration tests と fixtures。
 
-## Coding Style & Naming Conventions
-- Use standard Rust formatting (rustfmt defaults, 4-space indentation).
-- Naming: `snake_case` for functions/modules, `CamelCase` for types, `SCREAMING_SNAKE_CASE` for constants.
-- Keep rule specs and examples consistent with the docs in `docs/`.
+## Common Commands
+- `cargo fmt`: Rust formatting。
+- `cargo fmt --check`: CI / release preflight と同じ format check。
+- `cargo test`: workspace test suite。
+- `cargo test -p rulemorph`: core crate tests。
+- `cargo test -p rulemorph_mcp`: MCP-specific tests。
+- `cargo clippy --workspace`: workspace lint。
+- `npm --prefix crates/rulemorph_ui/ui run test`: UI unit tests。`cargo test` では実行されない。
+- `npm --prefix crates/rulemorph_ui/ui run test:e2e`: UI Playwright tests。`cargo test` では実行されない。
+- `npm --prefix crates/rulemorph_ui/ui run build`: UI asset build。`cargo test` では実行されない。
+- `cargo run -p rulemorph_cli -- --help`: CLI dev run。
+- `cargo build -p rulemorph_cli --release`: release CLI build。
+- `cargo build -p rulemorph_mcp --release`: release MCP build。
+- `cargo build -p rulemorph_server --features embedded-ui --release --locked`: embedded-ui server release build。`cargo test` では実行されない。
+- `scripts/verify-release-build.sh`: release preflight。`cargo test` では実行されない UI build と release builds も含む。
+- `scripts/verify-release-build.sh <target> [...]`: explicit Rust targets の preflight。
 
-## Design & Code Organization
-- Keep code simple and direct. Prefer small, readable functions and explicit control flow over clever abstractions.
-- Split responsibilities before files become hard to scan. When a module mixes parsing, validation, execution, tracing, persistence, or presentation concerns, extract focused submodules with clear names.
-- Treat file length as a maintainability signal. Aim to keep ordinary source files around 200-400 lines when practical; when a file exceeds roughly 400 lines, actively look for a responsibility split. Files above 600 lines should be exceptional and justified by cohesive ownership, generated/schema-like content, or tests/fixtures.
-- Keep file hierarchy aligned with domain responsibilities, not implementation accidents. A reader should be able to find the owning module from the feature or concept name.
-- Avoid broad utility modules and catch-all files. Shared helpers should have a narrow purpose and live near their primary caller unless they are truly cross-cutting.
-- Add abstractions only when they reduce real duplication, clarify ownership, or stabilize a public/internal boundary. Do not introduce layers just to make code look generalized.
-- Preserve a small public API surface. Prefer `pub(crate)` for internal seams, and expose only the types/functions that are intended for users or other crates.
-- When refactoring large files, keep behavior changes separate from mechanical moves where practical, and maintain tests that prove the split preserved existing semantics.
-
-## Testing Guidelines
-- Add unit/integration tests alongside the relevant crate.
-- For new rule behavior, add or extend fixtures in `crates/rulemorph/tests/fixtures`.
-- MCP behavior should include stdio JSON-RPC tests in `crates/rulemorph_mcp/tests/stdio.rs`.
-
-## Commit & Pull Request Guidelines
-- Commit messages are short, imperative, and sentence case (examples: "Add DTO parsing for additional languages", "Fix single-line TypeScript DTO parsing").
-- Keep commits focused on one logical change.
-- PRs should include: a brief summary, tests run, and any doc updates (especially when CLI/MCP behavior changes).
-
-## Configuration Tips
-- MCP server runs over stdio; see the README for client config examples.
+## Task-Specific Guides
+| 変更対象 | 先に読む guide |
+| --- | --- |
+| trace / transform / v2_eval / branch / finalize | `docs/agent-guides/semantic-trace.md` |
+| input normalization / parser / records_path / resource limits / input docs | `docs/agent-guides/input-normalization-security.md` |
+| release workflow / packaging / version bump / embedded-ui / UI assets | `docs/agent-guides/release-and-ui.md` |
+| MCP server / tools / resources / prompts / stdio tests | `docs/agent-guides/mcp.md` |
