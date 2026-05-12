@@ -150,6 +150,112 @@ mappings:
 }
 
 #[test]
+fn trace_v2_missing_short_circuit_does_not_evaluate_later_invalid_arg() {
+    let cases = [
+        (
+            "concat",
+            r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "out"
+    expr:
+      - "@input.missing"
+      - concat: ["@item.invalid"]
+"#,
+        ),
+        (
+            "pick",
+            r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "out"
+    expr:
+      - "@input.obj"
+      - pick: ["@input.missing", "@item.invalid"]
+"#,
+        ),
+        (
+            "lookup_first",
+            r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "out"
+    expr:
+      - "@input.missing"
+      - lookup_first: ["@input.not_array", "@item.invalid", "@item.invalid"]
+"#,
+        ),
+    ];
+    let input = r#"[{"obj":{"a":1},"not_array":"not-array"}]"#;
+
+    for (name, yaml) in cases {
+        let rule = parse_rule_file(yaml).unwrap_or_else(|err| panic!("{name} parse: {err:?}"));
+        let normal = transform(&rule, input, None)
+            .unwrap_or_else(|err| panic!("{name} normal transform: {err:?}"));
+        let traced = transform_input_with_trace(
+            &rule,
+            InputData::Text(input),
+            None,
+            &TransformTraceOptions::raw(),
+        )
+        .unwrap_or_else(|err| panic!("{name} traced transform: {err:?}"));
+
+        assert_eq!(normal, json!([{}]), "{name} normal output");
+        assert_eq!(traced.output, normal, "{name} traced output");
+        assert!(
+            iter_trace_events(&traced.trace).into_iter().all(|event| {
+                event.kind != TraceEventKind::RefRead
+                    || event.input_path.as_deref() != Some("@item.invalid")
+            }),
+            "{name} should not evaluate skipped invalid @item arg"
+        );
+        assert_trace_shape(&traced.trace);
+    }
+}
+
+#[test]
+fn trace_v1_missing_short_circuit_does_not_evaluate_later_invalid_arg() {
+    let yaml = r#"
+version: 1
+input:
+  format: json
+mappings:
+  - target: "out"
+    expr:
+      op: concat
+      args:
+        - { ref: "input.missing" }
+        - { ref: "item.value" }
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let normal = transform(&rule, r#"[{}]"#, None).expect("normal transform");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(normal, json!([{}]));
+    assert_eq!(traced.output, normal);
+    assert!(
+        iter_trace_events(&traced.trace).into_iter().all(|event| {
+            event.kind != TraceEventKind::RefRead
+                || event.input_path.as_deref() != Some("@item.value")
+        }),
+        "v1 traced missing short-circuit should not evaluate skipped invalid @item arg"
+    );
+    assert_trace_shape(&traced.trace);
+}
+
+#[test]
 fn trace_output_write_uses_output_snapshot_not_input_slot() {
     let yaml = r#"
 version: 2

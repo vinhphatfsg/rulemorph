@@ -2729,6 +2729,8 @@ fn v2_operator_has_eager_args(op: &str) -> bool {
         "and"
             | "or"
             | "coalesce"
+            | "lookup"
+            | "lookup_first"
             | "map"
             | "filter"
             | "flat_map"
@@ -2765,6 +2767,100 @@ fn v2_operator_has_item_level_trace(op: &str) -> bool {
 
 fn v2_operator_has_lazy_arg_trace(op: &str) -> bool {
     matches!(op, "and" | "or" | "coalesce")
+}
+
+fn v2_operator_skips_args_when_pipe_is_missing(op: &str) -> bool {
+    matches!(
+        op,
+        "concat"
+            | "replace"
+            | "split"
+            | "pad_start"
+            | "pad_end"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "add"
+            | "subtract"
+            | "multiply"
+            | "divide"
+            | "round"
+            | "to_base"
+            | "date_format"
+            | "to_unixtime"
+            | "merge"
+            | "deep_merge"
+            | "get"
+            | "keys"
+            | "values"
+            | "entries"
+            | "len"
+            | "from_entries"
+            | "object_flatten"
+            | "object_unflatten"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "unzip"
+            | "unique"
+            | "index_of"
+            | "contains"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "string"
+            | "int"
+            | "float"
+            | "bool"
+            | "trim"
+            | "uppercase"
+            | "lowercase"
+            | "to_string"
+            | "not"
+    )
+}
+
+fn v2_operator_stops_after_missing_arg(op: &str) -> bool {
+    matches!(
+        op,
+        "concat"
+            | "replace"
+            | "split"
+            | "pad_start"
+            | "pad_end"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "add"
+            | "subtract"
+            | "multiply"
+            | "divide"
+            | "round"
+            | "to_base"
+            | "date_format"
+            | "to_unixtime"
+            | "merge"
+            | "deep_merge"
+            | "get"
+            | "pick"
+            | "omit"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "index_of"
+            | "contains"
+    )
 }
 
 fn emit_v2_arg_eval(
@@ -2885,6 +2981,12 @@ fn eval_v2_eager_op_traced<'a>(
     ctx: &V2EvalContext<'a>,
     collector: &mut TraceCollector,
 ) -> Result<V2EvalValue, TransformError> {
+    if matches!(pipe_value, V2EvalValue::Missing)
+        && v2_operator_skips_args_when_pipe_is_missing(&op.op)
+    {
+        return eval_v2_op_step(op, pipe_value, record, context, out, step_path, ctx);
+    }
+
     let step_ctx = ctx.clone().with_pipe_value(pipe_value.clone());
     let mut arg_values = Vec::with_capacity(op.args.len());
     for (arg_index, arg) in op.args.iter().enumerate() {
@@ -2892,7 +2994,11 @@ fn eval_v2_eager_op_traced<'a>(
         let value =
             eval_v2_expr_traced(arg, record, context, out, &arg_path, &step_ctx, collector)?;
         emit_v2_arg_eval(collector, &arg_path, arg_index, &op.op, &value);
+        let is_missing = matches!(value, V2EvalValue::Missing);
         arg_values.push(value);
+        if is_missing && v2_operator_stops_after_missing_arg(&op.op) {
+            break;
+        }
     }
     let cached_ctx = ctx
         .clone()
@@ -4220,7 +4326,11 @@ fn eval_eager_op_traced(
         let arg_path = format!("{}.args[{}]", base_path, arg_index);
         let arg_value = eval_expr_traced(arg, record, context, out, &arg_path, locals, collector)?;
         emit_arg_eval(collector, &arg_path, arg_index, &arg_value);
+        let is_missing = matches!(arg_value, EvalValue::Missing);
         arg_values.push(arg_value);
+        if is_missing && v1_operator_stops_after_missing_arg(&expr_op.op) {
+            break;
+        }
     }
     let cached_locals = locals_with_precomputed_args(locals, base_path, &arg_values);
     eval_op(
@@ -4247,6 +4357,38 @@ fn v1_operator_has_scoped_expr_args(op: &str) -> bool {
             | "sort_by"
             | "find"
             | "find_index"
+    )
+}
+
+fn v1_operator_stops_after_missing_arg(op: &str) -> bool {
+    matches!(
+        op,
+        "concat"
+            | "+"
+            | "-"
+            | "*"
+            | "/"
+            | "replace"
+            | "split"
+            | "pad_start"
+            | "pad_end"
+            | "round"
+            | "to_base"
+            | "date_format"
+            | "to_unixtime"
+            | "merge"
+            | "deep_merge"
+            | "get"
+            | "pick"
+            | "omit"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "index_of"
+            | "contains"
     )
 }
 
