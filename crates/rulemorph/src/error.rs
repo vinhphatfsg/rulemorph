@@ -181,6 +181,19 @@ impl TransformError {
         self.path = Some(path.into());
         self
     }
+
+    pub fn kind_name(&self) -> &'static str {
+        match &self.kind {
+            TransformErrorKind::InvalidInput => "invalid_input",
+            TransformErrorKind::InvalidRecordsPath => "invalid_records_path",
+            TransformErrorKind::InvalidRef => "invalid_ref",
+            TransformErrorKind::InvalidTarget => "invalid_target",
+            TransformErrorKind::MissingRequired => "missing_required",
+            TransformErrorKind::TypeCastFailed => "type_cast_failed",
+            TransformErrorKind::ExprError => "expr_error",
+            TransformErrorKind::AssertionFailed => "assertion_failed",
+        }
+    }
 }
 
 impl std::fmt::Display for TransformError {

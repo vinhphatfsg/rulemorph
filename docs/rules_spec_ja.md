@@ -42,6 +42,38 @@ raw input
 
 `mappings` と `steps` はどちらも出力を作るための構文です。単純な変換では `mappings` を使い、途中で assert や branch を挟みたい場合に `steps` を使います。
 
+## Semantic trace API
+
+core library は opt-in の semantic trace API を提供します。
+
+- `transform_input_with_trace(...)`
+- `transform_input_with_trace_with_base_dir_and_options(...)`
+- `transform_record_with_trace(...)`
+
+trace は正規化済み record から `record_when`、`mappings` / `steps`、`expr`、operator、branch、`finalize` までの評価イベントを `TransformTrace` として返します。通常の `transform` / `transform_input` / `transform_record` の出力や warning は trace 有効化で変わってはいけません。
+
+`TransformTraceOptions::default()` は `Raw` mode です。trace API は値を観測する目的で明示的に呼び出す API なので、既定では input / output / context 由来の raw 値を snapshot に含めます。raw trace を保存、ログ出力、network 送信、`postMessage`、共有 URL へ出す処理は core には含めません。
+
+値の扱いは `TraceValueMode` で選択します。
+
+| mode | 挙動 | 主な用途 |
+| --- | --- | --- |
+| `Raw` | raw 値を snapshot に含める | ローカル UI の透明性表示、デバッグ |
+| `Redacted` | secret-like path や上限超過値を値なし snapshot に落とす | 人間確認用の安全寄り表示 |
+| `MetadataOnly` | 値を持たず state/type/bytes などのメタデータだけ返す | export / share / network / postMessage の既定 |
+
+`Redacted` の `redaction_reason` は secret-like path では `"secret_like_path"` を使います。object / array の composite snapshot は初期実装では metadata-only として扱います。
+
+各 value snapshot は `state` と `type` を持ち、`missing` / `null` / empty string を区別します。`default` は `missing` の場合だけ適用されます。`null` fallback を表現したい場合は `default` ではなく `coalesce` を使います。
+
+trace event の `input_path` / `output_path` は canonical form を使います。入力側は `@input.*`、`@item.*`、`@acc.*`、`@context.*`、`@out.*`、出力側は `$.*` です。bracket notation は `@input["@id"]`、`@input[0].name`、`@item[0].name`、`$.items[0].name` のように保持されます。
+
+trace は `max_events` / `max_trace_bytes` / `max_snapshot_bytes` で明示的に制限できます。event stream が打ち切られた場合は `complete=false` と `truncation.reason` が設定されます。`max_snapshot_bytes` は snapshot value のみを落とす制限であり、event の親子構造は維持されます。
+
+trace API の error は `TransformTraceError` として partial trace を返します。ただし `Debug` / `Display` / `std::error::Error` は raw trace 本体や underlying `TransformError` の full message を出しません。外部 surface に trace を渡す adapter は `MetadataOnly` を既定にし、`contains_raw_values == false` を確認してください。
+
+WASM binding follow-up の想定 shape は `wasm_transform_trace({ rule, input, inputFormat?, traceMode? })` です。`traceMode` は `"raw" | "redacted" | "metadata_only"` とし、local animation は `raw`、export / share / `postMessage` は `metadata_only` を既定にします。
+
 ## ルールファイル構成
 
 ```yaml

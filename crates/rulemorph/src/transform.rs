@@ -14,10 +14,16 @@ use crate::normalization::{
     InputData, NormalizationOptions, NormalizedRecords, normalize_records_with_options,
 };
 use crate::path::{PathToken, get_path, parse_path};
+use crate::trace::{
+    TraceCollector, TraceEventKind, TracePhase, TransformRecordTraceResult, TransformTraceError,
+    TransformTraceOptions, TransformTraceResult, canonical_acc_path, canonical_context_path,
+    canonical_input_path, canonical_item_path, canonical_out_path, canonical_output_path,
+};
 use crate::v2_eval::{
     EvalItem as V2EvalItem, EvalValue as V2EvalValue, V2EvalContext, eval_v2_condition,
-    eval_v2_expr, eval_v2_pipe,
+    eval_v2_expr, eval_v2_let_step, eval_v2_op_step, eval_v2_pipe, eval_v2_ref, eval_v2_start,
 };
+use crate::v2_model::{V2Expr, V2Pipe, V2Ref, V2Start, V2Step};
 use crate::v2_parser::{
     is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
     parse_v2_pipe_from_value,
@@ -25,6 +31,11 @@ use crate::v2_parser::{
 
 const REGEX_CACHE_CAPACITY: usize = 128;
 const BRANCH_MAX_DEPTH: usize = 64;
+
+#[cfg(test)]
+pub(crate) fn trace_supports_v2_operator(op: &str) -> bool {
+    crate::v2_validator::VALID_V2_OPERATORS.contains(&op)
+}
 
 fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
     static REGEX_CACHE: OnceLock<Mutex<LruCache<String, Regex>>> = OnceLock::new();
@@ -65,6 +76,52 @@ pub fn transform_input(
     context: Option<&JsonValue>,
 ) -> Result<JsonValue, TransformError> {
     transform_input_with_warnings(rule, input, context).map(|(output, _)| output)
+}
+
+pub fn transform_input_with_trace(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    trace_options: &TransformTraceOptions,
+) -> Result<TransformTraceResult, TransformTraceError> {
+    transform_input_with_trace_with_base_dir_and_options(
+        rule,
+        input,
+        context,
+        None,
+        &NormalizationOptions::default(),
+        trace_options,
+    )
+}
+
+pub fn transform_input_with_trace_with_base_dir_and_options(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: Option<&Path>,
+    options: &NormalizationOptions,
+    trace_options: &TransformTraceOptions,
+) -> Result<TransformTraceResult, TransformTraceError> {
+    let mut collector = TraceCollector::new(trace_options.clone());
+    match transform_with_warnings_inner_traced(
+        rule,
+        input,
+        context,
+        base_dir,
+        options,
+        &mut collector,
+    ) {
+        Ok((output, warnings)) => Ok(TransformTraceResult {
+            output,
+            warnings,
+            trace: collector.finish(),
+        }),
+        Err((error, warnings)) => Err(TransformTraceError {
+            error,
+            warnings,
+            trace: collector.finish(),
+        }),
+    }
 }
 
 pub fn transform_with_options(
@@ -532,6 +589,66 @@ fn transform_with_warnings_inner(
     Ok((output, warnings))
 }
 
+fn transform_with_warnings_inner_traced(
+    rule: &RuleFile,
+    input: InputData<'_>,
+    context: Option<&JsonValue>,
+    base_dir: Option<&Path>,
+    options: &NormalizationOptions,
+    collector: &mut TraceCollector,
+) -> Result<(JsonValue, Vec<TransformWarning>), (TransformError, Vec<TransformWarning>)> {
+    let mut warnings = Vec::new();
+    let mut output_records = Vec::new();
+    let mut records = input_records_iter_with_options(rule, input, options)
+        .map_err(|error| (error, warnings.clone()))?;
+    let mut record_index = 0usize;
+    while let Some(record) = records.next() {
+        let record = record.map_err(|error| (error, warnings.clone()))?;
+        collector.start_record(record_index, &record);
+        record_index += 1;
+        let mut record_warnings = Vec::new();
+        let mut branch_context = BranchContext::default();
+        match apply_rule_to_record_traced(
+            rule,
+            &record,
+            context,
+            &mut record_warnings,
+            base_dir,
+            &mut branch_context,
+            collector,
+        ) {
+            Ok(Some(output)) => output_records.push(output),
+            Ok(None) => {}
+            Err(error) => {
+                warnings.extend(record_warnings);
+                return Err((error, warnings));
+            }
+        }
+        warnings.extend(record_warnings);
+    }
+
+    let mut output = JsonValue::Array(output_records);
+    if let Some(finalize) = &rule.finalize {
+        collector.start_finalize(&output);
+        match apply_finalize_traced(finalize, output, context, collector) {
+            Ok(finalized) => {
+                output = finalized;
+                collector
+                    .end_span(TraceEventKind::FinalizeEnd, TracePhase::End)
+                    .finish(collector);
+            }
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "FINALIZE_ERROR", "finalize failed")
+                    .finish(collector);
+                return Err((error, warnings));
+            }
+        }
+    }
+
+    Ok((output, warnings))
+}
+
 pub fn transform_record(
     rule: &RuleFile,
     record: &JsonValue,
@@ -539,6 +656,69 @@ pub fn transform_record(
 ) -> Result<Option<JsonValue>, TransformError> {
     let (output, _warnings) = transform_record_with_warnings(rule, record, context)?;
     Ok(output)
+}
+
+pub fn transform_record_with_trace(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    trace_options: &TransformTraceOptions,
+) -> Result<TransformRecordTraceResult, TransformTraceError> {
+    let mut collector = TraceCollector::new(trace_options.clone());
+    collector.start_record(0, record);
+    let mut warnings = Vec::new();
+    let mut branch_context = BranchContext::default();
+    let result = apply_rule_to_record_traced(
+        rule,
+        record,
+        context,
+        &mut warnings,
+        None,
+        &mut branch_context,
+        &mut collector,
+    );
+    match result {
+        Ok(output) => {
+            let output = if let Some(finalize) = &rule.finalize {
+                let mut records = Vec::new();
+                if let Some(value) = output {
+                    records.push(value);
+                }
+                let array = JsonValue::Array(records);
+                collector.start_finalize(&array);
+                match apply_finalize_traced(finalize, array, context, &mut collector) {
+                    Ok(finalized) => {
+                        collector
+                            .end_span(TraceEventKind::FinalizeEnd, TracePhase::End)
+                            .finish(&mut collector);
+                        Some(finalized)
+                    }
+                    Err(error) => {
+                        collector
+                            .error_span(TraceEventKind::Error, "FINALIZE_ERROR", "finalize failed")
+                            .finish(&mut collector);
+                        return Err(TransformTraceError {
+                            error,
+                            warnings,
+                            trace: collector.finish(),
+                        });
+                    }
+                }
+            } else {
+                output
+            };
+            Ok(TransformRecordTraceResult {
+                output,
+                warnings,
+                trace: collector.finish(),
+            })
+        }
+        Err(error) => Err(TransformTraceError {
+            error,
+            warnings,
+            trace: collector.finish(),
+        }),
+    }
 }
 
 pub fn transform_record_with_base_dir(
@@ -756,6 +936,176 @@ fn apply_mappings_into(
     Ok(())
 }
 
+fn apply_mappings_traced(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    warnings: &mut Vec<TransformWarning>,
+    collector: &mut TraceCollector,
+) -> Result<JsonValue, TransformError> {
+    let mut out = JsonValue::Object(Map::new());
+    apply_mappings_into_traced(
+        &rule.mappings,
+        record,
+        context,
+        &mut out,
+        warnings,
+        rule.version,
+        "mappings",
+        collector,
+    )?;
+    Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_mappings_into_traced(
+    mappings: &[Mapping],
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &mut JsonValue,
+    warnings: &mut Vec<TransformWarning>,
+    rule_version: u8,
+    base_path: &str,
+    collector: &mut TraceCollector,
+) -> Result<(), TransformError> {
+    for (index, mapping) in mappings.iter().enumerate() {
+        let mapping_path = format!("{}[{}]", base_path, index);
+        collector
+            .start_span(TraceEventKind::MappingStart, TracePhase::Start)
+            .rule_path(&mapping_path)
+            .attr_index("mapping_index", index)
+            .finish(collector);
+
+        let applied = if mapping.when.is_some() {
+            let when_path = format!("{}.when", mapping_path);
+            collector
+                .start_span(TraceEventKind::MappingWhenStart, TracePhase::Start)
+                .rule_path(&when_path)
+                .finish(collector);
+            let flag = eval_when(
+                mapping,
+                record,
+                context,
+                out,
+                &mapping_path,
+                warnings,
+                rule_version,
+            );
+            collector
+                .end_span(TraceEventKind::MappingWhenEnd, TracePhase::End)
+                .rule_path(&when_path)
+                .finish_with_output(collector, &JsonValue::Bool(flag), None);
+            flag
+        } else {
+            true
+        };
+
+        collector
+            .emit(TraceEventKind::MappingDecision, TracePhase::Instant)
+            .rule_path(&mapping_path)
+            .attr_bool("applied", applied)
+            .attr_enum("skip_reason", if applied { "none" } else { "when_false" })
+            .finish(collector);
+
+        if !applied {
+            collector
+                .end_span(TraceEventKind::MappingEnd, TracePhase::End)
+                .rule_path(&mapping_path)
+                .finish(collector);
+            continue;
+        }
+
+        let value = match eval_mapping_traced(
+            mapping,
+            record,
+            context,
+            out,
+            &mapping_path,
+            rule_version,
+            collector,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "MAPPING_ERROR", "mapping failed")
+                    .rule_path(&mapping_path)
+                    .finish(collector);
+                return Err(error);
+            }
+        };
+
+        if let Some(value) = value {
+            if let Err(error) = set_path(out, &mapping.target, value.clone(), &mapping_path) {
+                collector
+                    .error_span(TraceEventKind::Error, "MAPPING_ERROR", "mapping failed")
+                    .rule_path(&mapping_path)
+                    .finish(collector);
+                return Err(error);
+            }
+            collector
+                .emit(TraceEventKind::OutputWrite, TracePhase::Instant)
+                .rule_path(format!("{}.target", mapping_path))
+                .output_path(canonical_output_path(&mapping.target))
+                .attr_path("target_path", canonical_output_path(&mapping.target))
+                .input_value(&value, collector.options(), Some(&mapping.target))
+                .finish(collector);
+        }
+
+        collector
+            .end_span(TraceEventKind::MappingEnd, TracePhase::End)
+            .rule_path(&mapping_path)
+            .finish(collector);
+    }
+    Ok(())
+}
+
+fn apply_rule_to_record_traced(
+    rule: &RuleFile,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    warnings: &mut Vec<TransformWarning>,
+    base_dir: Option<&Path>,
+    branch_context: &mut BranchContext,
+    collector: &mut TraceCollector,
+) -> Result<Option<JsonValue>, TransformError> {
+    if let Some(steps) = &rule.steps {
+        return apply_steps_traced(
+            steps,
+            record,
+            context,
+            warnings,
+            rule.version,
+            base_dir,
+            branch_context,
+            collector,
+        );
+    }
+
+    if rule.record_when.is_some() {
+        collector
+            .start_span(TraceEventKind::RecordWhenStart, TracePhase::Start)
+            .rule_path("record_when")
+            .finish(collector);
+    }
+    let keep = eval_record_when(rule, record, context, warnings);
+    if rule.record_when.is_some() {
+        collector
+            .end_span(TraceEventKind::RecordWhenEnd, TracePhase::End)
+            .rule_path("record_when")
+            .finish_with_output(collector, &JsonValue::Bool(keep), None);
+    }
+    collector
+        .emit(TraceEventKind::RecordDecision, TracePhase::Instant)
+        .attr_bool("kept", keep)
+        .finish(collector);
+    if !keep {
+        return Ok(None);
+    }
+
+    let output = apply_mappings_traced(rule, record, context, warnings, collector)?;
+    Ok(Some(output))
+}
+
 fn apply_rule_to_record(
     rule: &RuleFile,
     record: &JsonValue,
@@ -888,6 +1238,213 @@ fn apply_steps(
                 merge_branch_output(&mut out, &branch_output, &branch_path)?;
             }
             continue;
+        }
+    }
+
+    Ok(Some(out))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_steps_traced(
+    steps: &[V2RuleStep],
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    warnings: &mut Vec<TransformWarning>,
+    rule_version: u8,
+    base_dir: Option<&Path>,
+    branch_context: &mut BranchContext,
+    collector: &mut TraceCollector,
+) -> Result<Option<JsonValue>, TransformError> {
+    let mut out = JsonValue::Object(Map::new());
+
+    for (step_index, step) in steps.iter().enumerate() {
+        let base_path = format!("steps[{}]", step_index);
+        collector
+            .start_span(TraceEventKind::StepStart, TracePhase::Start)
+            .rule_path(&base_path)
+            .attr_index("step_index", step_index)
+            .finish(collector);
+
+        let step_result = (|| -> Result<Option<JsonValue>, TransformError> {
+            if let Some(mappings) = &step.mappings {
+                apply_mappings_into_traced(
+                    mappings,
+                    record,
+                    context,
+                    &mut out,
+                    warnings,
+                    rule_version,
+                    &format!("{}.mappings", base_path),
+                    collector,
+                )?;
+                return Ok(None);
+            }
+
+            if let Some(expr) = &step.record_when {
+                let when_path = format!("{}.record_when", base_path);
+                collector
+                    .start_span(TraceEventKind::RecordWhenStart, TracePhase::Start)
+                    .rule_path(&when_path)
+                    .finish(collector);
+                let keep = eval_when_expr(expr, record, context, &out, &when_path, rule_version)?;
+                collector
+                    .end_span(TraceEventKind::RecordWhenEnd, TracePhase::End)
+                    .rule_path(&when_path)
+                    .finish_with_output(collector, &JsonValue::Bool(keep), None);
+                collector
+                    .emit(TraceEventKind::RecordDecision, TracePhase::Instant)
+                    .rule_path(&when_path)
+                    .attr_bool("kept", keep)
+                    .finish(collector);
+                if !keep {
+                    return Ok(Some(JsonValue::Null));
+                }
+                return Ok(None);
+            }
+
+            if let Some(asserts) = &step.asserts {
+                for (assert_index, assert) in asserts.iter().enumerate() {
+                    let assert_path = format!("{}.asserts[{}]", base_path, assert_index);
+                    let ok = eval_when_expr(
+                        &assert.when,
+                        record,
+                        context,
+                        &out,
+                        &format!("{}.when", assert_path),
+                        rule_version,
+                    )?;
+                    collector
+                        .emit(TraceEventKind::AssertEval, TracePhase::Instant)
+                        .rule_path(&assert_path)
+                        .attr_index("assert_index", assert_index)
+                        .finish_with_output(collector, &JsonValue::Bool(ok), None);
+                    if !ok {
+                        return Err(TransformError::new(
+                            TransformErrorKind::AssertionFailed,
+                            "assert failed",
+                        )
+                        .with_path(assert_path));
+                    }
+                }
+                return Ok(None);
+            }
+
+            if let Some(branch) = &step.branch {
+                let branch_path = format!("{}.branch", base_path);
+                let take = eval_when_expr(
+                    &branch.when,
+                    record,
+                    context,
+                    &out,
+                    &format!("{}.when", branch_path),
+                    rule_version,
+                )?;
+                collector
+                    .emit(TraceEventKind::BranchEval, TracePhase::Instant)
+                    .rule_path(format!("{}.when", branch_path))
+                    .finish_with_output(collector, &JsonValue::Bool(take), None);
+                let (target, target_field) = if take {
+                    (Some(branch.then.as_str()), "then")
+                } else {
+                    (branch.r#else.as_deref(), "else")
+                };
+                if let Some(target) = target {
+                    collector
+                        .start_span(TraceEventKind::BranchTaken, TracePhase::Start)
+                        .rule_path(&branch_path)
+                        .attr_enum("selected_branch", target_field)
+                        .finish(collector);
+                    let branch_path_guard =
+                        branch_context.enter(base_dir, target).map_err(|err| {
+                            err.with_path(format!("{}.{}", branch_path, target_field))
+                        })?;
+                    let branch_result = (|| {
+                        let (branch_rule, branch_base_dir) =
+                            load_rule_from_path(base_dir, target, branch_context.allowed_root())
+                                .map_err(|err| {
+                                    err.with_path(format!("{}.{}", branch_path, target_field))
+                                })?;
+                        let branch_input = out.clone();
+                        apply_rule_to_record_traced(
+                            &branch_rule,
+                            &branch_input,
+                            context,
+                            warnings,
+                            Some(&branch_base_dir),
+                            branch_context,
+                            collector,
+                        )
+                    })();
+                    branch_context.exit(branch_path_guard);
+                    let branch_output = match branch_result {
+                        Ok(output) => output,
+                        Err(error) => {
+                            collector
+                                .error_span(TraceEventKind::Error, "BRANCH_ERROR", "branch failed")
+                                .rule_path(&branch_path)
+                                .finish(collector);
+                            return Err(error);
+                        }
+                    };
+                    let Some(branch_output) = branch_output else {
+                        collector
+                            .end_span(TraceEventKind::BranchTaken, TracePhase::End)
+                            .rule_path(&branch_path)
+                            .finish(collector);
+                        return Ok(Some(JsonValue::Null));
+                    };
+
+                    if branch.return_ {
+                        collector
+                            .end_span(TraceEventKind::BranchTaken, TracePhase::End)
+                            .rule_path(&branch_path)
+                            .finish_with_output(collector, &branch_output, None);
+                        return Ok(Some(branch_output));
+                    }
+                    merge_branch_output(&mut out, &branch_output, &branch_path)?;
+                    collector
+                        .emit(TraceEventKind::BranchMerge, TracePhase::Instant)
+                        .rule_path(&branch_path)
+                        .finish_with_output(collector, &out, None);
+                    collector
+                        .end_span(TraceEventKind::BranchTaken, TracePhase::End)
+                        .rule_path(&branch_path)
+                        .finish(collector);
+                }
+                return Ok(None);
+            }
+
+            Ok(None)
+        })();
+
+        match step_result {
+            Ok(Some(value)) if value.is_null() => {
+                collector
+                    .end_span(TraceEventKind::StepStart, TracePhase::End)
+                    .rule_path(&base_path)
+                    .finish(collector);
+                return Ok(None);
+            }
+            Ok(Some(value)) => {
+                collector
+                    .end_span(TraceEventKind::StepStart, TracePhase::End)
+                    .rule_path(&base_path)
+                    .finish_with_output(collector, &value, None);
+                return Ok(Some(value));
+            }
+            Ok(None) => {
+                collector
+                    .end_span(TraceEventKind::StepStart, TracePhase::End)
+                    .rule_path(&base_path)
+                    .finish(collector);
+            }
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "STEP_ERROR", "step failed")
+                    .rule_path(&base_path)
+                    .finish(collector);
+                return Err(error);
+            }
         }
     }
 
@@ -1158,6 +1715,146 @@ fn apply_finalize(
     Ok(output)
 }
 
+fn apply_finalize_traced(
+    finalize: &FinalizeSpec,
+    output: JsonValue,
+    context: Option<&JsonValue>,
+    collector: &mut TraceCollector,
+) -> Result<JsonValue, TransformError> {
+    let mut records = match output {
+        JsonValue::Array(records) => records,
+        _ => {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "finalize expects array output",
+            )
+            .with_path("finalize"));
+        }
+    };
+
+    if let Some(filter) = &finalize.filter {
+        let raw = expr_to_json_for_v2_condition(filter).ok_or_else(|| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "finalize.filter must be a v2 condition",
+            )
+            .with_path("finalize.filter")
+        })?;
+        let cond = parse_v2_condition(&raw).map_err(|err| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                format!("invalid v2 condition: {}", err),
+            )
+            .with_path("finalize.filter")
+        })?;
+        let base_out = JsonValue::Array(records.clone());
+        let before_count = records.len();
+        let mut filtered = Vec::new();
+        for (index, item) in records.iter().enumerate() {
+            let ctx = V2EvalContext::new().with_item(V2EvalItem { value: item, index });
+            let keep = eval_v2_condition(&cond, item, context, &base_out, "finalize.filter", &ctx)?;
+            if keep {
+                filtered.push(item.clone());
+            }
+        }
+        records = filtered;
+        collector
+            .emit(TraceEventKind::FinalizeFilter, TracePhase::Instant)
+            .rule_path("finalize.filter")
+            .attr_count("input_count", before_count)
+            .attr_count("output_count", records.len())
+            .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
+    }
+
+    if let Some(sort) = &finalize.sort {
+        let tokens = parse_path(&sort.by).map_err(|_| {
+            TransformError::new(
+                TransformErrorKind::InvalidRecordsPath,
+                "finalize.sort.by is invalid",
+            )
+            .with_path("finalize.sort.by")
+        })?;
+
+        struct SortItem {
+            key: SortKey,
+            index: usize,
+            value: JsonValue,
+        }
+
+        let mut items = Vec::with_capacity(records.len());
+        for (index, item) in records.iter().enumerate() {
+            let key_value = get_path(item, &tokens).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::InvalidRef,
+                    "finalize.sort.by path not found",
+                )
+                .with_path("finalize.sort.by")
+            })?;
+            let key = sort_key_from_value(key_value, "finalize.sort.by")?;
+            items.push(SortItem {
+                key,
+                index,
+                value: item.clone(),
+            });
+        }
+
+        items.sort_by(|left, right| {
+            let mut ordering = compare_sort_keys(&left.key, &right.key);
+            if sort.order == "desc" {
+                ordering = ordering.reverse();
+            }
+            if ordering == Ordering::Equal {
+                left.index.cmp(&right.index)
+            } else {
+                ordering
+            }
+        });
+
+        records = items.into_iter().map(|item| item.value).collect();
+        collector
+            .emit(TraceEventKind::FinalizeSort, TracePhase::Instant)
+            .rule_path("finalize.sort")
+            .attr_enum("order", if sort.order == "desc" { "desc" } else { "asc" })
+            .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
+    }
+
+    if let Some(offset) = finalize.offset {
+        if offset > 0 && offset < records.len() {
+            records = records.split_off(offset);
+        } else if offset >= records.len() {
+            records = Vec::new();
+        }
+        collector
+            .emit(TraceEventKind::FinalizeOffset, TracePhase::Instant)
+            .rule_path("finalize.offset")
+            .attr_index("offset", offset)
+            .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
+    }
+
+    if let Some(limit) = finalize.limit {
+        if limit < records.len() {
+            records.truncate(limit);
+        }
+        collector
+            .emit(TraceEventKind::FinalizeLimit, TracePhase::Instant)
+            .rule_path("finalize.limit")
+            .attr_count("limit", limit)
+            .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
+    }
+
+    let output = JsonValue::Array(records);
+    if let Some(wrap) = &finalize.wrap {
+        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap")?;
+        collector
+            .emit(TraceEventKind::FinalizeWrap, TracePhase::Instant)
+            .rule_path("finalize.wrap")
+            .finish_with_output(collector, &wrapped, None);
+        return Ok(wrapped);
+    }
+
+    Ok(output)
+}
+
 fn eval_wrap_value(
     value: &JsonValue,
     out: &JsonValue,
@@ -1324,6 +2021,492 @@ fn eval_mapping(
     Ok(Some(value))
 }
 
+fn eval_mapping_traced(
+    mapping: &crate::model::Mapping,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    mapping_path: &str,
+    version: u8,
+    collector: &mut TraceCollector,
+) -> Result<Option<JsonValue>, TransformError> {
+    let value = if let Some(source) = &mapping.source {
+        let value = resolve_source(source, record, context, out, mapping_path)?;
+        collector
+            .emit(TraceEventKind::SourceRead, TracePhase::Instant)
+            .rule_path(format!("{}.source", mapping_path))
+            .input_path(canonical_source_path(source))
+            .finish_with_eval_output(collector, &value, Some(source));
+        value
+    } else if let Some(literal) = &mapping.value {
+        collector
+            .emit(TraceEventKind::LiteralEval, TracePhase::Instant)
+            .rule_path(format!("{}.value", mapping_path))
+            .finish_with_output(collector, literal, None);
+        EvalValue::Value(literal.clone())
+    } else if let Some(expr) = &mapping.expr {
+        if version >= 2 {
+            let expr_path = format!("{}.expr", mapping_path);
+            let v2_json = expr_to_json_for_v2_pipe(expr);
+            if let Some(json_val) = v2_json {
+                let v2_pipe = parse_v2_pipe_from_value(&json_val).map_err(|e| {
+                    TransformError::new(TransformErrorKind::ExprError, e.to_string())
+                        .with_path(&expr_path)
+                })?;
+                let v2_ctx = V2EvalContext::new();
+                let v2_result = eval_v2_pipe_traced(
+                    &v2_pipe, record, context, out, &expr_path, &v2_ctx, collector,
+                )?;
+                match v2_result {
+                    V2EvalValue::Missing => EvalValue::Missing,
+                    V2EvalValue::Value(v) => EvalValue::Value(v),
+                }
+            } else {
+                eval_expr_traced(expr, record, context, out, &expr_path, None, collector)?
+            }
+        } else {
+            eval_expr_traced(
+                expr,
+                record,
+                context,
+                out,
+                &format!("{}.expr", mapping_path),
+                None,
+                collector,
+            )?
+        }
+    } else {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "mapping must define source, value, or expr",
+        )
+        .with_path(mapping_path));
+    };
+
+    let mut value = match value {
+        EvalValue::Missing => {
+            if let Some(default) = &mapping.default {
+                collector
+                    .emit(TraceEventKind::DefaultApplied, TracePhase::Instant)
+                    .rule_path(format!("{}.default", mapping_path))
+                    .finish_with_output(collector, default, None);
+                default.clone()
+            } else if mapping.required {
+                return Err(TransformError::new(
+                    TransformErrorKind::MissingRequired,
+                    "required value is missing",
+                )
+                .with_path(mapping_path));
+            } else {
+                return Ok(None);
+            }
+        }
+        EvalValue::Value(value) => value,
+    };
+
+    if value.is_null() {
+        if mapping.required {
+            return Err(TransformError::new(
+                TransformErrorKind::MissingRequired,
+                "required value is null",
+            )
+            .with_path(mapping_path));
+        }
+        return Ok(Some(value));
+    }
+
+    if let Some(type_name) = &mapping.value_type {
+        value = cast_value(&value, type_name, &format!("{}.type", mapping_path))?;
+        collector
+            .emit(TraceEventKind::TypeCast, TracePhase::Instant)
+            .rule_path(format!("{}.type", mapping_path))
+            .finish_with_output(collector, &value, None);
+    }
+
+    Ok(Some(value))
+}
+
+fn canonical_source_path(source: &str) -> String {
+    match parse_source(source) {
+        Ok((Namespace::Input, path)) => canonical_input_path(path),
+        Ok((Namespace::Context, path)) => canonical_context_path(path),
+        Ok((Namespace::Out, path)) => canonical_out_path(path),
+        _ => canonical_input_path(source),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_v2_pipe_traced<'a>(
+    pipe: &V2Pipe,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    base_path: &str,
+    ctx: &V2EvalContext<'a>,
+    collector: &mut TraceCollector,
+) -> Result<V2EvalValue, TransformError> {
+    collector
+        .start_span(TraceEventKind::ExprStart, TracePhase::Start)
+        .rule_path(base_path)
+        .finish(collector);
+
+    let mut current = match eval_v2_start(&pipe.start, record, context, out, base_path, ctx) {
+        Ok(value) => {
+            emit_v2_start_trace(&pipe.start, &value, base_path, collector);
+            value
+        }
+        Err(error) => {
+            collector
+                .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
+                .rule_path(base_path)
+                .finish(collector);
+            return Err(error);
+        }
+    };
+    let mut current_ctx = ctx.clone();
+
+    for (step_index, step) in pipe.steps.iter().enumerate() {
+        let step_path = format!("{}[{}]", base_path, step_index + 1);
+        current_ctx = current_ctx.clone().with_pipe_value(current.clone());
+        current = match eval_v2_step_traced(
+            step,
+            current,
+            record,
+            context,
+            out,
+            &step_path,
+            &current_ctx,
+            collector,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
+                    .rule_path(base_path)
+                    .finish(collector);
+                return Err(error);
+            }
+        };
+    }
+
+    collector
+        .end_span(TraceEventKind::ExprEnd, TracePhase::End)
+        .rule_path(base_path)
+        .finish_with_v2_eval_output(collector, &current, None);
+    Ok(current)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_v2_step_traced<'a>(
+    step: &V2Step,
+    pipe_value: V2EvalValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    step_path: &str,
+    ctx: &V2EvalContext<'a>,
+    collector: &mut TraceCollector,
+) -> Result<V2EvalValue, TransformError> {
+    match step {
+        V2Step::Op(op) => {
+            collector
+                .start_span(TraceEventKind::OpStart, TracePhase::Start)
+                .rule_path(step_path)
+                .operator(&op.op)
+                .input_v2_eval_value(&pipe_value, collector.options(), None)
+                .attr_count("arg_count", op.args.len())
+                .finish(collector);
+            for (arg_index, _arg) in op.args.iter().enumerate() {
+                let arg_path = format!("{}.args[{}]", step_path, arg_index);
+                let arg_value = match eval_v2_expr_with_trace(
+                    _arg, record, context, out, &arg_path, ctx, collector,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        collector
+                            .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                            .rule_path(step_path)
+                            .operator(&op.op)
+                            .input_v2_eval_value(&pipe_value, collector.options(), None)
+                            .finish(collector);
+                        return Err(error);
+                    }
+                };
+                collector
+                    .emit(TraceEventKind::ArgEval, TracePhase::Instant)
+                    .rule_path(&arg_path)
+                    .attr_index("arg_index", arg_index)
+                    .input_v2_eval_value(&arg_value, collector.options(), None)
+                    .finish(collector);
+            }
+            let result =
+                eval_v2_op_step(op, pipe_value.clone(), record, context, out, step_path, ctx);
+            let output = match result {
+                Ok(output) => output,
+                Err(error) => {
+                    collector
+                        .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                        .rule_path(step_path)
+                        .operator(&op.op)
+                        .input_v2_eval_value(&pipe_value, collector.options(), None)
+                        .finish(collector);
+                    return Err(error);
+                }
+            };
+            collector
+                .end_span(TraceEventKind::OpEnd, TracePhase::End)
+                .rule_path(step_path)
+                .operator(&op.op)
+                .input_v2_eval_value(&pipe_value, collector.options(), None)
+                .finish_with_v2_eval_output(collector, &output, None);
+            Ok(output)
+        }
+        V2Step::Map(map) => {
+            collector
+                .start_span(TraceEventKind::OpStart, TracePhase::Start)
+                .rule_path(step_path)
+                .operator("map")
+                .input_v2_eval_value(&pipe_value, collector.options(), None)
+                .finish(collector);
+            let arr = match &pipe_value {
+                V2EvalValue::Missing => {
+                    collector
+                        .end_span(TraceEventKind::OpEnd, TracePhase::End)
+                        .rule_path(step_path)
+                        .operator("map")
+                        .finish_with_v2_eval_output(collector, &V2EvalValue::Missing, None);
+                    return Ok(V2EvalValue::Missing);
+                }
+                V2EvalValue::Value(JsonValue::Array(arr)) => arr,
+                V2EvalValue::Value(_) => {
+                    collector
+                        .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                        .rule_path(step_path)
+                        .operator("map")
+                        .finish(collector);
+                    return Err(TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "map step requires array",
+                    )
+                    .with_path(step_path));
+                }
+            };
+            let mut results = Vec::with_capacity(arr.len());
+            for (index, item_value) in arr.iter().enumerate() {
+                let item_path = format!("{}[{}]", step_path, index);
+                let item_eval_value = V2EvalValue::Value(item_value.clone());
+                let item_ctx = ctx
+                    .clone()
+                    .with_pipe_value(item_eval_value.clone())
+                    .with_item(V2EvalItem {
+                        value: item_value,
+                        index,
+                    });
+                let mut current = item_eval_value;
+                let mut step_ctx = item_ctx.clone();
+
+                collector
+                    .start_span(TraceEventKind::CollectionItemStart, TracePhase::Start)
+                    .rule_path(&item_path)
+                    .input_path(canonical_item_path(""))
+                    .attr_index("item_index", index)
+                    .attr_enum("scope", "item")
+                    .input_value(item_value, collector.options(), Some("@item"))
+                    .finish(collector);
+
+                for (nested_index, nested_step) in map.steps.iter().enumerate() {
+                    step_ctx = step_ctx.clone().with_pipe_value(current.clone());
+                    current = match eval_v2_step_traced(
+                        nested_step,
+                        current,
+                        record,
+                        context,
+                        out,
+                        &format!("{}.step[{}]", item_path, nested_index),
+                        &step_ctx,
+                        collector,
+                    ) {
+                        Ok(value) => value,
+                        Err(error) => {
+                            collector
+                                .error_span(
+                                    TraceEventKind::Error,
+                                    "COLLECTION_ERROR",
+                                    "item failed",
+                                )
+                                .rule_path(&item_path)
+                                .finish(collector);
+                            return Err(error);
+                        }
+                    };
+                }
+                collector
+                    .end_span(TraceEventKind::CollectionItemEnd, TracePhase::End)
+                    .rule_path(&item_path)
+                    .finish_with_v2_eval_output(collector, &current, Some("@item"));
+                if let V2EvalValue::Value(value) = current {
+                    results.push(value);
+                }
+            }
+            collector
+                .end_span(TraceEventKind::OpEnd, TracePhase::End)
+                .rule_path(step_path)
+                .operator("map")
+                .finish_with_v2_eval_output(
+                    collector,
+                    &V2EvalValue::Value(JsonValue::Array(results.clone())),
+                    None,
+                );
+            Ok(V2EvalValue::Value(JsonValue::Array(results)))
+        }
+        V2Step::Let(let_step) => {
+            let new_ctx = eval_v2_let_step(
+                let_step,
+                pipe_value.clone(),
+                record,
+                context,
+                out,
+                step_path,
+                ctx,
+            )?;
+            collector
+                .emit(TraceEventKind::ChainStep, TracePhase::Instant)
+                .rule_path(step_path)
+                .input_v2_eval_value(&pipe_value, collector.options(), None)
+                .finish(collector);
+            Ok(new_ctx.get_pipe_value().cloned().unwrap_or(pipe_value))
+        }
+        V2Step::If(if_step) => {
+            let cond_ctx = ctx.clone().with_pipe_value(pipe_value.clone());
+            let cond_path = format!("{}.cond", step_path);
+            let cond =
+                eval_v2_condition(&if_step.cond, record, context, out, &cond_path, &cond_ctx)?;
+            collector
+                .emit(TraceEventKind::BranchEval, TracePhase::Instant)
+                .rule_path(&cond_path)
+                .finish_with_output(collector, &JsonValue::Bool(cond), None);
+            if cond {
+                collector
+                    .start_span(TraceEventKind::BranchTaken, TracePhase::Start)
+                    .rule_path(step_path)
+                    .attr_enum("selected_branch", "then")
+                    .finish(collector);
+                let result = eval_v2_pipe_traced(
+                    &if_step.then_branch,
+                    record,
+                    context,
+                    out,
+                    &format!("{}.then", step_path),
+                    &cond_ctx,
+                    collector,
+                )?;
+                collector
+                    .end_span(TraceEventKind::BranchTaken, TracePhase::End)
+                    .rule_path(step_path)
+                    .finish_with_v2_eval_output(collector, &result, None);
+                Ok(result)
+            } else if let Some(else_branch) = &if_step.else_branch {
+                collector
+                    .start_span(TraceEventKind::BranchTaken, TracePhase::Start)
+                    .rule_path(step_path)
+                    .attr_enum("selected_branch", "else")
+                    .finish(collector);
+                let result = eval_v2_pipe_traced(
+                    else_branch,
+                    record,
+                    context,
+                    out,
+                    &format!("{}.else", step_path),
+                    &cond_ctx,
+                    collector,
+                )?;
+                collector
+                    .end_span(TraceEventKind::BranchTaken, TracePhase::End)
+                    .rule_path(step_path)
+                    .finish_with_v2_eval_output(collector, &result, None);
+                Ok(result)
+            } else {
+                Ok(pipe_value)
+            }
+        }
+        V2Step::Ref(v2_ref) => {
+            let result = eval_v2_ref(v2_ref, record, context, out, step_path, ctx)?;
+            let mut event = collector
+                .emit(TraceEventKind::RefRead, TracePhase::Instant)
+                .rule_path(step_path);
+            if let Some(path) = canonical_v2_ref_path(v2_ref) {
+                event = event.input_path(path);
+            }
+            event.finish_with_v2_eval_output(collector, &result, None);
+            Ok(result)
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_v2_expr_with_trace<'a>(
+    expr: &V2Expr,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    path: &str,
+    ctx: &V2EvalContext<'a>,
+    collector: &mut TraceCollector,
+) -> Result<V2EvalValue, TransformError> {
+    match expr {
+        V2Expr::Pipe(pipe) => eval_v2_pipe_traced(pipe, record, context, out, path, ctx, collector),
+        V2Expr::V1Fallback(expr) => {
+            let result = eval_expr_traced(expr, record, context, out, path, None, collector)?;
+            Ok(match result {
+                EvalValue::Missing => V2EvalValue::Missing,
+                EvalValue::Value(value) => V2EvalValue::Value(value),
+            })
+        }
+    }
+}
+
+fn emit_v2_start_trace(
+    start: &V2Start,
+    value: &V2EvalValue,
+    path: &str,
+    collector: &mut TraceCollector,
+) {
+    match start {
+        V2Start::Ref(v2_ref) => {
+            let mut event = collector
+                .emit(TraceEventKind::RefRead, TracePhase::Instant)
+                .rule_path(path);
+            if let Some(input_path) = canonical_v2_ref_path(v2_ref) {
+                event = event.input_path(input_path);
+            }
+            event.finish_with_v2_eval_output(collector, value, None);
+        }
+        V2Start::Literal(_) => {
+            collector
+                .emit(TraceEventKind::LiteralEval, TracePhase::Instant)
+                .rule_path(path)
+                .finish_with_v2_eval_output(collector, value, None);
+        }
+        V2Start::PipeValue | V2Start::V1Expr(_) => {
+            collector
+                .emit(TraceEventKind::ChainStep, TracePhase::Instant)
+                .rule_path(path)
+                .finish_with_v2_eval_output(collector, value, None);
+        }
+    }
+}
+
+fn canonical_v2_ref_path(v2_ref: &V2Ref) -> Option<String> {
+    match v2_ref {
+        V2Ref::Input(path) => Some(canonical_input_path(path)),
+        V2Ref::Context(path) => Some(canonical_context_path(path)),
+        V2Ref::Out(path) => Some(canonical_out_path(path)),
+        V2Ref::Item(path) => Some(canonical_item_path(path)),
+        V2Ref::Acc(path) => Some(canonical_acc_path(path)),
+        V2Ref::Local(_) => None,
+    }
+}
+
 fn eval_when(
     mapping: &crate::model::Mapping,
     record: &JsonValue,
@@ -1473,6 +2656,123 @@ fn eval_expr(
         Expr::Ref(expr_ref) => eval_ref(expr_ref, record, context, out, base_path, locals),
         Expr::Op(expr_op) => eval_op(expr_op, record, context, out, base_path, None, locals),
         Expr::Chain(expr_chain) => eval_chain(expr_chain, record, context, out, base_path, locals),
+    }
+}
+
+fn eval_expr_traced(
+    expr: &Expr,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    collector
+        .start_span(TraceEventKind::ExprStart, TracePhase::Start)
+        .rule_path(base_path)
+        .finish(collector);
+
+    let result = match expr {
+        Expr::Literal(value) => {
+            let value = EvalValue::Value(value.clone());
+            collector
+                .emit(TraceEventKind::LiteralEval, TracePhase::Instant)
+                .rule_path(base_path)
+                .finish_with_eval_output(collector, &value, None);
+            Ok(value)
+        }
+        Expr::Ref(expr_ref) => {
+            let value = eval_ref(expr_ref, record, context, out, base_path, locals);
+            if let Ok(value) = &value {
+                collector
+                    .emit(TraceEventKind::RefRead, TracePhase::Instant)
+                    .rule_path(base_path)
+                    .input_path(canonical_ref_path(&expr_ref.ref_path))
+                    .finish_with_eval_output(collector, value, Some(&expr_ref.ref_path));
+            }
+            value
+        }
+        Expr::Op(expr_op) => {
+            collector
+                .start_span(TraceEventKind::OpStart, TracePhase::Start)
+                .rule_path(base_path)
+                .operator(&expr_op.op)
+                .finish(collector);
+            let mut arg_error = None;
+            for (arg_index, arg) in expr_op.args.iter().enumerate() {
+                let arg_path = format!("{}.args[{}]", base_path, arg_index);
+                let arg_value =
+                    match eval_expr_traced(arg, record, context, out, &arg_path, locals, collector)
+                    {
+                        Ok(value) => value,
+                        Err(error) => {
+                            arg_error = Some(error);
+                            break;
+                        }
+                    };
+                collector
+                    .emit(TraceEventKind::ArgEval, TracePhase::Instant)
+                    .rule_path(&arg_path)
+                    .attr_index("arg_index", arg_index)
+                    .input_eval_value(&arg_value, collector.options(), None)
+                    .finish(collector);
+            }
+            if let Some(error) = arg_error {
+                collector
+                    .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                    .rule_path(base_path)
+                    .operator(&expr_op.op)
+                    .finish(collector);
+                Err(error)
+            } else {
+                match eval_op(expr_op, record, context, out, base_path, None, locals) {
+                    Ok(value) => {
+                        collector
+                            .end_span(TraceEventKind::OpEnd, TracePhase::End)
+                            .rule_path(base_path)
+                            .operator(&expr_op.op)
+                            .finish_with_eval_output(collector, &value, None);
+                        Ok(value)
+                    }
+                    Err(error) => {
+                        collector
+                            .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                            .rule_path(base_path)
+                            .operator(&expr_op.op)
+                            .finish(collector);
+                        Err(error)
+                    }
+                }
+            }
+        }
+        Expr::Chain(expr_chain) => eval_chain(expr_chain, record, context, out, base_path, locals),
+    };
+
+    match &result {
+        Ok(value) => {
+            collector
+                .end_span(TraceEventKind::ExprEnd, TracePhase::End)
+                .rule_path(base_path)
+                .finish_with_eval_output(collector, value, None);
+        }
+        Err(_) => {
+            collector
+                .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
+                .rule_path(base_path)
+                .finish(collector);
+        }
+    }
+
+    result
+}
+
+fn canonical_ref_path(ref_path: &str) -> String {
+    match parse_ref(ref_path) {
+        Ok((Namespace::Input, path)) => canonical_input_path(path),
+        Ok((Namespace::Context, path)) => canonical_context_path(path),
+        Ok((Namespace::Out, path)) => canonical_out_path(path),
+        _ => canonical_input_path(ref_path),
     }
 }
 
