@@ -1042,12 +1042,13 @@ fn apply_mappings_into_traced(
                     .finish(collector);
                 return Err(error);
             }
+            let output_redaction_hint = mapping_output_redaction_hint(mapping);
             collector
                 .emit(TraceEventKind::OutputWrite, TracePhase::Instant)
                 .rule_path(format!("{}.target", mapping_path))
                 .output_path(canonical_output_path(&mapping.target))
                 .attr_path("target_path", canonical_output_path(&mapping.target))
-                .input_value(&value, collector.options(), Some(&mapping.target))
+                .input_value(&value, collector.options(), Some(&output_redaction_hint))
                 .finish(collector);
         }
 
@@ -1057,6 +1058,58 @@ fn apply_mappings_into_traced(
             .finish(collector);
     }
     Ok(())
+}
+
+fn mapping_output_redaction_hint(mapping: &Mapping) -> String {
+    let mut hint = mapping.target.clone();
+    if let Some(source) = &mapping.source {
+        hint.push(' ');
+        hint.push_str(source);
+    }
+    if let Some(expr) = &mapping.expr {
+        collect_expr_redaction_hints(expr, &mut hint);
+    }
+    hint
+}
+
+fn collect_expr_redaction_hints(expr: &Expr, hint: &mut String) {
+    match expr {
+        Expr::Ref(expr_ref) => {
+            hint.push(' ');
+            hint.push_str(&expr_ref.ref_path);
+        }
+        Expr::Op(expr_op) => {
+            for arg in &expr_op.args {
+                collect_expr_redaction_hints(arg, hint);
+            }
+        }
+        Expr::Chain(expr_chain) => {
+            for part in &expr_chain.chain {
+                collect_expr_redaction_hints(part, hint);
+            }
+        }
+        Expr::Literal(value) => collect_json_redaction_hints(value, hint),
+    }
+}
+
+fn collect_json_redaction_hints(value: &JsonValue, hint: &mut String) {
+    match value {
+        JsonValue::String(value) if value.starts_with('@') => {
+            hint.push(' ');
+            hint.push_str(value);
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                collect_json_redaction_hints(value, hint);
+            }
+        }
+        JsonValue::Object(values) => {
+            for value in values.values() {
+                collect_json_redaction_hints(value, hint);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn apply_rule_to_record_traced(

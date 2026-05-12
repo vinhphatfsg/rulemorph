@@ -334,6 +334,17 @@ impl TraceValueSnapshot {
                 bytes: Some(bytes),
             },
             TraceValueMode::Redacted(redaction) => {
+                if path_hint.is_none() {
+                    return Self {
+                        state,
+                        value_type,
+                        contains_raw_value: false,
+                        value: None,
+                        visibility: Some("metadata_only".to_string()),
+                        redaction_reason: Some("unknown_provenance".to_string()),
+                        bytes: Some(bytes),
+                    };
+                }
                 if value.is_object() || value.is_array() {
                     return Self {
                         state,
