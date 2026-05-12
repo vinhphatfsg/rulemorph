@@ -2919,6 +2919,39 @@ fn eval_expr_traced(
                     locals,
                     collector,
                 ),
+                "map" => eval_array_map_traced(
+                    &expr_op.args,
+                    None,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    locals,
+                    collector,
+                ),
+                "reduce" => eval_array_reduce_traced(
+                    &expr_op.args,
+                    None,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    locals,
+                    collector,
+                ),
+                "fold" => eval_array_fold_traced(
+                    &expr_op.args,
+                    None,
+                    record,
+                    context,
+                    out,
+                    base_path,
+                    locals,
+                    collector,
+                ),
+                op if v1_operator_has_scoped_expr_args(op) => {
+                    eval_op(expr_op, record, context, out, base_path, None, locals)
+                }
                 _ => eval_eager_op_traced(
                     expr_op, record, context, out, base_path, locals, collector,
                 ),
@@ -2974,12 +3007,39 @@ fn eval_eager_op_traced(
     locals: Option<&EvalLocals<'_>>,
     collector: &mut TraceCollector,
 ) -> Result<EvalValue, TransformError> {
+    let mut arg_values = Vec::with_capacity(expr_op.args.len());
     for (arg_index, arg) in expr_op.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", base_path, arg_index);
         let arg_value = eval_expr_traced(arg, record, context, out, &arg_path, locals, collector)?;
         emit_arg_eval(collector, &arg_path, arg_index, &arg_value);
+        arg_values.push(arg_value);
     }
-    eval_op(expr_op, record, context, out, base_path, None, locals)
+    let cached_locals = locals_with_precomputed_args(locals, base_path, &arg_values);
+    eval_op(
+        expr_op,
+        record,
+        context,
+        out,
+        base_path,
+        None,
+        Some(&cached_locals),
+    )
+}
+
+fn v1_operator_has_scoped_expr_args(op: &str) -> bool {
+    matches!(
+        op,
+        "filter"
+            | "flat_map"
+            | "zip_with"
+            | "group_by"
+            | "key_by"
+            | "partition"
+            | "distinct_by"
+            | "sort_by"
+            | "find"
+            | "find_index"
+    )
 }
 
 fn emit_arg_eval(
@@ -3035,6 +3095,40 @@ fn eval_expr_at_index_traced(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn eval_array_arg_traced(
+    index: usize,
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<Vec<JsonValue>, TransformError> {
+    let arg_path = format!("{}.args[{}]", base_path, index);
+    let value = eval_expr_at_index_traced(
+        index, args, injected, record, context, out, base_path, locals, collector,
+    )?;
+    emit_arg_eval(collector, &arg_path, index, &value);
+    match value {
+        EvalValue::Missing => Ok(Vec::new()),
+        EvalValue::Value(value) => {
+            if value.is_null() {
+                Ok(Vec::new())
+            } else if let JsonValue::Array(items) = value {
+                Ok(items)
+            } else {
+                Err(
+                    TransformError::new(TransformErrorKind::ExprError, "expr arg must be an array")
+                        .with_path(arg_path),
+                )
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn eval_coalesce_traced(
     args: &[Expr],
     injected: Option<&EvalValue>,
@@ -3071,6 +3165,196 @@ fn eval_coalesce_traced(
         }
     }
     Ok(EvalValue::Missing)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_array_map_traced(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg_traced(
+        0, args, injected, record, context, out, base_path, locals, collector,
+    )?;
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut results = Vec::with_capacity(array.len());
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = locals_with_item(locals, EvalItem { value: item, index });
+        let value = eval_expr_traced(
+            expr,
+            record,
+            context,
+            out,
+            &expr_path,
+            Some(&item_locals),
+            collector,
+        )?;
+        emit_arg_eval(collector, &expr_path, expr_index, &value);
+        results.push(match value {
+            EvalValue::Missing => JsonValue::Null,
+            EvalValue::Value(value) => value,
+        });
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_array_reduce_traced(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly two items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg_traced(
+        0, args, injected, record, context, out, base_path, locals, collector,
+    )?;
+    if array.is_empty() {
+        return Ok(EvalValue::Value(JsonValue::Null));
+    }
+
+    let expr = arg_expr_at(1, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[1]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 0 } else { 1 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    let mut acc = array[0].clone();
+    for (index, item) in array.iter().enumerate().skip(1) {
+        let item_locals = EvalLocals {
+            item: Some(EvalItem { value: item, index }),
+            acc: Some(&acc),
+            pipe: locals.and_then(|locals| locals.pipe),
+            locals: locals.and_then(|locals| locals.locals),
+            precomputed_op_args: None,
+        };
+        let value = eval_expr_traced(
+            expr,
+            record,
+            context,
+            out,
+            &expr_path,
+            Some(&item_locals),
+            collector,
+        )?;
+        emit_arg_eval(collector, &expr_path, expr_index, &value);
+        acc = match value {
+            EvalValue::Missing => JsonValue::Null,
+            EvalValue::Value(value) => value,
+        };
+    }
+
+    Ok(EvalValue::Value(acc))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_array_fold_traced(
+    args: &[Expr],
+    injected: Option<&EvalValue>,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    locals: Option<&EvalLocals<'_>>,
+    collector: &mut TraceCollector,
+) -> Result<EvalValue, TransformError> {
+    let total_len = args_len(args, injected);
+    if total_len != 3 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args must contain exactly three items",
+        )
+        .with_path(format!("{}.args", base_path)));
+    }
+
+    let array = eval_array_arg_traced(
+        0, args, injected, record, context, out, base_path, locals, collector,
+    )?;
+    let initial_path = format!("{}.args[1]", base_path);
+    let initial = eval_expr_at_index_traced(
+        1, args, injected, record, context, out, base_path, locals, collector,
+    )?;
+    emit_arg_eval(collector, &initial_path, 1, &initial);
+    let mut acc = match initial {
+        EvalValue::Missing => return Ok(EvalValue::Missing),
+        EvalValue::Value(value) => value,
+    };
+
+    let expr = arg_expr_at(2, args, injected).ok_or_else(|| {
+        TransformError::new(
+            TransformErrorKind::ExprError,
+            "expr.args index is out of bounds",
+        )
+        .with_path(format!("{}.args[2]", base_path))
+    })?;
+    let expr_index = if injected.is_some() { 1 } else { 2 };
+    let expr_path = format!("{}.args[{}]", base_path, expr_index);
+
+    for (index, item) in array.iter().enumerate() {
+        let item_locals = EvalLocals {
+            item: Some(EvalItem { value: item, index }),
+            acc: Some(&acc),
+            pipe: locals.and_then(|locals| locals.pipe),
+            locals: locals.and_then(|locals| locals.locals),
+            precomputed_op_args: None,
+        };
+        let value = eval_expr_traced(
+            expr,
+            record,
+            context,
+            out,
+            &expr_path,
+            Some(&item_locals),
+            collector,
+        )?;
+        emit_arg_eval(collector, &expr_path, expr_index, &value);
+        acc = match value {
+            EvalValue::Missing => JsonValue::Null,
+            EvalValue::Value(value) => value,
+        };
+    }
+
+    Ok(EvalValue::Value(acc))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3131,6 +3415,8 @@ fn canonical_ref_path(ref_path: &str) -> String {
         Ok((Namespace::Input, path)) => canonical_input_path(path),
         Ok((Namespace::Context, path)) => canonical_context_path(path),
         Ok((Namespace::Out, path)) => canonical_out_path(path),
+        Ok((Namespace::Item, path)) => canonical_item_path(path),
+        Ok((Namespace::Acc, path)) => canonical_acc_path(path),
         _ => canonical_input_path(ref_path),
     }
 }
@@ -4007,6 +4293,22 @@ fn eval_expr_at_index(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
+    if injected.is_none() {
+        if let Some((cached_base_path, cached_values)) =
+            locals.and_then(|locals| locals.precomputed_op_args)
+        {
+            if cached_base_path == base_path {
+                return cached_values.get(index).cloned().ok_or_else(|| {
+                    TransformError::new(
+                        TransformErrorKind::ExprError,
+                        "expr.args index is out of bounds",
+                    )
+                    .with_path(format!("{}.args[{}]", base_path, index))
+                });
+            }
+        }
+    }
+
     if let Some(injected) = injected {
         if index == 0 {
             return Ok(injected.clone());
@@ -4833,6 +5135,21 @@ fn locals_with_item<'a>(locals: Option<&EvalLocals<'a>>, item: EvalItem<'a>) -> 
         acc: locals.and_then(|locals| locals.acc),
         pipe: locals.and_then(|locals| locals.pipe),
         locals: locals.and_then(|locals| locals.locals),
+        precomputed_op_args: locals.and_then(|locals| locals.precomputed_op_args),
+    }
+}
+
+fn locals_with_precomputed_args<'a>(
+    locals: Option<&EvalLocals<'a>>,
+    base_path: &'a str,
+    arg_values: &'a [EvalValue],
+) -> EvalLocals<'a> {
+    EvalLocals {
+        item: locals.and_then(|locals| locals.item),
+        acc: locals.and_then(|locals| locals.acc),
+        pipe: locals.and_then(|locals| locals.pipe),
+        locals: locals.and_then(|locals| locals.locals),
+        precomputed_op_args: Some((base_path, arg_values)),
     }
 }
 
@@ -6244,6 +6561,7 @@ fn eval_array_reduce(
             acc: Some(&acc),
             pipe: locals.and_then(|locals| locals.pipe),
             locals: locals.and_then(|locals| locals.locals),
+            precomputed_op_args: locals.and_then(|locals| locals.precomputed_op_args),
         };
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         acc = value;
@@ -6294,6 +6612,7 @@ fn eval_array_fold(
             acc: Some(&acc),
             pipe: locals.and_then(|locals| locals.pipe),
             locals: locals.and_then(|locals| locals.locals),
+            precomputed_op_args: locals.and_then(|locals| locals.precomputed_op_args),
         };
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         acc = value;
@@ -8202,6 +8521,7 @@ pub(crate) struct EvalLocals<'a> {
     pub(crate) acc: Option<&'a JsonValue>,
     pub(crate) pipe: Option<&'a EvalValue>,
     pub(crate) locals: Option<&'a HashMap<String, EvalValue>>,
+    pub(crate) precomputed_op_args: Option<(&'a str, &'a [EvalValue])>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

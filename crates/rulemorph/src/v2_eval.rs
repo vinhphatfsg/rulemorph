@@ -1624,6 +1624,7 @@ fn eval_v2_op_with_v1_fallback<'a>(
         acc: ctx.get_acc(),
         pipe: Some(&v1_pipe),
         locals: Some(&v1_locals_map),
+        precomputed_op_args: None,
     };
 
     let result = eval_v1_op(
