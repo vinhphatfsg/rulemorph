@@ -33,9 +33,94 @@ const REGEX_CACHE_CAPACITY: usize = 128;
 const BRANCH_MAX_DEPTH: usize = 64;
 
 #[cfg(test)]
-pub(crate) fn trace_supports_v2_operator(op: &str) -> bool {
-    crate::v2_validator::VALID_V2_OPERATORS.contains(&op)
-}
+pub(crate) const TRACE_GENERIC_V2_OPERATORS: &[&str] = &[
+    "lookup",
+    "lookup_first",
+    "to_string",
+    "pad_start",
+    "pad_end",
+    "+",
+    "-",
+    "*",
+    "/",
+    "multiply",
+    "add",
+    "subtract",
+    "divide",
+    "round",
+    "to_base",
+    "date_format",
+    "to_unixtime",
+    "and",
+    "or",
+    "not",
+    "==",
+    "!=",
+    "<",
+    "<=",
+    ">",
+    ">=",
+    "~=",
+    "eq",
+    "ne",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "match",
+    "merge",
+    "deep_merge",
+    "get",
+    "pick",
+    "omit",
+    "keys",
+    "values",
+    "entries",
+    "len",
+    "from_entries",
+    "object_flatten",
+    "object_unflatten",
+    "map",
+    "filter",
+    "flat_map",
+    "flatten",
+    "take",
+    "drop",
+    "slice",
+    "chunk",
+    "zip",
+    "zip_with",
+    "unzip",
+    "group_by",
+    "key_by",
+    "partition",
+    "unique",
+    "distinct_by",
+    "sort_by",
+    "find",
+    "find_index",
+    "index_of",
+    "contains",
+    "sum",
+    "avg",
+    "min",
+    "max",
+    "reduce",
+    "fold",
+    "first",
+    "last",
+    "string",
+    "int",
+    "float",
+    "bool",
+    "trim",
+    "uppercase",
+    "lowercase",
+    "split",
+    "replace",
+    "concat",
+    "coalesce",
+];
 
 fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
     static REGEX_CACHE: OnceLock<Mutex<LruCache<String, Regex>>> = OnceLock::new();
@@ -1048,8 +1133,7 @@ fn apply_mappings_into_traced(
                 .rule_path(format!("{}.target", mapping_path))
                 .output_path(canonical_output_path(&mapping.target))
                 .attr_path("target_path", canonical_output_path(&mapping.target))
-                .input_value(&value, collector.options(), Some(&output_redaction_hint))
-                .finish(collector);
+                .finish_with_output(collector, &value, Some(&output_redaction_hint));
         }
 
         collector
@@ -2281,14 +2365,6 @@ fn eval_v2_step_traced<'a>(
                 .input_v2_eval_value(&pipe_value, collector.options(), None)
                 .attr_count("arg_count", op.args.len())
                 .finish(collector);
-            for (arg_index, _) in op.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", step_path, arg_index);
-                collector
-                    .emit(TraceEventKind::ArgEval, TracePhase::Instant)
-                    .rule_path(&arg_path)
-                    .attr_index("arg_index", arg_index)
-                    .finish(collector);
-            }
             let result =
                 eval_v2_op_step(op, pipe_value.clone(), record, context, out, step_path, ctx);
             let output = match result {
@@ -2385,6 +2461,12 @@ fn eval_v2_step_traced<'a>(
                                     "item failed",
                                 )
                                 .rule_path(&item_path)
+                                .finish(collector);
+                            collector
+                                .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                                .rule_path(step_path)
+                                .operator("map")
+                                .input_v2_eval_value(&pipe_value, collector.options(), None)
                                 .finish(collector);
                             return Err(error);
                         }

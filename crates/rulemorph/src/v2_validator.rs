@@ -1105,13 +1105,19 @@ mod tests {
     }
 
     #[test]
-    fn test_valid_v2_operator_inventory_is_trace_supported() {
-        for op in VALID_V2_OPERATORS {
-            assert!(
-                crate::transform::trace_supports_v2_operator(op),
-                "{op} is valid but missing from trace operator coverage"
-            );
-        }
+    fn test_valid_v2_operator_inventory_matches_traced_generic_operator_inventory() {
+        let valid = VALID_V2_OPERATORS
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        let traced = crate::transform::TRACE_GENERIC_V2_OPERATORS
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            traced, valid,
+            "trace generic operator inventory must drift with valid v2 operators"
+        );
     }
 
     #[test]

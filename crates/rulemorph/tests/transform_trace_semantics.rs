@@ -1,6 +1,6 @@
 use rulemorph::{
     InputData, TraceEvent, TraceEventKind, TransformTrace, TransformTraceOptions, parse_rule_file,
-    transform, transform_input_with_trace,
+    transform, transform_input_with_trace, transform_record, transform_record_with_trace,
 };
 use serde_json::{Value as JsonValue, json};
 
@@ -82,6 +82,42 @@ fn assert_traced_output_matches_normal(yaml: &str, input: &str, expected: JsonVa
 }
 
 #[test]
+fn trace_output_write_uses_output_snapshot_not_input_slot() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "name"
+    source: "name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"name":"alice"}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    let output_write = iter_trace_events(&traced.trace)
+        .into_iter()
+        .find(|event| event.kind == TraceEventKind::OutputWrite)
+        .expect("output_write event");
+    assert!(
+        output_write.inputs.is_empty(),
+        "output_write must not put the written value in inputs"
+    );
+    assert_eq!(
+        output_write
+            .output
+            .as_ref()
+            .and_then(|snapshot| snapshot.value.as_ref()),
+        Some(&json!("alice"))
+    );
+}
+
+#[test]
 fn trace_v2_and_short_circuits_false_pipe_without_evaluating_invalid_arg() {
     let yaml = r#"
 version: 2
@@ -134,6 +170,35 @@ mappings:
 }
 
 #[test]
+fn trace_v2_short_circuited_args_are_not_reported_as_arg_eval() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "flag"
+    expr:
+      - "@input.enabled"
+      - and: ["@item.enabled"]
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"enabled":false}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert!(
+        iter_trace_events(&traced.trace)
+            .into_iter()
+            .all(|event| event.kind != TraceEventKind::ArgEval),
+        "short-circuited v2 args must not be reported as evaluated"
+    );
+}
+
+#[test]
 fn trace_v2_non_short_circuited_invalid_arg_errors_like_normal() {
     let yaml = r#"
 version: 2
@@ -159,6 +224,65 @@ mappings:
 
     assert_eq!(traced.error, normal);
     assert_trace_shape(&traced.trace);
+}
+
+#[test]
+fn trace_v2_map_nested_error_closes_collection_and_map_spans() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "items"
+    expr:
+      - "@input.items"
+      - map:
+          - divide: [0]
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        transform_input_with_trace(
+            &rule,
+            InputData::Text(r#"[{"items":[1]}]"#),
+            None,
+            &TransformTraceOptions::raw(),
+        )
+    }));
+
+    assert!(result.is_ok(), "map nested error must not leave open spans");
+    let err = result.expect("no panic").expect_err("traced error");
+    assert_eq!(err.error.kind, rulemorph::TransformErrorKind::ExprError);
+    assert_trace_shape(&err.trace);
+}
+
+#[test]
+fn trace_record_api_matches_normal_finalize_behavior() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "name"
+    source: "name"
+finalize:
+  wrap:
+    data: "@out"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let record = json!({"name":"alice"});
+
+    let normal = transform_record(&rule, &record, None).expect("normal record transform");
+    let traced = transform_record_with_trace(&rule, &record, None, &TransformTraceOptions::raw())
+        .expect("traced record transform");
+
+    assert_eq!(normal, Some(json!({"data":[{"name":"alice"}]})));
+    assert_eq!(traced.output, normal);
+    assert!(
+        iter_trace_events(&traced.trace)
+            .into_iter()
+            .any(|event| event.kind == TraceEventKind::FinalizeStart),
+        "single-record trace API must mirror normal finalize behavior"
+    );
 }
 
 #[test]
