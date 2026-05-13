@@ -14,6 +14,9 @@ use crate::v2_model::{
     V2Comparison, V2Condition, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Ref,
     V2Start, V2Step,
 };
+use crate::v2_operator::{
+    V2OperatorArgScope, is_valid_operator, operator_arg_range, operator_arg_scope,
+};
 
 // =============================================================================
 // Type System
@@ -523,11 +526,7 @@ fn validate_v2_op_step(
     // Validate each argument expression
     for (i, arg) in op_step.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", base_path, i);
-        let arg_scope = if op_step.op == "zip_with" && i == op_step.args.len().saturating_sub(1) {
-            V2Scope::with_parent(scope).with_item()
-        } else {
-            get_arg_scope_for_op(&op_step.op, i, scope)
-        };
+        let arg_scope = get_arg_scope_for_op(&op_step.op, i, op_step.args.len(), scope);
         validate_v2_expr(arg, &arg_path, &arg_scope, ctx);
     }
 }
@@ -662,121 +661,22 @@ fn validate_v2_comparison(
 // Operation Validation
 // =============================================================================
 
-/// Check if an operation name is valid
-pub(crate) const VALID_V2_OPERATORS: &[&str] = &[
-    // String operations
-    "concat",
-    "to_string",
-    "trim",
-    "lowercase",
-    "uppercase",
-    "replace",
-    "split",
-    "pad_start",
-    "pad_end",
-    // Null handling
-    "coalesce",
-    // Lookup
-    "lookup",
-    "lookup_first",
-    // Arithmetic
-    "+",
-    "-",
-    "*",
-    "/",
-    "multiply",
-    "add",
-    "subtract",
-    "divide",
-    "round",
-    "to_base",
-    // Date
-    "date_format",
-    "to_unixtime",
-    // Logical
-    "and",
-    "or",
-    "not",
-    // Comparison
-    "==",
-    "!=",
-    "<",
-    "<=",
-    ">",
-    ">=",
-    "~=",
-    "eq",
-    "ne",
-    "lt",
-    "lte",
-    "gt",
-    "gte",
-    "match",
-    // JSON
-    "merge",
-    "deep_merge",
-    "get",
-    "pick",
-    "omit",
-    "keys",
-    "values",
-    "entries",
-    "len",
-    "from_entries",
-    "object_flatten",
-    "object_unflatten",
-    // Array
-    "map",
-    "filter",
-    "flat_map",
-    "flatten",
-    "take",
-    "drop",
-    "slice",
-    "chunk",
-    "zip",
-    "zip_with",
-    "unzip",
-    "group_by",
-    "key_by",
-    "partition",
-    "unique",
-    "distinct_by",
-    "sort_by",
-    "find",
-    "find_index",
-    "index_of",
-    "contains",
-    "sum",
-    "avg",
-    "min",
-    "max",
-    "reduce",
-    "fold",
-    "first",
-    "last",
-    // Type casts
-    "string",
-    "int",
-    "float",
-    "bool",
-];
-
 pub(crate) fn is_valid_op(op: &str) -> bool {
-    VALID_V2_OPERATORS.contains(&op)
+    is_valid_operator(op)
 }
 
 /// Get the appropriate scope for an operation argument
-fn get_arg_scope_for_op(op: &str, arg_index: usize, parent_scope: &V2Scope) -> V2Scope {
-    match op {
-        "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
-        | "sort_by" | "find" | "find_index"
-            if arg_index == 0 =>
-        {
-            V2Scope::with_parent(parent_scope).with_item()
+fn get_arg_scope_for_op(
+    op: &str,
+    arg_index: usize,
+    arg_count: usize,
+    parent_scope: &V2Scope,
+) -> V2Scope {
+    match operator_arg_scope(op, arg_index, arg_count) {
+        Some(V2OperatorArgScope::Item) => V2Scope::with_parent(parent_scope).with_item(),
+        Some(V2OperatorArgScope::ItemAndAcc) => {
+            V2Scope::with_parent(parent_scope).with_item().with_acc()
         }
-        "reduce" if arg_index == 0 => V2Scope::with_parent(parent_scope).with_item().with_acc(),
-        "fold" if arg_index == 1 => V2Scope::with_parent(parent_scope).with_item().with_acc(),
         _ => parent_scope.clone(),
     }
 }
@@ -811,56 +711,7 @@ fn validate_op_args_count(op: &str, count: usize, base_path: &str, ctx: &mut V2V
 /// Get the valid argument count range for an operation
 /// Returns (min, max) where max is None for unlimited
 fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
-    match op {
-        // No arguments
-        "trim" | "lowercase" | "uppercase" | "to_string" | "keys" | "values" | "entries"
-        | "unique" | "unzip" | "first" | "last" | "len" | "sum" | "avg" | "min" | "max" | "not"
-        | "string" | "int" | "float" | "bool" => (0, Some(0)),
-
-        // Optional one argument
-        "round" | "flatten" => (0, Some(1)),
-
-        // Exactly 1 argument
-        "take" | "drop" | "get" | "object_flatten" | "object_unflatten" | "chunk" | "map"
-        | "filter" | "flat_map" | "group_by" | "key_by" | "distinct_by" | "find" | "find_index"
-        | "index_of" | "contains" | "partition" | "split" | "reduce" | "to_base" => (1, Some(1)),
-
-        // One or two arguments
-        "sort_by" => (1, Some(2)),
-
-        // One or two arguments
-        "pad_start" | "pad_end" | "slice" => (1, Some(2)),
-
-        // Exactly 2 arguments
-        "fold" => (2, Some(2)),
-
-        // Two or three arguments
-        "replace" => (2, Some(3)),
-
-        // Date/Time
-        "date_format" => (1, Some(3)),
-        "to_unixtime" => (0, Some(2)),
-
-        // Variable arguments (at least 1)
-        "concat" | "coalesce" | "merge" | "deep_merge" | "and" | "or" | "pick" | "omit"
-        | "from_entries" | "add" | "subtract" | "multiply" | "divide" | "zip" => (1, None),
-
-        // Variable arguments (at least 2)
-        "zip_with" => (2, None),
-
-        // Comparison operators (exactly 1 argument for pipe context)
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt"
-        | "gte" | "match" => (1, Some(1)),
-
-        // Arithmetic (at least 1 argument for pipe context)
-        "+" | "-" | "*" | "/" => (1, None),
-
-        // Lookup operations (2-4 arguments: match_key, match_value, get? or from, match_key, match_value, get?)
-        "lookup" | "lookup_first" => (2, Some(4)),
-
-        // Default for unknown ops
-        _ => (0, None),
-    }
+    operator_arg_range(op)
 }
 
 // =============================================================================
@@ -1098,25 +949,53 @@ mod tests {
     // Op validation tests
     #[test]
     fn test_is_valid_op() {
-        for op in VALID_V2_OPERATORS {
-            assert!(is_valid_op(op), "{op} must be valid");
+        for metadata in crate::v2_operator::V2_OPERATORS {
+            assert!(
+                is_valid_op(metadata.name),
+                "{} must be valid",
+                metadata.name
+            );
         }
         assert!(!is_valid_op("nonexistent_op"));
     }
 
     #[test]
-    fn test_valid_v2_operator_inventory_matches_traced_generic_operator_inventory() {
-        let valid = VALID_V2_OPERATORS
+    fn test_v2_operator_metadata_covers_validation_and_trace_inventory() {
+        let names = crate::v2_operator::V2_OPERATORS
             .iter()
-            .copied()
+            .map(|metadata| metadata.name)
             .collect::<std::collections::BTreeSet<_>>();
-        let traced = crate::transform::TRACE_GENERIC_V2_OPERATORS
-            .iter()
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
+
         assert_eq!(
-            traced, valid,
-            "trace generic operator inventory must drift with valid v2 operators"
+            names.len(),
+            crate::v2_operator::V2_OPERATORS.len(),
+            "v2 operator metadata must not contain duplicate names"
+        );
+        assert!(
+            crate::v2_operator::V2_OPERATORS
+                .iter()
+                .all(|metadata| metadata.validates),
+            "all current v2 operators should remain validation-visible"
+        );
+        assert!(
+            crate::v2_operator::operator("nonexistent_op").is_none(),
+            "unknown operators must stay absent from shared metadata"
+        );
+        assert!(
+            crate::v2_operator::operator_has_eager_args("nonexistent_op"),
+            "unknown operator trace fallback must stay eager for behavior compatibility"
+        );
+        assert!(crate::v2_operator::operator_has_eager_args("concat"));
+        assert!(crate::v2_operator::operator_has_lazy_arg_trace("coalesce"));
+        assert!(crate::v2_operator::operator_has_item_level_trace("map"));
+        assert!(!crate::v2_operator::operator_has_eager_args("lookup_first"));
+        assert_eq!(
+            crate::v2_operator::operator_arg_scope("zip_with", 2, 3),
+            Some(crate::v2_operator::V2OperatorArgScope::Item)
+        );
+        assert_eq!(
+            crate::v2_operator::operator_arg_scope("reduce", 0, 1),
+            Some(crate::v2_operator::V2OperatorArgScope::ItemAndAcc)
         );
     }
 
