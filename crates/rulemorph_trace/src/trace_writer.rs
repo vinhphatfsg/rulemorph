@@ -1,10 +1,11 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 #[cfg(test)]
 use std::sync::OnceLock;
-use std::sync::{Arc, Condvar, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -15,6 +16,7 @@ use tracing::warn;
 mod chunk_write;
 mod externalize;
 mod masking;
+mod queue;
 mod sampling;
 
 use chunk_write::{
@@ -23,6 +25,10 @@ use chunk_write::{
 };
 use externalize::externalize_trace_payloads;
 use masking::{apply_masking, normalize_masking_rules};
+use queue::{
+    TraceQueue, TraceWriteRequest, estimate_trace_bytes, evict_normal, push_request, queue_bytes,
+    trace_id_for_log, trace_writer_loop,
+};
 use sampling::{TracePriority, should_keep_full_detail, trace_priority};
 
 use crate::trace_backend::TraceWriteBackend;
@@ -282,118 +288,6 @@ impl TraceWriter {
         self.queue.cvar.notify_one();
         true
     }
-}
-
-struct TraceWriteRequest {
-    trace: JsonValue,
-    options: TraceWriteOptions,
-    priority: TracePriority,
-    downgraded: bool,
-    approx_bytes: usize,
-}
-
-struct TraceQueue {
-    backend: Arc<dyn TraceWriteBackend>,
-    capacity: usize,
-    max_bytes: usize,
-    items: Mutex<VecDeque<TraceWriteRequest>>,
-    cvar: Condvar,
-}
-
-impl TraceQueue {
-    fn new(backend: Arc<dyn TraceWriteBackend>, capacity: usize, max_bytes: usize) -> Self {
-        Self {
-            backend,
-            capacity: capacity.max(1),
-            max_bytes: max_bytes.max(1),
-            items: Mutex::new(VecDeque::new()),
-            cvar: Condvar::new(),
-        }
-    }
-}
-
-fn trace_writer_loop(queue: Arc<TraceQueue>) {
-    loop {
-        let request = {
-            let mut guard = queue.items.lock().expect("trace queue lock");
-            while guard.is_empty() {
-                guard = queue.cvar.wait(guard).expect("trace queue wait");
-            }
-            guard.pop_front()
-        };
-        let Some(request) = request else {
-            continue;
-        };
-        if request.downgraded {
-            warn!(
-                "trace queue full; downgraded trace {} to basic",
-                trace_id_for_log(&request.trace)
-            );
-        }
-        if let Err(err) = queue
-            .backend
-            .write_trace_bundle(&request.trace, &request.options)
-        {
-            warn!("failed to write trace bundle: {}", err);
-        }
-    }
-}
-
-fn push_request(queue: &mut VecDeque<TraceWriteRequest>, request: TraceWriteRequest) {
-    match request.priority {
-        TracePriority::High => queue.push_front(request),
-        TracePriority::Normal => queue.push_back(request),
-    }
-}
-
-fn evict_normal(queue: &mut VecDeque<TraceWriteRequest>) -> bool {
-    let position = queue
-        .iter()
-        .position(|item| item.priority == TracePriority::Normal);
-    if let Some(index) = position {
-        queue.remove(index);
-        return true;
-    }
-    false
-}
-
-fn trace_id_for_log(trace: &JsonValue) -> String {
-    trace
-        .get("trace_id")
-        .and_then(|value| value.as_str())
-        .unwrap_or("unknown")
-        .to_string()
-}
-
-fn estimate_trace_bytes(trace: &JsonValue) -> usize {
-    struct CountingWriter {
-        size: usize,
-    }
-
-    impl Write for CountingWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.size = self.size.saturating_add(buf.len());
-            Ok(buf.len())
-        }
-
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let mut writer = CountingWriter { size: 0 };
-    if serde_json::to_writer(&mut writer, trace).is_ok() {
-        writer.size
-    } else {
-        0
-    }
-}
-
-fn queue_bytes(queue: &VecDeque<TraceWriteRequest>) -> usize {
-    queue
-        .iter()
-        .map(|request| request.approx_bytes)
-        .sum::<usize>()
 }
 
 fn strip_trace_detail(trace: &mut JsonValue) {
