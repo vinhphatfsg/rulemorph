@@ -163,6 +163,84 @@ fn trace_event_is_json_serializable() {
 }
 
 #[test]
+fn trace_schema_serializes_stable_top_level_contract() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "name"
+    source: "name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let raw = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"name":"alice"}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("raw trace");
+    let raw_value = serde_json::to_value(&raw.trace).expect("trace json");
+
+    assert_eq!(raw_value["schema_version"], 1);
+    assert_eq!(raw_value["value_mode"], "raw");
+    assert_eq!(raw_value["contains_raw_values"], true);
+    assert_eq!(raw_value["complete"], true);
+    assert!(
+        raw_value["records"]
+            .as_array()
+            .is_some_and(|records| !records.is_empty())
+    );
+    assert!(raw_value.get("finalize").is_none());
+    assert_eq!(raw_value["records"][0]["events"][0]["kind"], "record_start");
+    assert_eq!(raw_value["records"][0]["events"][0]["phase"], "instant");
+
+    let redacted = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"name":"alice"}]"#),
+        None,
+        &TransformTraceOptions::redacted(),
+    )
+    .expect("redacted trace");
+    let redacted_value = serde_json::to_value(&redacted.trace).expect("trace json");
+    assert_eq!(redacted_value["value_mode"], "redacted");
+
+    let metadata = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"name":"alice"}]"#),
+        None,
+        &TransformTraceOptions::metadata_only(),
+    )
+    .expect("metadata trace");
+    let metadata_value = serde_json::to_value(&metadata.trace).expect("trace json");
+    assert_eq!(metadata_value["value_mode"], "metadata_only");
+    assert_eq!(metadata_value["contains_raw_values"], false);
+
+    let finalize_yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "name"
+    source: "name"
+finalize:
+  limit: 1
+"#;
+    let finalize_rule = parse_rule_file(finalize_yaml).expect("parse rule");
+    let finalized = transform_input_with_trace(
+        &finalize_rule,
+        InputData::Text(r#"[{"name":"alice"},{"name":"bob"}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("finalize trace");
+    let finalized_value = serde_json::to_value(&finalized.trace).expect("trace json");
+    assert!(finalized_value["finalize"].is_array());
+    assert_eq!(finalized_value["finalize"][0]["kind"], "finalize_start");
+    assert_eq!(finalized_value["finalize"][0]["phase"], "start");
+}
+
+#[test]
 fn enabling_trace_does_not_change_transform_output() {
     let yaml = r#"
 version: 2
@@ -187,6 +265,88 @@ mappings:
     assert_eq!(traced.output, normal);
     assert!(traced.warnings.is_empty());
     assert_eq!(traced.trace.records.len(), 1);
+}
+
+#[test]
+fn trace_max_snapshot_bytes_marks_incomplete_without_breaking_parent_ids() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "payload"
+    source: "payload"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let mut options = TransformTraceOptions::raw();
+    options.max_snapshot_bytes = Some(8);
+
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"payload":"this string is deliberately oversized"}]"#),
+        None,
+        &options,
+    )
+    .expect("traced transform");
+
+    assert_eq!(
+        traced.output,
+        json!([{ "payload": "this string is deliberately oversized" }])
+    );
+    assert!(!traced.trace.complete);
+    assert_eq!(
+        traced
+            .trace
+            .truncation
+            .as_ref()
+            .map(|truncation| truncation.reason.as_str()),
+        Some("max_snapshot_bytes")
+    );
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
+
+    let events = iter_trace_events(&traced.trace);
+    let snapshots = events
+        .iter()
+        .flat_map(|event| event.inputs.iter().chain(event.output.iter()));
+    assert!(snapshots.into_iter().any(|snapshot| {
+        snapshot.visibility.as_deref() == Some("truncated")
+            && snapshot.redaction_reason.as_deref() == Some("max_snapshot_bytes")
+            && !snapshot.contains_raw_value
+            && snapshot.value.is_none()
+    }));
+}
+
+#[test]
+fn trace_max_trace_bytes_freezes_with_truncation_reason() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "name"
+    source: "name"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let mut options = TransformTraceOptions::raw();
+    options.max_trace_bytes = Some(1);
+
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"name":"alice"}]"#),
+        None,
+        &options,
+    )
+    .expect("traced transform");
+
+    assert_eq!(traced.output, json!([{ "name": "alice" }]));
+    assert!(!traced.trace.complete);
+    let truncation = traced.trace.truncation.as_ref().expect("truncation");
+    assert_eq!(truncation.reason, "max_trace_bytes");
+    assert_eq!(
+        truncation.emitted_events,
+        iter_trace_events(&traced.trace).len()
+    );
+    assert_parent_ids_point_to_emitted_events(&traced.trace);
 }
 
 #[test]

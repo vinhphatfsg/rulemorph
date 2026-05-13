@@ -150,6 +150,45 @@ mappings:
 }
 
 #[test]
+fn source_path_helpers_preserve_context_out_and_escaped_input_paths() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: "id"
+    source: '["@id"]'
+  - target: "tenant"
+    source: "context.tenant"
+  - target: "copied_id"
+    source: "out.id"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let context = json!({ "tenant": "acme" });
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"@id":"u1"}]"#),
+        Some(&context),
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform");
+
+    assert_eq!(
+        traced.output,
+        json!([{ "id": "u1", "tenant": "acme", "copied_id": "u1" }])
+    );
+    assert_trace_shape(&traced.trace);
+    let source_paths = iter_trace_events(&traced.trace)
+        .into_iter()
+        .filter(|event| event.kind == TraceEventKind::SourceRead)
+        .filter_map(|event| event.input_path.as_deref())
+        .collect::<Vec<_>>();
+    assert!(source_paths.contains(&r#"@input["@id"]"#));
+    assert!(source_paths.contains(&"@context.tenant"));
+    assert!(source_paths.contains(&"@out.id"));
+}
+
+#[test]
 fn trace_v2_missing_short_circuit_does_not_evaluate_later_invalid_arg() {
     let cases = [
         (
@@ -1457,6 +1496,78 @@ steps:
     let err = result.expect("no panic").expect_err("traced error");
     assert_eq!(err.error.kind, rulemorph::TransformErrorKind::InvalidTarget);
     assert_trace_shape(&err.trace);
+}
+
+#[test]
+fn trace_branch_base_dir_error_closes_open_spans() {
+    let dir = unique_temp_dir("branch-base-dir-error");
+    let outside = unique_temp_dir("branch-base-dir-outside");
+    let outside_rule = outside.join("outside.yaml");
+    fs::write(
+        &outside_rule,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: ok
+    value: true
+"#,
+    )
+    .expect("write outside rule");
+    let yaml = format!(
+        r#"version: 2
+input:
+  format: json
+  json: {{}}
+steps:
+  - branch:
+      when: {{ eq: [1, 1] }}
+      then: {}
+"#,
+        outside_rule.display()
+    );
+    let rule = parse_rule_file(&yaml).expect("parse rule");
+    let err = transform_input_with_trace_with_base_dir_and_options(
+        &rule,
+        InputData::Text(r#"[{"id":1}]"#),
+        None,
+        Some(&dir),
+        &Default::default(),
+        &TransformTraceOptions::raw(),
+    )
+    .expect_err("outside branch should be rejected");
+
+    assert_eq!(err.error.kind, rulemorph::TransformErrorKind::InvalidInput);
+    assert!(err.error.message.contains("base directory"));
+    assert_trace_shape(&err.trace);
+
+    let events = iter_trace_events(&err.trace);
+    let branch_taken = events
+        .iter()
+        .find(|event| event.kind == TraceEventKind::BranchTaken)
+        .expect("branch taken");
+    assert!(
+        events.iter().any(|event| {
+            event.kind == TraceEventKind::Error
+                && event.parent_id == Some(branch_taken.id)
+                && event
+                    .message
+                    .as_ref()
+                    .is_some_and(|message| message.code == "BRANCH_ERROR")
+        }),
+        "branch error should close the branch span"
+    );
+    assert!(
+        events.iter().any(|event| {
+            event.kind == TraceEventKind::Error
+                && event
+                    .message
+                    .as_ref()
+                    .is_some_and(|message| message.code == "STEP_ERROR")
+        }),
+        "step error should close the step span"
+    );
 }
 
 #[test]
