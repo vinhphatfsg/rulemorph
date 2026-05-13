@@ -1,23 +1,22 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::path::PathBuf;
+use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Extension, FromRequest, Multipart, Path as AxumPath, State},
+    extract::{DefaultBodyLimit, Extension, FromRequest, Multipart, State},
     http::{HeaderMap, Method, Request, StatusCode},
     middleware::{Next, from_fn_with_state},
     response::IntoResponse,
     routing::{any, get, post},
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell, broadcast};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::{ApiKeyInfo, ApiKeyIssueResult, ApiKeyStore};
 use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 use rulemorph_endpoint::{
     ApiMode, EndpointEngine, EngineConfig, RequestContext, validate_rules_dir,
@@ -32,10 +31,12 @@ use include_dir::{Dir, include_dir};
 #[cfg(feature = "embedded-ui")]
 static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../rulemorph_ui/ui/dist");
 
+mod api_key_routes;
 mod auth;
 mod import_zip;
 mod trace_routes;
 
+use self::api_key_routes::{issue_api_key, list_api_keys, revoke_api_key, rotate_api_key};
 #[cfg(test)]
 use self::auth::pre_auth_rate_limit_key;
 use self::auth::{
@@ -123,19 +124,6 @@ struct RateLimitState {
 const IMPORT_ZIP_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_ZIP_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const IMPORT_ZIP_MAX_ENTRIES: usize = 4096;
-static API_KEY_FILE_LOCKS: OnceLock<StdMutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
-
-fn api_key_file_lock(path: &Path) -> Arc<Mutex<()>> {
-    let lock_map = API_KEY_FILE_LOCKS.get_or_init(|| StdMutex::new(HashMap::new()));
-    let mut guard = lock_map
-        .lock()
-        .expect("api key lock map should not be poisoned");
-    guard
-        .entry(path.to_path_buf())
-        .or_insert_with(|| Arc::new(Mutex::new(())))
-        .clone()
-}
-
 impl RateLimiter {
     pub fn new(limit: u64) -> Self {
         Self {
@@ -622,21 +610,6 @@ struct ImportPathRequest {
     bundle_path: String,
 }
 
-#[derive(Deserialize)]
-struct ApiKeyIssueRequest {
-    label: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ApiKeyRotateRequest {
-    label: Option<String>,
-}
-
-#[derive(Serialize)]
-struct ApiKeyListResponse {
-    keys: Vec<ApiKeyInfo>,
-}
-
 async fn import_bundle_path(
     Extension(resources): Extension<Arc<TenantResources>>,
     Json(payload): Json<ImportPathRequest>,
@@ -707,61 +680,6 @@ async fn import_bundle_zip_with_resources(
         .await
         .map_err(ApiError::internal)?;
     Ok(result)
-}
-
-async fn list_api_keys(
-    Extension(resources): Extension<Arc<TenantResources>>,
-) -> std::result::Result<Json<ApiKeyListResponse>, ApiError> {
-    let path = resources.auth_dir.join("api_keys.json");
-    let store = ApiKeyStore::load(path, &resources.tenant_id).map_err(ApiError::internal)?;
-    let keys = store.map(|store| store.list()).unwrap_or_default();
-    Ok(Json(ApiKeyListResponse { keys }))
-}
-
-async fn issue_api_key(
-    Extension(resources): Extension<Arc<TenantResources>>,
-    Json(payload): Json<ApiKeyIssueRequest>,
-) -> std::result::Result<Json<ApiKeyIssueResult>, ApiError> {
-    let path = resources.auth_dir.join("api_keys.json");
-    let lock = api_key_file_lock(&path);
-    let _guard = lock.lock().await;
-    let mut store =
-        ApiKeyStore::load_or_init(path, &resources.tenant_id).map_err(ApiError::internal)?;
-    let issued = store.issue(payload.label).map_err(ApiError::internal)?;
-    Ok(Json(issued))
-}
-
-async fn revoke_api_key(
-    Extension(resources): Extension<Arc<TenantResources>>,
-    AxumPath(id): AxumPath<String>,
-) -> std::result::Result<Json<serde_json::Value>, ApiError> {
-    let path = resources.auth_dir.join("api_keys.json");
-    let lock = api_key_file_lock(&path);
-    let _guard = lock.lock().await;
-    let mut store = ApiKeyStore::load(path, &resources.tenant_id)
-        .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::not_found("api key store not found"))?;
-    let revoked = store.revoke(&id).map_err(ApiError::internal)?;
-    Ok(Json(json!({ "revoked": revoked })))
-}
-
-async fn rotate_api_key(
-    Extension(resources): Extension<Arc<TenantResources>>,
-    AxumPath(id): AxumPath<String>,
-    Json(payload): Json<ApiKeyRotateRequest>,
-) -> std::result::Result<Json<ApiKeyIssueResult>, ApiError> {
-    let path = resources.auth_dir.join("api_keys.json");
-    let lock = api_key_file_lock(&path);
-    let _guard = lock.lock().await;
-    let mut store =
-        ApiKeyStore::load_or_init(path, &resources.tenant_id).map_err(ApiError::internal)?;
-    let issued = store
-        .rotate(&id, payload.label)
-        .map_err(ApiError::internal)?;
-    let Some(issued) = issued else {
-        return Err(ApiError::not_found("api key not found"));
-    };
-    Ok(Json(issued))
 }
 
 struct ApiError {
