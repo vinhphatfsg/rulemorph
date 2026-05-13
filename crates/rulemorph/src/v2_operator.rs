@@ -480,24 +480,19 @@ pub(crate) fn operator_arg_scope(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn operator_has_eager_args(name: &str) -> bool {
     operator(name)
         .map(|metadata| metadata.trace == V2OperatorTrace::EagerArgs)
         .unwrap_or(true)
 }
 
+#[cfg(test)]
 pub(crate) fn operator_has_item_level_trace(name: &str) -> bool {
     operator(name).is_some_and(|metadata| metadata.trace == V2OperatorTrace::ItemLevelCollection)
 }
 
+#[cfg(test)]
 pub(crate) fn operator_has_lazy_arg_trace(name: &str) -> bool {
     operator(name).is_some_and(|metadata| metadata.trace == V2OperatorTrace::LazyShortCircuit)
-}
-
-pub(crate) fn operator_skips_args_when_pipe_is_missing(name: &str) -> bool {
-    operator(name).is_some_and(|metadata| metadata.skips_args_when_pipe_is_missing)
-}
-
-pub(crate) fn operator_stops_after_missing_arg(name: &str) -> bool {
-    operator(name).is_some_and(|metadata| metadata.stops_after_missing_arg)
 }
