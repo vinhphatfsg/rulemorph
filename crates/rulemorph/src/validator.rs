@@ -14,14 +14,18 @@ use serde_json::Value as JsonValue;
 mod bool_expr;
 mod expr_args;
 mod input;
+mod op_inventory;
 mod refs;
+mod scope;
 
 use self::bool_expr::validate_when_expr;
 use self::expr_args::{
     validate_lookup_args, validate_lookup_args_chain, validate_path_arg, validate_path_array_arg,
 };
 use self::input::validate_input;
+use self::op_inventory::{element_expr_scope, is_valid_op};
 use self::refs::{validate_ref, validate_source};
+use self::scope::LocalScope;
 
 pub fn validate_rule_file(rule: &RuleFile) -> ValidationResult {
     validate_rule_file_with_locator(rule, None)
@@ -630,23 +634,6 @@ fn validate_expr(
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum LocalScope {
-    None,
-    Item,
-    ItemAcc,
-}
-
-impl LocalScope {
-    fn allows_item(self) -> bool {
-        matches!(self, LocalScope::Item | LocalScope::ItemAcc)
-    }
-
-    fn allows_acc(self) -> bool {
-        matches!(self, LocalScope::ItemAcc)
-    }
-}
-
 fn validate_chain(
     expr_chain: &ExprChain,
     base_path: &str,
@@ -934,36 +921,6 @@ fn validate_chain_op(
             _ => scope,
         };
         validate_expr(arg, &arg_path, produced_targets, ctx, arg_scope);
-    }
-}
-
-fn element_expr_scope(
-    op: &str,
-    injected: bool,
-    args_len: usize,
-    parent_scope: LocalScope,
-) -> Option<(usize, LocalScope)> {
-    let item_scope = if parent_scope.allows_acc() {
-        LocalScope::ItemAcc
-    } else {
-        LocalScope::Item
-    };
-    match op {
-        "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
-        | "sort_by" | "find" | "find_index" => {
-            let index = if injected { 0 } else { 1 };
-            Some((index, item_scope))
-        }
-        "zip_with" => args_len.checked_sub(1).map(|index| (index, item_scope)),
-        "reduce" => {
-            let index = if injected { 0 } else { 1 };
-            Some((index, LocalScope::ItemAcc))
-        }
-        "fold" => {
-            let index = if injected { 1 } else { 2 };
-            Some((index, LocalScope::ItemAcc))
-        }
-        _ => None,
     }
 }
 
@@ -1255,81 +1212,6 @@ fn validate_op(
 
 fn is_valid_type_name(value: &str) -> bool {
     matches!(value, "string" | "int" | "float" | "bool")
-}
-
-fn is_valid_op(value: &str) -> bool {
-    matches!(
-        value,
-        "concat"
-            | "coalesce"
-            | "to_string"
-            | "trim"
-            | "lowercase"
-            | "uppercase"
-            | "replace"
-            | "split"
-            | "pad_start"
-            | "pad_end"
-            | "lookup"
-            | "lookup_first"
-            | "merge"
-            | "deep_merge"
-            | "get"
-            | "pick"
-            | "omit"
-            | "keys"
-            | "values"
-            | "entries"
-            | "len"
-            | "from_entries"
-            | "object_flatten"
-            | "object_unflatten"
-            | "map"
-            | "filter"
-            | "flat_map"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "zip_with"
-            | "unzip"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "unique"
-            | "distinct_by"
-            | "sort_by"
-            | "find"
-            | "find_index"
-            | "index_of"
-            | "contains"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "reduce"
-            | "fold"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "round"
-            | "to_base"
-            | "date_format"
-            | "to_unixtime"
-            | "and"
-            | "or"
-            | "not"
-            | "=="
-            | "!="
-            | "<"
-            | "<="
-            | ">"
-            | ">="
-            | "~="
-    )
 }
 
 struct ValidationCtx<'a> {
