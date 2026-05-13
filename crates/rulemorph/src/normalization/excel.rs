@@ -12,6 +12,7 @@ use super::{InputData, NormalizationOptions, enforce_records_limit};
 mod cell;
 mod range;
 mod workbook;
+mod worksheet;
 mod xlsx;
 mod xml;
 
