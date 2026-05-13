@@ -2,11 +2,10 @@ use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
@@ -24,6 +23,7 @@ use crate::trace_schema::{
 
 mod chunk_read;
 mod import_path;
+mod purge;
 mod trace_id_path;
 
 #[cfg(test)]
@@ -35,13 +35,15 @@ use self::chunk_read::{
 use self::import_path::{
     copy_file_create_new, ensure_import_base_dir, ensure_import_target_parent,
 };
+use self::purge::purge_trace_metas;
+#[cfg(test)]
+use self::purge::resolve_trace_timestamp;
 use self::trace_id_path::{
     fallback_trace_id_for_path, hash_trace_id_for_path, path_hash_for_trace_id,
 };
 
 const IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
-const MAX_TRACE_FUTURE_SKEW: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceMeta {
@@ -114,45 +116,14 @@ impl FileTraceBackend {
 
     pub async fn purge_traces(&self, retention: Duration, dry_run: bool) -> Result<PurgeReport> {
         let traces = self.list().await?;
-        let cutoff = SystemTime::now()
-            .checked_sub(retention)
-            .unwrap_or(SystemTime::UNIX_EPOCH);
         let traces_dir = traces_dir(&self.data_dir);
-        let mut purged = Vec::new();
-        let mut failed = Vec::new();
-
-        for meta in traces {
-            let path = PathBuf::from(&meta.path);
-            let Some(timestamp) = resolve_trace_timestamp(&meta, &path).await else {
-                continue;
-            };
-            if timestamp > cutoff {
-                continue;
-            }
-            if dry_run {
-                purged.push(meta);
-                continue;
-            }
-            if let Err(err) = delete_trace_path(&path, &traces_dir).await {
-                failed.push(PurgeFailure {
-                    trace_id: meta.trace_id.clone(),
-                    path: meta.path.clone(),
-                    error: err.to_string(),
-                });
-                warn!(
-                    "failed to purge trace {} at {}: {}",
-                    meta.trace_id, meta.path, err
-                );
-                continue;
-            }
-            purged.push(meta);
-        }
+        let report = purge_trace_metas(traces, &traces_dir, retention, dry_run).await;
 
         if !dry_run {
             self.refresh_index().await?;
         }
 
-        Ok(PurgeReport { purged, failed })
+        Ok(report)
     }
 
     pub async fn get(&self, trace_id: &str) -> Result<Option<Value>> {
@@ -781,51 +752,6 @@ fn traces_dir(data_dir: &Path) -> PathBuf {
 
 fn rules_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("rules")
-}
-
-async fn resolve_trace_timestamp(meta: &TraceMeta, path: &Path) -> Option<SystemTime> {
-    if let Some(timestamp) = meta.timestamp.as_deref() {
-        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-            let utc = parsed.with_timezone(&Utc);
-            let parsed_time = SystemTime::from(utc);
-            let now = SystemTime::now();
-            if parsed_time <= now {
-                return Some(parsed_time);
-            }
-            if let Ok(delta) = parsed_time.duration_since(now) {
-                if delta <= MAX_TRACE_FUTURE_SKEW {
-                    return Some(parsed_time);
-                }
-            }
-        }
-    }
-    let metadata = tokio::fs::metadata(path).await.ok()?;
-    metadata.modified().ok()
-}
-
-async fn delete_trace_path(path: &Path, traces_dir: &Path) -> Result<()> {
-    let traces_root = traces_dir
-        .canonicalize()
-        .unwrap_or_else(|_| traces_dir.to_path_buf());
-    let candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if !candidate.starts_with(&traces_root) {
-        return Err(anyhow::anyhow!(
-            "trace path escapes traces dir: {}",
-            candidate.display()
-        ));
-    }
-    let file_name = candidate.file_name().and_then(|name| name.to_str());
-    let parent = candidate.parent().unwrap_or_else(|| traces_root.as_path());
-    if file_name == Some("trace.json") && parent != traces_root {
-        tokio::fs::remove_dir_all(parent)
-            .await
-            .with_context(|| format!("failed to remove trace dir {}", parent.display()))?;
-    } else {
-        tokio::fs::remove_file(&candidate)
-            .await
-            .with_context(|| format!("failed to remove trace file {}", candidate.display()))?;
-    }
-    Ok(())
 }
 
 fn rollback_import(copied_paths: &[PathBuf], created_dirs: &BTreeSet<PathBuf>) {
