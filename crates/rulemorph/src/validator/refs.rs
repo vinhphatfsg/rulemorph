@@ -4,7 +4,8 @@ use crate::error::ErrorCode;
 use crate::model::ExprRef;
 use crate::path::{PathToken, parse_path};
 
-use super::{LocalScope, ValidationCtx};
+use super::ValidationCtx;
+use super::scope::LocalScope;
 
 pub(super) fn validate_source(
     source: &str,
