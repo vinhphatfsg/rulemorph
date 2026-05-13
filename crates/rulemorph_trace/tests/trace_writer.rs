@@ -1,45 +1,21 @@
+mod common;
+
 use std::collections::HashMap;
 use std::fs;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
+use common::trace_writer::{
+    create_temp_dir, read_manifest, read_manifest_payload, read_manifest_value, sampling_bucket,
+    trace_dir, unique_temp_dir,
+};
 use rulemorph_trace::{
     TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TraceCompression, TraceDetailLevel,
     TraceManifest, TraceStore, TraceWriteOptions, write_trace_bundle,
 };
 use serde_json::json;
 
-fn unique_temp_dir() -> std::path::PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    static TEMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    std::env::temp_dir().join(format!("rulemorph-trace-test-{pid}-{nanos}-{counter}"))
-}
-
-fn sampling_bucket(value: &str) -> f64 {
-    fn fnv1a64(bytes: &[u8]) -> u64 {
-        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-        const FNV_PRIME: u64 = 0x100000001b3;
-        let mut hash = FNV_OFFSET;
-        for byte in bytes {
-            hash ^= *byte as u64;
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        hash
-    }
-
-    let hash = fnv1a64(value.as_bytes());
-    (hash as f64) / (u64::MAX as f64)
-}
-
 #[tokio::test]
 async fn write_trace_bundle_downgrades_on_budget_exceeded() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-test",
@@ -55,8 +31,7 @@ async fn write_trace_bundle_downgrades_on_budget_exceeded() -> anyhow::Result<()
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "basic");
@@ -69,7 +44,7 @@ async fn write_trace_bundle_downgrades_on_budget_exceeded() -> anyhow::Result<()
     assert!(detail.records.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     for entry in fs::read_dir(trace_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -88,8 +63,7 @@ async fn write_trace_bundle_downgrades_on_budget_exceeded() -> anyhow::Result<()
 
 #[tokio::test]
 async fn write_trace_bundle_clamps_max_chunk_bytes_uncompressed() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-clamp",
@@ -104,8 +78,7 @@ async fn write_trace_bundle_clamps_max_chunk_bytes_uncompressed() -> anyhow::Res
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     assert_eq!(
         manifest.max_chunk_bytes_uncompressed,
         Some(16 * 1024 * 1024)
@@ -116,8 +89,7 @@ async fn write_trace_bundle_clamps_max_chunk_bytes_uncompressed() -> anyhow::Res
 
 #[tokio::test]
 async fn write_trace_bundle_downgrades_on_oversized_record_line() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-oversize-line",
@@ -132,8 +104,7 @@ async fn write_trace_bundle_downgrades_on_oversized_record_line() -> anyhow::Res
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "basic");
@@ -147,7 +118,7 @@ async fn write_trace_bundle_downgrades_on_oversized_record_line() -> anyhow::Res
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     for entry in fs::read_dir(trace_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -166,8 +137,7 @@ async fn write_trace_bundle_downgrades_on_oversized_record_line() -> anyhow::Res
 
 #[tokio::test]
 async fn write_trace_bundle_downgrades_on_chunk_count_exceeded() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let record_count = TRACE_CHUNK_COUNT_HARD_MAX + 1;
     let records: Vec<_> = (0..record_count)
@@ -185,8 +155,7 @@ async fn write_trace_bundle_downgrades_on_chunk_count_exceeded() -> anyhow::Resu
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "basic");
@@ -200,7 +169,7 @@ async fn write_trace_bundle_downgrades_on_chunk_count_exceeded() -> anyhow::Resu
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     for entry in fs::read_dir(trace_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -219,8 +188,7 @@ async fn write_trace_bundle_downgrades_on_chunk_count_exceeded() -> anyhow::Resu
 
 #[tokio::test]
 async fn write_trace_bundle_drops_rule_source_when_manifest_too_large() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-large-manifest",
@@ -236,7 +204,7 @@ async fn write_trace_bundle_drops_rule_source_when_manifest_too_large() -> anyho
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
+    let manifest_payload = read_manifest_payload(&manifest_path)?;
     assert!(manifest_payload.len() as u64 <= TRACE_JSON_MAX_BYTES);
     let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
     let detail = manifest.detail.expect("detail should exist");
@@ -253,8 +221,7 @@ async fn write_trace_bundle_drops_rule_source_when_manifest_too_large() -> anyho
 
 #[tokio::test]
 async fn write_trace_bundle_sampling_skips_success() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-sample-success",
@@ -277,8 +244,7 @@ async fn write_trace_bundle_sampling_skips_success() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "basic");
@@ -287,7 +253,7 @@ async fn write_trace_bundle_sampling_skips_success() -> anyhow::Result<()> {
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     for entry in fs::read_dir(trace_dir)? {
         let entry = entry?;
         let name = entry.file_name();
@@ -306,8 +272,7 @@ async fn write_trace_bundle_sampling_skips_success() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_sampling_keeps_error() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-sample-error",
@@ -330,8 +295,7 @@ async fn write_trace_bundle_sampling_keeps_error() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "full");
@@ -342,8 +306,7 @@ async fn write_trace_bundle_sampling_keeps_error() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_sampling_keeps_slow_trace() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-sample-slow",
@@ -367,8 +330,7 @@ async fn write_trace_bundle_sampling_keeps_slow_trace() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "full");
@@ -381,8 +343,7 @@ async fn write_trace_bundle_sampling_keeps_slow_trace() -> anyhow::Result<()> {
 #[tokio::test]
 async fn write_trace_bundle_sampling_uses_generated_trace_id_for_placeholder() -> anyhow::Result<()>
 {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let rate = 0.5;
     let placeholder_keep = sampling_bucket("trace") < rate;
@@ -409,8 +370,7 @@ async fn write_trace_bundle_sampling_uses_generated_trace_id_for_placeholder() -
         };
 
         let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-        let manifest_payload = fs::read_to_string(&manifest_path)?;
-        let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+        let manifest = read_manifest(&manifest_path)?;
         let detail = manifest.detail.expect("detail should exist");
         let keep = sampling_bucket(&manifest.trace_id) < rate;
         if keep != placeholder_keep {
@@ -425,8 +385,7 @@ async fn write_trace_bundle_sampling_uses_generated_trace_id_for_placeholder() -
 
 #[tokio::test]
 async fn write_trace_bundle_splits_nodes() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes",
@@ -458,8 +417,7 @@ async fn write_trace_bundle_splits_nodes() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.status, "full");
@@ -467,7 +425,7 @@ async fn write_trace_bundle_splits_nodes() -> anyhow::Result<()> {
     assert!(!detail.records.is_empty());
     assert!(!detail.nodes.is_empty());
 
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
     for line in record_payload.lines() {
@@ -521,8 +479,7 @@ async fn write_trace_bundle_splits_nodes() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_recovers_nodes_without_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-missing-index",
@@ -544,10 +501,9 @@ async fn write_trace_bundle_recovers_nodes_without_record_index() -> anyhow::Res
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -591,8 +547,7 @@ async fn write_trace_bundle_recovers_nodes_without_record_index() -> anyhow::Res
 
 #[tokio::test]
 async fn write_trace_bundle_preserves_node_owned_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-node-owned-record-index",
@@ -618,10 +573,9 @@ async fn write_trace_bundle_preserves_node_owned_record_index() -> anyhow::Resul
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
     let first_line = node_payload
@@ -672,8 +626,7 @@ async fn write_trace_bundle_preserves_node_owned_record_index() -> anyhow::Resul
 
 #[tokio::test]
 async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-legacy-wrapper",
@@ -694,10 +647,9 @@ async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -746,8 +698,7 @@ async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_keeps_node_key_with_sibling_fields() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-legacy-wrapper-extra-keys",
@@ -768,10 +719,9 @@ async fn write_trace_bundle_keeps_node_key_with_sibling_fields() -> anyhow::Resu
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -830,8 +780,7 @@ async fn write_trace_bundle_keeps_node_key_with_sibling_fields() -> anyhow::Resu
 
 #[tokio::test]
 async fn write_trace_bundle_skips_malformed_ndjson_line() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-malformed-ndjson",
@@ -852,10 +801,9 @@ async fn write_trace_bundle_skips_malformed_ndjson_line() -> anyhow::Result<()> 
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -912,8 +860,7 @@ async fn write_trace_bundle_skips_malformed_ndjson_line() -> anyhow::Result<()> 
 
 #[tokio::test]
 async fn write_trace_bundle_inherits_record_index_for_legacy_wrapper() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-legacy-wrapper-inherit",
@@ -934,10 +881,9 @@ async fn write_trace_bundle_inherits_record_index_for_legacy_wrapper() -> anyhow
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -992,8 +938,7 @@ async fn write_trace_bundle_inherits_record_index_for_legacy_wrapper() -> anyhow
 
 #[tokio::test]
 async fn write_trace_bundle_skips_invalid_utf8_chunk() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-invalid-utf8-chunk",
@@ -1014,10 +959,9 @@ async fn write_trace_bundle_skips_invalid_utf8_chunk() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
     fs::write(&record_chunk_path, vec![0xff, 0xfe, 0xfd])?;
@@ -1056,8 +1000,7 @@ async fn write_trace_bundle_skips_invalid_utf8_chunk() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_skips_unsupported_compression_chunk() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-unsupported-compression",
@@ -1078,8 +1021,7 @@ async fn write_trace_bundle_skips_unsupported_compression_chunk() -> anyhow::Res
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let mut manifest_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let mut manifest_value = read_manifest_value(&manifest_path)?;
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
@@ -1129,8 +1071,7 @@ async fn write_trace_bundle_skips_unsupported_compression_chunk() -> anyhow::Res
 
 #[tokio::test]
 async fn write_trace_bundle_skips_unsupported_format_chunk() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-unsupported-format",
@@ -1151,8 +1092,7 @@ async fn write_trace_bundle_skips_unsupported_format_chunk() -> anyhow::Result<(
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let mut manifest_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let mut manifest_value = read_manifest_value(&manifest_path)?;
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
@@ -1202,8 +1142,7 @@ async fn write_trace_bundle_skips_unsupported_format_chunk() -> anyhow::Result<(
 
 #[tokio::test]
 async fn write_trace_bundle_skips_zstd_decode_failure() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-zstd-decode-failure",
@@ -1224,8 +1163,7 @@ async fn write_trace_bundle_skips_zstd_decode_failure() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let mut manifest_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let mut manifest_value = read_manifest_value(&manifest_path)?;
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
@@ -1275,8 +1213,7 @@ async fn write_trace_bundle_skips_zstd_decode_failure() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_roundtrips_finalize_none() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-roundtrip-none",
@@ -1303,8 +1240,7 @@ async fn write_trace_bundle_roundtrips_finalize_none() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_roundtrips_finalize_zstd() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-roundtrip-zstd",
@@ -1331,8 +1267,7 @@ async fn write_trace_bundle_roundtrips_finalize_zstd() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_downgrades_on_oversized_finalize() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-oversized",
@@ -1347,8 +1282,7 @@ async fn write_trace_bundle_downgrades_on_oversized_finalize() -> anyhow::Result
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
     assert_eq!(detail.status, "basic");
     assert!(
@@ -1361,7 +1295,7 @@ async fn write_trace_bundle_downgrades_on_oversized_finalize() -> anyhow::Result
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     assert!(!trace_dir.join("finalize.json").exists());
 
     Ok(())
@@ -1369,8 +1303,7 @@ async fn write_trace_bundle_downgrades_on_oversized_finalize() -> anyhow::Result
 
 #[tokio::test]
 async fn write_trace_bundle_skips_finalize_unsupported_format() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-unsupported-format",
@@ -1384,8 +1317,7 @@ async fn write_trace_bundle_skips_finalize_unsupported_format() -> anyhow::Resul
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let mut manifest_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let mut manifest_value = read_manifest_value(&manifest_path)?;
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
@@ -1411,8 +1343,7 @@ async fn write_trace_bundle_skips_finalize_unsupported_format() -> anyhow::Resul
 
 #[tokio::test]
 async fn write_trace_bundle_skips_finalize_unsupported_compression() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-unsupported-compression",
@@ -1426,8 +1357,7 @@ async fn write_trace_bundle_skips_finalize_unsupported_compression() -> anyhow::
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let mut manifest_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let mut manifest_value = read_manifest_value(&manifest_path)?;
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
@@ -1453,8 +1383,7 @@ async fn write_trace_bundle_skips_finalize_unsupported_compression() -> anyhow::
 
 #[tokio::test]
 async fn write_trace_bundle_skips_finalize_invalid_json() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-invalid-json",
@@ -1468,10 +1397,9 @@ async fn write_trace_bundle_skips_finalize_invalid_json() -> anyhow::Result<()> 
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let finalize = detail.finalize.expect("finalize chunk should exist");
     let finalize_path = trace_dir.join(&finalize.path);
     fs::write(&finalize_path, b"{invalid json")?;
@@ -1488,8 +1416,7 @@ async fn write_trace_bundle_skips_finalize_invalid_json() -> anyhow::Result<()> 
 
 #[tokio::test]
 async fn write_trace_bundle_skips_finalize_zstd_decode_failure() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-finalize-zstd-decode-failure",
@@ -1503,8 +1430,7 @@ async fn write_trace_bundle_skips_finalize_zstd_decode_failure() -> anyhow::Resu
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let mut manifest_value: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(&manifest_path)?)?;
+    let mut manifest_value = read_manifest_value(&manifest_path)?;
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
@@ -1530,8 +1456,7 @@ async fn write_trace_bundle_skips_finalize_zstd_decode_failure() -> anyhow::Resu
 
 #[tokio::test]
 async fn write_trace_bundle_parses_string_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-string-index",
@@ -1553,10 +1478,9 @@ async fn write_trace_bundle_parses_string_record_index() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
@@ -1599,8 +1523,7 @@ async fn write_trace_bundle_parses_string_record_index() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_normalizes_inline_nodes() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-inline-nodes",
@@ -1644,8 +1567,7 @@ async fn write_trace_bundle_normalizes_inline_nodes() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_skips_invalid_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-invalid-index",
@@ -1667,10 +1589,9 @@ async fn write_trace_bundle_skips_invalid_record_index() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -1714,8 +1635,7 @@ async fn write_trace_bundle_skips_invalid_record_index() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_skips_null_record_index_keeps_inheritance() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-null-index",
@@ -1737,10 +1657,9 @@ async fn write_trace_bundle_skips_null_record_index_keeps_inheritance() -> anyho
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -1803,8 +1722,7 @@ async fn write_trace_bundle_skips_null_record_index_keeps_inheritance() -> anyho
 #[tokio::test]
 async fn write_trace_bundle_treats_node_key_with_core_fields_as_normal_node() -> anyhow::Result<()>
 {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-node-key",
@@ -1825,10 +1743,9 @@ async fn write_trace_bundle_treats_node_key_with_core_fields_as_normal_node() ->
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -1883,8 +1800,7 @@ async fn write_trace_bundle_treats_node_key_with_core_fields_as_normal_node() ->
 
 #[tokio::test]
 async fn write_trace_bundle_wraps_non_object_nodes() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-non-object",
@@ -1903,10 +1819,9 @@ async fn write_trace_bundle_wraps_non_object_nodes() -> anyhow::Result<()> {
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
     let first_line = node_payload
@@ -1928,8 +1843,7 @@ async fn write_trace_bundle_wraps_non_object_nodes() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_dedupes_duplicate_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-duplicate-index",
@@ -1954,10 +1868,9 @@ async fn write_trace_bundle_dedupes_duplicate_record_index() -> anyhow::Result<(
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
 
     let record_chunk = &detail.records[0];
     let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
@@ -1990,8 +1903,7 @@ async fn write_trace_bundle_dedupes_duplicate_record_index() -> anyhow::Result<(
 
 #[tokio::test]
 async fn write_trace_bundle_skips_missing_first_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-missing-first-index",
@@ -2013,10 +1925,9 @@ async fn write_trace_bundle_skips_missing_first_record_index() -> anyhow::Result
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -2057,8 +1968,7 @@ async fn write_trace_bundle_skips_missing_first_record_index() -> anyhow::Result
 
 #[tokio::test]
 async fn write_trace_bundle_accepts_string_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-string-index-input",
@@ -2080,10 +1990,9 @@ async fn write_trace_bundle_accepts_string_record_index() -> anyhow::Result<()> 
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
 
     let record_chunk = &detail.records[0];
     let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
@@ -2114,8 +2023,7 @@ async fn write_trace_bundle_accepts_string_record_index() -> anyhow::Result<()> 
 
 #[tokio::test]
 async fn write_trace_bundle_merges_inline_nodes_with_chunk() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-merge",
@@ -2134,10 +2042,9 @@ async fn write_trace_bundle_merges_inline_nodes_with_chunk() -> anyhow::Result<(
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
@@ -2186,8 +2093,7 @@ async fn write_trace_bundle_merges_inline_nodes_with_chunk() -> anyhow::Result<(
 
 #[tokio::test]
 async fn write_trace_bundle_first_wins_duplicate_record_index() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-dup-index-first-wins",
@@ -2210,10 +2116,9 @@ async fn write_trace_bundle_first_wins_duplicate_record_index() -> anyhow::Resul
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
 
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
@@ -2271,8 +2176,7 @@ async fn write_trace_bundle_first_wins_duplicate_record_index() -> anyhow::Resul
 
 #[tokio::test]
 async fn write_trace_bundle_skips_missing_record_index_across_chunks() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-missing-index-across-chunks",
@@ -2295,11 +2199,10 @@ async fn write_trace_bundle_skips_missing_record_index_across_chunks() -> anyhow
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
     assert!(detail.nodes.len() >= 2);
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let second_chunk = &detail.nodes[1];
     let second_chunk_path = trace_dir.join(&second_chunk.path);
     let node_payload = fs::read_to_string(&second_chunk_path)?;
@@ -2339,8 +2242,7 @@ async fn write_trace_bundle_skips_missing_record_index_across_chunks() -> anyhow
 
 #[tokio::test]
 async fn write_trace_bundle_parses_string_record_index_in_nodes() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-nodes-string-index-line",
@@ -2361,10 +2263,9 @@ async fn write_trace_bundle_parses_string_record_index_in_nodes() -> anyhow::Res
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -2408,8 +2309,7 @@ async fn write_trace_bundle_parses_string_record_index_in_nodes() -> anyhow::Res
 
 #[tokio::test]
 async fn write_trace_bundle_skips_invalid_record_index_in_record() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-invalid-record-index",
@@ -2430,10 +2330,9 @@ async fn write_trace_bundle_skips_invalid_record_index_in_record() -> anyhow::Re
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
@@ -2469,8 +2368,7 @@ async fn write_trace_bundle_skips_invalid_record_index_in_record() -> anyhow::Re
 
 #[tokio::test]
 async fn write_trace_bundle_emits_chunk_metadata_offsets() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-chunk-metadata",
@@ -2490,8 +2388,7 @@ async fn write_trace_bundle_emits_chunk_metadata_offsets() -> anyhow::Result<()>
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.records.len(), 2);
@@ -2512,8 +2409,7 @@ async fn write_trace_bundle_emits_chunk_metadata_offsets() -> anyhow::Result<()>
 #[tokio::test]
 async fn write_trace_bundle_emits_chunk_metadata_offsets_with_non_sequential_index()
 -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-chunk-metadata-non-seq",
@@ -2533,8 +2429,7 @@ async fn write_trace_bundle_emits_chunk_metadata_offsets_with_non_sequential_ind
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
 
     assert_eq!(detail.records.len(), 2);
@@ -2554,8 +2449,7 @@ async fn write_trace_bundle_emits_chunk_metadata_offsets_with_non_sequential_ind
 
 #[tokio::test]
 async fn write_trace_bundle_wraps_inline_non_object_nodes() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-inline-non-object",
@@ -2574,10 +2468,9 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes() -> anyhow::Result<()
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
     let record_line = record_payload
@@ -2599,8 +2492,7 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes() -> anyhow::Result<()
 
 #[tokio::test]
 async fn write_trace_bundle_wraps_inline_non_object_nodes_on_read() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-inline-non-object-read",
@@ -2621,10 +2513,9 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes_on_read() -> anyhow::R
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
@@ -2667,8 +2558,7 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes_on_read() -> anyhow::R
 
 #[tokio::test]
 async fn write_trace_bundle_invalid_record_index_keeps_inheritance() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-invalid-index-keeps",
@@ -2691,10 +2581,9 @@ async fn write_trace_bundle_invalid_record_index_keeps_inheritance() -> anyhow::
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
     let detail = manifest.detail.expect("detail should exist");
-    let trace_dir = manifest_path.parent().expect("trace dir should exist");
+    let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
@@ -2745,8 +2634,7 @@ async fn write_trace_bundle_invalid_record_index_keeps_inheritance() -> anyhow::
 
 #[tokio::test]
 async fn write_trace_bundle_default_compression_loads() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-default-compression",
@@ -2782,16 +2670,14 @@ async fn write_trace_bundle_default_compression_loads() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_generates_trace_id_when_missing() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "records": []
     });
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert!(manifest.trace_id.starts_with("trace-"));
 
@@ -2800,8 +2686,7 @@ async fn write_trace_bundle_generates_trace_id_when_missing() -> anyhow::Result<
 
 #[tokio::test]
 async fn write_trace_bundle_generates_trace_id_when_empty() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "",
@@ -2809,8 +2694,7 @@ async fn write_trace_bundle_generates_trace_id_when_empty() -> anyhow::Result<()
     });
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert!(manifest.trace_id.starts_with("trace-"));
 
@@ -2819,8 +2703,7 @@ async fn write_trace_bundle_generates_trace_id_when_empty() -> anyhow::Result<()
 
 #[tokio::test]
 async fn write_trace_bundle_sanitizes_trace_id() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "../unsafe/trace",
@@ -2828,8 +2711,7 @@ async fn write_trace_bundle_sanitizes_trace_id() -> anyhow::Result<()> {
     });
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert!(!manifest.trace_id.contains('/'));
     assert!(!manifest.trace_id.contains('\\'));
@@ -2840,8 +2722,7 @@ async fn write_trace_bundle_sanitizes_trace_id() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_sanitizes_trace_id_general_case() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "abc DEF/ghi あ",
@@ -2849,8 +2730,7 @@ async fn write_trace_bundle_sanitizes_trace_id_general_case() -> anyhow::Result<
     });
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert_eq!(manifest.trace_id, "abc_DEF_ghi__");
 
@@ -2860,8 +2740,7 @@ async fn write_trace_bundle_sanitizes_trace_id_general_case() -> anyhow::Result<
 #[tokio::test]
 async fn write_trace_bundle_rejects_dot_trace_id() -> anyhow::Result<()> {
     for raw in [".", ".."] {
-        let temp_dir = unique_temp_dir();
-        fs::create_dir_all(&temp_dir)?;
+        let temp_dir = create_temp_dir()?;
 
         let trace = json!({
             "trace_id": raw,
@@ -2869,8 +2748,7 @@ async fn write_trace_bundle_rejects_dot_trace_id() -> anyhow::Result<()> {
         });
 
         let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-        let manifest_payload = fs::read_to_string(&manifest_path)?;
-        let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+        let manifest = read_manifest(&manifest_path)?;
 
         assert!(manifest.trace_id.starts_with("trace-"));
         assert_ne!(manifest.trace_id, raw);
@@ -2881,8 +2759,7 @@ async fn write_trace_bundle_rejects_dot_trace_id() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_trace_trace_id_falls_back_to_generated() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace",
@@ -2890,8 +2767,7 @@ async fn write_trace_bundle_trace_trace_id_falls_back_to_generated() -> anyhow::
     });
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert!(manifest.trace_id.starts_with("trace-"));
     assert_ne!(manifest.trace_id, "trace");
@@ -2901,8 +2777,7 @@ async fn write_trace_bundle_trace_trace_id_falls_back_to_generated() -> anyhow::
 
 #[tokio::test]
 async fn write_trace_bundle_preserves_trailing_underscore_trace_id() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace_",
@@ -2910,8 +2785,7 @@ async fn write_trace_bundle_preserves_trailing_underscore_trace_id() -> anyhow::
     });
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, None).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert_eq!(manifest.trace_id, "trace_");
 
@@ -3010,8 +2884,7 @@ async fn write_trace_bundle_legacy_trace_id_trace_falls_back_to_hash() -> anyhow
 
 #[tokio::test]
 async fn write_trace_bundle_avoids_trace_id_collision_on_sanitize() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace_a = json!({
         "trace_id": "a/b",
@@ -3025,12 +2898,10 @@ async fn write_trace_bundle_avoids_trace_id_collision_on_sanitize() -> anyhow::R
     });
 
     let manifest_a_path = write_trace_bundle(&temp_dir, &trace_a, None).await?;
-    let manifest_a_payload = fs::read_to_string(&manifest_a_path)?;
-    let manifest_a: TraceManifest = serde_json::from_str(&manifest_a_payload)?;
+    let manifest_a = read_manifest(&manifest_a_path)?;
 
     let manifest_b_path = write_trace_bundle(&temp_dir, &trace_b, None).await?;
-    let manifest_b_payload = fs::read_to_string(&manifest_b_path)?;
-    let manifest_b: TraceManifest = serde_json::from_str(&manifest_b_payload)?;
+    let manifest_b = read_manifest(&manifest_b_path)?;
 
     assert_ne!(manifest_a.trace_id, manifest_b.trace_id);
 
@@ -3404,8 +3275,7 @@ async fn trace_store_collision_adds_counter_when_candidate_exists() -> anyhow::R
 
 #[tokio::test]
 async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-mask",
@@ -3473,8 +3343,7 @@ async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_masks_rule_source_when_basic() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-mask-basic-rule-source",
@@ -3561,8 +3430,7 @@ async fn write_trace_bundle_masks_rule_source_when_basic() -> anyhow::Result<()>
 
 #[tokio::test]
 async fn write_trace_bundle_masks_rule_source_when_off() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-mask-off-rule-source",
@@ -3636,8 +3504,7 @@ async fn write_trace_bundle_masks_rule_source_when_off() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_basic_without_masking_strips_detail() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-basic-no-mask",
@@ -3712,8 +3579,7 @@ async fn write_trace_bundle_basic_without_masking_strips_detail() -> anyhow::Res
 
 #[tokio::test]
 async fn write_trace_bundle_off_without_masking_strips_detail() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-off-no-mask",
@@ -3788,8 +3654,7 @@ async fn write_trace_bundle_off_without_masking_strips_detail() -> anyhow::Resul
 
 #[tokio::test]
 async fn write_trace_bundle_masks_url_query_params() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-mask-url",
@@ -3836,8 +3701,7 @@ async fn write_trace_bundle_masks_url_query_params() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_masks_url_fragment_params() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-mask-url-fragment",
@@ -3894,8 +3758,7 @@ async fn write_trace_bundle_masks_url_fragment_params() -> anyhow::Result<()> {
 
 #[tokio::test]
 async fn write_trace_bundle_drops_oversized_rule_source() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-rule-source-drop",
@@ -3914,8 +3777,7 @@ async fn write_trace_bundle_drops_oversized_rule_source() -> anyhow::Result<()> 
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let manifest_payload = fs::read_to_string(&manifest_path)?;
-    let manifest: TraceManifest = serde_json::from_str(&manifest_payload)?;
+    let manifest = read_manifest(&manifest_path)?;
 
     assert!(manifest.rule_source.is_none());
     let detail = manifest.detail.expect("detail should exist");
@@ -3931,8 +3793,7 @@ async fn write_trace_bundle_drops_oversized_rule_source() -> anyhow::Result<()> 
 
 #[tokio::test]
 async fn write_trace_bundle_externalizes_large_payloads() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-blob",
@@ -3972,7 +3833,7 @@ async fn write_trace_bundle_externalizes_large_payloads() -> anyhow::Result<()> 
         .expect("size_bytes");
     assert!(size_bytes > 32);
 
-    let trace_dir = manifest_path.parent().expect("trace dir");
+    let trace_dir = trace_dir(&manifest_path);
     let blob_path = trace_dir.join(blob_ref);
     assert!(blob_path.exists(), "blob file should exist");
 
@@ -3996,11 +3857,9 @@ async fn write_trace_bundle_counts_blob_bytes_in_budget() -> anyhow::Result<()> 
         ..Default::default()
     };
 
-    let temp_dir_full = unique_temp_dir();
-    fs::create_dir_all(&temp_dir_full)?;
+    let temp_dir_full = create_temp_dir()?;
     let manifest_path_full = write_trace_bundle(&temp_dir_full, &trace, Some(options_full)).await?;
-    let manifest_payload_full = fs::read_to_string(&manifest_path_full)?;
-    let manifest_full: TraceManifest = serde_json::from_str(&manifest_payload_full)?;
+    let manifest_full = read_manifest(&manifest_path_full)?;
     let detail_full = manifest_full.detail.expect("detail should exist");
     assert_eq!(detail_full.status, "full");
 
@@ -4024,7 +3883,7 @@ async fn write_trace_bundle_counts_blob_bytes_in_budget() -> anyhow::Result<()> 
                 .unwrap_or(0),
         );
 
-    let trace_dir_full = manifest_path_full.parent().expect("trace dir");
+    let trace_dir_full = trace_dir(&manifest_path_full);
     let blobs_dir = trace_dir_full.join("blobs");
     let mut blob_total = 0u64;
     if blobs_dir.exists() {
@@ -4043,12 +3902,10 @@ async fn write_trace_bundle_counts_blob_bytes_in_budget() -> anyhow::Result<()> 
         ..Default::default()
     };
 
-    let temp_dir_budget = unique_temp_dir();
-    fs::create_dir_all(&temp_dir_budget)?;
+    let temp_dir_budget = create_temp_dir()?;
     let manifest_path_budget =
         write_trace_bundle(&temp_dir_budget, &trace, Some(options_budget)).await?;
-    let manifest_payload_budget = fs::read_to_string(&manifest_path_budget)?;
-    let manifest_budget: TraceManifest = serde_json::from_str(&manifest_payload_budget)?;
+    let manifest_budget = read_manifest(&manifest_path_budget)?;
     let detail_budget = manifest_budget.detail.expect("detail should exist");
     assert_eq!(detail_budget.status, "basic");
     assert!(
@@ -4063,8 +3920,7 @@ async fn write_trace_bundle_counts_blob_bytes_in_budget() -> anyhow::Result<()> 
 
 #[tokio::test]
 async fn write_trace_bundle_masks_preview_for_externalized_payloads() -> anyhow::Result<()> {
-    let temp_dir = unique_temp_dir();
-    fs::create_dir_all(&temp_dir)?;
+    let temp_dir = create_temp_dir()?;
 
     let trace = json!({
         "trace_id": "trace-blob-mask-preview",
@@ -4112,7 +3968,7 @@ async fn write_trace_bundle_masks_preview_for_externalized_payloads() -> anyhow:
         .get("blob_ref")
         .and_then(|value| value.as_str())
         .expect("blob_ref should exist");
-    let blob_path = manifest_path.parent().expect("trace dir").join(blob_ref);
+    let blob_path = trace_dir(&manifest_path).join(blob_ref);
     let blob_payload = fs::read_to_string(blob_path)?;
     let blob_json: serde_json::Value = serde_json::from_str(&blob_payload)?;
     let token = blob_json
