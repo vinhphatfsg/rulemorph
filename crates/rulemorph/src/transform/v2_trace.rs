@@ -1,4 +1,5 @@
 use super::*;
+use crate::v2_operator::{V2OperatorMetadata, V2OperatorTrace, operator};
 
 pub(super) fn eval_v2_pipe_traced<'a>(
     pipe: &V2Pipe,
@@ -75,8 +76,12 @@ fn eval_v2_step_traced<'a>(
                 .input_v2_eval_value(&pipe_value, collector.options(), None)
                 .attr_count("arg_count", op.args.len())
                 .finish(collector);
-            let result = if v2_operator_has_item_level_trace(&op.op) {
-                eval_v2_collection_op_traced(
+            let operator_metadata = operator(&op.op);
+            let trace = operator_metadata
+                .map(|metadata| metadata.trace)
+                .unwrap_or(V2OperatorTrace::EagerArgs);
+            let result = match trace {
+                V2OperatorTrace::ItemLevelCollection => eval_v2_collection_op_traced(
                     op,
                     pipe_value.clone(),
                     record,
@@ -85,9 +90,19 @@ fn eval_v2_step_traced<'a>(
                     step_path,
                     ctx,
                     collector,
-                )
-            } else if v2_operator_has_eager_args(&op.op) {
-                eval_v2_eager_op_traced(
+                ),
+                V2OperatorTrace::EagerArgs => eval_v2_eager_op_traced(
+                    op,
+                    pipe_value.clone(),
+                    record,
+                    context,
+                    out,
+                    step_path,
+                    ctx,
+                    operator_metadata,
+                    collector,
+                ),
+                V2OperatorTrace::LazyShortCircuit => eval_v2_lazy_op_traced(
                     op,
                     pipe_value.clone(),
                     record,
@@ -96,20 +111,10 @@ fn eval_v2_step_traced<'a>(
                     step_path,
                     ctx,
                     collector,
-                )
-            } else if v2_operator_has_lazy_arg_trace(&op.op) {
-                eval_v2_lazy_op_traced(
-                    op,
-                    pipe_value.clone(),
-                    record,
-                    context,
-                    out,
-                    step_path,
-                    ctx,
-                    collector,
-                )
-            } else {
-                eval_v2_op_step(op, pipe_value.clone(), record, context, out, step_path, ctx)
+                ),
+                V2OperatorTrace::Delegated => {
+                    eval_v2_op_step(op, pipe_value.clone(), record, context, out, step_path, ctx)
+                }
             };
             let output = match result {
                 Ok(output) => output,
@@ -329,146 +334,6 @@ fn eval_v2_step_traced<'a>(
     }
 }
 
-fn v2_operator_has_eager_args(op: &str) -> bool {
-    !matches!(
-        op,
-        "and"
-            | "or"
-            | "coalesce"
-            | "lookup"
-            | "lookup_first"
-            | "map"
-            | "filter"
-            | "flat_map"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "distinct_by"
-            | "sort_by"
-            | "find"
-            | "find_index"
-            | "zip_with"
-            | "reduce"
-            | "fold"
-    )
-}
-
-fn v2_operator_has_item_level_trace(op: &str) -> bool {
-    matches!(
-        op,
-        "map"
-            | "filter"
-            | "flat_map"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "distinct_by"
-            | "sort_by"
-            | "find"
-            | "find_index"
-            | "reduce"
-            | "fold"
-    )
-}
-
-fn v2_operator_has_lazy_arg_trace(op: &str) -> bool {
-    matches!(op, "and" | "or" | "coalesce")
-}
-
-fn v2_operator_skips_args_when_pipe_is_missing(op: &str) -> bool {
-    matches!(
-        op,
-        "concat"
-            | "replace"
-            | "split"
-            | "pad_start"
-            | "pad_end"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "add"
-            | "subtract"
-            | "multiply"
-            | "divide"
-            | "round"
-            | "to_base"
-            | "date_format"
-            | "to_unixtime"
-            | "merge"
-            | "deep_merge"
-            | "get"
-            | "keys"
-            | "values"
-            | "entries"
-            | "len"
-            | "from_entries"
-            | "object_flatten"
-            | "object_unflatten"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "unzip"
-            | "unique"
-            | "index_of"
-            | "contains"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "first"
-            | "last"
-            | "string"
-            | "int"
-            | "float"
-            | "bool"
-            | "trim"
-            | "uppercase"
-            | "lowercase"
-            | "to_string"
-            | "not"
-    )
-}
-
-fn v2_operator_stops_after_missing_arg(op: &str) -> bool {
-    matches!(
-        op,
-        "concat"
-            | "replace"
-            | "split"
-            | "pad_start"
-            | "pad_end"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "add"
-            | "subtract"
-            | "multiply"
-            | "divide"
-            | "round"
-            | "to_base"
-            | "date_format"
-            | "to_unixtime"
-            | "merge"
-            | "deep_merge"
-            | "get"
-            | "pick"
-            | "omit"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "index_of"
-            | "contains"
-    )
-}
-
 fn emit_v2_arg_eval(
     collector: &mut TraceCollector,
     rule_path: &str,
@@ -585,16 +450,19 @@ fn eval_v2_eager_op_traced<'a>(
     out: &'a JsonValue,
     step_path: &str,
     ctx: &V2EvalContext<'a>,
+    operator_metadata: Option<&'static V2OperatorMetadata>,
     collector: &mut TraceCollector,
 ) -> Result<V2EvalValue, TransformError> {
     if matches!(pipe_value, V2EvalValue::Missing)
-        && v2_operator_skips_args_when_pipe_is_missing(&op.op)
+        && operator_metadata.is_some_and(|metadata| metadata.skips_args_when_pipe_is_missing)
     {
         return eval_v2_op_step(op, pipe_value, record, context, out, step_path, ctx);
     }
 
     let step_ctx = ctx.clone().with_pipe_value(pipe_value.clone());
     let mut arg_values = Vec::with_capacity(op.args.len());
+    let stops_after_missing_arg =
+        operator_metadata.is_some_and(|metadata| metadata.stops_after_missing_arg);
     for (arg_index, arg) in op.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", step_path, arg_index);
         let value =
@@ -602,7 +470,7 @@ fn eval_v2_eager_op_traced<'a>(
         emit_v2_arg_eval(collector, &arg_path, arg_index, &op.op, &value);
         let is_missing = matches!(value, V2EvalValue::Missing);
         arg_values.push(value);
-        if is_missing && v2_operator_stops_after_missing_arg(&op.op) {
+        if is_missing && stops_after_missing_arg {
             break;
         }
     }

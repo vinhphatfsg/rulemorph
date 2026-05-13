@@ -1,75 +1,16 @@
 use std::fs;
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
+mod common;
+
+use common::trace::{
+    assert_trace_shape, attr_bool, attr_number, iter_trace_events, unique_temp_dir,
+};
 use rulemorph::{
-    InputData, TraceAttributeValue, TraceEvent, TraceEventKind, TransformTrace,
-    TransformTraceOptions, parse_rule_file, transform, transform_input_with_trace,
-    transform_input_with_trace_with_base_dir_and_options, transform_record,
-    transform_record_with_trace, transform_with_base_dir,
+    InputData, TraceAttributeValue, TraceEventKind, TransformTraceOptions, parse_rule_file,
+    transform, transform_input_with_trace, transform_input_with_trace_with_base_dir_and_options,
+    transform_record, transform_record_with_trace, transform_with_base_dir,
 };
 use serde_json::{Value as JsonValue, json};
-
-fn iter_trace_events(trace: &TransformTrace) -> Vec<&TraceEvent> {
-    trace
-        .records
-        .iter()
-        .flat_map(|record| record.events.iter())
-        .chain(trace.finalize.iter().flatten())
-        .collect()
-}
-
-fn assert_parent_ids_point_to_emitted_events(trace: &TransformTrace) {
-    let ids = iter_trace_events(trace)
-        .into_iter()
-        .map(|event| event.id)
-        .collect::<std::collections::BTreeSet<_>>();
-    for event in iter_trace_events(trace) {
-        if let Some(parent_id) = event.parent_id {
-            assert!(
-                ids.contains(&parent_id),
-                "dangling parent_id {parent_id} on {:?}",
-                event.kind
-            );
-        }
-    }
-}
-
-fn assert_trace_paths_are_canonical(trace: &TransformTrace) {
-    for event in iter_trace_events(trace) {
-        if let Some(path) = event.input_path.as_deref() {
-            assert!(
-                path == "@input"
-                    || path.starts_with("@input.")
-                    || path.starts_with("@input[")
-                    || path == "@item"
-                    || path.starts_with("@item.")
-                    || path.starts_with("@item[")
-                    || path == "@acc"
-                    || path.starts_with("@acc.")
-                    || path.starts_with("@acc[")
-                    || path == "@context"
-                    || path.starts_with("@context.")
-                    || path.starts_with("@context[")
-                    || path == "@out"
-                    || path.starts_with("@out.")
-                    || path.starts_with("@out["),
-                "non-canonical input_path: {path}"
-            );
-        }
-        if let Some(path) = event.output_path.as_deref() {
-            assert!(
-                path == "$" || path.starts_with("$.") || path.starts_with("$["),
-                "non-canonical output_path: {path}"
-            );
-        }
-    }
-}
-
-fn assert_trace_shape(trace: &TransformTrace) {
-    assert_parent_ids_point_to_emitted_events(trace);
-    assert_trace_paths_are_canonical(trace);
-}
 
 fn assert_traced_output_matches_normal(yaml: &str, input: &str, expected: JsonValue) {
     let rule = parse_rule_file(yaml).expect("parse rule");
@@ -85,30 +26,6 @@ fn assert_traced_output_matches_normal(yaml: &str, input: &str, expected: JsonVa
     assert_eq!(normal, expected);
     assert_eq!(traced.output, normal);
     assert_trace_shape(&traced.trace);
-}
-
-fn attr_number(event: &TraceEvent, key: &str) -> Option<u64> {
-    match event.attributes.get(key) {
-        Some(TraceAttributeValue::Number(number)) => number.as_u64(),
-        _ => None,
-    }
-}
-
-fn attr_bool(event: &TraceEvent, key: &str) -> Option<bool> {
-    match event.attributes.get(key) {
-        Some(TraceAttributeValue::Bool(flag)) => Some(*flag),
-        _ => None,
-    }
-}
-
-fn unique_temp_dir(name: &str) -> PathBuf {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("rulemorph-trace-{name}-{nanos}"));
-    fs::create_dir_all(&path).expect("create temp dir");
-    path
 }
 
 #[test]

@@ -10,6 +10,7 @@ pub mod trace;
 mod transform;
 pub mod v2_eval;
 pub mod v2_model;
+mod v2_operator;
 pub mod v2_parser;
 pub mod v2_validator;
 mod validator;

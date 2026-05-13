@@ -1,121 +1,16 @@
+mod common;
+
+use common::trace::{
+    assert_no_raw_leak_in_attributes_or_messages, assert_operator_lifecycle,
+    assert_parent_ids_point_to_emitted_events, assert_trace_does_not_contain_string,
+    assert_trace_paths_are_canonical, iter_trace_events,
+};
 use rulemorph::{
     InputData, TraceEvent, TraceEventKind, TraceJsonType, TracePhase, TraceValueSnapshot,
     TraceValueState, TransformTraceOptions, parse_rule_file, transform, transform_input_with_trace,
     transform_input_with_trace_with_base_dir_and_options,
 };
 use serde_json::json;
-
-fn iter_trace_events(trace: &rulemorph::TransformTrace) -> Vec<&rulemorph::TraceEvent> {
-    trace
-        .records
-        .iter()
-        .flat_map(|record| record.events.iter())
-        .chain(trace.finalize.iter().flatten())
-        .collect()
-}
-
-fn assert_operator_lifecycle(trace: &rulemorph::TransformTrace, operator: &str) {
-    let events = iter_trace_events(trace);
-    let op_start = events
-        .iter()
-        .find(|event| {
-            event.kind == TraceEventKind::OpStart && event.operator.as_deref() == Some(operator)
-        })
-        .copied()
-        .unwrap_or_else(|| panic!("missing op_start for {operator}"));
-    let has_end_or_error = events.iter().any(|event| {
-        matches!(&event.kind, TraceEventKind::OpEnd | TraceEventKind::OpError)
-            && event.operator.as_deref() == Some(operator)
-            && event.parent_id == Some(op_start.id)
-    });
-    assert!(has_end_or_error, "missing op_end/op_error for {operator}");
-}
-
-fn assert_parent_ids_point_to_emitted_events(trace: &rulemorph::TransformTrace) {
-    let ids = iter_trace_events(trace)
-        .into_iter()
-        .map(|event| event.id)
-        .collect::<std::collections::BTreeSet<_>>();
-    for event in iter_trace_events(trace) {
-        if let Some(parent_id) = event.parent_id {
-            assert!(
-                ids.contains(&parent_id),
-                "dangling parent_id {parent_id} on {:?}",
-                event.kind
-            );
-        }
-    }
-}
-
-fn assert_trace_paths_are_canonical(trace: &rulemorph::TransformTrace) {
-    for event in iter_trace_events(trace) {
-        if let Some(path) = event.input_path.as_deref() {
-            assert!(
-                path == "@input"
-                    || path.starts_with("@input.")
-                    || path.starts_with("@input[")
-                    || path == "@item"
-                    || path.starts_with("@item.")
-                    || path.starts_with("@item[")
-                    || path == "@acc"
-                    || path.starts_with("@acc.")
-                    || path == "@context"
-                    || path.starts_with("@context.")
-                    || path == "@out"
-                    || path.starts_with("@out."),
-                "non-canonical input_path: {path}"
-            );
-        }
-        if let Some(path) = event.output_path.as_deref() {
-            assert!(
-                path == "$" || path.starts_with("$.") || path.starts_with("$["),
-                "non-canonical output_path: {path}"
-            );
-        }
-    }
-}
-
-fn assert_json_tree_does_not_contain_string(value: &serde_json::Value, needle: &str) {
-    match value {
-        serde_json::Value::String(text) => assert!(!text.contains(needle)),
-        serde_json::Value::Array(items) => {
-            for item in items {
-                assert_json_tree_does_not_contain_string(item, needle);
-            }
-        }
-        serde_json::Value::Object(map) => {
-            for (key, value) in map {
-                assert!(!key.contains(needle));
-                assert_json_tree_does_not_contain_string(value, needle);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn assert_trace_does_not_contain_string(trace: &rulemorph::TransformTrace, needle: &str) {
-    let value = serde_json::to_value(trace).expect("trace json");
-    assert_json_tree_does_not_contain_string(&value, needle);
-}
-
-fn assert_no_raw_leak_in_attributes_or_messages(
-    trace: &rulemorph::TransformTrace,
-    secrets: &[&str],
-) {
-    for event in iter_trace_events(trace) {
-        let metadata = serde_json::json!({
-            "attributes": &event.attributes,
-            "message": &event.message,
-        });
-        let text = serde_json::to_string(&metadata).expect("metadata json");
-        for secret in secrets {
-            assert!(
-                !text.contains(secret),
-                "secret leaked through attributes/message"
-            );
-        }
-    }
-}
 
 #[test]
 fn trace_value_raw_mode_preserves_missing_null_and_empty_string() {
