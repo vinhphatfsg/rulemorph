@@ -1,6 +1,8 @@
 use calamine::{Data, ExcelDateTime, Range};
 use serde_json::{Number as JsonNumber, Value as JsonValue};
 
+use crate::model::ExcelDatePolicy;
+
 use super::*;
 
 pub(super) fn excel_cell_to_json(
