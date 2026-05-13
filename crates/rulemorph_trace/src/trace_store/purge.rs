@@ -18,6 +18,15 @@ pub(super) async fn purge_trace_metas(
     let cutoff = SystemTime::now()
         .checked_sub(retention)
         .unwrap_or(SystemTime::UNIX_EPOCH);
+    let traces_root = if dry_run {
+        None
+    } else {
+        Some(
+            traces_dir
+                .canonicalize()
+                .unwrap_or_else(|_| traces_dir.to_path_buf()),
+        )
+    };
     let mut purged = Vec::new();
     let mut failed = Vec::new();
 
@@ -33,7 +42,14 @@ pub(super) async fn purge_trace_metas(
             purged.push(meta);
             continue;
         }
-        if let Err(err) = delete_trace_path(&path, traces_dir).await {
+        if let Err(err) = delete_trace_path(
+            &path,
+            traces_root
+                .as_deref()
+                .expect("traces root is available when not dry-run"),
+        )
+        .await
+        {
             failed.push(PurgeFailure {
                 trace_id: meta.trace_id.clone(),
                 path: meta.path.clone(),
@@ -71,19 +87,16 @@ pub(super) async fn resolve_trace_timestamp(meta: &TraceMeta, path: &Path) -> Op
     metadata.modified().ok()
 }
 
-async fn delete_trace_path(path: &Path, traces_dir: &Path) -> Result<()> {
-    let traces_root = traces_dir
-        .canonicalize()
-        .unwrap_or_else(|_| traces_dir.to_path_buf());
+async fn delete_trace_path(path: &Path, traces_root: &Path) -> Result<()> {
     let candidate = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    if !candidate.starts_with(&traces_root) {
+    if !candidate.starts_with(traces_root) {
         return Err(anyhow::anyhow!(
             "trace path escapes traces dir: {}",
             candidate.display()
         ));
     }
     let file_name = candidate.file_name().and_then(|name| name.to_str());
-    let parent = candidate.parent().unwrap_or_else(|| traces_root.as_path());
+    let parent = candidate.parent().unwrap_or(traces_root);
     if file_name == Some("trace.json") && parent != traces_root {
         tokio::fs::remove_dir_all(parent)
             .await
