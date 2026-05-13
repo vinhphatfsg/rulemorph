@@ -11,7 +11,9 @@ use super::{InputData, NormalizationOptions, enforce_records_limit};
 
 mod cell;
 mod range;
+mod workbook;
 mod xlsx;
+mod xml;
 
 use self::cell::{cell_at, excel_cell_to_json, formula_at};
 use self::range::{CellWindow, column_letters_to_index, parse_cell_window};
