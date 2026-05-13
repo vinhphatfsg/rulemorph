@@ -18,13 +18,9 @@ use super::{InputData, NormalizationOptions, enforce_records_limit};
 const OFFICE_RELATIONSHIPS_NS: &[u8] =
     b"http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 
-#[derive(Clone, Copy)]
-struct CellWindow {
-    start_row: usize,
-    end_row: Option<usize>,
-    start_col: usize,
-    end_col: Option<usize>,
-}
+mod range;
+
+use self::range::{CellWindow, column_letters_to_index, parse_cell_ref, parse_cell_window};
 
 pub fn normalize_excel_records(
     rule: &RuleFile,
@@ -1181,89 +1177,6 @@ fn formula_at(formulas: Option<&Range<String>>, row: usize, col: usize) -> Optio
     let row = u32::try_from(row).ok()?;
     let col = u32::try_from(col).ok()?;
     formulas.and_then(|formulas| formulas.get_value((row, col)))
-}
-
-fn parse_cell_window(range: Option<&str>) -> Result<CellWindow, TransformError> {
-    let Some(range) = range else {
-        return Ok(CellWindow {
-            start_row: 0,
-            end_row: None,
-            start_col: 0,
-            end_col: None,
-        });
-    };
-    let (start, end) = range
-        .split_once(':')
-        .ok_or_else(|| invalid("Excel range must use A:D or A1:D100 form"))?;
-    let start = parse_cell_ref(start)?;
-    let end = parse_cell_ref(end)?;
-    if start.col > end.col {
-        return Err(invalid("Excel range start column is after end column"));
-    }
-    if let (Some(start_row), Some(end_row)) = (start.row, end.row)
-        && start_row > end_row
-    {
-        return Err(invalid("Excel range start row is after end row"));
-    }
-    Ok(CellWindow {
-        start_row: start.row.unwrap_or(0),
-        end_row: end.row,
-        start_col: start.col,
-        end_col: Some(end.col),
-    })
-}
-
-struct ParsedCellRef {
-    col: usize,
-    row: Option<usize>,
-}
-
-fn parse_cell_ref(value: &str) -> Result<ParsedCellRef, TransformError> {
-    let mut letters = String::new();
-    let mut digits = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphabetic() && digits.is_empty() {
-            letters.push(ch.to_ascii_uppercase());
-        } else if ch.is_ascii_digit() {
-            digits.push(ch);
-        } else {
-            return Err(invalid("Excel cell reference is invalid"));
-        }
-    }
-    if letters.is_empty() {
-        return Err(invalid("Excel cell reference requires a column"));
-    }
-    let col = column_letters_to_index(&letters)?;
-    let row = if digits.is_empty() {
-        None
-    } else {
-        let row = digits
-            .parse::<usize>()
-            .map_err(|_| invalid("Excel cell reference row is invalid"))?;
-        if row == 0 {
-            return Err(invalid("Excel cell reference row must be 1-based"));
-        }
-        Some(row - 1)
-    };
-    Ok(ParsedCellRef { col, row })
-}
-
-fn column_letters_to_index(value: &str) -> Result<usize, TransformError> {
-    let mut index = 0usize;
-    for ch in value.chars() {
-        if !ch.is_ascii_alphabetic() {
-            return Err(invalid("Excel column reference is invalid"));
-        }
-        let value = (ch.to_ascii_uppercase() as u8 - b'A' + 1) as usize;
-        index = index
-            .checked_mul(26)
-            .and_then(|index| index.checked_add(value))
-            .ok_or_else(|| invalid("Excel column reference is too large"))?;
-    }
-    if index == 0 {
-        return Err(invalid("Excel column reference is required"));
-    }
-    Ok(index - 1)
 }
 
 fn invalid(message: impl Into<String>) -> TransformError {
