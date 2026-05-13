@@ -3,25 +3,22 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::Utc;
-use rand::RngCore;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use async_trait::async_trait;
 
 use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 
 const API_KEY_VERSION: u8 = 1;
-const API_KEY_PREFIX: &str = "rmk_";
-const SECRET_BYTES: usize = 32;
-const SALT_BYTES: usize = 16;
-const ID_BYTES: usize = 12;
-const PREFIX_VISIBLE_CHARS: usize = 8;
 
+mod crypto;
 mod file_lock;
 
+use self::crypto::{
+    API_KEY_PREFIX, ID_BYTES, PREFIX_VISIBLE_CHARS, SALT_BYTES, SECRET_BYTES, hash_key,
+    random_base64,
+};
 use self::file_lock::ApiKeyFileLock;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -337,33 +334,8 @@ fn replace_file(temp_path: &Path, target_path: &Path) -> Result<()> {
     }
 }
 
-fn random_base64(size: usize) -> String {
-    let mut buf = vec![0u8; size];
-    rand::thread_rng().fill_bytes(&mut buf);
-    URL_SAFE_NO_PAD.encode(buf)
-}
-
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
-}
-
-fn hash_key(salt_b64: &str, key: &str) -> Result<String> {
-    let salt = URL_SAFE_NO_PAD
-        .decode(salt_b64)
-        .context("invalid api key salt")?;
-    let mut hasher = Sha256::new();
-    hasher.update(&salt);
-    hasher.update(key.as_bytes());
-    let digest = hasher.finalize();
-    Ok(hex_encode(&digest))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{:02x}", b));
-    }
-    out
 }
 
 #[cfg(test)]
