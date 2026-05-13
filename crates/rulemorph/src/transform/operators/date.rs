@@ -2,6 +2,7 @@ use super::*;
 
 use chrono::offset::TimeZone;
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime};
+use std::sync::OnceLock;
 
 pub(super) fn eval_date_format(
     args: &[Expr],
@@ -262,15 +263,19 @@ fn parse_datetime(
         }
     }
 
-    parse_datetime_with_formats(
-        value,
-        &DEFAULT_DATE_FORMATS
-            .iter()
-            .map(|f| f.to_string())
-            .collect::<Vec<_>>(),
-        timezone,
-        path,
-    )
+    parse_datetime_with_formats(value, default_date_formats(), timezone, path)
+}
+
+fn default_date_formats() -> &'static [String] {
+    static DEFAULT_DATE_FORMATS_CACHE: OnceLock<Vec<String>> = OnceLock::new();
+    DEFAULT_DATE_FORMATS_CACHE
+        .get_or_init(|| {
+            DEFAULT_DATE_FORMATS
+                .iter()
+                .map(|format| format.to_string())
+                .collect()
+        })
+        .as_slice()
 }
 
 fn parse_datetime_with_formats(
