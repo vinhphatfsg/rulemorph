@@ -67,11 +67,6 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
         }
     }
 
-    // Check for reserved namespaces that should not be local variables
-    if rest == "input" || rest == "context" || rest == "out" {
-        return None; // These require a path after the dot
-    }
-
     // Otherwise, it's a local variable reference
     if is_valid_identifier(rest) {
         return Some(V2Ref::Local(rest.to_string()));
