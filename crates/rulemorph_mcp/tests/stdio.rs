@@ -1353,6 +1353,38 @@ fn analyze_input_records_path_supports_quoted_segments() {
 }
 
 #[test]
+fn analyze_input_invalid_records_path_returns_json_rpc_error() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 122,
+        "method": "tools/call",
+        "params": {
+            "name": "analyze_input",
+            "arguments": {
+                "input_json": {
+                    "payload": [
+                        { "id": 1 }
+                    ]
+                },
+                "records_path": "payload."
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(
+        response["error"]["message"],
+        "records_path is invalid: path syntax is invalid"
+    );
+
+    server.shutdown();
+}
+
+#[test]
 fn raw_json_input_text_rejects_duplicate_keys_for_analysis_and_generation() {
     let mut server = McpServer::start();
     initialize(&mut server);
