@@ -15,6 +15,7 @@ use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 mod args;
 mod dto_language;
 mod dto_normalize;
+mod dto_schema;
 mod errors;
 mod input_analysis;
 mod input_records;
@@ -38,13 +39,16 @@ use self::dto_normalize::{
     normalize_java_text, normalize_kotlin_text, normalize_python_text, normalize_rust_text,
     normalize_swift_text, normalize_typescript_text,
 };
+use self::dto_schema::{
+    DtoField, DtoFieldType, DtoSchema, DtoType, PrimitiveKind, generate_mappings_from_schema,
+};
 use self::errors::{CallError, io_error_json, tool_error_result};
 use self::input_analysis::{analyze_records, build_input_paths, select_candidates, stats_to_json};
 use self::input_records::{
     InputDataFormat, json_records_from_value, normalize_format, parse_csv_records,
     parse_json_records_strict,
 };
-use self::path_expr::{append_path, leaf_from_path};
+use self::path_expr::leaf_from_path;
 use self::prompts::{prompts_get_result, prompts_list_result};
 use self::protocol::{OutputMode, read_message, write_message};
 use self::resources::{resources_list_result, resources_read_result};
@@ -1252,40 +1256,6 @@ fn rule_has_file_branch(rule: &RuleFile) -> bool {
     rule.steps
         .as_ref()
         .is_some_and(|steps| steps.iter().any(|step| step.branch.is_some()))
-}
-
-struct DtoSchema {
-    root: String,
-    types: HashMap<String, DtoType>,
-}
-
-struct DtoType {
-    fields: Vec<DtoField>,
-}
-
-struct DtoField {
-    json_key: String,
-    field_type: DtoFieldType,
-    optional: bool,
-}
-
-enum DtoFieldType {
-    Primitive(PrimitiveKind),
-    Object(String),
-    Unknown,
-}
-
-enum PrimitiveKind {
-    String,
-    Int,
-    Float,
-    Bool,
-}
-
-struct GeneratedMapping {
-    target: String,
-    value_type: Option<String>,
-    required: bool,
 }
 
 fn parse_dto_schema(text: &str, language: DtoSourceLanguage) -> Result<DtoSchema, String> {
@@ -2529,74 +2499,6 @@ fn parse_serde_rename(line: &str) -> Option<String> {
     let after_quote = &after_marker[quote_start + 1..];
     let quote_end = after_quote.find('"')?;
     Some(after_quote[..quote_end].to_string())
-}
-
-fn generate_mappings_from_schema(schema: &DtoSchema) -> Result<Vec<GeneratedMapping>, String> {
-    let mut mappings = Vec::new();
-    let mut visiting = HashSet::new();
-    build_mappings_for_type(
-        schema,
-        &schema.root,
-        "",
-        false,
-        &mut visiting,
-        &mut mappings,
-    )?;
-    Ok(mappings)
-}
-
-fn build_mappings_for_type(
-    schema: &DtoSchema,
-    type_name: &str,
-    prefix: &str,
-    parent_optional: bool,
-    visiting: &mut HashSet<String>,
-    out: &mut Vec<GeneratedMapping>,
-) -> Result<(), String> {
-    if !visiting.insert(type_name.to_string()) {
-        return Ok(());
-    }
-    let dto_type = schema
-        .types
-        .get(type_name)
-        .ok_or_else(|| format!("unknown dto type: {}", type_name))?;
-
-    for field in &dto_type.fields {
-        let target = append_path(prefix, &field.json_key);
-        let optional = parent_optional || field.optional;
-        match &field.field_type {
-            DtoFieldType::Primitive(kind) => {
-                let value_type = primitive_to_value_type(kind);
-                out.push(GeneratedMapping {
-                    target,
-                    value_type,
-                    required: !optional,
-                });
-            }
-            DtoFieldType::Unknown => {
-                out.push(GeneratedMapping {
-                    target,
-                    value_type: None,
-                    required: !optional,
-                });
-            }
-            DtoFieldType::Object(child) => {
-                build_mappings_for_type(schema, child, &target, optional, visiting, out)?;
-            }
-        }
-    }
-
-    visiting.remove(type_name);
-    Ok(())
-}
-
-fn primitive_to_value_type(kind: &PrimitiveKind) -> Option<String> {
-    match kind {
-        PrimitiveKind::String => Some("string".to_string()),
-        PrimitiveKind::Int => Some("int".to_string()),
-        PrimitiveKind::Float => Some("float".to_string()),
-        PrimitiveKind::Bool => Some("bool".to_string()),
-    }
 }
 
 fn build_input_yaml(format: &str, records_path: Option<&str>) -> YamlValue {
