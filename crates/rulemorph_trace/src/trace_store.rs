@@ -1,5 +1,4 @@
-use std::cmp::Reverse;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +19,7 @@ use crate::trace_schema::{
 };
 
 mod chunk_read;
+mod import_bundle;
 mod import_path;
 mod manifest_budget;
 mod purge;
@@ -31,9 +31,7 @@ use self::chunk_read::{
     ChunkBudget, count_inline_nodes, normalize_inline_nodes_value, parse_node_chunk_entry,
     parse_record_index, read_json_chunk, read_ndjson_chunk,
 };
-use self::import_path::{
-    copy_file_create_new, ensure_import_base_dir, ensure_import_target_parent,
-};
+use self::import_bundle::{IMPORT_MAX_TOTAL_BYTES, import_bundle_files};
 use self::manifest_budget::{
     apply_manifest_budget, apply_record_total_budget_for_get, resolve_max_chunk_bytes,
 };
@@ -43,9 +41,6 @@ use self::purge::resolve_trace_timestamp;
 use self::trace_id_path::{
     fallback_trace_id_for_path, hash_trace_id_for_path, path_hash_for_trace_id,
 };
-
-const IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
-const IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceMeta {
@@ -82,11 +77,6 @@ pub struct PurgeFailure {
 pub struct PurgeReport {
     pub purged: Vec<TraceMeta>,
     pub failed: Vec<PurgeFailure>,
-}
-
-struct ImportWorkResult {
-    imported_paths: Vec<PathBuf>,
-    rules_imported: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -384,151 +374,8 @@ impl FileTraceBackend {
         }
 
         let data_dir = self.data_dir.clone();
-        let result = tokio::task::spawn_blocking(move || -> Result<ImportWorkResult> {
-            let traces_src = bundle_path.join("traces");
-            let rules_src = bundle_path.join("rules");
-
-            let mut copied_paths = Vec::new();
-            let mut created_dirs = BTreeSet::new();
-
-            let work = (|| -> Result<ImportWorkResult> {
-                let mut imported_paths = Vec::new();
-                let mut total_bytes: u64 = 0;
-                if traces_src.exists() {
-                    let dest = traces_dir(&data_dir);
-                    let dest_canon = ensure_import_base_dir(&dest)?;
-                    let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
-                    for entry in WalkDir::new(&traces_src)
-                        .follow_links(false)
-                        .into_iter()
-                        .filter_map(|e| e.ok())
-                    {
-                        if entry.file_type().is_symlink() {
-                            return Err(anyhow::anyhow!(
-                                "bundle contains symlink: {}",
-                                entry.path().display()
-                            ));
-                        }
-                        if entry.file_type().is_file() {
-                            let rel = entry.path().strip_prefix(&traces_src).unwrap();
-                            let target = dest.join(rel);
-                            let file_bytes = entry.metadata().map(|meta| meta.len())?;
-                            if file_bytes > IMPORT_MAX_FILE_BYTES {
-                                return Err(anyhow::anyhow!(
-                                    "bundle file exceeds max bytes: {} > {} ({})",
-                                    file_bytes,
-                                    IMPORT_MAX_FILE_BYTES,
-                                    entry.path().display()
-                                ));
-                            }
-                            total_bytes = total_bytes.saturating_add(file_bytes);
-                            if total_bytes > max_total_bytes {
-                                return Err(anyhow::anyhow!(
-                                    "bundle exceeds max total bytes: {} > {}",
-                                    total_bytes,
-                                    max_total_bytes
-                                ));
-                            }
-                            entries.push((entry.path().to_path_buf(), target));
-                        }
-                    }
-                    for (_, target) in &entries {
-                        if target.exists() {
-                            return Err(anyhow::anyhow!(
-                                "bundle would overwrite existing file: {}",
-                                target.display()
-                            ));
-                        }
-                    }
-                    for (source, target) in entries {
-                        ensure_import_target_parent(
-                            &dest,
-                            &dest_canon,
-                            &target,
-                            &mut created_dirs,
-                        )?;
-                        copy_file_create_new(&source, &target, &dest_canon)?;
-                        copied_paths.push(target.clone());
-                        if is_trace_meta_candidate(&target) {
-                            if parse_trace_meta(&target).is_ok() {
-                                imported_paths.push(target);
-                            }
-                        }
-                    }
-                }
-
-                let mut rules_imported = 0usize;
-                if rules_src.exists() {
-                    let dest = rules_dir(&data_dir);
-                    let dest_canon = ensure_import_base_dir(&dest)?;
-                    let mut entries: Vec<(PathBuf, PathBuf)> = Vec::new();
-                    for entry in WalkDir::new(&rules_src)
-                        .follow_links(false)
-                        .into_iter()
-                        .filter_map(|e| e.ok())
-                    {
-                        if entry.file_type().is_symlink() {
-                            return Err(anyhow::anyhow!(
-                                "bundle contains symlink: {}",
-                                entry.path().display()
-                            ));
-                        }
-                        if entry.file_type().is_file() {
-                            let rel = entry.path().strip_prefix(&rules_src).unwrap();
-                            let target = dest.join(rel);
-                            let file_bytes = entry.metadata().map(|meta| meta.len())?;
-                            if file_bytes > IMPORT_MAX_FILE_BYTES {
-                                return Err(anyhow::anyhow!(
-                                    "bundle file exceeds max bytes: {} > {} ({})",
-                                    file_bytes,
-                                    IMPORT_MAX_FILE_BYTES,
-                                    entry.path().display()
-                                ));
-                            }
-                            total_bytes = total_bytes.saturating_add(file_bytes);
-                            if total_bytes > max_total_bytes {
-                                return Err(anyhow::anyhow!(
-                                    "bundle exceeds max total bytes: {} > {}",
-                                    total_bytes,
-                                    max_total_bytes
-                                ));
-                            }
-                            entries.push((entry.path().to_path_buf(), target));
-                        }
-                    }
-                    for (_, target) in &entries {
-                        if target.exists() {
-                            return Err(anyhow::anyhow!(
-                                "bundle would overwrite existing file: {}",
-                                target.display()
-                            ));
-                        }
-                    }
-                    for (source, target) in entries {
-                        ensure_import_target_parent(
-                            &dest,
-                            &dest_canon,
-                            &target,
-                            &mut created_dirs,
-                        )?;
-                        copy_file_create_new(&source, &target, &dest_canon)?;
-                        copied_paths.push(target);
-                        rules_imported += 1;
-                    }
-                }
-
-                Ok(ImportWorkResult {
-                    imported_paths,
-                    rules_imported,
-                })
-            })();
-
-            if let Err(err) = work {
-                rollback_import(&copied_paths, &created_dirs);
-                return Err(err);
-            }
-
-            work
+        let result = tokio::task::spawn_blocking(move || {
+            import_bundle_files(&data_dir, &bundle_path, max_total_bytes)
         })
         .await??;
 
@@ -754,30 +601,6 @@ fn traces_dir(data_dir: &Path) -> PathBuf {
 
 fn rules_dir(data_dir: &Path) -> PathBuf {
     data_dir.join("rules")
-}
-
-fn rollback_import(copied_paths: &[PathBuf], created_dirs: &BTreeSet<PathBuf>) {
-    for path in copied_paths.iter().rev() {
-        if let Err(err) = std::fs::remove_file(path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!(
-                    "failed to rollback imported file {}: {}",
-                    path.display(),
-                    err
-                );
-            }
-        }
-    }
-
-    let mut dirs: Vec<&PathBuf> = created_dirs.iter().collect();
-    dirs.sort_by_key(|path| Reverse(path.components().count()));
-    for dir in dirs {
-        if let Err(err) = std::fs::remove_dir(dir) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!("failed to rollback import dir {}: {}", dir.display(), err);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
