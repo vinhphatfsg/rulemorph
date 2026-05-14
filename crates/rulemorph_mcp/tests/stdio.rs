@@ -30,6 +30,11 @@ fn initialize_and_list_tools() {
         "generate_rules_from_base",
         "generate_rules_from_dto",
     ];
+    let names = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().expect("tool name"))
+        .collect::<Vec<_>>();
+    assert_eq!(names, expected);
     for name in expected {
         assert!(tools.iter().any(|tool| tool["name"] == name));
     }
@@ -63,6 +68,82 @@ fn initialize_and_list_tools() {
             .expect("input_json description");
     assert!(input_json_description.contains("Inline typed JSON value"));
     assert!(input_json_description.contains("Duplicate-key validation"));
+
+    let generate_dto_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "generate_dto")
+        .expect("generate_dto tool");
+    assert_eq!(
+        generate_dto_tool["inputSchema"]["required"],
+        json!(["language"])
+    );
+    assert_eq!(
+        generate_dto_tool["inputSchema"]["properties"]["language"]["enum"],
+        json!([
+            "rust",
+            "typescript",
+            "python",
+            "go",
+            "java",
+            "kotlin",
+            "swift"
+        ])
+    );
+
+    let list_ops_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "list_ops")
+        .expect("list_ops tool");
+    assert_eq!(list_ops_tool["inputSchema"]["properties"], json!({}));
+
+    let analyze_input_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "analyze_input")
+        .expect("analyze_input tool");
+    assert_eq!(
+        analyze_input_tool["inputSchema"]["properties"]["format"]["enum"],
+        json!(["csv", "json"])
+    );
+    assert_eq!(
+        analyze_input_tool["inputSchema"]["properties"]["max_paths"]["minimum"],
+        json!(1)
+    );
+
+    let generate_rules_from_base_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "generate_rules_from_base")
+        .expect("generate_rules_from_base tool");
+    assert_eq!(
+        generate_rules_from_base_tool["inputSchema"]["properties"]["max_candidates"]["minimum"],
+        json!(1)
+    );
+    assert!(
+        generate_rules_from_base_tool["inputSchema"]["properties"]
+            .as_object()
+            .expect("properties")
+            .contains_key("records_path")
+    );
+
+    let generate_rules_from_dto_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "generate_rules_from_dto")
+        .expect("generate_rules_from_dto tool");
+    assert_eq!(
+        generate_rules_from_dto_tool["inputSchema"]["required"],
+        json!(["dto_text", "dto_language"])
+    );
+    assert_eq!(
+        generate_rules_from_dto_tool["inputSchema"]["properties"]["dto_language"]["enum"],
+        json!([
+            "rust",
+            "typescript",
+            "python",
+            "go",
+            "java",
+            "kotlin",
+            "swift"
+        ])
+    );
 
     server.shutdown();
 }
