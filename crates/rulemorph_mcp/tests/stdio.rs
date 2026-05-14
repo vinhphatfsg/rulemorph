@@ -1685,6 +1685,78 @@ fn generate_rules_from_dto_success() {
 }
 
 #[test]
+fn generate_rules_from_dto_nested_optional_object_keeps_required_semantics() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dto_text = r#"export interface Record {
+  id: string;
+  profile?: Profile;
+}
+
+export interface Profile {
+  name: string;
+  score?: number;
+}"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1501,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_dto",
+            "arguments": {
+                "dto_text": dto_text,
+                "dto_language": "typescript",
+                "input_json": {
+                    "id": "001",
+                    "profile": {
+                        "name": "Ada",
+                        "score": 98.5
+                    }
+                }
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let rule = parse_rule_file(output_text).expect("parse output rules");
+
+    let id_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "id")
+        .expect("id mapping");
+    assert_eq!(id_mapping.source.as_deref(), Some("id"));
+    assert!(id_mapping.required);
+
+    let profile_name_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "profile.name")
+        .expect("profile.name mapping");
+    assert_eq!(profile_name_mapping.source.as_deref(), Some("profile.name"));
+    assert!(!profile_name_mapping.required);
+
+    let profile_score_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "profile.score")
+        .expect("profile.score mapping");
+    assert_eq!(
+        profile_score_mapping.source.as_deref(),
+        Some("profile.score")
+    );
+    assert_eq!(profile_score_mapping.value_type.as_deref(), Some("float"));
+    assert!(!profile_score_mapping.required);
+
+    server.shutdown();
+}
+
+#[test]
 fn generate_rules_from_dto_invalid_language_returns_json_rpc_error() {
     let mut server = McpServer::start();
     initialize(&mut server);
