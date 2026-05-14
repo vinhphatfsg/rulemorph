@@ -31,10 +31,12 @@ use uuid::Uuid;
 
 use crate::ssrf::{ResolvedSsrfTarget, resolve_ssrf_target};
 
+mod error;
 mod multipart_import;
 mod trace_graph;
 mod validation;
 
+use self::error::{EndpointError, EndpointErrorKind};
 use self::multipart_import::build_multipart_import_body;
 #[cfg(test)]
 use self::multipart_import::{copy_zip_entry_bounded, extract_zip};
@@ -1748,108 +1750,6 @@ impl CatchSpec {
             }
         }
         map.get("default").map(PathBuf::from)
-    }
-}
-
-#[derive(Debug, Clone)]
-struct EndpointError {
-    kind: EndpointErrorKind,
-    status: Option<u16>,
-    message: String,
-    path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum EndpointErrorKind {
-    Timeout,
-    HttpStatus,
-    Network,
-    Transform,
-    Invalid,
-}
-
-impl EndpointError {
-    fn timeout() -> Self {
-        Self {
-            kind: EndpointErrorKind::Timeout,
-            status: None,
-            message: "timeout".to_string(),
-            path: None,
-        }
-    }
-
-    fn http_status(status: u16) -> Self {
-        Self {
-            kind: EndpointErrorKind::HttpStatus,
-            status: Some(status),
-            message: format!("http status {}", status),
-            path: None,
-        }
-    }
-
-    fn network(message: String) -> Self {
-        Self {
-            kind: EndpointErrorKind::Network,
-            status: None,
-            message,
-            path: None,
-        }
-    }
-
-    fn invalid(message: impl Into<String>) -> Self {
-        Self {
-            kind: EndpointErrorKind::Invalid,
-            status: None,
-            message: message.into(),
-            path: None,
-        }
-    }
-
-    fn bad_request(message: impl Into<String>) -> Self {
-        Self {
-            kind: EndpointErrorKind::Invalid,
-            status: Some(StatusCode::BAD_REQUEST.as_u16()),
-            message: message.into(),
-            path: None,
-        }
-    }
-
-    fn payload_too_large(limit: usize) -> Self {
-        Self {
-            kind: EndpointErrorKind::Invalid,
-            status: Some(StatusCode::PAYLOAD_TOO_LARGE.as_u16()),
-            message: format!("payload too large (limit {} bytes)", limit),
-            path: None,
-        }
-    }
-
-    fn from_transform(err: TransformError) -> Self {
-        Self {
-            kind: EndpointErrorKind::Transform,
-            status: None,
-            message: err.to_string(),
-            path: None,
-        }
-    }
-
-    fn with_path(mut self, path: PathBuf) -> Self {
-        self.path = Some(path);
-        self
-    }
-
-    fn to_json(&self) -> JsonValue {
-        json!({
-            "kind": format!("{:?}", self.kind),
-            "status": self.status,
-            "message": self.message,
-            "path": self.path.as_ref().map(|p| p.display().to_string()),
-        })
-    }
-}
-
-impl std::fmt::Display for EndpointError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
     }
 }
 
