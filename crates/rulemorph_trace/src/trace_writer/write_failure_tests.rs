@@ -1,5 +1,6 @@
 use super::*;
 use serde_json::json;
+use std::fs;
 
 #[test]
 fn write_trace_bundle_cleans_up_on_manifest_write_failure() {
