@@ -9,7 +9,8 @@ use walkdir::WalkDir;
 use super::import_path::{
     copy_file_create_new, ensure_import_base_dir, ensure_import_target_parent,
 };
-use super::{is_trace_meta_candidate, parse_trace_meta, rules_dir, traces_dir};
+use super::meta::parse_trace_meta;
+use super::{is_trace_meta_candidate, rules_dir, traces_dir};
 
 const IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 pub(super) const IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
