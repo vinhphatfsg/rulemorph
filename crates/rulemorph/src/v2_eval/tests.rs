@@ -1,5 +1,7 @@
 use super::*;
-use crate::v2_model::{V2Comparison, V2ComparisonOp, V2Condition, V2Ref};
+use crate::v2_model::{
+    V2Comparison, V2ComparisonOp, V2Condition, V2IfStep, V2LetStep, V2MapStep, V2Ref, V2Step,
+};
 
 #[cfg(test)]
 mod v2_ref_eval_tests {
