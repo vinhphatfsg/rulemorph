@@ -25,3 +25,14 @@ pub(crate) fn tool_error_result(message: &str, errors: Option<Vec<Value>>) -> Va
 
     result
 }
+
+pub(crate) fn io_error_json(message: &str, path: Option<&str>) -> Value {
+    let mut value = json!({
+        "type": "io",
+        "message": message
+    });
+    if let Some(path) = path {
+        value["path"] = json!(path);
+    }
+    value
+}
