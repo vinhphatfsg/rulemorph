@@ -15,6 +15,7 @@ use rulemorph::{
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
+mod args;
 mod errors;
 mod prompts;
 mod protocol;
@@ -22,6 +23,10 @@ mod resources;
 mod schemas;
 mod tools;
 
+use self::args::{
+    get_optional_bool, get_optional_json_value, get_optional_object, get_optional_string,
+    get_optional_usize,
+};
 use self::errors::{CallError, tool_error_result};
 use self::prompts::{prompts_get_result, prompts_list_result};
 use self::protocol::{OutputMode, read_message, write_message};
@@ -1145,61 +1150,6 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
         ],
         "meta": meta
     }))
-}
-
-fn get_optional_string(args: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
-    match args.get(key) {
-        Some(Value::String(value)) => Ok(Some(value.clone())),
-        Some(Value::Null) => Ok(None),
-        Some(_) => Err(format!("{} must be a string", key)),
-        None => Ok(None),
-    }
-}
-
-fn get_optional_bool(args: &Map<String, Value>, key: &str) -> Result<Option<bool>, String> {
-    match args.get(key) {
-        Some(Value::Bool(value)) => Ok(Some(*value)),
-        Some(Value::Null) => Ok(None),
-        Some(_) => Err(format!("{} must be a boolean", key)),
-        None => Ok(None),
-    }
-}
-
-fn get_optional_usize(args: &Map<String, Value>, key: &str) -> Result<Option<usize>, String> {
-    match args.get(key) {
-        Some(Value::Number(value)) => value
-            .as_u64()
-            .and_then(|value| {
-                if value > 0 {
-                    Some(value as usize)
-                } else {
-                    None
-                }
-            })
-            .ok_or_else(|| format!("{} must be a positive integer", key))
-            .map(Some),
-        Some(Value::Null) => Ok(None),
-        Some(_) => Err(format!("{} must be a positive integer", key)),
-        None => Ok(None),
-    }
-}
-
-fn get_optional_json_value(args: &Map<String, Value>, key: &str) -> Result<Option<Value>, String> {
-    match args.get(key) {
-        Some(Value::Array(_)) | Some(Value::Object(_)) => Ok(args.get(key).cloned()),
-        Some(Value::Null) => Ok(None),
-        Some(_) => Err(format!("{} must be an object or array", key)),
-        None => Ok(None),
-    }
-}
-
-fn get_optional_object(args: &Map<String, Value>, key: &str) -> Result<Option<Value>, String> {
-    match args.get(key) {
-        Some(Value::Object(_)) => Ok(args.get(key).cloned()),
-        Some(Value::Null) => Ok(None),
-        Some(_) => Err(format!("{} must be an object", key)),
-        None => Ok(None),
-    }
 }
 
 fn load_rule_from_source(
