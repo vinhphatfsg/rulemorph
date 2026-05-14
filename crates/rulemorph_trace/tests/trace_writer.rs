@@ -2491,6 +2491,49 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes() -> anyhow::Result<()
 }
 
 #[tokio::test]
+async fn write_trace_bundle_wraps_inline_scalar_nodes_value() -> anyhow::Result<()> {
+    let temp_dir = create_temp_dir()?;
+
+    let trace = json!({
+        "trace_id": "trace-inline-scalar-nodes",
+        "records": [
+            {
+                "status": "ok",
+                "nodes": "raw-node"
+            }
+        ]
+    });
+
+    let options = TraceWriteOptions {
+        compression: TraceCompression::None,
+        split_nodes: false,
+        ..Default::default()
+    };
+
+    let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
+    let manifest = read_manifest(&manifest_path)?;
+    let detail = manifest.detail.expect("detail should exist");
+    let trace_dir = trace_dir(&manifest_path);
+    let record_chunk = &detail.records[0];
+    let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
+    let record_line = record_payload
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .expect("record line should exist");
+    let record: serde_json::Value = serde_json::from_str(record_line)?;
+    let nodes = record
+        .get("nodes")
+        .and_then(|value| value.as_array())
+        .expect("nodes should be array");
+    assert_eq!(
+        nodes[0].get("value").and_then(|value| value.as_str()),
+        Some("raw-node")
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn write_trace_bundle_wraps_inline_non_object_nodes_on_read() -> anyhow::Result<()> {
     let temp_dir = create_temp_dir()?;
 
