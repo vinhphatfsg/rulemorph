@@ -1130,6 +1130,43 @@ mappings:
 }
 
 #[test]
+fn generate_dto_invalid_language_returns_json_rpc_error() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let rules_text = r#"version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "id"
+"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 101,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_dto",
+            "arguments": {
+                "rules_text": rules_text,
+                "language": "ruby"
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(
+        response["error"]["message"],
+        "language must be one of rust, typescript, python, go, java, kotlin, swift"
+    );
+
+    server.shutdown();
+}
+
+#[test]
 fn list_ops_success() {
     let mut server = McpServer::start();
     initialize(&mut server);
@@ -1611,6 +1648,37 @@ fn generate_rules_from_dto_success() {
     let rule = parse_rule_file(output_text).expect("parse output rules");
     assert_eq!(rule.mappings[0].source.as_deref(), Some("id"));
     assert_eq!(rule.mappings[1].source.as_deref(), Some("name"));
+
+    server.shutdown();
+}
+
+#[test]
+fn generate_rules_from_dto_invalid_language_returns_json_rpc_error() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1510,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_dto",
+            "arguments": {
+                "dto_text": "type Record = { id: string }",
+                "dto_language": "ruby",
+                "input_json": {
+                    "id": 1
+                }
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    assert_eq!(response["error"]["code"], -32602);
+    assert_eq!(
+        response["error"]["message"],
+        "dto_language must be rust, typescript, python, go, java, kotlin, or swift"
+    );
 
     server.shutdown();
 }

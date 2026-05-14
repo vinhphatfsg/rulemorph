@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use csv::ReaderBuilder;
 use rulemorph::serde_guard::parse_json_value_strict;
 use rulemorph::{
-    DtoLanguage, Expr, ExprChain, ExprOp, InputData, InputFormat, RuleError, RuleFile, RuleFormat,
+    Expr, ExprChain, ExprOp, InputData, InputFormat, RuleError, RuleFile, RuleFormat,
     TransformError, TransformErrorKind, TransformWarning, generate_dto,
     parse_rule_file_with_format, transform_input_with_warnings,
     transform_input_with_warnings_with_base_dir, transform_stream_input,
@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
 mod args;
+mod dto_language;
 mod errors;
 mod path_expr;
 mod prompts;
@@ -27,6 +28,10 @@ mod tools;
 use self::args::{
     get_optional_bool, get_optional_json_value, get_optional_object, get_optional_string,
     get_optional_usize,
+};
+use self::dto_language::{
+    DtoSourceLanguage, dto_error_json, dto_language_to_str, parse_dto_language,
+    parse_dto_source_language,
 };
 use self::errors::{CallError, io_error_json, tool_error_result};
 use self::path_expr::{append_path, get_value_at_path, leaf_from_path};
@@ -1237,66 +1242,6 @@ fn rule_has_file_branch(rule: &RuleFile) -> bool {
     rule.steps
         .as_ref()
         .is_some_and(|steps| steps.iter().any(|step| step.branch.is_some()))
-}
-
-fn parse_dto_language(value: &str) -> Result<DtoLanguage, String> {
-    match value.to_lowercase().as_str() {
-        "rust" => Ok(DtoLanguage::Rust),
-        "typescript" => Ok(DtoLanguage::TypeScript),
-        "python" => Ok(DtoLanguage::Python),
-        "go" => Ok(DtoLanguage::Go),
-        "java" => Ok(DtoLanguage::Java),
-        "kotlin" => Ok(DtoLanguage::Kotlin),
-        "swift" => Ok(DtoLanguage::Swift),
-        _ => Err(
-            "language must be one of rust, typescript, python, go, java, kotlin, swift".to_string(),
-        ),
-    }
-}
-
-fn dto_language_to_str(language: DtoLanguage) -> &'static str {
-    match language {
-        DtoLanguage::Rust => "rust",
-        DtoLanguage::TypeScript => "typescript",
-        DtoLanguage::Python => "python",
-        DtoLanguage::Go => "go",
-        DtoLanguage::Java => "java",
-        DtoLanguage::Kotlin => "kotlin",
-        DtoLanguage::Swift => "swift",
-    }
-}
-
-#[derive(Clone, Copy)]
-enum DtoSourceLanguage {
-    Rust,
-    TypeScript,
-    Python,
-    Go,
-    Java,
-    Kotlin,
-    Swift,
-}
-
-fn parse_dto_source_language(value: &str) -> Result<DtoSourceLanguage, String> {
-    match value.to_lowercase().as_str() {
-        "rust" => Ok(DtoSourceLanguage::Rust),
-        "typescript" => Ok(DtoSourceLanguage::TypeScript),
-        "python" => Ok(DtoSourceLanguage::Python),
-        "go" => Ok(DtoSourceLanguage::Go),
-        "java" => Ok(DtoSourceLanguage::Java),
-        "kotlin" => Ok(DtoSourceLanguage::Kotlin),
-        "swift" => Ok(DtoSourceLanguage::Swift),
-        _ => Err(
-            "dto_language must be rust, typescript, python, go, java, kotlin, or swift".to_string(),
-        ),
-    }
-}
-
-fn dto_error_json(message: &str) -> Value {
-    json!({
-        "type": "dto",
-        "message": message,
-    })
 }
 
 #[derive(Clone, Copy)]
