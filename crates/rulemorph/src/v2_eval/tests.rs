@@ -3153,6 +3153,50 @@ mod v2_lookup_eval_tests {
     }
 
     #[test]
+    fn test_lookup_skips_matches_missing_get_field() {
+        let employees = json!([
+            {"name": "Alice", "dept": "Engineering"},
+            {"dept": "Engineering"},
+            {"name": "Charlie", "dept": "Engineering"}
+        ]);
+        let op = V2OpStep {
+            op: "lookup".to_string(),
+            args: vec![
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Ref(V2Ref::Context("employees".to_string())),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("dept")),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("Engineering")),
+                    steps: vec![],
+                }),
+                V2Expr::Pipe(V2Pipe {
+                    start: V2Start::Literal(json!("name")),
+                    steps: vec![],
+                }),
+            ],
+        };
+        let record = json!({});
+        let context = json!({"employees": employees});
+        let out = json!({});
+        let ctx = V2EvalContext::new();
+        let result = eval_v2_op_step(
+            &op,
+            EvalValue::Value(json!(null)),
+            &record,
+            Some(&context),
+            &out,
+            "test",
+            &ctx,
+        );
+        assert!(matches!(result, Ok(EvalValue::Value(v)) if v == json!(["Alice", "Charlie"])));
+    }
+
+    #[test]
     fn test_lookup_no_matches() {
         let op = V2OpStep {
             op: "lookup".to_string(),
