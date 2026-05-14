@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::warn;
 use walkdir::WalkDir;
@@ -21,6 +21,7 @@ use crate::trace_schema::{
 mod chunk_read;
 mod import_bundle;
 mod import_path;
+mod legacy;
 mod manifest_budget;
 mod purge;
 mod trace_id_path;
@@ -32,6 +33,9 @@ use self::chunk_read::{
     parse_record_index, read_json_chunk, read_ndjson_chunk,
 };
 use self::import_bundle::{IMPORT_MAX_TOTAL_BYTES, import_bundle_files};
+#[cfg(test)]
+use self::legacy::apply_legacy_limits_with_thresholds;
+use self::legacy::{apply_legacy_limits, looks_like_legacy_trace};
 use self::manifest_budget::{
     apply_manifest_budget, apply_record_total_budget_for_get, resolve_max_chunk_bytes,
 };
@@ -1533,57 +1537,6 @@ fn parse_trace_meta(path: &Path) -> Result<TraceMeta> {
 
 fn is_manifest(value: &Value) -> bool {
     value.get("trace_schema_version").is_some()
-}
-
-fn looks_like_legacy_trace(value: &Value) -> bool {
-    value.get("trace_id").is_some() || value.get("records").is_some() || value.get("rule").is_some()
-}
-
-fn apply_legacy_limits(legacy: &mut Value) {
-    apply_legacy_limits_with_thresholds(
-        legacy,
-        TRACE_RECORD_COUNT_HARD_MAX,
-        TRACE_NODE_COUNT_HARD_MAX,
-    );
-}
-
-fn apply_legacy_limits_with_thresholds(legacy: &mut Value, record_limit: usize, node_limit: usize) {
-    let (record_count, node_count) = legacy_counts(legacy);
-    if record_count <= record_limit && node_count <= node_limit {
-        return;
-    }
-    if let Some(obj) = legacy.as_object_mut() {
-        obj.insert("records".to_string(), Value::Array(Vec::new()));
-        obj.remove("finalize");
-        obj.remove("nodes");
-        obj.insert(
-            "detail".to_string(),
-            json!({
-                "layout": "records_inline",
-                "status": "basic",
-                "reason": ["budget_exceeded"],
-                "records": [],
-                "nodes": []
-            }),
-        );
-    }
-}
-
-fn legacy_counts(legacy: &Value) -> (usize, usize) {
-    let mut record_count = 0usize;
-    let mut node_count = 0usize;
-    if let Some(records) = legacy.get("records").and_then(|value| value.as_array()) {
-        record_count = records.len();
-        for record in records {
-            if let Some(nodes) = record.get("nodes").and_then(|value| value.as_array()) {
-                node_count = node_count.saturating_add(nodes.len());
-            }
-        }
-    }
-    if let Some(nodes) = legacy.get("nodes").and_then(|value| value.as_array()) {
-        node_count = node_count.saturating_add(nodes.len());
-    }
-    (record_count, node_count)
 }
 
 fn parse_manifest_meta(manifest: &TraceManifest, path: &Path) -> Result<TraceMeta> {
