@@ -15,12 +15,14 @@ use rulemorph::{
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
+mod errors;
 mod prompts;
 mod protocol;
 mod resources;
 mod schemas;
 mod tools;
 
+use self::errors::{CallError, tool_error_result};
 use self::prompts::{prompts_get_result, prompts_list_result};
 use self::protocol::{OutputMode, read_message, write_message};
 use self::resources::{resources_list_result, resources_read_result};
@@ -201,14 +203,6 @@ fn tools_list_result() -> Value {
             }
         ]
     })
-}
-
-enum CallError {
-    InvalidParams(String),
-    Tool {
-        message: String,
-        errors: Option<Vec<Value>>,
-    },
 }
 
 fn handle_tools_call(params: &Value) -> Result<Value, CallError> {
@@ -1151,24 +1145,6 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
         ],
         "meta": meta
     }))
-}
-
-fn tool_error_result(message: &str, errors: Option<Vec<Value>>) -> Value {
-    let mut result = json!({
-        "content": [
-            {
-                "type": "text",
-                "text": message
-            }
-        ],
-        "isError": true
-    });
-
-    if let Some(errors) = errors {
-        result["meta"] = json!({ "errors": errors });
-    }
-
-    result
 }
 
 fn get_optional_string(args: &Map<String, Value>, key: &str) -> Result<Option<String>, String> {
