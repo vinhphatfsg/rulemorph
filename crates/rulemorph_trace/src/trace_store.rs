@@ -11,10 +11,9 @@ use tokio::sync::RwLock;
 use tracing::warn;
 
 use crate::trace_backend::TraceBackend;
-use crate::trace_schema::{
-    RuleMeta, TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX, TraceManifest, TraceSummary,
-};
+use crate::trace_schema::{RuleMeta, TraceManifest, TraceSummary};
 
+mod chunk_access;
 mod chunk_read;
 mod import_bundle;
 mod import_path;
@@ -26,19 +25,20 @@ mod meta;
 mod purge;
 mod trace_id_path;
 
+use self::chunk_access::{
+    get_finalize_chunk as get_manifest_finalize_chunk, get_nodes_chunk as get_manifest_nodes_chunk,
+    get_records_chunk as get_manifest_records_chunk,
+};
 #[cfg(test)]
 use self::chunk_read::ChunkBudget;
 #[cfg(test)]
 use self::chunk_read::resolve_chunk_path;
-use self::chunk_read::{parse_node_chunk_entry, read_json_chunk, read_ndjson_chunk};
 use self::import_bundle::{IMPORT_MAX_TOTAL_BYTES, import_bundle_files};
 use self::index::{build_trace_index, is_trace_meta_candidate};
 #[cfg(test)]
 use self::legacy::apply_legacy_limits_with_thresholds;
 use self::legacy::{apply_legacy_limits, looks_like_legacy_trace};
-use self::manifest_budget::{
-    apply_manifest_budget, apply_record_total_budget_for_get, resolve_max_chunk_bytes,
-};
+use self::manifest_budget::{apply_manifest_budget, apply_record_total_budget_for_get};
 use self::manifest_trace::build_trace_from_manifest_async;
 #[cfg(test)]
 use self::manifest_trace::build_trace_from_manifest_with_budget;
@@ -179,36 +179,7 @@ impl FileTraceBackend {
         let Some((manifest, base_dir)) = self.load_manifest_entry(trace_id).await? else {
             return Ok(None);
         };
-        let detail = match manifest.detail.as_ref() {
-            Some(detail) => detail,
-            None => return Ok(None),
-        };
-        if detail.status != "full" {
-            return Ok(None);
-        }
-        let chunk = match detail.records.get(chunk_index) {
-            Some(chunk) => chunk.clone(),
-            None => return Ok(None),
-        };
-        let max_chunk_bytes = resolve_max_chunk_bytes(&manifest);
-        let chunk_path = chunk.path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            read_ndjson_chunk(
-                &base_dir,
-                &chunk,
-                max_chunk_bytes,
-                TRACE_RECORD_COUNT_HARD_MAX,
-            )
-        })
-        .await
-        .map_err(|err| anyhow::anyhow!("trace record chunk task failed: {}", err))??;
-        if result.had_error || result.size_exceeded || result.limit_exceeded {
-            return Err(anyhow::anyhow!(
-                "trace record chunk failed to load: {}",
-                chunk_path
-            ));
-        }
-        Ok(Some(result.value))
+        get_manifest_records_chunk(manifest, base_dir, chunk_index).await
     }
 
     pub async fn get_nodes_chunk(
@@ -219,97 +190,14 @@ impl FileTraceBackend {
         let Some((manifest, base_dir)) = self.load_manifest_entry(trace_id).await? else {
             return Ok(None);
         };
-        let detail = match manifest.detail.as_ref() {
-            Some(detail) => detail,
-            None => return Ok(None),
-        };
-        if detail.status != "full" {
-            return Ok(None);
-        }
-        if detail.layout != "records_nodes_split" {
-            warn!(
-                "node chunks present but layout is {}; skipping nodes chunk",
-                detail.layout
-            );
-            return Ok(None);
-        }
-        let chunk = match detail.nodes.get(chunk_index) {
-            Some(chunk) => chunk.clone(),
-            None => return Ok(None),
-        };
-        let max_chunk_bytes = resolve_max_chunk_bytes(&manifest);
-        let chunk_path = chunk.path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            read_ndjson_chunk(
-                &base_dir,
-                &chunk,
-                max_chunk_bytes,
-                TRACE_NODE_COUNT_HARD_MAX,
-            )
-        })
-        .await
-        .map_err(|err| anyhow::anyhow!("trace node chunk task failed: {}", err))??;
-        if result.had_error || result.size_exceeded || result.limit_exceeded {
-            return Err(anyhow::anyhow!(
-                "trace node chunk failed to load: {}",
-                chunk_path
-            ));
-        }
-        let mut entries = Vec::new();
-        let mut last_record_index: Option<u64> = None;
-        for value in result.value {
-            let entry = parse_node_chunk_entry(value);
-            if entry.record_index.is_none() && entry.record_index_present {
-                warn!("node chunk entry has invalid record_index; skipping");
-                continue;
-            }
-            let record_index = match entry.record_index.or(last_record_index) {
-                Some(index) => index,
-                None => {
-                    warn!("node chunk entry missing record_index; skipping");
-                    continue;
-                }
-            };
-            if entry.record_index.is_some() {
-                last_record_index = entry.record_index;
-            }
-            entries.push(TraceNodeChunkEntry {
-                record_index,
-                node: entry.node,
-            });
-        }
-        Ok(Some(entries))
+        get_manifest_nodes_chunk(manifest, base_dir, chunk_index).await
     }
 
     pub async fn get_finalize_chunk(&self, trace_id: &str) -> Result<Option<Value>> {
         let Some((manifest, base_dir)) = self.load_manifest_entry(trace_id).await? else {
             return Ok(None);
         };
-        let detail = match manifest.detail.as_ref() {
-            Some(detail) => detail,
-            None => return Ok(None),
-        };
-        if detail.status != "full" {
-            return Ok(None);
-        }
-        let chunk = match detail.finalize.as_ref() {
-            Some(chunk) => chunk.clone(),
-            None => return Ok(None),
-        };
-        let max_chunk_bytes = resolve_max_chunk_bytes(&manifest);
-        let chunk_path = chunk.path.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            read_json_chunk(&base_dir, &chunk, max_chunk_bytes)
-        })
-        .await
-        .map_err(|err| anyhow::anyhow!("trace finalize chunk task failed: {}", err))??;
-        if result.had_error || result.size_exceeded || result.limit_exceeded {
-            return Err(anyhow::anyhow!(
-                "trace finalize chunk failed to load: {}",
-                chunk_path
-            ));
-        }
-        Ok(result.value)
+        get_manifest_finalize_chunk(manifest, base_dir).await
     }
 
     async fn resolve_meta(&self, trace_id: &str) -> Result<Option<TraceMeta>> {
