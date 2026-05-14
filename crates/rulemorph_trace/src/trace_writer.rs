@@ -10,6 +10,7 @@ use tracing::warn;
 
 mod atomic;
 mod chunk_write;
+mod cleanup;
 mod externalize;
 mod masking;
 mod queue;
@@ -27,6 +28,7 @@ use chunk_write::{
     max_ndjson_line_bytes, total_chunk_bytes, write_finalize_chunk, write_node_chunks,
     write_record_chunks,
 };
+use cleanup::{TraceDirGuard, cleanup_detail_files};
 use externalize::externalize_trace_payloads;
 use masking::{apply_masking, normalize_masking_rules};
 use queue::{
@@ -696,77 +698,6 @@ fn write_trace_bundle_sync(
     trace_dir_guard.commit();
 
     Ok(manifest_path)
-}
-
-struct TraceDirGuard {
-    path: PathBuf,
-    committed: bool,
-}
-
-impl TraceDirGuard {
-    fn new(path: PathBuf) -> Self {
-        Self {
-            path,
-            committed: false,
-        }
-    }
-
-    fn commit(&mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for TraceDirGuard {
-    fn drop(&mut self) {
-        if self.committed {
-            return;
-        }
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
-fn cleanup_detail_files(
-    record_files: &mut Vec<PathBuf>,
-    node_files: &mut Vec<PathBuf>,
-    finalize_file: &mut Option<PathBuf>,
-    blob_files: &mut Vec<PathBuf>,
-) {
-    for path in record_files.iter() {
-        if let Err(err) = fs::remove_file(path) {
-            warn!(
-                "failed to remove record chunk file {}: {}",
-                path.display(),
-                err
-            );
-        }
-    }
-    for path in node_files.iter() {
-        if let Err(err) = fs::remove_file(path) {
-            warn!(
-                "failed to remove node chunk file {}: {}",
-                path.display(),
-                err
-            );
-        }
-    }
-    if let Some(path) = finalize_file.as_ref() {
-        if let Err(err) = fs::remove_file(path) {
-            warn!(
-                "failed to remove finalize chunk file {}: {}",
-                path.display(),
-                err
-            );
-        }
-    }
-    for path in blob_files.iter() {
-        if let Err(err) = fs::remove_file(path) {
-            warn!("failed to remove blob file {}: {}", path.display(), err);
-        }
-    }
-    record_files.clear();
-    node_files.clear();
-    *finalize_file = None;
-    blob_files.clear();
 }
 
 fn parse_date_parts(timestamp: &str) -> Option<(i32, u32, u32)> {
