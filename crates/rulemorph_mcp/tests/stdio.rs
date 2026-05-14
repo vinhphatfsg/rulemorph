@@ -1278,6 +1278,44 @@ fn analyze_input_json_success() {
 }
 
 #[test]
+fn analyze_input_records_path_supports_quoted_segments() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 121,
+        "method": "tools/call",
+        "params": {
+            "name": "analyze_input",
+            "arguments": {
+                "input_json": {
+                    "payload": {
+                        "items.with.dot": [
+                            {
+                                "user.name": "Ada",
+                                "age": 37
+                            }
+                        ]
+                    }
+                },
+                "records_path": "payload[\"items.with.dot\"]"
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let paths = response["result"]["meta"]["paths"]
+        .as_array()
+        .expect("paths array");
+    assert!(paths.iter().any(|item| item["path"] == "[\"user.name\"]"));
+    assert!(paths.iter().any(|item| item["path"] == "age"));
+    assert_eq!(response["result"]["meta"]["summary"]["records"], json!(1));
+
+    server.shutdown();
+}
+
+#[test]
 fn raw_json_input_text_rejects_duplicate_keys_for_analysis_and_generation() {
     let mut server = McpServer::start();
     initialize(&mut server);
