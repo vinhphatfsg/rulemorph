@@ -12,6 +12,7 @@ mod atomic;
 mod chunk_write;
 mod cleanup;
 mod externalize;
+mod manifest;
 mod masking;
 mod queue;
 #[cfg(test)]
@@ -30,6 +31,10 @@ use chunk_write::{
 };
 use cleanup::{TraceDirGuard, cleanup_detail_files};
 use externalize::externalize_trace_payloads;
+use manifest::{
+    blob_total_bytes, count_inline_nodes, parse_date_parts, parse_rule_meta, parse_summary,
+    reserve_budget,
+};
 use masking::{apply_masking, normalize_masking_rules};
 use queue::{
     TraceQueue, TraceWriteRequest, estimate_trace_bytes, evict_normal, push_request, queue_bytes,
@@ -41,9 +46,9 @@ use sampling::{TracePriority, should_keep_full_detail, trace_priority};
 use crate::trace_backend::TraceWriteBackend;
 use crate::trace_id::{sanitize_trace_id, trace_id_is_placeholder};
 use crate::trace_schema::{
-    RuleMeta, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX,
-    TRACE_JSON_MAX_BYTES, TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX, TraceDetailRef,
-    TraceManifest, TraceMasking, TraceSummary,
+    TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX, TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES,
+    TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX, TraceDetailRef, TraceManifest,
+    TraceMasking,
 };
 
 const DEFAULT_MAX_RECORDS_PER_CHUNK: usize = 200;
@@ -700,53 +705,6 @@ fn write_trace_bundle_sync(
     Ok(manifest_path)
 }
 
-fn parse_date_parts(timestamp: &str) -> Option<(i32, u32, u32)> {
-    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
-    Some((parsed.year(), parsed.month(), parsed.day()))
-}
-
-fn parse_rule_meta(value: &JsonValue) -> RuleMeta {
-    RuleMeta {
-        name: value
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|v| v.to_string()),
-        path: value
-            .get("path")
-            .and_then(|v| v.as_str())
-            .map(|v| v.to_string()),
-        r#type: value
-            .get("type")
-            .and_then(|v| v.as_str())
-            .map(|v| v.to_string()),
-        version: value
-            .get("version")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u8),
-    }
-}
-
-fn parse_summary(value: &JsonValue) -> TraceSummary {
-    TraceSummary {
-        record_total: value.get("record_total").and_then(|v| v.as_u64()),
-        record_success: value.get("record_success").and_then(|v| v.as_u64()),
-        record_failed: value.get("record_failed").and_then(|v| v.as_u64()),
-        duration_ms: value.get("duration_ms").and_then(|v| v.as_u64()),
-        duration_us: value.get("duration_us").and_then(|v| v.as_u64()),
-    }
-}
-
-fn reserve_budget(remaining: &mut u64, bytes: u64) -> bool {
-    if bytes == 0 {
-        return true;
-    }
-    if *remaining < bytes {
-        return false;
-    }
-    *remaining -= bytes;
-    true
-}
-
 fn ensure_unique_trace_dir(
     base_dir: &Path,
     trace_id: String,
@@ -788,30 +746,4 @@ fn ensure_unique_trace_dir(
             Err(err) => return Err(err.into()),
         }
     }
-}
-
-fn count_inline_nodes(records: &[JsonValue], max_nodes: usize) -> usize {
-    let mut total = 0usize;
-    for record in records {
-        if let Some(nodes) = record.get("nodes").and_then(|value| value.as_array()) {
-            total = total.saturating_add(nodes.len());
-            if total > max_nodes {
-                break;
-            }
-        }
-    }
-    total
-}
-
-fn blob_total_bytes(blob_files: &[PathBuf]) -> u64 {
-    blob_files
-        .iter()
-        .map(|path| match fs::metadata(path) {
-            Ok(meta) => meta.len(),
-            Err(err) => {
-                warn!("failed to read blob metadata {}: {}", path.display(), err);
-                0
-            }
-        })
-        .sum()
 }
