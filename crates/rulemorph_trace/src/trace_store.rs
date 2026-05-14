@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -9,7 +9,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::warn;
-use walkdir::WalkDir;
 
 use crate::trace_backend::TraceBackend;
 use crate::trace_schema::{
@@ -19,6 +18,7 @@ use crate::trace_schema::{
 mod chunk_read;
 mod import_bundle;
 mod import_path;
+mod index;
 mod legacy;
 mod manifest_budget;
 mod manifest_trace;
@@ -32,6 +32,7 @@ use self::chunk_read::ChunkBudget;
 use self::chunk_read::resolve_chunk_path;
 use self::chunk_read::{parse_node_chunk_entry, read_json_chunk, read_ndjson_chunk};
 use self::import_bundle::{IMPORT_MAX_TOTAL_BYTES, import_bundle_files};
+use self::index::{build_trace_index, is_trace_meta_candidate};
 #[cfg(test)]
 use self::legacy::apply_legacy_limits_with_thresholds;
 use self::legacy::{apply_legacy_limits, looks_like_legacy_trace};
@@ -41,13 +42,12 @@ use self::manifest_budget::{
 use self::manifest_trace::build_trace_from_manifest_async;
 #[cfg(test)]
 use self::manifest_trace::build_trace_from_manifest_with_budget;
-use self::meta::{is_manifest, parse_trace_meta, read_trace_json_with_limit_async};
+use self::meta::{is_manifest, read_trace_json_with_limit_async};
 use self::purge::purge_trace_metas;
 #[cfg(test)]
 use self::purge::resolve_trace_timestamp;
 #[cfg(test)]
-use self::trace_id_path::fallback_trace_id_for_path;
-use self::trace_id_path::path_hash_for_trace_id;
+use self::trace_id_path::{fallback_trace_id_for_path, path_hash_for_trace_id};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceMeta {
@@ -411,76 +411,8 @@ impl FileTraceBackend {
 
     async fn refresh_index(&self) -> Result<()> {
         let data_dir = self.data_dir.clone();
-        let index = tokio::task::spawn_blocking(move || -> Result<HashMap<String, TraceMeta>> {
-            let mut metas = Vec::new();
-            let dir = traces_dir(&data_dir);
-            if !dir.exists() {
-                return Ok(HashMap::new());
-            }
-            for entry in WalkDir::new(&dir)
-                .into_iter()
-                .filter_entry(|entry| {
-                    !(entry.file_type().is_dir() && entry.file_name().to_string_lossy() == "blobs")
-                })
-                .filter_map(|e| e.ok())
-            {
-                if !entry.file_type().is_file() {
-                    continue;
-                }
-                let path = entry.path();
-                if !is_trace_meta_candidate(path) {
-                    continue;
-                }
-                match parse_trace_meta(path) {
-                    Ok(meta) => metas.push(meta),
-                    Err(err) => {
-                        warn!("failed to parse trace metadata {}: {}", path.display(), err);
-                    }
-                }
-            }
-            let original_ids: HashSet<String> =
-                metas.iter().map(|meta| meta.trace_id.clone()).collect();
-            let mut by_id: HashMap<String, Vec<TraceMeta>> = HashMap::new();
-            for meta in metas {
-                by_id.entry(meta.trace_id.clone()).or_default().push(meta);
-            }
-
-            let mut used_ids = HashSet::new();
-            let mut map = HashMap::new();
-            let mut keys: Vec<String> = by_id.keys().cloned().collect();
-            keys.sort();
-
-            for base_id in keys {
-                let mut group = by_id.remove(&base_id).unwrap_or_default();
-                group.sort_by(|a, b| a.path.cmp(&b.path));
-                if group.len() == 1 {
-                    let meta = group.pop().expect("single meta");
-                    used_ids.insert(base_id.clone());
-                    map.insert(base_id, meta);
-                    continue;
-                }
-
-                for mut meta in group {
-                    let hash = path_hash_for_trace_id(Path::new(&meta.path));
-                    let mut candidate = format!("{base_id}-dup-{hash:x}");
-                    let mut counter = 0usize;
-                    while used_ids.contains(&candidate) || original_ids.contains(&candidate) {
-                        counter = counter.saturating_add(1);
-                        candidate = format!("{base_id}-dup-{hash:x}-{counter}");
-                    }
-                    warn!(
-                        "trace_id collision {} at {}; using {}",
-                        base_id, meta.path, candidate
-                    );
-                    meta.trace_id = candidate.clone();
-                    used_ids.insert(candidate.clone());
-                    map.insert(candidate, meta);
-                }
-            }
-
-            Ok(map)
-        })
-        .await??;
+        let index = tokio::task::spawn_blocking(move || build_trace_index(&traces_dir(&data_dir)))
+            .await??;
 
         let mut guard = self.index.write().await;
         *guard = index;
@@ -1389,26 +1321,6 @@ mod tests {
 
         Ok(())
     }
-}
-
-fn is_trace_meta_candidate(path: &Path) -> bool {
-    if path.extension().and_then(|s| s.to_str()) != Some("json") {
-        return false;
-    }
-    if path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "finalize.json")
-    {
-        return false;
-    }
-    if path
-        .components()
-        .any(|component| component.as_os_str() == "blobs")
-    {
-        return false;
-    }
-    true
 }
 
 // copy_dir_recursive was intentionally omitted to avoid counting existing files.
