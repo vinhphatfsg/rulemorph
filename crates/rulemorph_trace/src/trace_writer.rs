@@ -32,7 +32,9 @@ use chunk_write::{
     write_record_chunks,
 };
 use cleanup::{TraceDirGuard, cleanup_detail_files};
-use detail::{append_detail_reason, strip_trace_detail};
+use detail::{
+    append_detail_reason, detail_status_for_level, initial_detail_reasons, strip_trace_detail,
+};
 use externalize::externalize_trace_payloads;
 use manifest::{
     blob_total_bytes, count_inline_nodes, parse_date_parts, parse_rule_meta, parse_summary,
@@ -259,18 +261,7 @@ fn write_trace_bundle_sync(
     let mut detail_layout = "records_inline".to_string();
 
     let mut detail_level = options.detail_level;
-    let mut detail_reason = Vec::new();
-    if let Some(reason) = options.detail_reason.as_ref() {
-        for item in reason.split(|ch| ch == ',' || ch == ';') {
-            let trimmed = item.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if !detail_reason.iter().any(|existing| existing == trimmed) {
-                detail_reason.push(trimmed.to_string());
-            }
-        }
-    }
+    let mut detail_reason = initial_detail_reasons(options.detail_reason.as_deref());
 
     if detail_level == TraceDetailLevel::Full
         && !should_keep_full_detail(&trace, &records_raw, &options)
@@ -279,11 +270,7 @@ fn write_trace_bundle_sync(
         detail_reason.push("sampled_out".to_string());
     }
 
-    let mut detail_status = match detail_level {
-        TraceDetailLevel::Full => "full".to_string(),
-        TraceDetailLevel::Basic => "basic".to_string(),
-        TraceDetailLevel::Off => "dropped".to_string(),
-    };
+    let mut detail_status = detail_status_for_level(detail_level);
 
     let masking_rules = if options.masking_enabled {
         normalize_masking_rules(&options.masking_rules)
