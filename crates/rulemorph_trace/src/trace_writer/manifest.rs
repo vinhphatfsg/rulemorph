@@ -1,16 +1,10 @@
 use std::fs;
 use std::path::PathBuf;
 
-use chrono::Datelike;
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
 use crate::trace_schema::{RuleMeta, TraceSummary};
-
-pub(super) fn parse_date_parts(timestamp: &str) -> Option<(i32, u32, u32)> {
-    let parsed = chrono::DateTime::parse_from_rfc3339(timestamp).ok()?;
-    Some((parsed.year(), parsed.month(), parsed.day()))
-}
 
 pub(super) fn parse_rule_meta(value: &JsonValue) -> RuleMeta {
     RuleMeta {
