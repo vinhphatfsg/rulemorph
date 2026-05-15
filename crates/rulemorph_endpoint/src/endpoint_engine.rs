@@ -1,6 +1,8 @@
 #[cfg(test)]
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
@@ -12,7 +14,6 @@ use http_body_util::LengthLimitError;
 #[cfg(test)]
 use rulemorph::Mapping;
 use rulemorph::serde_guard::parse_yaml_value_strict;
-use rulemorph::transform_record_with_base_dir;
 use rulemorph::v2_eval::{V2EvalContext, eval_v2_condition};
 #[cfg(test)]
 use rulemorph::v2_parser::parse_v2_expr;
@@ -25,6 +26,7 @@ const MULTIPART_IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MULTIPART_IMPORT_MAX_ENTRIES: usize = 4096;
 
 mod catch;
+mod catch_runtime;
 mod config;
 mod endpoint_rule;
 mod error;
@@ -43,7 +45,6 @@ mod trace_emit;
 mod trace_graph;
 mod validation;
 
-use self::catch::CatchSpec;
 pub use self::config::{ApiMode, EngineConfig, RequestContext};
 #[cfg(test)]
 use self::endpoint_rule::EndpointPath;
@@ -69,7 +70,6 @@ use self::request_input::{
 };
 #[cfg(test)]
 use self::rule_loader::LoadedRule;
-use self::rule_loader::{RuleKind, load_rule_kind};
 use self::rule_ref::{
     resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
 };
@@ -451,39 +451,6 @@ impl EndpointEngine {
         }
 
         response_result
-    }
-
-    fn run_catch(
-        &self,
-        catch: &CatchSpec,
-        error: &EndpointError,
-        input: &JsonValue,
-        params: Option<&JsonValue>,
-        base_dir: &Path,
-        base_context: &JsonValue,
-    ) -> Result<Option<JsonValue>, EndpointError> {
-        if let Some(target) = catch.match_target(error) {
-            let target_path = resolve_rule_path(base_dir, &target.to_string_lossy());
-            let rule = match load_rule_kind(&target_path)
-                .map_err(|err| EndpointError::invalid(err.to_string()))?
-            {
-                RuleKind::Normal(rule) => rule,
-                RuleKind::Network(_) => {
-                    return Err(EndpointError::invalid("catch rule must be normal"));
-                }
-            };
-            let error_context = self.step_context(base_context, params, Some(error));
-            let output = transform_record_with_base_dir(
-                &rule.rule,
-                input,
-                Some(&error_context),
-                &rule.base_dir,
-            )
-            .map_err(EndpointError::from_transform)?
-            .unwrap_or_else(empty_object);
-            return Ok(Some(output));
-        }
-        Ok(None)
     }
 }
 
