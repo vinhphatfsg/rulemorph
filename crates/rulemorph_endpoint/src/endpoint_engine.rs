@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
@@ -11,6 +10,7 @@ use http_body_util::LengthLimitError;
 use reqwest::Client;
 use rulemorph::serde_guard::parse_yaml_value_strict;
 use rulemorph::v2_eval::{EvalValue, V2EvalContext, eval_v2_condition, eval_v2_expr};
+#[cfg(test)]
 use rulemorph::v2_parser::parse_v2_expr;
 use rulemorph::{
     Mapping, RuleFile, RuleFormat, TransformError, get_path, parse_path,
@@ -18,7 +18,6 @@ use rulemorph::{
     validate_rule_file_with_source,
 };
 use rulemorph_trace::{TraceWriter, TraceWriterConfig};
-use serde::Deserialize;
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use tracing::warn;
 
@@ -34,6 +33,7 @@ mod endpoint_rule;
 mod error;
 mod host;
 mod multipart_import;
+mod network_rule;
 mod trace_graph;
 mod validation;
 
@@ -47,11 +47,18 @@ use self::multipart_import::build_multipart_import_body;
 #[cfg(test)]
 use self::multipart_import::{copy_zip_entry_bounded, extract_zip};
 #[cfg(test)]
+use self::network_rule::{CompiledNetworkRequest, NetworkRequest};
+use self::network_rule::{
+    CompiledNetworkRule, NetworkRuleFile, compile_network_rule, compile_retry, parse_duration,
+};
+#[cfg(test)]
 use self::trace_graph::{build_mapping_ops_with_values, sum_rule_trace_duration_us};
 use self::trace_graph::{
     build_network_nodes_with_timing, build_rule_nodes_from_rule, build_rule_trace,
 };
 pub use self::validation::{RulesDirError, RulesDirErrors, validate_rules_dir};
+#[cfg(test)]
+use std::time::Duration;
 
 pub struct EndpointEngine {
     endpoint_rule: CompiledEndpointRule,
@@ -1294,84 +1301,6 @@ fn build_ssrf_audit_log(
 }
 
 #[derive(Debug)]
-struct CompiledNetworkRule {
-    request: CompiledNetworkRequest,
-    timeout: Duration,
-    select: Option<String>,
-    body: Option<rulemorph::v2_model::V2Expr>,
-    body_map: Option<Vec<Mapping>>,
-    body_rule: Option<LoadedRule>,
-    body_rule_ref: Option<String>,
-    rule_ref: Option<String>,
-    catch: Option<CatchSpec>,
-    retry: Option<RetryConfig>,
-    internal_auth: bool,
-    base_dir: PathBuf,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetworkRuleFile {
-    version: u8,
-    #[serde(rename = "type")]
-    rule_type: String,
-    request: NetworkRequest,
-    timeout: String,
-    #[serde(default)]
-    internal_auth: bool,
-    #[serde(default)]
-    select: Option<String>,
-    #[serde(default)]
-    body: Option<JsonValue>,
-    #[serde(default)]
-    body_map: Option<Vec<Mapping>>,
-    #[serde(default)]
-    body_rule: Option<String>,
-    #[serde(default)]
-    catch: Option<HashMap<String, String>>,
-    #[serde(default)]
-    retry: Option<NetworkRetry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetworkRequest {
-    method: String,
-    url: JsonValue,
-    #[serde(default)]
-    headers: Option<HashMap<String, JsonValue>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct NetworkRetry {
-    #[serde(default)]
-    max: Option<u32>,
-    #[serde(default)]
-    backoff: Option<String>,
-    #[serde(default)]
-    initial_delay: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct RetryConfig {
-    max: u32,
-    backoff: RetryBackoff,
-    initial_delay: Duration,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum RetryBackoff {
-    Fixed,
-    Linear,
-    Exponential,
-}
-
-#[derive(Debug)]
-struct CompiledNetworkRequest {
-    method: Method,
-    url: rulemorph::v2_model::V2Expr,
-    headers: HashMap<String, rulemorph::v2_model::V2Expr>,
-}
-
-#[derive(Debug)]
 struct CatchSpec(HashMap<String, String>);
 
 impl From<HashMap<String, String>> for CatchSpec {
@@ -1623,151 +1552,6 @@ fn load_rule_kind(path: &Path) -> Result<RuleKind> {
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf();
             Ok(RuleKind::Normal(LoadedRule { rule, base_dir }))
-        }
-    }
-}
-
-fn compile_network_rule(raw: NetworkRuleFile, path: &Path) -> Result<CompiledNetworkRule> {
-    if raw.version != 2 {
-        return Err(anyhow!("network rule version must be 2"));
-    }
-    if raw.rule_type != "network" {
-        return Err(anyhow!("network rule type must be network"));
-    }
-    if raw.body.is_some() && raw.body_map.is_some() {
-        return Err(anyhow!("body and body_map are mutually exclusive"));
-    }
-    if raw.body.is_some() && raw.body_rule.is_some() {
-        return Err(anyhow!("body and body_rule are mutually exclusive"));
-    }
-    if raw.body_map.is_some() && raw.body_rule.is_some() {
-        return Err(anyhow!("body_map and body_rule are mutually exclusive"));
-    }
-
-    let method =
-        Method::from_bytes(raw.request.method.as_bytes()).map_err(|_| anyhow!("invalid method"))?;
-    if method == Method::GET
-        && (raw.body.is_some() || raw.body_map.is_some() || raw.body_rule.is_some())
-    {
-        return Err(anyhow!("GET with body is not allowed"));
-    }
-    let url_expr = parse_v2_expr(&raw.request.url).map_err(|err| anyhow!(err))?;
-    let mut headers: HashMap<String, rulemorph::v2_model::V2Expr> = HashMap::new();
-    for (key, value) in raw.request.headers.unwrap_or_default() {
-        let expr = parse_v2_expr(&value).map_err(|err| anyhow!(err))?;
-        headers.insert(key.to_lowercase(), expr);
-    }
-    let timeout = parse_duration(&raw.timeout)?;
-    if timeout.is_zero() {
-        return Err(anyhow!("timeout must be > 0"));
-    }
-    let body = match raw.body {
-        Some(value) => Some(parse_v2_expr(&value).map_err(|err| anyhow!(err))?),
-        None => None,
-    };
-    let body_rule = match raw.body_rule.as_ref() {
-        Some(path_str) => {
-            let resolved =
-                resolve_rule_path(path.parent().unwrap_or_else(|| Path::new(".")), path_str);
-            let source = std::fs::read_to_string(&resolved)
-                .with_context(|| format!("failed to read {}", resolved.display()))?;
-            let rule = parse_rule_file_with_format(&source, RuleFormat::from_path(&resolved))
-                .with_context(|| format!("failed to parse {}", resolved.display()))?;
-            validate_rule_file_with_source(&rule, &source)
-                .map_err(|err| anyhow!("failed to validate {}: {:?}", resolved.display(), err))?;
-            let base_dir = resolved
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-            Some(LoadedRule { rule, base_dir })
-        }
-        None => None,
-    };
-    let body_rule_ref = raw.body_rule.as_ref().map(|path_str| {
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        let resolved = resolve_rule_path(base_dir, path_str);
-        rule_ref_from_path(base_dir, &resolved)
-    });
-
-    let retry = compile_retry(raw.retry.as_ref())?;
-    let rule_ref = {
-        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-        Some(rule_ref_from_path(base_dir, path))
-    };
-    Ok(CompiledNetworkRule {
-        request: CompiledNetworkRequest {
-            method,
-            url: url_expr,
-            headers,
-        },
-        timeout,
-        select: raw.select,
-        body,
-        body_map: raw.body_map,
-        body_rule,
-        body_rule_ref,
-        rule_ref,
-        catch: raw.catch.map(CatchSpec::from),
-        retry,
-        internal_auth: raw.internal_auth,
-        base_dir: path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf(),
-    })
-}
-
-fn parse_duration(value: &str) -> Result<Duration> {
-    let trimmed = value.trim();
-    if let Some(ms) = trimmed.strip_suffix("ms") {
-        let amount = u64::from_str(ms.trim()).context("invalid ms")?;
-        return Ok(Duration::from_millis(amount));
-    }
-    if let Some(sec) = trimmed.strip_suffix('s') {
-        let amount = u64::from_str(sec.trim()).context("invalid s")?;
-        return Ok(Duration::from_secs(amount));
-    }
-    Err(anyhow!("invalid duration: {}", value))
-}
-
-fn compile_retry(raw: Option<&NetworkRetry>) -> Result<Option<RetryConfig>> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let max = raw.max.unwrap_or(0);
-    if max == 0 {
-        return Ok(None);
-    }
-    let backoff = match raw.backoff.as_deref().unwrap_or("fixed") {
-        "fixed" => RetryBackoff::Fixed,
-        "linear" => RetryBackoff::Linear,
-        "exponential" => RetryBackoff::Exponential,
-        other => return Err(anyhow!("invalid retry backoff: {}", other)),
-    };
-    let initial_delay = match raw.initial_delay.as_deref() {
-        Some(value) => parse_duration(value)?,
-        None => Duration::from_millis(100),
-    };
-    Ok(Some(RetryConfig {
-        max,
-        backoff,
-        initial_delay,
-    }))
-}
-
-impl RetryConfig {
-    fn delay_for(&self, attempt: u32) -> Duration {
-        let factor = attempt.saturating_add(1);
-        match self.backoff {
-            RetryBackoff::Fixed => self.initial_delay,
-            RetryBackoff::Linear => self
-                .initial_delay
-                .checked_mul(factor)
-                .unwrap_or(Duration::MAX),
-            RetryBackoff::Exponential => {
-                let exp = 2u32.saturating_pow(attempt);
-                self.initial_delay.checked_mul(exp).unwrap_or(Duration::MAX)
-            }
         }
     }
 }
