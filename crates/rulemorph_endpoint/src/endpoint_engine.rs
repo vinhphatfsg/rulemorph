@@ -37,6 +37,7 @@ mod multipart_import;
 mod network_rule;
 mod request_input;
 mod rule_ref;
+mod ssrf_audit;
 mod trace_graph;
 mod validation;
 
@@ -62,6 +63,7 @@ use self::rule_ref::{
     resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
     safe_rule_ref_from_path,
 };
+use self::ssrf_audit::build_ssrf_audit_log;
 #[cfg(test)]
 use self::trace_graph::{build_mapping_ops_with_values, sum_rule_trace_duration_us};
 use self::trace_graph::{
@@ -1261,53 +1263,6 @@ impl EndpointEngine {
             }
         }
         value
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SsrAuditLog {
-    tenant_id: String,
-    rule_ref: String,
-    method: Method,
-    url: String,
-    reason: String,
-}
-
-fn redact_ssrf_url(url: &str) -> String {
-    let Ok(parsed) = url::Url::parse(url) else {
-        return url.to_string();
-    };
-    let host = match parsed.host_str() {
-        Some(host) => host,
-        None => return url.to_string(),
-    };
-    let port = parsed
-        .port()
-        .map(|value| format!(":{value}"))
-        .unwrap_or_default();
-    format!("{}://{}{}{}", parsed.scheme(), host, port, parsed.path())
-}
-
-fn build_ssrf_audit_log(
-    rule: &CompiledNetworkRule,
-    url: &str,
-    reason: &str,
-    request_context: Option<&RequestContext>,
-) -> SsrAuditLog {
-    let tenant_id = request_context
-        .and_then(|ctx| ctx.tenant_id.as_ref())
-        .cloned()
-        .unwrap_or_else(|| "unknown".to_string());
-    let rule_ref = rule
-        .rule_ref
-        .clone()
-        .unwrap_or_else(|| "unknown".to_string());
-    SsrAuditLog {
-        tenant_id,
-        rule_ref,
-        method: rule.request.method.clone(),
-        url: redact_ssrf_url(url),
-        reason: reason.to_string(),
     }
 }
 
