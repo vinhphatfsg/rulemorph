@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use chrono::{Datelike, Utc};
@@ -21,6 +20,7 @@ mod queue_tests;
 mod record_nodes;
 mod sampling;
 mod trace_dir;
+mod trace_identity;
 #[cfg(test)]
 mod write_failure_tests;
 
@@ -48,9 +48,9 @@ use queue::{
 use record_nodes::{normalize_inline_records, split_records_and_nodes};
 use sampling::{TracePriority, should_keep_full_detail, trace_priority};
 use trace_dir::ensure_unique_trace_dir;
+use trace_identity::resolve_trace_id;
 
 use crate::trace_backend::TraceWriteBackend;
-use crate::trace_id::{sanitize_trace_id, trace_id_is_placeholder};
 use crate::trace_schema::{
     TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TRACE_NODE_COUNT_HARD_MAX,
     TRACE_RECORD_COUNT_HARD_MAX, TraceDetailRef, TraceManifest, TraceMasking,
@@ -217,39 +217,7 @@ fn write_trace_bundle_sync(
     let mut options = options.clone();
     options.max_chunk_bytes_uncompressed =
         clamp_max_chunk_bytes_uncompressed(options.max_chunk_bytes_uncompressed);
-    let raw_trace_id = trace
-        .get("trace_id")
-        .and_then(|value| value.as_str())
-        .filter(|value| !value.is_empty())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| {
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos();
-            let fallback = format!("trace-{nanos}");
-            warn!("trace_id missing; using generated id {}", fallback);
-            fallback
-        });
-    let mut trace_id = sanitize_trace_id(&raw_trace_id);
-    let trace_id_is_placeholder = trace_id_is_placeholder(&trace_id);
-    if trace_id.is_empty() || trace_id_is_placeholder {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        trace_id = format!("trace-{nanos}");
-        if trace_id_is_placeholder {
-            warn!("trace_id is insufficient; using generated id {}", trace_id);
-        } else {
-            warn!(
-                "trace_id sanitized to empty; using generated id {}",
-                trace_id
-            );
-        }
-    } else if trace_id != raw_trace_id {
-        warn!("trace_id sanitized from {} to {}", raw_trace_id, trace_id);
-    }
+    let resolved_trace_id = resolve_trace_id(&trace);
     let timestamp = trace
         .get("timestamp")
         .and_then(|value| value.as_str())
@@ -266,7 +234,11 @@ fn write_trace_bundle_sync(
         .join(format!("{year:04}"))
         .join(format!("{month:02}"))
         .join(format!("{day:02}"));
-    let (trace_id, trace_dir) = ensure_unique_trace_dir(&trace_dir_base, trace_id, &raw_trace_id)?;
+    let (trace_id, trace_dir) = ensure_unique_trace_dir(
+        &trace_dir_base,
+        resolved_trace_id.trace_id,
+        &resolved_trace_id.raw_trace_id,
+    )?;
     if let Some(obj) = trace.as_object_mut() {
         obj.insert("trace_id".to_string(), JsonValue::String(trace_id.clone()));
     }
