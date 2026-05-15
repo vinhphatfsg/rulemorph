@@ -1,11 +1,9 @@
 use std::collections::HashSet;
 use std::io::{self, BufReader};
-use std::path::{Path, PathBuf};
 
 use rulemorph::{
-    InputData, InputFormat, RuleFile, RuleFormat, generate_dto, parse_rule_file_with_format,
-    transform_input_with_warnings, transform_input_with_warnings_with_base_dir,
-    validate_rule_file_with_source,
+    InputFormat, generate_dto, transform_input_with_warnings,
+    transform_input_with_warnings_with_base_dir, validate_rule_file_with_source,
 };
 use serde_json::{Map, Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -23,6 +21,7 @@ mod path_expr;
 mod prompts;
 mod protocol;
 mod resources;
+mod rule_source;
 mod rules_yaml;
 mod sandbox;
 mod schemas;
@@ -52,13 +51,14 @@ use self::path_expr::leaf_from_path;
 use self::prompts::{prompts_get_result, prompts_list_result};
 use self::protocol::{OutputMode, read_message, write_message};
 use self::resources::{resources_list_result, resources_read_result};
+use self::rule_source::{
+    OwnedInput, load_rule_from_source, rule_has_file_branch, validate_transform_format,
+};
 use self::rules_yaml::{
     apply_format_override, build_input_yaml, collect_missing_refs, update_yaml_input_spec,
     update_yaml_mapping, yaml_key, yaml_mappings_sequence_mut,
 };
-use self::sandbox::{
-    read_allowed_bytes, read_allowed_file, read_allowed_to_string, write_allowed_output,
-};
+use self::sandbox::{read_allowed_bytes, read_allowed_to_string, write_allowed_output};
 use self::schemas::{
     analyze_input_input_schema, generate_dto_input_schema, generate_rules_from_base_input_schema,
     generate_rules_from_dto_input_schema, list_ops_input_schema, transform_input_schema,
@@ -1177,87 +1177,4 @@ fn run_generate_rules_from_dto_tool(args: &Map<String, Value>) -> Result<Value, 
         ],
         "meta": meta
     }))
-}
-
-fn load_rule_from_source(
-    rules_path: Option<&str>,
-    rules_text: Option<&str>,
-    rules_format: Option<&str>,
-) -> Result<(RuleFile, String, Option<PathBuf>), CallError> {
-    let format_override = parse_rules_format(rules_format)?;
-    match (rules_path, rules_text) {
-        (Some(path), None) => {
-            let (resolved_path, yaml) = read_allowed_file(path, "rules")?;
-            let format = format_override.unwrap_or_else(|| RuleFormat::from_path(&resolved_path));
-            let rule = parse_rule_file_with_format(&yaml, format).map_err(|err| {
-                let message = format!("failed to parse rules: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![parse_error_json(&message, Some(path))]),
-                }
-            })?;
-            let base_dir = resolved_path.parent().map(Path::to_path_buf);
-            Ok((rule, yaml, base_dir))
-        }
-        (None, Some(text)) => {
-            let format = format_override.unwrap_or(RuleFormat::Yaml);
-            let rule = parse_rule_file_with_format(text, format).map_err(|err| {
-                let message = format!("failed to parse rules: {}", err);
-                CallError::Tool {
-                    message: message.clone(),
-                    errors: Some(vec![parse_error_json(&message, None)]),
-                }
-            })?;
-            Ok((rule, text.to_string(), None))
-        }
-        _ => Err(CallError::InvalidParams(
-            "rules_path or rules_text is required".to_string(),
-        )),
-    }
-}
-
-fn parse_rules_format(value: Option<&str>) -> Result<Option<RuleFormat>, CallError> {
-    match value {
-        None => Ok(None),
-        Some(value) if value.eq_ignore_ascii_case("yaml") => Ok(Some(RuleFormat::Yaml)),
-        Some(value) if value.eq_ignore_ascii_case("json") => Ok(Some(RuleFormat::Json)),
-        Some(_) => Err(CallError::InvalidParams(
-            "rules_format must be yaml or json".to_string(),
-        )),
-    }
-}
-
-fn validate_transform_format(value: Option<&str>) -> Result<(), CallError> {
-    let Some(value) = value else {
-        return Ok(());
-    };
-    if matches!(
-        value.to_ascii_lowercase().as_str(),
-        "csv" | "json" | "yaml" | "toml" | "xml" | "html" | "excel"
-    ) {
-        return Ok(());
-    }
-    Err(CallError::InvalidParams(
-        "format must be csv, json, yaml, toml, xml, html, or excel".to_string(),
-    ))
-}
-
-enum OwnedInput {
-    Text(String),
-    Bytes(Vec<u8>),
-}
-
-impl OwnedInput {
-    fn as_input_data(&self) -> InputData<'_> {
-        match self {
-            OwnedInput::Text(value) => InputData::Text(value),
-            OwnedInput::Bytes(value) => InputData::Bytes(value),
-        }
-    }
-}
-
-fn rule_has_file_branch(rule: &RuleFile) -> bool {
-    rule.steps
-        .as_ref()
-        .is_some_and(|steps| steps.iter().any(|step| step.branch.is_some()))
 }
