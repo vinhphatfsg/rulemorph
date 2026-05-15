@@ -34,6 +34,7 @@ mod error;
 mod host;
 mod multipart_import;
 mod network_rule;
+mod rule_ref;
 mod trace_graph;
 mod validation;
 
@@ -50,6 +51,10 @@ use self::multipart_import::{copy_zip_entry_bounded, extract_zip};
 use self::network_rule::{CompiledNetworkRequest, NetworkRequest};
 use self::network_rule::{
     CompiledNetworkRule, NetworkRuleFile, compile_network_rule, compile_retry, parse_duration,
+};
+use self::rule_ref::{
+    resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
+    safe_rule_ref_from_path,
 };
 #[cfg(test)]
 use self::trace_graph::{build_mapping_ops_with_values, sum_rule_trace_duration_us};
@@ -1515,15 +1520,6 @@ fn json_value_kind(value: &JsonValue) -> &'static str {
     }
 }
 
-fn resolve_rule_path(base_dir: &Path, rule: &str) -> PathBuf {
-    let path = PathBuf::from(rule);
-    if path.is_absolute() {
-        path
-    } else {
-        base_dir.join(path)
-    }
-}
-
 fn load_rule_kind(path: &Path) -> Result<RuleKind> {
     let source = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
@@ -1565,39 +1561,6 @@ fn step_label(rule: &str) -> String {
     path.file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or(rule)
-        .to_string()
-}
-
-fn rule_ref_from_rule(base_dir: &Path, rule: &str) -> String {
-    let resolved = resolve_rule_path(base_dir, rule);
-    rule_ref_from_path(base_dir, &resolved)
-}
-
-fn safe_rule_ref_from_path(base_dir: &Path, path: &Path) -> Option<String> {
-    if path.strip_prefix(base_dir).is_ok() {
-        Some(rule_ref_from_path(base_dir, path))
-    } else {
-        None
-    }
-}
-
-fn rule_ref_from_path(base_dir: &Path, path: &Path) -> String {
-    if let Ok(rel) = path.strip_prefix(base_dir) {
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        if rel.starts_with("rules/") {
-            rel
-        } else {
-            format!("rules/{}", rel)
-        }
-    } else {
-        path.display().to_string()
-    }
-}
-
-fn rule_display_name(path: &Path) -> String {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("rule")
         .to_string()
 }
 
