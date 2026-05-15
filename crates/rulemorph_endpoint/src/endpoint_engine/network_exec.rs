@@ -1,0 +1,226 @@
+use axum::http::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::Client;
+use serde_json::{Map as JsonMap, Value as JsonValue};
+
+use crate::ssrf::{ResolvedSsrfTarget, resolve_ssrf_target};
+
+use super::EndpointEngine;
+use super::config::RequestContext;
+use super::error::EndpointError;
+use super::host::internal_hosts_match;
+use super::network_rule::CompiledNetworkRule;
+use super::ssrf_audit::build_ssrf_audit_log;
+
+impl EndpointEngine {
+    fn build_resolved_client(&self, target: &ResolvedSsrfTarget) -> Result<Client, EndpointError> {
+        Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .resolve(&target.host, target.addr)
+            .build()
+            .map_err(|err| EndpointError::network(err.to_string()))
+    }
+
+    pub(super) fn is_internal_target(&self, url: &str) -> bool {
+        let Ok(target) = url::Url::parse(url) else {
+            return false;
+        };
+        let Ok(base) = url::Url::parse(&self.config.internal_base) else {
+            return false;
+        };
+        target.scheme() == base.scheme()
+            && internal_hosts_match(target.host_str(), base.host_str())
+            && target.port_or_known_default() == base.port_or_known_default()
+    }
+
+    pub(super) fn resolve_internal_api_key(
+        &self,
+        request_context: Option<&RequestContext>,
+    ) -> Option<String> {
+        if let Some(context) = request_context {
+            if let Some(key) = context.internal_api_key.as_ref() {
+                return Some(key.clone());
+            }
+        }
+        self.config.internal_api_key.clone()
+    }
+
+    pub(super) fn context_with_internal_api_key(
+        &self,
+        base_context: &JsonValue,
+        internal_api_key: &str,
+    ) -> JsonValue {
+        let mut value = base_context.clone();
+        if let JsonValue::Object(ref mut map) = value {
+            let config = map
+                .entry("config".to_string())
+                .or_insert_with(|| JsonValue::Object(JsonMap::new()));
+            if let JsonValue::Object(config) = config {
+                config.insert(
+                    "internal_api_key".to_string(),
+                    JsonValue::String(internal_api_key.to_string()),
+                );
+            }
+        }
+        value
+    }
+
+    fn ensure_internal_auth_path_allowed(&self, url: &str) -> Result<(), EndpointError> {
+        if self.config.internal_auth_path_allowlist.is_empty() {
+            return Err(EndpointError::invalid(
+                "internal_auth path allowlist not configured",
+            ));
+        }
+        let parsed =
+            url::Url::parse(url).map_err(|_| EndpointError::invalid("invalid internal url"))?;
+        let path = parsed.path();
+        let allowed = self
+            .config
+            .internal_auth_path_allowlist
+            .iter()
+            .any(|entry| {
+                if entry.ends_with('/') {
+                    path.starts_with(entry)
+                } else {
+                    path == entry
+                }
+            });
+        if allowed {
+            Ok(())
+        } else {
+            Err(EndpointError::invalid("internal_auth path not allowed"))
+        }
+    }
+
+    pub(super) async fn send_network_request(
+        &self,
+        rule: &CompiledNetworkRule,
+        url: &str,
+        headers: &HeaderMap,
+        body: Option<&JsonValue>,
+        request_context: Option<&RequestContext>,
+    ) -> Result<JsonValue, EndpointError> {
+        if rule.internal_auth && !self.config.allow_internal_auth {
+            return Err(EndpointError::invalid("internal_auth is not allowed"));
+        }
+        let value = tokio::time::timeout(rule.timeout, async {
+            let internal_auth_allowed = rule.internal_auth && self.config.allow_internal_auth;
+            let is_internal = internal_auth_allowed && self.is_internal_target(url);
+            if rule.internal_auth && self.config.allow_internal_auth && !is_internal {
+                return Err(EndpointError::invalid(
+                    "internal_auth requires internal_base",
+                ));
+            }
+            let allow_private_hosts: &[String] = if is_internal {
+                &self.config.ssrf_private_allowlist
+            } else {
+                &[]
+            };
+            if is_internal {
+                self.ensure_internal_auth_path_allowed(url)?;
+            }
+            let target = match resolve_ssrf_target(
+                url,
+                &self.config.ssrf_allowlist,
+                self.config.ssrf_allow_private,
+                allow_private_hosts,
+            )
+            .await
+            {
+                Ok(target) => target,
+                Err(reason) => {
+                    self.log_ssrf_block(rule, url, &reason, request_context);
+                    return Err(EndpointError::invalid(reason));
+                }
+            };
+            let client = self.build_resolved_client(&target)?;
+            let mut req = client.request(rule.request.method.clone(), url);
+            let mut headers = headers.clone();
+            if is_internal {
+                if let Some(internal_api_key) = self.resolve_internal_api_key(request_context) {
+                    if !headers.contains_key("x-api-key") {
+                        let value = HeaderValue::from_str(&internal_api_key)
+                            .map_err(|_| EndpointError::invalid("invalid internal api key"))?;
+                        headers.insert(HeaderName::from_static("x-api-key"), value);
+                    }
+                }
+                if let Some(tenant_id) = request_context.and_then(|ctx| ctx.tenant_id.as_ref()) {
+                    let value = HeaderValue::from_str(tenant_id)
+                        .map_err(|_| EndpointError::invalid("invalid tenant id"))?;
+                    headers.insert(HeaderName::from_static("x-tenant-id"), value);
+                }
+            }
+            if body.is_some() && !headers.contains_key("content-type") {
+                headers.insert(
+                    HeaderName::from_static("content-type"),
+                    HeaderValue::from_static("application/json"),
+                );
+            }
+            req = req.headers(headers);
+            if let Some(body) = body {
+                req = req.json(body);
+            }
+
+            let mut response = req
+                .send()
+                .await
+                .map_err(|err| EndpointError::network(err.to_string()))?;
+
+            let status = response.status();
+            let status_u16 = status.as_u16();
+            if status.is_client_error() || status.is_server_error() {
+                return Err(EndpointError::http_status(status_u16));
+            }
+
+            let max_response_bytes = self.config.max_response_bytes;
+            if let Some(length) = response.content_length() {
+                if length > max_response_bytes as u64 {
+                    return Err(EndpointError::payload_too_large(max_response_bytes));
+                }
+            }
+            let mut bytes: Vec<u8> = Vec::new();
+            let mut total = 0usize;
+            while let Some(chunk) = response
+                .chunk()
+                .await
+                .map_err(|err| EndpointError::network(err.to_string()))?
+            {
+                total = total.saturating_add(chunk.len());
+                if total > max_response_bytes {
+                    return Err(EndpointError::payload_too_large(max_response_bytes));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            let value = if bytes.is_empty() {
+                JsonValue::Null
+            } else {
+                serde_json::from_slice::<JsonValue>(&bytes)
+                    .map_err(|err| EndpointError::network(err.to_string()))?
+            };
+            Ok(value)
+        })
+        .await
+        .map_err(|_| EndpointError::timeout())??;
+
+        Ok(value)
+    }
+
+    fn log_ssrf_block(
+        &self,
+        rule: &CompiledNetworkRule,
+        url: &str,
+        reason: &str,
+        request_context: Option<&RequestContext>,
+    ) {
+        let log = build_ssrf_audit_log(rule, url, reason, request_context);
+        tracing::warn!(
+            target: "rulemorph_endpoint::ssrf",
+            tenant_id = log.tenant_id,
+            rule_ref = log.rule_ref,
+            method = %log.method,
+            url = log.url,
+            reason = log.reason,
+            "blocked ssrf request"
+        );
+    }
+}
