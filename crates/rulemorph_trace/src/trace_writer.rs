@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Result;
-use chrono::{Datelike, Utc};
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
@@ -37,8 +36,7 @@ use detail::{
 };
 use externalize::externalize_trace_payloads;
 use manifest::{
-    blob_total_bytes, count_inline_nodes, parse_date_parts, parse_rule_meta, parse_summary,
-    reserve_budget,
+    blob_total_bytes, count_inline_nodes, parse_rule_meta, parse_summary, reserve_budget,
 };
 use masking::{apply_masking, normalize_masking_rules};
 use options::clamp_max_chunk_bytes_uncompressed;
@@ -49,7 +47,7 @@ use queue::{
 };
 use record_nodes::{normalize_inline_records, split_records_and_nodes};
 use sampling::{TracePriority, should_keep_full_detail, trace_priority};
-use trace_dir::ensure_unique_trace_dir;
+use trace_dir::{ensure_unique_trace_dir, resolve_trace_timestamp, trace_dir_base_for_timestamp};
 use trace_identity::resolve_trace_id;
 
 use crate::trace_backend::TraceWriteBackend;
@@ -220,22 +218,8 @@ fn write_trace_bundle_sync(
     options.max_chunk_bytes_uncompressed =
         clamp_max_chunk_bytes_uncompressed(options.max_chunk_bytes_uncompressed);
     let resolved_trace_id = resolve_trace_id(&trace);
-    let timestamp = trace
-        .get("timestamp")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| Utc::now().to_rfc3339());
-
-    let (year, month, day) = parse_date_parts(&timestamp).unwrap_or_else(|| {
-        let now = Utc::now();
-        (now.year(), now.month(), now.day())
-    });
-
-    let trace_dir_base = data_dir
-        .join("traces")
-        .join(format!("{year:04}"))
-        .join(format!("{month:02}"))
-        .join(format!("{day:02}"));
+    let timestamp = resolve_trace_timestamp(&trace);
+    let trace_dir_base = trace_dir_base_for_timestamp(data_dir, &timestamp);
     let (trace_id, trace_dir) = ensure_unique_trace_dir(
         &trace_dir_base,
         resolved_trace_id.trace_id,
