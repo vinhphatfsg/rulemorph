@@ -8,7 +8,7 @@ use rulemorph::v2_parser::{parse_v2_condition, parse_v2_expr};
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use super::CatchSpec;
+use super::catch::CatchSpec;
 
 #[derive(Debug)]
 pub(super) struct CompiledEndpointRule {

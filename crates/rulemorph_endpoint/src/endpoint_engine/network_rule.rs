@@ -10,7 +10,7 @@ use rulemorph::{Mapping, RuleFormat, parse_rule_file_with_format, validate_rule_
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use super::{CatchSpec, LoadedRule, resolve_rule_path, rule_ref_from_path};
+use super::{LoadedRule, catch::CatchSpec, resolve_rule_path, rule_ref_from_path};
 
 #[derive(Debug)]
 pub(super) struct CompiledNetworkRule {
