@@ -1,3 +1,4 @@
+#[cfg(test)]
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -8,14 +9,15 @@ use axum::response::Response;
 use chrono::Utc;
 use http_body_util::LengthLimitError;
 use reqwest::Client;
+#[cfg(test)]
+use rulemorph::Mapping;
 use rulemorph::serde_guard::parse_yaml_value_strict;
-use rulemorph::v2_eval::{EvalValue, V2EvalContext, eval_v2_condition, eval_v2_expr};
+use rulemorph::v2_eval::{EvalValue, V2EvalContext, eval_v2_condition};
 #[cfg(test)]
 use rulemorph::v2_parser::parse_v2_expr;
 use rulemorph::{
-    Mapping, RuleFile, RuleFormat, TransformError, get_path, parse_path,
-    parse_rule_file_with_format, transform_record, transform_record_with_base_dir,
-    validate_rule_file_with_source,
+    RuleFile, RuleFormat, get_path, parse_path, parse_rule_file_with_format,
+    transform_record_with_base_dir, validate_rule_file_with_source,
 };
 use rulemorph_trace::{TraceWriter, TraceWriterConfig};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
@@ -32,6 +34,7 @@ mod catch;
 mod config;
 mod endpoint_rule;
 mod error;
+mod expr;
 mod host;
 mod multipart_import;
 mod network_rule;
@@ -47,6 +50,7 @@ pub use self::config::{ApiMode, EngineConfig, RequestContext};
 use self::endpoint_rule::EndpointPath;
 use self::endpoint_rule::{CompiledEndpointRule, CompiledReply, CompiledStep, EndpointRuleFile};
 use self::error::{EndpointError, EndpointErrorKind};
+use self::expr::{apply_mappings_via_rule, build_headers, eval_expr_string, eval_expr_value};
 use self::host::internal_hosts_match;
 use self::multipart_import::build_multipart_import_body;
 #[cfg(test)]
@@ -1263,110 +1267,6 @@ impl EndpointEngine {
             }
         }
         value
-    }
-}
-
-fn build_headers(
-    headers: &HashMap<String, rulemorph::v2_model::V2Expr>,
-    input: &JsonValue,
-    context: Option<&JsonValue>,
-) -> Result<HeaderMap, EndpointError> {
-    let mut map = HeaderMap::new();
-    for (key, expr) in headers {
-        let lower = key.trim().to_ascii_lowercase();
-        if matches!(
-            lower.as_str(),
-            "host" | "forwarded" | "x-forwarded-for" | "x-forwarded-host" | "x-forwarded-proto"
-        ) {
-            return Err(EndpointError::invalid(format!(
-                "disallowed header: {}",
-                key
-            )));
-        }
-        let value = match eval_expr_value(expr, input, context)
-            .map_err(|err| EndpointError::invalid(format!("expr eval error: {}", err)))?
-        {
-            EvalValue::Missing => {
-                continue;
-            }
-            EvalValue::Value(JsonValue::String(value)) => value,
-            EvalValue::Value(other) => {
-                return Err(EndpointError::invalid(format!(
-                    "expected string, got {}",
-                    json_value_kind(&other)
-                )));
-            }
-        };
-        let name = HeaderName::from_bytes(key.as_bytes())
-            .map_err(|_| EndpointError::invalid("invalid header name"))?;
-        let header_value = HeaderValue::from_str(&value)
-            .map_err(|_| EndpointError::invalid("invalid header value"))?;
-        map.insert(name, header_value);
-    }
-    Ok(map)
-}
-
-fn apply_mappings_via_rule(
-    mappings: &[Mapping],
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-) -> Result<Option<JsonValue>, TransformError> {
-    let rule = RuleFile {
-        version: 2,
-        input: rulemorph::InputSpec {
-            format: rulemorph::InputFormat::Json,
-            csv: None,
-            json: None,
-            yaml: None,
-            toml: None,
-            xml: None,
-            html: None,
-            excel: None,
-        },
-        output: None,
-        record_when: None,
-        mappings: mappings.to_vec(),
-        steps: None,
-        finalize: None,
-    };
-    transform_record(&rule, record, context)
-}
-
-fn eval_expr_value(
-    expr: &rulemorph::v2_model::V2Expr,
-    input: &JsonValue,
-    context: Option<&JsonValue>,
-) -> Result<EvalValue> {
-    let ctx = V2EvalContext::new();
-    eval_v2_expr(expr, input, context, &empty_object(), "expr", &ctx)
-        .map_err(|err| anyhow!(err.to_string()))
-}
-
-fn eval_expr_string(
-    expr: &rulemorph::v2_model::V2Expr,
-    input: &JsonValue,
-    context: Option<&JsonValue>,
-) -> Result<String, EndpointError> {
-    match eval_expr_value(expr, input, context)
-        .map_err(|err| EndpointError::invalid(format!("expr eval error: {}", err)))?
-    {
-        EvalValue::Missing => Err(EndpointError::invalid("expected string, got missing")),
-        EvalValue::Value(JsonValue::String(value)) => Ok(value),
-        EvalValue::Value(other) => Err(EndpointError::invalid(format!(
-            "expected string, got {}",
-            json_value_kind(&other)
-        ))),
-    }
-}
-
-fn json_value_kind(value: &JsonValue) -> &'static str {
-    match value {
-        JsonValue::Null => "null",
-        JsonValue::Bool(_) => "bool",
-        JsonValue::Number(_) => "number",
-        JsonValue::String(_) => "string",
-        JsonValue::Array(_) => "array",
-        JsonValue::Object(_) => "object",
     }
 }
 
