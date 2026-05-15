@@ -1,4 +1,6 @@
 use super::options::{DEFAULT_TRACE_QUEUE_CAPACITY, DEFAULT_TRACE_QUEUE_MAX_BYTES};
+use super::queue::trace_id_for_log;
+use super::sampling::TracePriority;
 use super::*;
 use serde_json::json;
 
