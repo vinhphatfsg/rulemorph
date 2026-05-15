@@ -13,12 +13,12 @@ use http_body_util::LengthLimitError;
 #[cfg(test)]
 use rulemorph::Mapping;
 use rulemorph::serde_guard::parse_yaml_value_strict;
-use rulemorph::v2_eval::{EvalValue, V2EvalContext, eval_v2_condition};
+use rulemorph::v2_eval::{V2EvalContext, eval_v2_condition};
 #[cfg(test)]
 use rulemorph::v2_parser::parse_v2_expr;
 use rulemorph::{
-    RuleFile, RuleFormat, get_path, parse_path, parse_rule_file_with_format,
-    transform_record_with_base_dir, validate_rule_file_with_source,
+    RuleFile, RuleFormat, parse_rule_file_with_format, transform_record_with_base_dir,
+    validate_rule_file_with_source,
 };
 use rulemorph_trace::{TraceWriter, TraceWriterConfig};
 use serde_json::{Value as JsonValue, json};
@@ -50,8 +50,12 @@ pub use self::config::{ApiMode, EngineConfig, RequestContext};
 #[cfg(test)]
 use self::endpoint_rule::EndpointPath;
 use self::endpoint_rule::{CompiledEndpointRule, CompiledStep, EndpointRuleFile};
-use self::error::{EndpointError, EndpointErrorKind};
-use self::expr::{apply_mappings_via_rule, build_headers, eval_expr_string, eval_expr_value};
+use self::error::EndpointError;
+#[cfg(test)]
+use self::error::EndpointErrorKind;
+use self::expr::apply_mappings_via_rule;
+#[cfg(test)]
+use self::expr::{build_headers, eval_expr_string};
 #[cfg(test)]
 use self::host::internal_hosts_match;
 use self::multipart_import::build_multipart_import_body;
@@ -723,215 +727,6 @@ impl EndpointEngine {
                 })
             }
         }
-    }
-
-    async fn execute_network(
-        &self,
-        rule: &CompiledNetworkRule,
-        input: &JsonValue,
-        context: Option<&JsonValue>,
-        request_context: Option<&RequestContext>,
-    ) -> Result<NetworkExecution, EndpointError> {
-        if rule.request.method == Method::GET && rule.body.is_some() {
-            return Err(EndpointError::invalid("GET with body is not allowed"));
-        }
-
-        let total_started = Instant::now();
-        let empty_context = empty_object();
-        let base_context = context.unwrap_or(&empty_context);
-        let run_catch = |err: EndpointError,
-                         request_us: u64,
-                         body_rule_trace: Option<JsonValue>|
-         -> Result<NetworkExecution, EndpointError> {
-            if let Some(catch) = &rule.catch {
-                if let Some(output) =
-                    self.run_catch(catch, &err, input, None, &rule.base_dir, base_context)?
-                {
-                    return Ok(NetworkExecution {
-                        output,
-                        request_us,
-                        total_us: total_started.elapsed().as_micros() as u64,
-                        body_rule_trace,
-                    });
-                }
-            }
-            Err(err)
-        };
-
-        let url = match eval_expr_string(&rule.request.url, input, context) {
-            Ok(url) => url,
-            Err(err) => return run_catch(err, 0, None),
-        };
-        let mut network_context_override = None;
-        let context_for_eval = if rule.internal_auth
-            && self.config.allow_internal_auth
-            && self.is_internal_target(&url)
-        {
-            if let Some(internal_api_key) = self.resolve_internal_api_key(request_context) {
-                let value = self.context_with_internal_api_key(base_context, &internal_api_key);
-                network_context_override = Some(value);
-            }
-            network_context_override
-                .as_ref()
-                .map(|value| value as &JsonValue)
-        } else {
-            None
-        };
-        let context_for_eval = context_for_eval.or(context);
-
-        let headers = match build_headers(&rule.request.headers, input, context_for_eval) {
-            Ok(headers) => headers,
-            Err(err) => return run_catch(err, 0, None),
-        };
-        let body = match self.build_network_body(rule, input, context_for_eval) {
-            Ok(body) => body,
-            Err(err) => return run_catch(err, 0, None),
-        };
-        let body_rule_trace =
-            Self::build_body_rule_trace(rule, input, context_for_eval, body.as_ref());
-
-        let mut attempt = 0;
-        loop {
-            let request_started = Instant::now();
-            let result = self
-                .send_network_request(rule, &url, &headers, body.as_ref(), request_context)
-                .await;
-            let request_us = request_started.elapsed().as_micros() as u64;
-            let run_catch_with_body =
-                |err: EndpointError, request_us: u64| -> Result<NetworkExecution, EndpointError> {
-                    run_catch(err, request_us, body_rule_trace.clone())
-                };
-
-            match result {
-                Ok(value) => {
-                    if let Some(select) = &rule.select {
-                        let tokens = match parse_path(select) {
-                            Ok(tokens) => tokens,
-                            Err(_) => {
-                                return run_catch_with_body(
-                                    EndpointError::invalid(format!(
-                                        "invalid select path: {}",
-                                        select
-                                    )),
-                                    request_us,
-                                );
-                            }
-                        };
-                        let selected = match get_path(&value, &tokens) {
-                            Some(selected) => selected,
-                            None => {
-                                return run_catch_with_body(
-                                    EndpointError::invalid(format!(
-                                        "select path not found: {}",
-                                        select
-                                    )),
-                                    request_us,
-                                );
-                            }
-                        };
-                        return Ok(NetworkExecution {
-                            output: selected.clone(),
-                            request_us,
-                            total_us: total_started.elapsed().as_micros() as u64,
-                            body_rule_trace: body_rule_trace.clone(),
-                        });
-                    }
-                    return Ok(NetworkExecution {
-                        output: value,
-                        request_us,
-                        total_us: total_started.elapsed().as_micros() as u64,
-                        body_rule_trace: body_rule_trace.clone(),
-                    });
-                }
-                Err(err) => {
-                    if let Some(retry) = &rule.retry {
-                        if err.kind == EndpointErrorKind::Timeout
-                            || err.kind == EndpointErrorKind::Network
-                        {
-                            if attempt < retry.max {
-                                let delay = retry.delay_for(attempt);
-                                attempt += 1;
-                                tokio::time::sleep(delay).await;
-                                continue;
-                            }
-                        }
-                    }
-                    return run_catch_with_body(err, request_us);
-                }
-            }
-        }
-    }
-
-    fn build_network_body(
-        &self,
-        rule: &CompiledNetworkRule,
-        input: &JsonValue,
-        context: Option<&JsonValue>,
-    ) -> Result<Option<JsonValue>, EndpointError> {
-        if let Some(body_expr) = &rule.body {
-            let value = eval_expr_value(body_expr, input, context)
-                .map_err(|err| EndpointError::invalid(err.to_string()))?;
-            return Ok(match value {
-                EvalValue::Missing => None,
-                EvalValue::Value(val) => Some(val),
-            });
-        }
-        if let Some(mappings) = &rule.body_map {
-            let output = apply_mappings_via_rule(mappings, input, context)
-                .map_err(EndpointError::from_transform)?
-                .unwrap_or_else(empty_object);
-            return Ok(Some(output));
-        }
-        if let Some(body_rule) = &rule.body_rule {
-            let output = transform_record_with_base_dir(
-                &body_rule.rule,
-                input,
-                context,
-                &body_rule.base_dir,
-            )
-            .map_err(EndpointError::from_transform)?;
-            return Ok(output);
-        }
-        Ok(None)
-    }
-
-    fn build_body_rule_trace(
-        rule: &CompiledNetworkRule,
-        input: &JsonValue,
-        context: Option<&JsonValue>,
-        output: Option<&JsonValue>,
-    ) -> Option<JsonValue> {
-        let body_rule = rule.body_rule.as_ref()?;
-        let rule_ref = rule
-            .body_rule_ref
-            .clone()
-            .unwrap_or_else(|| "body_rule".to_string());
-        let name = Path::new(&rule_ref)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("body_rule")
-            .to_string();
-        let rule_trace =
-            build_rule_nodes_from_rule(&body_rule.rule, input, context, &body_rule.base_dir);
-        let duration_us = rule_trace.duration_us;
-        let output_value = rule_trace
-            .pre_finalize_output
-            .clone()
-            .or_else(|| output.cloned())
-            .unwrap_or(JsonValue::Null);
-        Some(build_rule_trace(
-            "normal",
-            name,
-            rule_ref,
-            body_rule.rule.version,
-            json!({}),
-            input.clone(),
-            output_value,
-            rule_trace.nodes,
-            rule_trace.finalize,
-            duration_us,
-            "ok",
-        ))
     }
 
     fn run_catch(
