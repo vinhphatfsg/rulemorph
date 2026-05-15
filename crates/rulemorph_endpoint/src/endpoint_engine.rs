@@ -12,13 +12,10 @@ use http_body_util::LengthLimitError;
 #[cfg(test)]
 use rulemorph::Mapping;
 use rulemorph::serde_guard::parse_yaml_value_strict;
+use rulemorph::transform_record_with_base_dir;
 use rulemorph::v2_eval::{V2EvalContext, eval_v2_condition};
 #[cfg(test)]
 use rulemorph::v2_parser::parse_v2_expr;
-use rulemorph::{
-    RuleFile, RuleFormat, parse_rule_file_with_format, transform_record_with_base_dir,
-    validate_rule_file_with_source,
-};
 use rulemorph_trace::{TraceWriter, TraceWriterConfig};
 use serde_json::{Value as JsonValue, json};
 use tracing::warn;
@@ -39,6 +36,7 @@ mod network_rule;
 mod reply_context;
 mod request_input;
 mod rule_exec;
+mod rule_loader;
 mod rule_ref;
 mod ssrf_audit;
 mod trace_emit;
@@ -62,13 +60,16 @@ use self::multipart_import::build_multipart_import_body;
 #[cfg(test)]
 use self::multipart_import::{copy_zip_entry_bounded, extract_zip};
 #[cfg(test)]
+use self::network_rule::compile_network_rule;
+#[cfg(test)]
 use self::network_rule::{CompiledNetworkRequest, NetworkRequest};
-use self::network_rule::{
-    CompiledNetworkRule, NetworkRuleFile, compile_network_rule, compile_retry, parse_duration,
-};
+use self::network_rule::{CompiledNetworkRule, NetworkRuleFile, compile_retry, parse_duration};
 use self::request_input::{
     build_input, build_input_from_parts, is_multipart_import_request, parse_query,
 };
+#[cfg(test)]
+use self::rule_loader::LoadedRule;
+use self::rule_loader::{RuleKind, load_rule_kind};
 use self::rule_ref::{
     resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
 };
@@ -108,12 +109,6 @@ struct NetworkExecution {
     request_us: u64,
     total_us: u64,
     body_rule_trace: Option<JsonValue>,
-}
-
-#[derive(Debug)]
-struct LoadedRule {
-    rule: RuleFile,
-    base_dir: PathBuf,
 }
 
 impl EndpointEngine {
@@ -492,50 +487,8 @@ impl EndpointEngine {
     }
 }
 
-fn load_rule_kind(path: &Path) -> Result<RuleKind> {
-    let source = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let meta = parse_yaml_value_strict(&source)
-        .map_err(|err| anyhow!(err))
-        .with_context(|| format!("failed to parse {}", path.display()))?;
-    let rule_type = meta
-        .get("type")
-        .and_then(|value| value.as_str())
-        .unwrap_or("normal");
-    match rule_type {
-        "network" => {
-            let raw: NetworkRuleFile = serde_yaml::from_value(meta)
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-            let compiled = compile_network_rule(raw, path)?;
-            Ok(RuleKind::Network(compiled))
-        }
-        "endpoint" => Err(anyhow!("endpoint rule not allowed as step")),
-        _ => {
-            let rule = parse_rule_file_with_format(&source, RuleFormat::from_path(path))
-                .with_context(|| format!("failed to parse {}", path.display()))?;
-            validate_rule_file_with_source(&rule, &source)
-                .map_err(|err| anyhow!("failed to validate {}: {:?}", path.display(), err))?;
-            let base_dir = path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .to_path_buf();
-            Ok(RuleKind::Normal(LoadedRule { rule, base_dir }))
-        }
-    }
-}
-
 fn empty_object() -> JsonValue {
     JsonValue::Object(serde_json::Map::new())
-}
-
-fn yaml_source_to_json(source: &str) -> Option<JsonValue> {
-    let raw = parse_yaml_value_strict(source).ok()?;
-    serde_json::to_value(raw).ok()
-}
-
-enum RuleKind {
-    Normal(LoadedRule),
-    Network(CompiledNetworkRule),
 }
 
 #[cfg(test)]

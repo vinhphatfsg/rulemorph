@@ -4,13 +4,14 @@ use anyhow::Result;
 use rulemorph::transform_record_with_base_dir;
 use serde_json::{Value as JsonValue, json};
 
+use super::EndpointEngine;
 use super::config::RequestContext;
 use super::error::EndpointError;
+use super::rule_loader::{RuleKind, load_rule_kind, yaml_source_to_json};
 use super::rule_ref::{resolve_rule_path, rule_display_name, rule_ref_from_path};
 use super::trace_graph::{
     build_network_nodes_with_timing, build_rule_nodes_from_rule, build_rule_trace,
 };
-use super::{EndpointEngine, RuleKind, load_rule_kind, yaml_source_to_json};
 
 pub(super) struct RuleExecution {
     pub(super) output: JsonValue,
