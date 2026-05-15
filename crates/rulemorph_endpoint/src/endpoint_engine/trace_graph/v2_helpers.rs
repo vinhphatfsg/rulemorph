@@ -1,0 +1,344 @@
+use rulemorph::v2_eval::{
+    EvalValue, V2EvalContext, eval_v2_if_step, eval_v2_let_step, eval_v2_map_step, eval_v2_op_step,
+    eval_v2_pipe, eval_v2_ref, eval_v2_start,
+};
+use rulemorph::v2_model::{V2Ref, V2Start, V2Step};
+use rulemorph::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref};
+use rulemorph::{Expr, PathToken, get_path, parse_path};
+use serde_json::{Map as JsonMap, Value as JsonValue, json};
+
+pub(super) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
+    match expr {
+        Expr::Literal(JsonValue::Array(arr)) => Some(JsonValue::Array(arr.clone())),
+        Expr::Literal(JsonValue::String(value)) => {
+            if is_v2_ref(value) || is_pipe_value(value) || is_literal_escape(value) {
+                Some(JsonValue::String(value.clone()))
+            } else {
+                None
+            }
+        }
+        Expr::Ref(expr_ref)
+            if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) =>
+        {
+            Some(JsonValue::Array(vec![JsonValue::String(
+                expr_ref.ref_path.clone(),
+            )]))
+        }
+        Expr::Chain(chain) => {
+            if let Some(first) = chain.chain.first() {
+                if let Expr::Ref(reference) = first {
+                    if reference.ref_path.starts_with('@') {
+                        let items: Vec<JsonValue> =
+                            chain.chain.iter().map(expr_to_json_value).collect();
+                        return Some(JsonValue::Array(items));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
+    match expr {
+        Expr::Literal(value) => Some(value.clone()),
+        Expr::Ref(reference)
+            if reference.ref_path.starts_with('@') || is_literal_escape(&reference.ref_path) =>
+        {
+            Some(JsonValue::String(reference.ref_path.clone()))
+        }
+        Expr::Chain(chain) => {
+            if let Some(first) = chain.chain.first() {
+                if let Expr::Ref(reference) = first {
+                    if reference.ref_path.starts_with('@') {
+                        let items: Vec<JsonValue> = chain
+                            .chain
+                            .iter()
+                            .map(expr_to_json_value_for_condition)
+                            .collect();
+                        return Some(JsonValue::Array(items));
+                    }
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+fn expr_to_json_value_for_condition(expr: &Expr) -> JsonValue {
+    match expr {
+        Expr::Ref(reference) => JsonValue::String(reference.ref_path.clone()),
+        Expr::Literal(value) => value.clone(),
+        Expr::Op(op) => {
+            let args: Vec<JsonValue> = op
+                .args
+                .iter()
+                .map(expr_to_json_value_for_condition)
+                .collect();
+            let mut obj = JsonMap::new();
+            obj.insert(op.op.clone(), JsonValue::Array(args));
+            JsonValue::Object(obj)
+        }
+        Expr::Chain(chain) => {
+            let items: Vec<JsonValue> = chain
+                .chain
+                .iter()
+                .map(expr_to_json_value_for_condition)
+                .collect();
+            JsonValue::Array(items)
+        }
+    }
+}
+
+pub(super) fn build_pipe_steps(
+    pipe: &rulemorph::v2_model::V2Pipe,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    ctx: &V2EvalContext,
+) -> Vec<JsonValue> {
+    let mut steps = Vec::new();
+    let start_value = eval_v2_start(&pipe.start, record, context, out, "trace", ctx).ok();
+    let start_output = start_value.clone().and_then(eval_value_to_json);
+    steps.push(json!({
+        "index": 0,
+        "label": v2_start_label(&pipe.start),
+        "input": JsonValue::Null,
+        "output": start_output
+    }));
+
+    let mut current = match start_value {
+        Some(value) => value,
+        None => return steps,
+    };
+    let mut current_ctx = ctx.clone();
+
+    for (index, step) in pipe.steps.iter().enumerate() {
+        let step_input = eval_value_to_json(current.clone());
+        current_ctx = current_ctx.clone().with_pipe_value(current.clone());
+        let step_path = format!("trace[{}]", index + 1);
+        match step {
+            V2Step::Op(op_step) => {
+                if let Ok(next) = eval_v2_op_step(
+                    op_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
+                    current = next;
+                }
+            }
+            V2Step::Let(let_step) => {
+                if let Ok(next_ctx) = eval_v2_let_step(
+                    let_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
+                    current_ctx = next_ctx;
+                }
+            }
+            V2Step::If(if_step) => {
+                if let Ok(next) = eval_v2_if_step(
+                    if_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
+                    current = next;
+                }
+            }
+            V2Step::Map(map_step) => {
+                if let Ok(next) = eval_v2_map_step(
+                    map_step,
+                    current.clone(),
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                ) {
+                    current = next;
+                }
+            }
+            V2Step::Ref(v2_ref) => {
+                if let Ok(next) =
+                    eval_v2_ref(v2_ref, record, context, out, &step_path, &current_ctx)
+                {
+                    current = next;
+                }
+            }
+        }
+
+        steps.push(json!({
+            "index": index + 1,
+            "label": v2_step_label(step),
+            "input": step_input,
+            "output": eval_value_to_json(current.clone())
+        }));
+    }
+
+    steps
+}
+
+fn v2_start_label(start: &V2Start) -> String {
+    match start {
+        V2Start::Ref(reference) => v2_ref_label(reference),
+        V2Start::PipeValue => "$".to_string(),
+        V2Start::Literal(value) => value.to_string(),
+        V2Start::V1Expr(_) => "v1_expr".to_string(),
+    }
+}
+
+fn v2_step_label(step: &V2Step) -> String {
+    match step {
+        V2Step::Op(op) => op.op.clone(),
+        V2Step::Let(let_step) => format!(
+            "let {}",
+            let_step
+                .bindings
+                .iter()
+                .map(|(name, _)| name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        V2Step::If(_) => "if".to_string(),
+        V2Step::Map(_) => "map".to_string(),
+        V2Step::Ref(reference) => v2_ref_label(reference),
+    }
+}
+
+fn v2_ref_label(reference: &V2Ref) -> String {
+    match reference {
+        V2Ref::Input(path) => format!("@input.{}", path),
+        V2Ref::Context(path) => format!("@context.{}", path),
+        V2Ref::Out(path) => format!("@out.{}", path),
+        V2Ref::Item(path) => format!("@item.{}", path),
+        V2Ref::Acc(path) => format!("@acc.{}", path),
+        V2Ref::Local(name) => format!("@{}", name),
+    }
+}
+
+pub(super) fn eval_v2_start_value(
+    start: &rulemorph::v2_model::V2Start,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    ctx: &V2EvalContext,
+) -> Option<JsonValue> {
+    eval_v2_start(start, record, context, out, "trace", ctx)
+        .ok()
+        .and_then(eval_value_to_json)
+}
+
+pub(super) fn eval_v2_pipe_value(
+    pipe: &rulemorph::v2_model::V2Pipe,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    ctx: &V2EvalContext,
+) -> Option<JsonValue> {
+    eval_v2_pipe(pipe, record, context, out, "trace", ctx)
+        .ok()
+        .and_then(eval_value_to_json)
+}
+
+fn eval_value_to_json(value: EvalValue) -> Option<JsonValue> {
+    match value {
+        EvalValue::Missing => None,
+        EvalValue::Value(value) => Some(value),
+    }
+}
+
+pub(super) fn resolve_source_value(
+    source: &str,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+) -> Option<JsonValue> {
+    let trimmed = source.strip_prefix('@').unwrap_or(source);
+    let (prefix, path) = trimmed.split_once('.').unwrap_or(("input", trimmed));
+    if path.is_empty() {
+        return None;
+    }
+    let target = match prefix {
+        "input" => Some(record),
+        "context" => context,
+        "out" => Some(out),
+        _ => Some(record),
+    }?;
+    let tokens = parse_path(path).ok()?;
+    get_path(target, &tokens).cloned()
+}
+
+pub(super) fn set_path_value(root: &mut JsonValue, path: &str, value: JsonValue) -> Result<(), ()> {
+    let tokens = parse_path(path).map_err(|_| ())?;
+    if tokens.is_empty() {
+        return Err(());
+    }
+    let mut current = root;
+    for (index, token) in tokens.iter().enumerate() {
+        let is_last = index == tokens.len() - 1;
+        let key = match token {
+            PathToken::Key(key) => key,
+            PathToken::Index(_) => return Err(()),
+        };
+
+        if is_last {
+            match current {
+                JsonValue::Object(map) => {
+                    map.insert(key.to_string(), value);
+                }
+                _ => {
+                    let mut map = JsonMap::new();
+                    map.insert(key.to_string(), value);
+                    *current = JsonValue::Object(map);
+                }
+            }
+            return Ok(());
+        }
+
+        let next = match current {
+            JsonValue::Object(map) => map
+                .entry(key.to_string())
+                .or_insert_with(|| JsonValue::Object(JsonMap::new())),
+            _ => {
+                *current = JsonValue::Object(JsonMap::new());
+                if let JsonValue::Object(map) = current {
+                    map.entry(key.to_string())
+                        .or_insert_with(|| JsonValue::Object(JsonMap::new()))
+                } else {
+                    return Err(());
+                }
+            }
+        };
+        current = next;
+    }
+    Err(())
+}
+
+pub(super) fn expr_to_json_value(expr: &Expr) -> JsonValue {
+    match expr {
+        Expr::Ref(reference) => json!({ "ref": reference.ref_path }),
+        Expr::Op(op) => {
+            let args: Vec<JsonValue> = op.args.iter().map(expr_to_json_value).collect();
+            json!({ "op": op.op, "args": args })
+        }
+        Expr::Chain(chain) => {
+            let items: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+            JsonValue::Array(items)
+        }
+        Expr::Literal(value) => value.clone(),
+    }
+}
