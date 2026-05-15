@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use anyhow::Result;
 use serde_json::Value as JsonValue;
@@ -22,6 +21,7 @@ mod trace_dir;
 mod trace_identity;
 #[cfg(test)]
 mod write_failure_tests;
+mod writer;
 
 #[cfg(test)]
 use atomic::fail_write_for_trace_id;
@@ -32,7 +32,6 @@ use chunk_write::{
 };
 use cleanup::{TraceDirGuard, cleanup_detail_files};
 use detail::{detail_status_for_level, initial_detail_reasons, strip_trace_detail};
-use enqueue::enqueue_trace;
 use externalize::externalize_trace_payloads;
 use manifest::{
     blob_total_bytes, count_inline_nodes, parse_rule_meta, parse_summary, reserve_budget,
@@ -40,80 +39,18 @@ use manifest::{
 use masking::{apply_masking, normalize_masking_rules};
 use options::clamp_max_chunk_bytes_uncompressed;
 pub use options::{TraceCompression, TraceDetailLevel, TraceWriteOptions, TraceWriterConfig};
-use queue::{TraceQueue, trace_writer_loop};
 use record_nodes::{normalize_inline_records, split_records_and_nodes};
 use sampling::should_keep_full_detail;
 use trace_dir::{ensure_unique_trace_dir, resolve_trace_timestamp, trace_dir_base_for_timestamp};
 use trace_identity::resolve_trace_id;
+pub use writer::TraceWriter;
 
-use crate::trace_backend::TraceWriteBackend;
 use crate::trace_schema::{
     TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TRACE_NODE_COUNT_HARD_MAX,
     TRACE_RECORD_COUNT_HARD_MAX, TraceDetailRef, TraceManifest, TraceMasking,
 };
 
 const TRACE_SCHEMA_VERSION: u8 = 1;
-
-#[derive(Clone)]
-struct FileTraceWriteBackend {
-    data_dir: PathBuf,
-}
-
-impl FileTraceWriteBackend {
-    fn new(data_dir: PathBuf) -> Self {
-        Self { data_dir }
-    }
-}
-
-impl TraceWriteBackend for FileTraceWriteBackend {
-    fn write_trace_bundle(&self, trace: &JsonValue, options: &TraceWriteOptions) -> Result<()> {
-        write_trace_bundle_sync(&self.data_dir, trace, options).map(|_| ())
-    }
-}
-
-#[derive(Clone)]
-pub struct TraceWriter {
-    queue: Arc<TraceQueue>,
-    default_options: TraceWriteOptions,
-}
-
-impl TraceWriter {
-    pub fn new(data_dir: PathBuf) -> Self {
-        Self::with_config(data_dir, TraceWriterConfig::default())
-    }
-
-    pub fn with_config(data_dir: PathBuf, config: TraceWriterConfig) -> Self {
-        let backend = config
-            .write_backend
-            .unwrap_or_else(|| Arc::new(FileTraceWriteBackend::new(data_dir)));
-        let queue = Arc::new(TraceQueue::new(
-            backend,
-            config.queue_capacity,
-            config.queue_max_bytes,
-        ));
-        if config.spawn_worker {
-            let worker_queue = queue.clone();
-            std::thread::spawn(move || trace_writer_loop(worker_queue));
-        }
-        Self {
-            queue,
-            default_options: config.write_options,
-        }
-    }
-
-    pub fn enqueue(&self, trace: JsonValue) -> bool {
-        self.enqueue_with_options(trace, None)
-    }
-
-    pub fn enqueue_with_options(
-        &self,
-        trace: JsonValue,
-        options: Option<TraceWriteOptions>,
-    ) -> bool {
-        let options = options.unwrap_or_else(|| self.default_options.clone());
-        enqueue_trace(&self.queue, trace, options)
-    }
-}
 
 pub async fn write_trace_bundle(
     data_dir: &Path,
@@ -127,7 +64,7 @@ pub async fn write_trace_bundle(
         .await?
 }
 
-fn write_trace_bundle_sync(
+pub(super) fn write_trace_bundle_sync(
     data_dir: &Path,
     trace: &JsonValue,
     options: &TraceWriteOptions,
