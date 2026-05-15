@@ -10,6 +10,7 @@ use tracing::warn;
 mod atomic;
 mod chunk_write;
 mod cleanup;
+mod detail;
 mod externalize;
 mod manifest;
 mod masking;
@@ -31,6 +32,7 @@ use chunk_write::{
     write_record_chunks,
 };
 use cleanup::{TraceDirGuard, cleanup_detail_files};
+use detail::{append_detail_reason, strip_trace_detail};
 use externalize::externalize_trace_payloads;
 use manifest::{
     blob_total_bytes, count_inline_nodes, parse_date_parts, parse_rule_meta, parse_summary,
@@ -55,22 +57,6 @@ use crate::trace_schema::{
 };
 
 const TRACE_SCHEMA_VERSION: u8 = 1;
-
-fn append_detail_reason(existing: Option<String>, reason: &str) -> Option<String> {
-    match existing {
-        None => Some(reason.to_string()),
-        Some(current) => {
-            let already_present = current
-                .split(|ch| ch == ',' || ch == ';')
-                .any(|item| item.trim() == reason);
-            if already_present {
-                Some(current)
-            } else {
-                Some(format!("{current},{reason}"))
-            }
-        }
-    }
-}
 
 #[derive(Clone)]
 struct FileTraceWriteBackend {
@@ -208,15 +194,6 @@ impl TraceWriter {
         self.queue.cvar.notify_one();
         true
     }
-}
-
-fn strip_trace_detail(trace: &mut JsonValue) {
-    let Some(obj) = trace.as_object_mut() else {
-        return;
-    };
-    obj.remove("records");
-    obj.remove("finalize");
-    obj.remove("nodes");
 }
 
 pub async fn write_trace_bundle(
