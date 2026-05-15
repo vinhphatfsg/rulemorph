@@ -4,7 +4,7 @@ use super::config::RequestContext;
 use super::network_rule::CompiledNetworkRule;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SsrAuditLog {
+pub(super) struct SsrfAuditLog {
     pub(super) tenant_id: String,
     pub(super) rule_ref: String,
     pub(super) method: Method,
@@ -32,7 +32,7 @@ pub(super) fn build_ssrf_audit_log(
     url: &str,
     reason: &str,
     request_context: Option<&RequestContext>,
-) -> SsrAuditLog {
+) -> SsrfAuditLog {
     let tenant_id = request_context
         .and_then(|ctx| ctx.tenant_id.as_ref())
         .cloned()
@@ -41,7 +41,7 @@ pub(super) fn build_ssrf_audit_log(
         .rule_ref
         .clone()
         .unwrap_or_else(|| "unknown".to_string());
-    SsrAuditLog {
+    SsrfAuditLog {
         tenant_id,
         rule_ref,
         method: rule.request.method.clone(),
