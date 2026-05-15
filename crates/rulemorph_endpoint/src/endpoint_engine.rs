@@ -8,7 +8,6 @@ use anyhow::{Context, Result, anyhow};
 use axum::http::HeaderMap;
 use axum::http::{Method, Request};
 use axum::response::Response;
-use chrono::Utc;
 use http_body_util::LengthLimitError;
 #[cfg(test)]
 use rulemorph::Mapping;
@@ -27,7 +26,6 @@ use tracing::warn;
 const MULTIPART_IMPORT_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const MULTIPART_IMPORT_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const MULTIPART_IMPORT_MAX_ENTRIES: usize = 4096;
-use uuid::Uuid;
 
 mod catch;
 mod config;
@@ -43,6 +41,7 @@ mod request_input;
 mod rule_exec;
 mod rule_ref;
 mod ssrf_audit;
+mod trace_emit;
 mod trace_graph;
 mod validation;
 
@@ -50,7 +49,7 @@ use self::catch::CatchSpec;
 pub use self::config::{ApiMode, EngineConfig, RequestContext};
 #[cfg(test)]
 use self::endpoint_rule::EndpointPath;
-use self::endpoint_rule::{CompiledEndpointRule, CompiledStep, EndpointRuleFile};
+use self::endpoint_rule::{CompiledEndpointRule, EndpointRuleFile};
 use self::error::EndpointError;
 #[cfg(test)]
 use self::error::EndpointErrorKind;
@@ -72,7 +71,6 @@ use self::request_input::{
 };
 use self::rule_ref::{
     resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
-    safe_rule_ref_from_path,
 };
 #[cfg(test)]
 use self::ssrf_audit::build_ssrf_audit_log;
@@ -460,118 +458,6 @@ impl EndpointEngine {
         response_result
     }
 
-    fn build_trace(
-        &self,
-        method: &Method,
-        path: &str,
-        input: JsonValue,
-        output: JsonValue,
-        status: String,
-        error: Option<JsonValue>,
-        nodes: Vec<JsonValue>,
-        duration_us: u64,
-    ) -> JsonValue {
-        let trace_id = Uuid::new_v4().to_string();
-        let now = Utc::now();
-        let rule_path = rule_ref_from_path(
-            &self.endpoint_rule.base_dir,
-            &self.endpoint_rule.source_path,
-        );
-        let rule_source = self.raw_rule_source.clone();
-        let record = json!({
-            "index": 0,
-            "status": status,
-            "duration_us": duration_us,
-            "input": input,
-            "output": output,
-            "nodes": nodes,
-            "error": error
-        });
-        json!({
-            "trace_id": trace_id,
-            "status": status,
-            "timestamp": now.to_rfc3339(),
-            "rule": {
-                "type": "endpoint",
-                "name": format!("{} {}", method.as_str(), path),
-                "path": rule_path,
-                "version": 2
-            },
-            "input_format": "json",
-            "rule_source": rule_source,
-            "records": [record],
-            "summary": {
-                "record_total": 1,
-                "record_success": if status == "ok" { 1 } else { 0 },
-                "record_failed": if status == "ok" { 0 } else { 1 },
-                "duration_us": duration_us
-            }
-        })
-    }
-
-    fn build_step_trace(
-        &self,
-        step_index: usize,
-        step: &CompiledStep,
-        status: &str,
-        input: JsonValue,
-        output: Option<JsonValue>,
-        error: Option<EndpointError>,
-        duration_us: u64,
-        child_trace: Option<JsonValue>,
-    ) -> JsonValue {
-        let label = step_label(&step.rule);
-        let rule_ref = rule_ref_from_rule(&self.endpoint_rule.base_dir, &step.rule);
-        let mut node = json!({
-            "id": format!("step-{}", step_index),
-            "kind": "endpoint",
-            "label": label,
-            "status": status,
-            "input": input,
-            "output": output,
-            "duration_us": duration_us,
-            "meta": {
-                "rule_ref": rule_ref,
-                "step_index": step_index
-            }
-        });
-        if let Some(err) = error {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("error".to_string(), self.endpoint_error_to_trace(&err));
-            }
-        }
-        if let Some(child_trace) = child_trace {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("child_trace".to_string(), child_trace);
-            }
-        }
-        node
-    }
-
-    fn endpoint_error_to_trace(&self, err: &EndpointError) -> JsonValue {
-        let path = err
-            .path
-            .as_ref()
-            .and_then(|path| safe_rule_ref_from_path(&self.endpoint_rule.base_dir, path));
-        json!({
-            "code": format!("{:?}", err.kind),
-            "message": err.message,
-            "path": path
-        })
-    }
-
-    async fn write_trace(&self, trace: JsonValue) -> Result<()> {
-        let trace_id = trace
-            .get("trace_id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("unknown")
-            .to_string();
-        if !self.trace_writer.enqueue(trace) {
-            warn!("trace queue full; dropped trace {}", trace_id);
-        }
-        Ok(())
-    }
-
     fn run_catch(
         &self,
         catch: &CatchSpec,
@@ -640,14 +526,6 @@ fn load_rule_kind(path: &Path) -> Result<RuleKind> {
 
 fn empty_object() -> JsonValue {
     JsonValue::Object(serde_json::Map::new())
-}
-
-fn step_label(rule: &str) -> String {
-    let path = Path::new(rule);
-    path.file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(rule)
-        .to_string()
 }
 
 fn yaml_source_to_json(source: &str) -> Option<JsonValue> {
