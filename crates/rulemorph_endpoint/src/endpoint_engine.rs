@@ -11,7 +11,7 @@ use http_body_util::LengthLimitError;
 use reqwest::Client;
 use rulemorph::serde_guard::parse_yaml_value_strict;
 use rulemorph::v2_eval::{EvalValue, V2EvalContext, eval_v2_condition, eval_v2_expr};
-use rulemorph::v2_parser::{parse_v2_condition, parse_v2_expr};
+use rulemorph::v2_parser::parse_v2_expr;
 use rulemorph::{
     Mapping, RuleFile, RuleFormat, TransformError, get_path, parse_path,
     parse_rule_file_with_format, transform_record, transform_record_with_base_dir,
@@ -30,6 +30,7 @@ use uuid::Uuid;
 use crate::ssrf::{ResolvedSsrfTarget, resolve_ssrf_target};
 
 mod config;
+mod endpoint_rule;
 mod error;
 mod host;
 mod multipart_import;
@@ -37,6 +38,9 @@ mod trace_graph;
 mod validation;
 
 pub use self::config::{ApiMode, EngineConfig, RequestContext};
+#[cfg(test)]
+use self::endpoint_rule::EndpointPath;
+use self::endpoint_rule::{CompiledEndpointRule, CompiledReply, CompiledStep, EndpointRuleFile};
 use self::error::{EndpointError, EndpointErrorKind};
 use self::host::internal_hosts_match;
 use self::multipart_import::build_multipart_import_body;
@@ -1287,245 +1291,6 @@ fn build_ssrf_audit_log(
         url: redact_ssrf_url(url),
         reason: reason.to_string(),
     }
-}
-
-#[derive(Debug)]
-struct CompiledEndpointRule {
-    base_dir: PathBuf,
-    source_path: PathBuf,
-    endpoints: Vec<CompiledEndpoint>,
-}
-
-impl CompiledEndpointRule {
-    fn compile(raw: EndpointRuleFile, source_path: &Path) -> Result<Self> {
-        let base_dir = source_path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-        let endpoints = raw
-            .endpoints
-            .into_iter()
-            .map(|endpoint| CompiledEndpoint::compile(endpoint, &base_dir))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Self {
-            base_dir,
-            source_path: source_path.to_path_buf(),
-            endpoints,
-        })
-    }
-
-    fn match_endpoint(&self, method: &Method, path: &str) -> Option<EndpointMatch<'_>> {
-        self.endpoints
-            .iter()
-            .find(|endpoint| endpoint.matches(method, path))
-            .map(|endpoint| EndpointMatch {
-                params: endpoint.matcher.capture(path),
-                endpoint,
-            })
-    }
-}
-
-struct EndpointMatch<'a> {
-    endpoint: &'a CompiledEndpoint,
-    params: HashMap<String, String>,
-}
-
-#[derive(Debug)]
-struct CompiledEndpoint {
-    method: Method,
-    matcher: EndpointPath,
-    input: Option<Vec<Mapping>>,
-    steps: Vec<CompiledStep>,
-    reply: CompiledReply,
-    catch: Option<CatchSpec>,
-}
-
-impl CompiledEndpoint {
-    fn compile(raw: EndpointDef, _base_dir: &Path) -> Result<Self> {
-        let method =
-            Method::from_bytes(raw.method.as_bytes()).map_err(|_| anyhow!("invalid method"))?;
-        let matcher = EndpointPath::parse(&raw.path)?;
-        let steps = raw
-            .steps
-            .into_iter()
-            .map(CompiledStep::compile)
-            .collect::<Result<Vec<_>>>()?;
-        let reply = CompiledReply::compile(raw.reply)?;
-        Ok(Self {
-            method,
-            matcher,
-            input: raw.input,
-            steps,
-            reply,
-            catch: raw.catch.map(CatchSpec::from),
-        })
-    }
-
-    fn matches(&self, method: &Method, path: &str) -> bool {
-        if &self.method != method {
-            return false;
-        }
-        self.matcher.matches(path)
-    }
-}
-
-#[derive(Debug)]
-struct CompiledStep {
-    rule: String,
-    with: Option<JsonValue>,
-    when: Option<rulemorph::v2_model::V2Condition>,
-    catch: Option<CatchSpec>,
-}
-
-impl CompiledStep {
-    fn compile(raw: EndpointStep) -> Result<Self> {
-        let when = match raw.when {
-            Some(value) => Some(parse_v2_condition(&value).map_err(|err| anyhow!(err))?),
-            None => None,
-        };
-        Ok(Self {
-            rule: raw.rule,
-            with: raw.with,
-            when,
-            catch: raw.catch.map(CatchSpec::from),
-        })
-    }
-}
-
-#[derive(Debug)]
-struct CompiledReply {
-    status: rulemorph::v2_model::V2Expr,
-    headers: HashMap<String, String>,
-    body: Option<rulemorph::v2_model::V2Expr>,
-}
-
-impl CompiledReply {
-    fn compile(raw: EndpointReply) -> Result<Self> {
-        let status = parse_v2_expr(&raw.status).map_err(|err| anyhow!(err))?;
-        let body = match raw.body {
-            Some(value) => Some(parse_v2_expr(&value).map_err(|err| anyhow!(err))?),
-            None => None,
-        };
-        let headers = raw
-            .headers
-            .unwrap_or_default()
-            .into_iter()
-            .map(|(k, v)| (k.to_lowercase(), v))
-            .collect();
-        Ok(Self {
-            status,
-            headers,
-            body,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct EndpointPath {
-    segments: Vec<PathSegment>,
-}
-
-#[derive(Debug)]
-enum PathSegment {
-    Literal(String),
-    Param(String),
-}
-
-impl EndpointPath {
-    fn parse(path: &str) -> Result<Self> {
-        if !path.starts_with('/') {
-            return Err(anyhow!("endpoint path must start with /"));
-        }
-        let segments = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|seg| !seg.is_empty())
-            .map(|seg| {
-                if let Some(param) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-                    if param.is_empty() {
-                        return Err(anyhow!("empty path param"));
-                    }
-                    Ok(PathSegment::Param(param.to_string()))
-                } else {
-                    Ok(PathSegment::Literal(seg.to_string()))
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Self { segments })
-    }
-
-    fn matches(&self, path: &str) -> bool {
-        let parts: Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|seg| !seg.is_empty())
-            .collect();
-        if parts.len() != self.segments.len() {
-            return false;
-        }
-        for (seg, part) in self.segments.iter().zip(parts.iter()) {
-            match seg {
-                PathSegment::Literal(lit) if lit != part => return false,
-                _ => {}
-            }
-        }
-        true
-    }
-
-    fn capture(&self, path: &str) -> HashMap<String, String> {
-        let parts: Vec<&str> = path
-            .trim_start_matches('/')
-            .split('/')
-            .filter(|seg| !seg.is_empty())
-            .collect();
-        let mut params = HashMap::new();
-        for (seg, part) in self.segments.iter().zip(parts.iter()) {
-            if let PathSegment::Param(name) = seg {
-                params.insert(name.clone(), (*part).to_string());
-            }
-        }
-        params
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EndpointRuleFile {
-    version: u8,
-    #[serde(rename = "type")]
-    rule_type: String,
-    endpoints: Vec<EndpointDef>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EndpointDef {
-    method: String,
-    path: String,
-    #[serde(default)]
-    input: Option<Vec<Mapping>>,
-    steps: Vec<EndpointStep>,
-    reply: EndpointReply,
-    #[serde(default)]
-    catch: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EndpointStep {
-    rule: String,
-    #[serde(default)]
-    with: Option<JsonValue>,
-    #[serde(default)]
-    when: Option<JsonValue>,
-    #[serde(default)]
-    catch: Option<HashMap<String, String>>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct EndpointReply {
-    status: JsonValue,
-    #[serde(default)]
-    headers: Option<HashMap<String, String>>,
-    #[serde(default)]
-    body: Option<JsonValue>,
 }
 
 #[derive(Debug)]
