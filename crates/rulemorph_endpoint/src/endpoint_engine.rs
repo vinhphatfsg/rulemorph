@@ -35,6 +35,7 @@ mod error;
 mod host;
 mod multipart_import;
 mod network_rule;
+mod request_input;
 mod rule_ref;
 mod trace_graph;
 mod validation;
@@ -53,6 +54,9 @@ use self::multipart_import::{copy_zip_entry_bounded, extract_zip};
 use self::network_rule::{CompiledNetworkRequest, NetworkRequest};
 use self::network_rule::{
     CompiledNetworkRule, NetworkRuleFile, compile_network_rule, compile_retry, parse_duration,
+};
+use self::request_input::{
+    build_input, build_input_from_parts, is_multipart_import_request, parse_query,
 };
 use self::rule_ref::{
     resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
@@ -1307,60 +1311,6 @@ fn build_ssrf_audit_log(
     }
 }
 
-fn build_input(
-    parts: &axum::http::request::Parts,
-    path_params: &HashMap<String, String>,
-    body: Option<JsonValue>,
-) -> Result<JsonValue, EndpointError> {
-    let query = parse_query(parts.uri.query())?;
-    Ok(build_input_from_parts(parts, path_params, body, query))
-}
-
-fn build_input_from_parts(
-    parts: &axum::http::request::Parts,
-    path_params: &HashMap<String, String>,
-    body: Option<JsonValue>,
-    query: JsonValue,
-) -> JsonValue {
-    let mut headers: HashMap<String, String> = HashMap::new();
-    for (name, value) in parts.headers.iter() {
-        let key = name.as_str().to_lowercase();
-        let value = value.to_str().unwrap_or_default();
-        if let Some(existing) = headers.get_mut(&key) {
-            existing.push(',');
-            existing.push_str(value);
-        } else {
-            headers.insert(key, value.to_string());
-        }
-    }
-
-    let mut input = json!({
-        "method": parts.method.as_str(),
-        "path": path_params,
-        "query": query,
-        "headers": headers,
-    });
-
-    if let Some(body) = body {
-        if let JsonValue::Object(ref mut map) = input {
-            map.insert("body".to_string(), body);
-        }
-    }
-
-    input
-}
-
-fn is_multipart_form_data(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| multer::parse_boundary(value).is_ok())
-}
-
-fn is_multipart_import_request(method: &Method, path: &str, headers: &HeaderMap) -> bool {
-    method == Method::POST && path == "/api/import" && is_multipart_form_data(headers)
-}
-
 fn build_headers(
     headers: &HashMap<String, rulemorph::v2_model::V2Expr>,
     input: &JsonValue,
@@ -1399,24 +1349,6 @@ fn build_headers(
         map.insert(name, header_value);
     }
     Ok(map)
-}
-
-fn parse_query(query: Option<&str>) -> Result<JsonValue, EndpointError> {
-    let mut map: HashMap<String, String> = HashMap::new();
-    if let Some(q) = query {
-        for (key, value) in url::form_urlencoded::parse(q.as_bytes()) {
-            let key = key.into_owned();
-            let value = value.into_owned();
-            if map.contains_key(&key) {
-                return Err(EndpointError::invalid(format!(
-                    "duplicate query param: {}",
-                    key
-                )));
-            }
-            map.insert(key, value);
-        }
-    }
-    serde_json::to_value(map).map_err(|err| EndpointError::invalid(err.to_string()))
 }
 
 fn apply_mappings_via_rule(
