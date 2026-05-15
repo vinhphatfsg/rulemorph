@@ -2,8 +2,8 @@ use csv::ReaderBuilder;
 use rulemorph::serde_guard::parse_json_value_strict;
 use serde_json::{Map, Value};
 
+use crate::diagnostics::parse_error_json;
 use crate::errors::CallError;
-use crate::parse_error_json;
 use crate::path_expr::get_value_at_path;
 
 #[derive(Clone, Copy)]

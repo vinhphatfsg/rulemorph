@@ -4,8 +4,8 @@ use rulemorph::{Expr, InputFormat, RuleFile};
 use serde_json::{Value, json};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
+use crate::diagnostics::parse_error_json;
 use crate::errors::CallError;
-use crate::parse_error_json;
 
 pub(crate) fn build_input_yaml(format: &str, records_path: Option<&str>) -> YamlValue {
     let mut input_map = YamlMapping::new();
