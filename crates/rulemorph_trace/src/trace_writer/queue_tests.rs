@@ -1,3 +1,4 @@
+use super::options::{DEFAULT_TRACE_QUEUE_CAPACITY, DEFAULT_TRACE_QUEUE_MAX_BYTES};
 use super::*;
 use serde_json::json;
 
