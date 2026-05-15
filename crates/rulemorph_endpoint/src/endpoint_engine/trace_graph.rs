@@ -18,10 +18,10 @@ use rulemorph::{
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use uuid::Uuid;
 
+use super::rule_loader::{RuleKind, load_rule_kind, yaml_source_to_json};
 use super::{
-    CompiledNetworkRule, NetworkExecution, RuleKind, empty_object, load_rule_kind,
-    resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
-    yaml_source_to_json,
+    CompiledNetworkRule, NetworkExecution, empty_object, resolve_rule_path, rule_display_name,
+    rule_ref_from_path, rule_ref_from_rule,
 };
 
 pub(super) fn build_rule_trace(
