@@ -1,6 +1,6 @@
 use serde_json::Value as JsonValue;
 
-use super::{DEFAULT_SAMPLING_RATE, TraceWriteOptions};
+use super::{TraceWriteOptions, options::DEFAULT_SAMPLING_RATE};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) enum TracePriority {
