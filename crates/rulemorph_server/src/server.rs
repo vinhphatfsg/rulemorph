@@ -13,7 +13,6 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, OnceCell, broadcast};
 use tower_http::services::{ServeDir, ServeFile};
 
@@ -34,6 +33,7 @@ static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../rulemorph_ui/ui/di
 mod api_key_routes;
 mod auth;
 mod import_zip;
+mod rate_limit;
 mod trace_routes;
 
 use self::api_key_routes::{issue_api_key, list_api_keys, revoke_api_key, rotate_api_key};
@@ -49,6 +49,7 @@ use self::auth::{
 #[cfg(test)]
 use self::import_zip::copy_zip_entry_bounded;
 use self::import_zip::{extract_zip, resolve_bundle_root, validate_bundle_path};
+pub use self::rate_limit::RateLimiter;
 use self::trace_routes::{
     get_api_graph, get_trace, get_trace_finalize, get_trace_manifest, get_trace_nodes_chunk,
     get_trace_records_chunk, list_traces, stream_traces,
@@ -106,65 +107,9 @@ pub struct TenantRegistry {
     tenants: Mutex<HashMap<String, Arc<OnceCell<Arc<TenantResources>>>>>,
 }
 
-#[derive(Debug)]
-pub struct RateLimiter {
-    limit: u64,
-    state: Mutex<HashMap<String, RateLimitState>>,
-    max_entries: usize,
-    ttl: Duration,
-}
-
-#[derive(Debug)]
-struct RateLimitState {
-    window_start: Instant,
-    count: u64,
-    last_seen: Instant,
-}
-
 const IMPORT_ZIP_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_ZIP_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const IMPORT_ZIP_MAX_ENTRIES: usize = 4096;
-impl RateLimiter {
-    pub fn new(limit: u64) -> Self {
-        Self {
-            limit,
-            state: Mutex::new(HashMap::new()),
-            max_entries: 10_000,
-            ttl: Duration::from_secs(600),
-        }
-    }
-
-    pub async fn allow(&self, key: &str) -> bool {
-        let mut state = self.state.lock().await;
-        let now = Instant::now();
-        if state.len() >= self.max_entries {
-            state.retain(|_, entry| now.duration_since(entry.last_seen) <= self.ttl);
-            if state.len() >= self.max_entries {
-                if let Some((oldest_key, _)) = state.iter().min_by_key(|(_, entry)| entry.last_seen)
-                {
-                    let oldest_key = oldest_key.clone();
-                    state.remove(&oldest_key);
-                }
-            }
-        }
-
-        let entry = state.entry(key.to_string()).or_insert(RateLimitState {
-            window_start: now,
-            count: 0,
-            last_seen: now,
-        });
-        entry.last_seen = now;
-        if now.duration_since(entry.window_start) >= Duration::from_secs(1) {
-            entry.window_start = now;
-            entry.count = 0;
-        }
-        if entry.count >= self.limit {
-            return false;
-        }
-        entry.count += 1;
-        true
-    }
-}
 
 impl TenantRegistry {
     pub fn new(
