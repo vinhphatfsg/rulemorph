@@ -67,7 +67,7 @@ fn validate_path_syntax(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'
     }
 }
 
-/// Validate @item path (supports @item, @item.path, @item.index)
+/// Validate @item path (supports @item, @item.value, @item.index, and @item.path)
 fn validate_item_path(path: &str, base_path: &str, ctx: &mut V2ValidationCtx<'_>) {
     if path.is_empty() {
         return; // @item with no path is valid
@@ -112,10 +112,12 @@ fn validate_out_not_forward(path: &str, base_path: &str, ctx: &mut V2ValidationC
     }
 
     // Check if any prefix of the path has been produced
-    for end in (1..=key_tokens.len()).rev() {
-        if ctx.produced_targets.contains(&key_tokens[..end].to_vec()) {
+    let mut candidate = key_tokens;
+    while !candidate.is_empty() {
+        if ctx.produced_targets.contains(&candidate) {
             return; // Found a matching prefix
         }
+        candidate.pop();
     }
 
     ctx.push_error(
