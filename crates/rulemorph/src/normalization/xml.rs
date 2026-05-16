@@ -1,7 +1,7 @@
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::name::ResolveResult;
 use quick_xml::reader::NsReader as XmlReader;
-use serde_json::{Map, Value as JsonValue};
+use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::error::{TransformError, TransformErrorKind};
@@ -9,22 +9,9 @@ use crate::model::{RuleFile, XmlInput, XmlNamespacePolicy};
 use crate::xml_name::is_xml_name;
 
 use super::{NormalizationOptions, enforce_json_limits, enforce_records_limit};
+use shape::{XmlAttribute, XmlNode, select_xml_records, xml_node_to_json};
 
-#[derive(Debug)]
-struct XmlNode {
-    name: String,
-    canonical_name: String,
-    attributes: Vec<XmlAttribute>,
-    text: String,
-    children: Vec<XmlNode>,
-}
-
-#[derive(Debug)]
-struct XmlAttribute {
-    key: String,
-    canonical_name: String,
-    value: String,
-}
+mod shape;
 
 pub fn normalize_xml_records(
     rule: &RuleFile,
@@ -319,15 +306,6 @@ fn append_text(
     Ok(())
 }
 
-fn normalize_text(value: &str, xml: &XmlInput) -> String {
-    let value = if xml.trim_text { value.trim() } else { value };
-    if xml.collapse_whitespace {
-        value.split_whitespace().collect::<Vec<_>>().join(" ")
-    } else {
-        value.to_string()
-    }
-}
-
 fn attach_node(
     node: XmlNode,
     stack: &mut [XmlNode],
@@ -341,83 +319,6 @@ fn attach_node(
         return Err(invalid("XML document must have a single root element"));
     }
     *root = Some(node);
-    Ok(())
-}
-
-fn select_xml_records<'a>(node: &'a XmlNode, path: &[&str], selected: &mut Vec<&'a XmlNode>) {
-    if path.is_empty() {
-        selected.push(node);
-        return;
-    }
-    if node.name != path[0] {
-        return;
-    }
-    if path.len() == 1 {
-        selected.push(node);
-        return;
-    }
-    for child in &node.children {
-        select_xml_records(child, &path[1..], selected);
-    }
-}
-
-fn xml_node_to_json(
-    node: &XmlNode,
-    xml: &XmlInput,
-    options: &NormalizationOptions,
-    depth: usize,
-) -> Result<JsonValue, TransformError> {
-    if depth > options.max_depth {
-        return Err(invalid("input exceeds max_depth"));
-    }
-    let mut object = Map::new();
-    let mut inserted_attributes = BTreeMap::<String, String>::new();
-    for attribute in &node.attributes {
-        if let Some(previous) =
-            inserted_attributes.insert(attribute.key.clone(), attribute.canonical_name.clone())
-            && previous != attribute.canonical_name
-        {
-            return Err(invalid("XML attribute namespace collision"));
-        }
-        checked_insert(
-            &mut object,
-            attribute.key.clone(),
-            JsonValue::String(attribute.value.clone()),
-        )?;
-    }
-    let text = normalize_text(&node.text, xml);
-    if !text.is_empty() {
-        checked_insert(&mut object, xml.text_key.clone(), JsonValue::String(text))?;
-    }
-    let mut child_groups = BTreeMap::<String, (String, Vec<JsonValue>)>::new();
-    for child in &node.children {
-        let entry = child_groups
-            .entry(child.name.clone())
-            .or_insert_with(|| (child.canonical_name.clone(), Vec::new()));
-        if entry.0 != child.canonical_name {
-            return Err(invalid("XML namespace collision"));
-        }
-        entry
-            .1
-            .push(xml_node_to_json(child, xml, options, depth + 1)?);
-    }
-    for (key, (_qualified_name, values)) in child_groups {
-        if values.len() > options.max_array_len {
-            return Err(invalid("input exceeds max_array_len"));
-        }
-        checked_insert(&mut object, key, JsonValue::Array(values))?;
-    }
-    Ok(JsonValue::Object(object))
-}
-
-fn checked_insert(
-    object: &mut Map<String, JsonValue>,
-    key: String,
-    value: JsonValue,
-) -> Result<(), TransformError> {
-    if object.insert(key, value).is_some() {
-        return Err(invalid("XML namespace or key collision"));
-    }
     Ok(())
 }
 
