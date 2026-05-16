@@ -2,10 +2,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use axum::http::Method;
-use rulemorph::serde_guard::parse_yaml_value_strict;
 use rulemorph::v2_parser::parse_v2_expr;
 use rulemorph::{RuleFormat, parse_rule_file_with_format, validate_rule_file_with_source};
-use serde::de::DeserializeOwned;
 
 use super::{
     CompiledEndpointRule, EndpointRuleFile, NetworkRuleFile, compile_retry, parse_duration,
@@ -13,9 +11,11 @@ use super::{
 };
 
 mod diagnostics;
+mod source;
 
 pub use self::diagnostics::{RulesDirError, RulesDirErrors};
 use self::diagnostics::{push_error, push_parse_error, push_rule_error};
+use self::source::{parse_rule_type, parse_yaml, read_rule_source};
 
 #[derive(Debug, Default, Clone, Copy)]
 struct RuleRefUsage {
@@ -156,54 +156,6 @@ pub fn validate_rules_dir(rules_dir: &Path) -> std::result::Result<(), RulesDirE
     } else {
         Err(RulesDirErrors { errors })
     }
-}
-
-fn read_rule_source(path: &Path, errors: &mut Vec<RulesDirError>) -> Option<String> {
-    match std::fs::read_to_string(path) {
-        Ok(source) => Some(source),
-        Err(err) => {
-            push_error(errors, "ReadFailed", path, err.to_string(), None, None);
-            None
-        }
-    }
-}
-
-fn parse_yaml<T: DeserializeOwned>(
-    path: &Path,
-    source: &str,
-    errors: &mut Vec<RulesDirError>,
-) -> Option<T> {
-    let value = match parse_yaml_value_strict(source) {
-        Ok(value) => value,
-        Err(err) => {
-            push_parse_error(errors, path, &err.to_string(), err.location());
-            return None;
-        }
-    };
-    match serde_yaml::from_value(value) {
-        Ok(value) => Some(value),
-        Err(err) => {
-            let location = err.location().map(|loc| (loc.line(), loc.column()));
-            push_parse_error(errors, path, &err.to_string(), location);
-            None
-        }
-    }
-}
-
-fn parse_rule_type(path: &Path, source: &str, errors: &mut Vec<RulesDirError>) -> Option<String> {
-    let meta: serde_yaml::Value = match parse_yaml_value_strict(source) {
-        Ok(value) => value,
-        Err(err) => {
-            push_parse_error(errors, path, &err.to_string(), err.location());
-            return None;
-        }
-    };
-    Some(
-        meta.get("type")
-            .and_then(|value| value.as_str())
-            .unwrap_or("normal")
-            .to_string(),
-    )
 }
 
 fn validate_rule_path(
