@@ -1,20 +1,20 @@
 use std::path::Path;
 use std::time::Instant;
 
-use chrono::Utc;
 use rulemorph::v2_eval::{EvalValue, V2EvalContext, eval_v2_condition, eval_v2_expr};
 use rulemorph::v2_parser::{parse_v2_condition, parse_v2_expr};
 use rulemorph::{
     Expr, RuleFile, TransformError, TransformErrorKind, transform_record_with_base_dir,
 };
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
-use uuid::Uuid;
 
+mod envelope;
 mod finalize;
 mod mapping_ops;
 mod network_nodes;
 mod v2_helpers;
 
+pub(super) use self::envelope::build_rule_trace;
 use self::finalize::build_finalize_trace;
 pub(super) use self::mapping_ops::build_mapping_ops_with_values;
 pub(super) use self::network_nodes::build_network_nodes_with_timing;
@@ -23,56 +23,6 @@ use super::rule_loader::{RuleKind, load_rule_kind, yaml_source_to_json};
 use super::{
     empty_object, resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
 };
-
-pub(super) fn build_rule_trace(
-    rule_type: &str,
-    name: String,
-    path: String,
-    version: u8,
-    rule_source: JsonValue,
-    input: JsonValue,
-    output: JsonValue,
-    nodes: Vec<JsonValue>,
-    finalize: Option<JsonValue>,
-    duration_us: u64,
-    status: &str,
-) -> JsonValue {
-    let trace_id = Uuid::new_v4().to_string();
-    let now = Utc::now();
-    let record = json!({
-        "index": 0,
-        "status": status,
-        "duration_us": duration_us,
-        "input": input,
-        "output": output,
-        "nodes": nodes,
-    });
-    let mut trace = json!({
-        "trace_id": trace_id,
-        "timestamp": now.to_rfc3339(),
-        "rule": {
-            "type": rule_type,
-            "name": name,
-            "path": path,
-            "version": version
-        },
-        "input_format": "json",
-        "rule_source": rule_source,
-        "records": [record],
-        "summary": {
-            "record_total": 1,
-            "record_success": if status == "ok" { 1 } else { 0 },
-            "record_failed": if status == "ok" { 0 } else { 1 },
-            "duration_us": duration_us
-        }
-    });
-    if let Some(finalize) = finalize {
-        if let Some(obj) = trace.as_object_mut() {
-            obj.insert("finalize".to_string(), finalize);
-        }
-    }
-    trace
-}
 
 pub(super) struct RuleTraceNodes {
     pub(super) nodes: Vec<JsonValue>,
