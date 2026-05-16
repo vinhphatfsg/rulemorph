@@ -12,60 +12,12 @@ use super::{
 
 mod diagnostics;
 mod source;
+mod state;
 
 pub use self::diagnostics::{RulesDirError, RulesDirErrors};
 use self::diagnostics::{push_error, push_parse_error, push_rule_error};
 use self::source::{parse_rule_type, parse_yaml, read_rule_source};
-
-#[derive(Debug, Default, Clone, Copy)]
-struct RuleRefUsage {
-    step: bool,
-    body_rule: bool,
-    catch_rule: bool,
-    branch_rule: bool,
-}
-
-impl RuleRefUsage {
-    fn step() -> Self {
-        RuleRefUsage {
-            step: true,
-            ..RuleRefUsage::default()
-        }
-    }
-
-    fn body_rule() -> Self {
-        RuleRefUsage {
-            body_rule: true,
-            ..RuleRefUsage::default()
-        }
-    }
-
-    fn catch_rule() -> Self {
-        RuleRefUsage {
-            catch_rule: true,
-            ..RuleRefUsage::default()
-        }
-    }
-
-    fn branch_rule() -> Self {
-        RuleRefUsage {
-            branch_rule: true,
-            ..RuleRefUsage::default()
-        }
-    }
-
-    fn merge(&mut self, other: RuleRefUsage) {
-        self.step |= other.step;
-        self.body_rule |= other.body_rule;
-        self.catch_rule |= other.catch_rule;
-        self.branch_rule |= other.branch_rule;
-    }
-}
-
-#[derive(Debug, Default)]
-struct ValidationState {
-    validated_content: BTreeSet<PathBuf>,
-}
+use self::state::{RuleRefUsage, ValidationState};
 
 pub fn validate_rules_dir(rules_dir: &Path) -> std::result::Result<(), RulesDirErrors> {
     let mut errors = Vec::new();
