@@ -5,6 +5,7 @@ use rulemorph::{RuleFile, TransformError, TransformErrorKind, transform_record_w
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 mod condition;
+mod duration;
 mod envelope;
 mod finalize;
 mod mapping_ops;
@@ -12,6 +13,7 @@ mod network_nodes;
 mod v2_helpers;
 
 use self::condition::eval_trace_condition;
+pub(super) use self::duration::sum_rule_trace_duration_us;
 pub(super) use self::envelope::build_rule_trace;
 use self::finalize::build_finalize_trace;
 pub(super) use self::mapping_ops::build_mapping_ops_with_values;
@@ -383,22 +385,6 @@ pub(super) fn build_rule_nodes_from_rule(
         pre_finalize_output,
         duration_us,
     }
-}
-
-fn sum_node_duration_us(nodes: &[JsonValue]) -> u64 {
-    nodes
-        .iter()
-        .filter_map(|node| node.get("duration_us").and_then(|value| value.as_u64()))
-        .sum()
-}
-
-pub(super) fn sum_rule_trace_duration_us(nodes: &[JsonValue], finalize: Option<&JsonValue>) -> u64 {
-    sum_node_duration_us(nodes).saturating_add(
-        finalize
-            .and_then(|trace| trace.get("duration_us"))
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0),
-    )
 }
 
 fn transform_error_to_trace(err: &TransformError) -> JsonValue {
