@@ -1,0 +1,78 @@
+use std::collections::HashMap;
+
+use crate::dto::schema::{
+    Field, FieldType, PrimitiveType, SchemaNode, node_has_required, node_uses_json,
+};
+use crate::dto::support::{NameRegistry, collect_types, field_identifier, rust_string_literal};
+use crate::dto::{DtoError, DtoLanguage};
+
+pub(in crate::dto) fn render_rust(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
+    let mut registry = NameRegistry::new(name);
+    let mut defs = Vec::new();
+    collect_types(schema, Vec::new(), &mut registry, &mut defs);
+
+    let mut out = String::new();
+    out.push_str("use serde::{Deserialize, Serialize};\n");
+    if node_uses_json(schema) {
+        out.push_str("use serde_json::Value;\n");
+    }
+    out.push('\n');
+
+    for def in defs {
+        out.push_str("#[derive(Debug, Clone, Serialize, Deserialize)]\n");
+        out.push_str(&format!("pub struct {} {{\n", def.name));
+
+        let mut used = HashMap::new();
+        for field in &def.node.fields {
+            let ident = field_identifier(DtoLanguage::Rust, &field.key, &mut used);
+            let rename = ident != field.key;
+            let optional = match &field.field_type {
+                FieldType::Object(child) => !node_has_required(child),
+                _ => field.optional,
+            };
+            let field_type = rust_type_for_field(field, &def.path, &registry);
+
+            let mut attrs = Vec::new();
+            if optional {
+                attrs.push("default".to_string());
+                attrs.push("skip_serializing_if = \"Option::is_none\"".to_string());
+            }
+            if rename {
+                attrs.push(format!("rename = {}", rust_string_literal(&field.key)));
+            }
+
+            if !attrs.is_empty() {
+                out.push_str(&format!("    #[serde({})]\n", attrs.join(", ")));
+            }
+
+            let final_type = if optional {
+                format!("Option<{}>", field_type)
+            } else {
+                field_type
+            };
+            out.push_str(&format!("    pub {}: {},\n", ident, final_type));
+        }
+
+        out.push_str("}\n\n");
+    }
+
+    Ok(out.trim_end().to_string())
+}
+
+fn rust_type_for_field(field: &Field, parent_path: &[String], registry: &NameRegistry) -> String {
+    match &field.field_type {
+        FieldType::Primitive(PrimitiveType::String) => "String".to_string(),
+        FieldType::Primitive(PrimitiveType::Int) => "i64".to_string(),
+        FieldType::Primitive(PrimitiveType::Float) => "f64".to_string(),
+        FieldType::Primitive(PrimitiveType::Bool) => "bool".to_string(),
+        FieldType::JsonValue => "Value".to_string(),
+        FieldType::Object(_) => {
+            let mut path = parent_path.to_vec();
+            path.push(field.key.clone());
+            registry
+                .get(&path)
+                .cloned()
+                .unwrap_or_else(|| "Record".to_string())
+        }
+    }
+}
