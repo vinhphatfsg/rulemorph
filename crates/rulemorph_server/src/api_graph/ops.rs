@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use rulemorph::{Expr, ExprChain, ExprOp, ExprRef, Mapping, RuleFile};
 
-use super::{ApiGraphOp, EndpointRuleFile, NetworkRuleFile, normalize_path, rule_id};
+use super::primitives::{normalize_path, rule_id};
+use super::{ApiGraphOp, EndpointRuleFile, NetworkRuleFile};
 
 pub(super) fn endpoint_ops(
     rule: &EndpointRuleFile,

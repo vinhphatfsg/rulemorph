@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Result;
 use rulemorph::serde_guard::parse_yaml_value_strict;
@@ -7,11 +7,15 @@ use rulemorph::{RuleFormat, parse_rule_file_with_format};
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
-use walkdir::WalkDir;
 
 mod ops;
+mod primitives;
 
 use self::ops::{endpoint_ops, network_ops, normal_ops, resolve_rule_path};
+use self::primitives::{
+    collect_rule_files, insert_placeholder, normalize_path, push_edge, rule_id, rule_label,
+    rule_path_display,
+};
 
 #[derive(Debug, Serialize)]
 pub struct ApiGraphResponse {
@@ -236,90 +240,6 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
         nodes: nodes.into_values().collect(),
         edges,
     })
-}
-
-fn collect_rule_files(data_dir: &Path) -> Vec<PathBuf> {
-    WalkDir::new(data_dir)
-        .into_iter()
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.file_type().is_file())
-        .filter(|entry| {
-            entry
-                .path()
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| ext == "yaml" || ext == "yml" || ext == "json")
-                .unwrap_or(false)
-        })
-        .map(|entry| entry.path().to_path_buf())
-        .collect()
-}
-
-fn rule_id(data_dir: &Path, path: &Path) -> String {
-    let path = normalize_path(path);
-    let data_dir = normalize_path(data_dir);
-    if let Ok(rel) = path.strip_prefix(&data_dir) {
-        rel.to_string_lossy().replace('\\', "/")
-    } else {
-        path.to_string_lossy().replace('\\', "/")
-    }
-}
-
-fn rule_path_display(data_dir: &Path, path: &Path) -> String {
-    rule_id(data_dir, path)
-}
-
-fn rule_label(path: &Path) -> String {
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("rule")
-        .to_string()
-}
-
-fn insert_placeholder(nodes: &mut HashMap<String, ApiGraphNode>, data_dir: &Path, path: &Path) {
-    let id = rule_id(data_dir, path);
-    nodes.entry(id.clone()).or_insert(ApiGraphNode {
-        id,
-        label: format!("missing · {}", rule_label(path)),
-        kind: "missing".to_string(),
-        path: rule_path_display(data_dir, path),
-        ops: Vec::new(),
-    });
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut result = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                result.pop();
-            }
-            other => result.push(other.as_os_str()),
-        }
-    }
-    result
-}
-
-fn push_edge(
-    edges: &mut Vec<ApiGraphEdge>,
-    edge_keys: &mut HashSet<String>,
-    source: &str,
-    target: &str,
-    label: Option<String>,
-    kind: &str,
-) {
-    let key = format!("{}::{}::{}", source, target, label.as_deref().unwrap_or(""));
-    if edge_keys.contains(&key) {
-        return;
-    }
-    edge_keys.insert(key);
-    edges.push(ApiGraphEdge {
-        source: source.to_string(),
-        target: target.to_string(),
-        label,
-        kind: kind.to_string(),
-    });
 }
 
 #[cfg(test)]
