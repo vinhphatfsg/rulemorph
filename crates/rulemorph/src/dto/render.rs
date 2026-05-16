@@ -3,10 +3,11 @@ use std::collections::HashMap;
 use super::schema::{
     Field, FieldType, PrimitiveType, SchemaNode, node_has_required, node_uses_json,
 };
-use super::{
-    DtoError, DtoLanguage, NameRegistry, collect_types, field_identifier, go_json_tag_literal,
-    json_string_literal, rust_string_literal, safe_comment_text, swift_string_literal,
+use super::support::{
+    NameRegistry, collect_types, field_identifier, go_json_tag_literal, json_string_literal,
+    rust_string_literal, safe_comment_text, swift_string_literal,
 };
+use super::{DtoError, DtoLanguage};
 
 pub(super) fn render_rust(schema: &SchemaNode, name: &str) -> Result<String, DtoError> {
     let mut registry = NameRegistry::new(name);
