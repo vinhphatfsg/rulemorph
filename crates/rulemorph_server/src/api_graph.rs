@@ -5,13 +5,14 @@ use anyhow::Result;
 use rulemorph::serde_guard::parse_yaml_value_strict;
 use rulemorph::{RuleFormat, parse_rule_file_with_format};
 use serde::Serialize;
-use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 
 mod ops;
 mod primitives;
 
-use self::ops::{endpoint_ops, network_ops, normal_ops, resolve_rule_path};
+use self::ops::{
+    EndpointRuleFile, NetworkRuleFile, endpoint_ops, network_ops, normal_ops, resolve_rule_path,
+};
 use self::primitives::{
     collect_rule_files, insert_placeholder, normalize_path, push_edge, rule_id, rule_label,
     rule_path_display,
@@ -48,42 +49,6 @@ pub struct ApiGraphEdge {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
     pub kind: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct EndpointRuleFile {
-    #[serde(rename = "type")]
-    _rule_type: String,
-    #[serde(default)]
-    endpoints: Vec<EndpointDef>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct EndpointDef {
-    method: String,
-    path: String,
-    #[serde(default)]
-    steps: Vec<EndpointStep>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct EndpointStep {
-    rule: String,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct NetworkRuleFile {
-    #[serde(rename = "type")]
-    _rule_type: String,
-    request: NetworkRequest,
-    #[serde(default)]
-    body_rule: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct NetworkRequest {
-    method: String,
-    url: JsonValue,
 }
 
 pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
@@ -244,6 +209,7 @@ pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
 
 #[cfg(test)]
 mod tests {
+    use super::ops::{EndpointDef, EndpointStep, NetworkRequest};
     use super::*;
     use rulemorph::parse_rule_file;
     use serde_json::json;

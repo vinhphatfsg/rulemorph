@@ -1,9 +1,46 @@
 use std::path::{Path, PathBuf};
 
 use rulemorph::{Expr, ExprChain, ExprOp, ExprRef, Mapping, RuleFile};
+use serde_json::Value as JsonValue;
 
+use super::ApiGraphOp;
 use super::primitives::{normalize_path, rule_id};
-use super::{ApiGraphOp, EndpointRuleFile, NetworkRuleFile};
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct EndpointRuleFile {
+    #[serde(rename = "type")]
+    pub(super) _rule_type: String,
+    #[serde(default)]
+    pub(super) endpoints: Vec<EndpointDef>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct EndpointDef {
+    pub(super) method: String,
+    pub(super) path: String,
+    #[serde(default)]
+    pub(super) steps: Vec<EndpointStep>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct EndpointStep {
+    pub(super) rule: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct NetworkRuleFile {
+    #[serde(rename = "type")]
+    pub(super) _rule_type: String,
+    pub(super) request: NetworkRequest,
+    #[serde(default)]
+    pub(super) body_rule: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub(super) struct NetworkRequest {
+    pub(super) method: String,
+    pub(super) url: JsonValue,
+}
 
 pub(super) fn endpoint_ops(
     rule: &EndpointRuleFile,
