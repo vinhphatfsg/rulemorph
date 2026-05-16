@@ -1,5 +1,4 @@
-use std::fs;
-use std::io::{self, Write};
+use std::io::Write;
 use std::path::PathBuf;
 #[cfg(feature = "server")]
 use std::time::Duration;
@@ -24,6 +23,7 @@ use rulemorph_trace::TraceStore;
 mod api_keys;
 mod emit;
 mod input;
+mod output;
 
 #[cfg(feature = "server")]
 use self::emit::emit_rules_dir_errors;
@@ -31,6 +31,9 @@ use self::emit::{emit_transform_error, emit_transform_warnings, emit_validation_
 use self::input::{
     apply_format_override, load_context, load_input_bytes_with_limit, load_normalization_options,
     load_rule, rule_base_dir,
+};
+use self::output::{
+    create_output_writer, emit_text_output, serialize_json_output, write_json_line,
 };
 
 #[derive(Parser)]
@@ -386,31 +389,15 @@ fn run_transform(args: TransformArgs) -> i32 {
         }
     };
 
-    let output_text = match serde_json::to_string(&output) {
+    let output_text = match serialize_json_output(&output) {
         Ok(text) => text,
-        Err(err) => {
-            eprintln!("failed to serialize output JSON: {}", err);
-            return 1;
-        }
+        Err(()) => return 1,
     };
 
     emit_transform_warnings(&warnings, args.error_format);
 
-    if let Some(path) = args.output {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(err) = fs::create_dir_all(parent) {
-                    eprintln!("failed to create output directory: {}", err);
-                    return 1;
-                }
-            }
-        }
-        if let Err(err) = fs::write(&path, output_text.as_bytes()) {
-            eprintln!("failed to write output: {}", err);
-            return 1;
-        }
-    } else {
-        println!("{}", output_text);
+    if emit_text_output(&output_text, args.output.as_ref()).is_err() {
+        return 1;
     }
 
     0
@@ -440,28 +427,10 @@ fn run_transform_ndjson(
         }
     };
 
-    let writer: Box<dyn Write> = match output {
-        Some(path) => {
-            if let Some(parent) = path.parent() {
-                if !parent.as_os_str().is_empty() {
-                    if let Err(err) = fs::create_dir_all(parent) {
-                        eprintln!("failed to create output directory: {}", err);
-                        return 1;
-                    }
-                }
-            }
-            match fs::File::create(&path) {
-                Ok(file) => Box::new(file),
-                Err(err) => {
-                    eprintln!("failed to write output: {}", err);
-                    return 1;
-                }
-            }
-        }
-        None => Box::new(io::stdout()),
+    let mut writer = match create_output_writer(output.as_ref()) {
+        Ok(writer) => writer,
+        Err(()) => return 1,
     };
-
-    let mut writer = io::BufWriter::new(writer);
 
     for item in stream {
         let item = match item {
@@ -478,16 +447,7 @@ fn run_transform_ndjson(
             Some(output) => output,
             None => continue,
         };
-        let output_text = match serde_json::to_string(&output) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("failed to serialize output JSON: {}", err);
-                return 1;
-            }
-        };
-
-        if let Err(err) = writeln!(writer, "{}", output_text) {
-            eprintln!("failed to write output: {}", err);
+        if write_json_line(&mut writer, &output).is_err() {
             return 1;
         }
     }
@@ -524,21 +484,8 @@ fn run_generate(args: GenerateArgs) -> i32 {
         }
     };
 
-    if let Some(path) = args.output {
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                if let Err(err) = fs::create_dir_all(parent) {
-                    eprintln!("failed to create output directory: {}", err);
-                    return 1;
-                }
-            }
-        }
-        if let Err(err) = fs::write(&path, output.as_bytes()) {
-            eprintln!("failed to write output: {}", err);
-            return 1;
-        }
-    } else {
-        println!("{}", output);
+    if output::emit_text_output(&output, args.output.as_ref()).is_err() {
+        return 1;
     }
 
     0
