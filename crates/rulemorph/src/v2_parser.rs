@@ -10,15 +10,19 @@
 
 #[cfg(test)]
 use crate::v2_model::V2Ref;
-use crate::v2_model::{V2Comparison, V2ComparisonOp, V2Condition, V2Expr, V2Pipe, V2Start, V2Step};
+#[cfg(test)]
+use crate::v2_model::{V2ComparisonOp, V2Condition};
+use crate::v2_model::{V2Expr, V2Pipe, V2Start, V2Step};
 use crate::v2_validator::is_valid_op;
 use serde_json::Value as JsonValue;
 // Note: V2Step::Ref variant is used for reference steps like "@doubled"
 
+mod condition;
 mod error;
 mod ref_parse;
 mod step;
 
+pub use condition::parse_v2_condition;
 pub use error::V2ParseError;
 pub use ref_parse::{extract_literal, is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_ref};
 pub use step::parse_v2_step;
@@ -203,82 +207,6 @@ pub fn parse_v2_expr(value: &JsonValue) -> Result<V2Expr, V2ParseError> {
             }))
         }
     }
-}
-
-// =============================================================================
-// v2 Condition Parser
-// =============================================================================
-
-/// Parse a V2Condition from a JSON value
-pub fn parse_v2_condition(value: &JsonValue) -> Result<V2Condition, V2ParseError> {
-    match value {
-        JsonValue::Object(obj) => {
-            // Check for all: [...]
-            if let Some(all_arr) = obj.get("all") {
-                return parse_condition_array(all_arr, |conds| V2Condition::All(conds));
-            }
-            // Check for any: [...]
-            if let Some(any_arr) = obj.get("any") {
-                return parse_condition_array(any_arr, |conds| V2Condition::Any(conds));
-            }
-            // Check for comparison operators: eq, ne, gt, gte, lt, lte, match
-            if let Some(comp) = parse_comparison_from_object(obj)? {
-                return Ok(V2Condition::Comparison(comp));
-            }
-            // Otherwise, treat as expression condition
-            let expr = parse_v2_expr(value)?;
-            Ok(V2Condition::Expr(expr))
-        }
-        JsonValue::Array(_) => {
-            // Array treated as expression
-            let expr = parse_v2_expr(value)?;
-            Ok(V2Condition::Expr(expr))
-        }
-        _ => {
-            // Other values treated as expression
-            let expr = parse_v2_expr(value)?;
-            Ok(V2Condition::Expr(expr))
-        }
-    }
-}
-
-fn parse_condition_array<F>(value: &JsonValue, constructor: F) -> Result<V2Condition, V2ParseError>
-where
-    F: FnOnce(Vec<V2Condition>) -> V2Condition,
-{
-    match value {
-        JsonValue::Array(arr) => {
-            let conditions: Result<Vec<V2Condition>, _> =
-                arr.iter().map(parse_v2_condition).collect();
-            Ok(constructor(conditions?))
-        }
-        _ => Err(V2ParseError::InvalidCondition(
-            "all/any must contain an array".to_string(),
-        )),
-    }
-}
-
-fn parse_comparison_from_object(
-    obj: &serde_json::Map<String, JsonValue>,
-) -> Result<Option<V2Comparison>, V2ParseError> {
-    let ops = [
-        ("eq", V2ComparisonOp::Eq),
-        ("ne", V2ComparisonOp::Ne),
-        ("gt", V2ComparisonOp::Gt),
-        ("gte", V2ComparisonOp::Gte),
-        ("lt", V2ComparisonOp::Lt),
-        ("lte", V2ComparisonOp::Lte),
-        ("match", V2ComparisonOp::Match),
-    ];
-
-    for (key, op) in ops.iter() {
-        if let Some(args_val) = obj.get(*key) {
-            let args = parse_v2_expr_args(args_val)?;
-            return Ok(Some(V2Comparison { op: *op, args }));
-        }
-    }
-
-    Ok(None)
 }
 
 // =============================================================================
