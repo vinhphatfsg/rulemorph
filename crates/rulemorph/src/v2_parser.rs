@@ -18,8 +18,10 @@ use crate::v2_validator::is_valid_op;
 use serde_json::Value as JsonValue;
 // Note: V2Step::Ref variant is used for reference steps like "@doubled"
 
+mod error;
 mod ref_parse;
 
+pub use error::V2ParseError;
 pub use ref_parse::{extract_literal, is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_ref};
 
 // =============================================================================
@@ -447,33 +449,6 @@ fn parse_comparison_from_object(
 
     Ok(None)
 }
-
-// =============================================================================
-// Parse Errors
-// =============================================================================
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum V2ParseError {
-    EmptyPipe,
-    InvalidStart(String),
-    InvalidStep(String),
-    InvalidArgs(String),
-    InvalidCondition(String),
-}
-
-impl std::fmt::Display for V2ParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            V2ParseError::EmptyPipe => write!(f, "pipe array cannot be empty"),
-            V2ParseError::InvalidStart(msg) => write!(f, "invalid start value: {}", msg),
-            V2ParseError::InvalidStep(msg) => write!(f, "invalid step: {}", msg),
-            V2ParseError::InvalidArgs(msg) => write!(f, "invalid args: {}", msg),
-            V2ParseError::InvalidCondition(msg) => write!(f, "invalid condition: {}", msg),
-        }
-    }
-}
-
-impl std::error::Error for V2ParseError {}
 
 // =============================================================================
 // v2 Parser Tests
