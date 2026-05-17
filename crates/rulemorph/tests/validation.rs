@@ -1,60 +1,13 @@
 use std::fs;
-use std::path::{Path, PathBuf};
 
 use rulemorph::{
-    ErrorCode, RuleError, RuleFormat, parse_rule_file, parse_rule_file_with_format,
-    validate_rule_file, validate_rule_file_with_source,
+    ErrorCode, RuleFormat, parse_rule_file, parse_rule_file_with_format, validate_rule_file,
+    validate_rule_file_with_source,
 };
-use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-struct ExpectedError {
-    code: String,
-    path: Option<String>,
-}
+mod common;
 
-fn fixtures_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-}
-
-fn load_rule(case: &str) -> rulemorph::RuleFile {
-    let rules_path = fixtures_dir().join(case).join("rules.yaml");
-    let yaml = fs::read_to_string(&rules_path)
-        .unwrap_or_else(|_| panic!("failed to read {}", rules_path.display()));
-    parse_rule_file(&yaml)
-        .unwrap_or_else(|err| panic!("failed to parse YAML {}: {}", rules_path.display(), err))
-}
-
-fn load_expected_errors(case: &str) -> Vec<ExpectedError> {
-    let errors_path = fixtures_dir().join(case).join("expected_errors.json");
-    let json = fs::read_to_string(&errors_path)
-        .unwrap_or_else(|_| panic!("failed to read {}", errors_path.display()));
-    serde_json::from_str(&json).unwrap_or_else(|err| {
-        panic!(
-            "failed to parse expected errors {}: {}",
-            errors_path.display(),
-            err
-        )
-    })
-}
-
-fn normalize_errors(errors: Vec<RuleError>) -> Vec<(String, Option<String>)> {
-    let mut normalized: Vec<(String, Option<String>)> = errors
-        .into_iter()
-        .map(|err| (err.code.as_str().to_string(), err.path))
-        .collect();
-    normalized.sort();
-    normalized
-}
-
-fn normalize_expected(errors: Vec<ExpectedError>) -> Vec<(String, Option<String>)> {
-    let mut normalized: Vec<(String, Option<String>)> =
-        errors.into_iter().map(|err| (err.code, err.path)).collect();
-    normalized.sort();
-    normalized
-}
+use common::validation::{fixtures_dir, load_expected_errors, load_rule, normalize_errors};
 
 #[test]
 fn valid_rules_should_pass_validation() {
@@ -121,7 +74,7 @@ fn invalid_rules_should_match_expected_errors() {
 
     for case in cases {
         let rule = load_rule(case);
-        let expected = normalize_expected(load_expected_errors(case));
+        let expected = load_expected_errors(case);
         let errors = validate_rule_file(&rule).unwrap_err();
         let actual = normalize_errors(errors);
         assert_eq!(actual, expected, "error mismatch for fixture {}", case);
@@ -489,7 +442,7 @@ fn v2_invalid_rules_should_fail_validation() {
 
     for case in cases {
         let rule = load_rule(case);
-        let expected = normalize_expected(load_expected_errors(case));
+        let expected = load_expected_errors(case);
         let errors = validate_rule_file(&rule).unwrap_err();
         let actual = normalize_errors(errors);
         assert_eq!(actual, expected, "error mismatch for {}", case);
@@ -500,7 +453,7 @@ fn v2_invalid_rules_should_fail_validation() {
 fn v2_forward_out_ref_should_fail_validation() {
     // tv26_v02_forward_out_ref should fail with ForwardOutReference error
     let rule = load_rule("tv26_v02_forward_out_ref");
-    let expected = normalize_expected(load_expected_errors("tv26_v02_forward_out_ref"));
+    let expected = load_expected_errors("tv26_v02_forward_out_ref");
     let errors = validate_rule_file(&rule).unwrap_err();
     let actual = normalize_errors(errors);
     assert_eq!(
