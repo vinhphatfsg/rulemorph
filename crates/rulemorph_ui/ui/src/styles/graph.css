@@ -1,0 +1,132 @@
+.trace-node {
+  border-radius: 14px;
+  padding: 8px 10px;
+  font-family: "IBM Plex Mono", monospace;
+  color: var(--paper);
+  border: 1px solid rgba(153, 168, 184, 0.16);
+  background: rgba(16, 20, 26, 0.85);
+  box-shadow: 0 8px 20px rgba(6, 9, 12, 0.45);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.1;
+}
+
+.trace-node__body {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.trace-node--overview {
+  border-color: rgba(177, 255, 92, 0.45);
+  background: linear-gradient(140deg, rgba(16, 24, 20, 0.95), rgba(18, 22, 28, 0.9));
+  font-size: 0.9rem;
+}
+
+.trace-node--type-endpoint {
+  border-color: rgba(127, 217, 255, 0.6);
+  background: linear-gradient(140deg, rgba(12, 26, 32, 0.95), rgba(18, 22, 28, 0.9));
+}
+
+.trace-node--type-network {
+  border-color: rgba(255, 172, 92, 0.62);
+  background: linear-gradient(140deg, rgba(30, 20, 12, 0.95), rgba(18, 18, 20, 0.9));
+}
+
+.trace-node--type-normal {
+  border-color: rgba(177, 255, 92, 0.45);
+  background: linear-gradient(140deg, rgba(16, 24, 20, 0.95), rgba(18, 22, 28, 0.9));
+}
+
+.trace-node--overview-expanded {
+  border: 1px dashed rgba(153, 197, 255, 0.35);
+  background: transparent;
+  overflow: visible;
+}
+
+.trace-node--detail {
+  border-color: rgba(157, 214, 255, 0.45);
+  background: rgba(16, 22, 28, 0.88);
+  font-size: 0.8rem;
+}
+
+.trace-node--op {
+  border-color: rgba(255, 184, 77, 0.55);
+  background: rgba(20, 18, 12, 0.92);
+  font-size: 0.7rem;
+}
+
+.trace-node--back {
+  border-color: rgba(157, 214, 255, 0.6);
+  background: rgba(12, 16, 22, 0.9);
+  font-size: 0.75rem;
+  color: var(--paper);
+  pointer-events: all;
+}
+
+.trace-node--reveal {
+  animation: node-pop 360ms ease both;
+}
+
+.trace-node--error-path {
+  border-color: rgba(255, 110, 110, 0.8);
+  background: linear-gradient(140deg, rgba(36, 16, 16, 0.92), rgba(22, 14, 14, 0.9));
+  box-shadow: 0 0 0 1px rgba(255, 120, 120, 0.4), 0 10px 28px rgba(200, 60, 60, 0.25);
+}
+
+.react-flow__edge-text {
+  fill: rgba(214, 226, 238, 0.9);
+  font-size: 10px;
+  font-family: "IBM Plex Mono", monospace;
+  letter-spacing: 0.01em;
+  white-space: pre;
+  line-height: 1.2;
+}
+
+.react-flow__edge-textbg {
+  fill: rgba(8, 12, 16, 0.75);
+  stroke: rgba(148, 175, 204, 0.25);
+  stroke-width: 1;
+}
+
+.react-flow__edges {
+  z-index: 3;
+}
+
+.react-flow__edge-path {
+  stroke: rgba(146, 178, 205, 0.7);
+}
+
+.edge--endpoint .react-flow__edge-text {
+  fill: rgba(200, 225, 255, 0.95);
+}
+
+.edge--error .react-flow__edge-path {
+  stroke: rgba(255, 120, 120, 0.8);
+  stroke-width: 1.8;
+}
+
+.edge--error .react-flow__edge-text {
+  fill: rgba(255, 210, 210, 0.95);
+}
+
+.edge--ref .react-flow__edge-path {
+  stroke: rgba(255, 209, 128, 0.7);
+  stroke-dasharray: 6 6;
+}
+
+@keyframes node-pop {
+  0% {
+    opacity: 0;
+  }
+  60% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 1;
+  }
+}

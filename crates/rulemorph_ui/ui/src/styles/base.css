@@ -1,0 +1,71 @@
+:root {
+  --ink: #0c0e11;
+  --coal: #1b1f25;
+  --ash: #2a3038;
+  --steel: #394352;
+  --fog: #cbd3dd;
+  --paper: #f2f0ec;
+  --lime: #b1ff5c;
+  --amber: #ffb84d;
+  --blueprint: #9dd6ff;
+  --danger: #ff6b6b;
+  --shadow: rgba(8, 12, 16, 0.35);
+  --glass: rgba(14, 18, 22, 0.72);
+  --glass-border: rgba(148, 166, 185, 0.25);
+  --accent: #9dd6ff;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", sans-serif;
+  background: radial-gradient(circle at 10% 10%, #1f2933, transparent 45%),
+    radial-gradient(circle at 90% 0%, #2a2f36, transparent 50%),
+    radial-gradient(circle at 30% 85%, #1c252c, transparent 50%),
+    #0d1014;
+  color: var(--paper);
+}
+
+.app {
+  min-height: 100vh;
+  padding: 16px 18px 24px;
+  position: relative;
+  overflow: hidden;
+}
+
+.app__glow {
+  position: absolute;
+  inset: -20% -20% 60% -20%;
+  background: radial-gradient(circle at 30% 30%, rgba(177, 255, 92, 0.2), transparent 50%);
+  filter: blur(80px);
+  pointer-events: none;
+}
+
+.stage {
+  position: relative;
+  height: calc(100vh - 92px);
+  border-radius: 26px;
+  overflow: hidden;
+  border: 1px solid rgba(135, 156, 176, 0.12);
+  background: radial-gradient(circle at 20% 20%, rgba(44, 60, 78, 0.25), transparent 45%),
+    linear-gradient(160deg, rgba(8, 12, 16, 0.9), rgba(18, 22, 28, 0.95));
+  box-shadow: none;
+}
+
+.stage::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.08) 1px, transparent 1px);
+  background-size: 28px 28px;
+  opacity: 0.25;
+  pointer-events: none;
+}
+
+.trace-canvas {
+  position: absolute;
+  inset: 0;
+}
