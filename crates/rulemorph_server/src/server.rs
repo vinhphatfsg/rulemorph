@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
-    http::Request,
-    middleware::{Next, from_fn_with_state},
+    extract::DefaultBodyLimit,
+    middleware::from_fn_with_state,
     routing::{any, get, post},
 };
 
-use crate::{TenantContext, TenantResolver};
-use rulemorph_endpoint::{ApiMode, EndpointEngine, RequestContext};
+use crate::TenantResolver;
+use rulemorph_endpoint::ApiMode;
 #[cfg(test)]
 use rulemorph_trace::TraceStore;
 
@@ -19,6 +18,7 @@ mod auth;
 mod error;
 mod import_zip;
 mod rate_limit;
+mod rules_api;
 mod tenant_registry;
 mod trace_routes;
 mod ui;
@@ -31,9 +31,8 @@ use self::api_key_routes::{issue_api_key, list_api_keys, revoke_api_key, rotate_
 #[cfg(test)]
 use self::auth::pre_auth_rate_limit_key;
 use self::auth::{
-    DispatchInvalidApiKeyForRules, api_rate_limit, apply_v1_auth_context, enforce_api_rate_limit,
-    ensure_pre_auth_rate_limit_for_request, internal_auth, internal_auth_required, internal_tenant,
-    pre_auth_rate_limit, rate_limit_key, v1_auth,
+    api_rate_limit, internal_auth, internal_auth_required, internal_tenant, pre_auth_rate_limit,
+    v1_auth,
 };
 use self::error::ApiError;
 #[cfg(test)]
@@ -41,6 +40,7 @@ use self::import_zip::copy_zip_entry_bounded;
 #[cfg(test)]
 use self::import_zip::extract_zip;
 pub use self::rate_limit::RateLimiter;
+use self::rules_api::{handle_rules_api, inject_default_resources};
 pub(crate) use self::tenant_registry::internal_auth_path_allowlist;
 pub use self::tenant_registry::{TenantRegistry, TenantResources};
 use self::trace_routes::{
@@ -173,101 +173,6 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
 
     app.layer(from_fn_with_state(state.clone(), inject_default_resources))
         .with_state(state)
-}
-
-fn request_resources(
-    state: &AppState,
-    request: &Request<axum::body::Body>,
-) -> Arc<TenantResources> {
-    request
-        .extensions()
-        .get::<Arc<TenantResources>>()
-        .cloned()
-        .unwrap_or_else(|| state.default_resources.clone())
-}
-
-fn request_engine<'a>(
-    state: &'a AppState,
-    resources: &'a Arc<TenantResources>,
-) -> std::result::Result<&'a Arc<EndpointEngine>, ApiError> {
-    resources
-        .api_engine
-        .as_ref()
-        .or(state.default_resources.api_engine.as_ref())
-        .ok_or_else(|| ApiError::internal("api engine not configured"))
-}
-
-async fn run_rules_api_request(
-    state: &AppState,
-    mut request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    if state.tenant_resolver.is_some() && state.rate_limiter.is_some() {
-        ensure_pre_auth_rate_limit_for_request(state, &mut request).await?;
-    }
-    if state.tenant_resolver.is_some() && request.extensions().get::<TenantContext>().is_none() {
-        if request
-            .extensions()
-            .get::<DispatchInvalidApiKeyForRules>()
-            .is_some()
-        {
-            return Err(ApiError::unauthorized("invalid api key"));
-        }
-        apply_v1_auth_context(state, &mut request).await?;
-    }
-    if state.rate_limiter.is_some() {
-        let key = rate_limit_key(state, &request);
-        enforce_api_rate_limit(state, key).await?;
-    }
-    handle_rules_api_core(state, request).await
-}
-
-async fn handle_rules_api(
-    state: State<AppState>,
-    request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    handle_rules_api_core(&state.0, request).await
-}
-
-async fn handle_rules_api_core(
-    state: &AppState,
-    mut request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    let resources = request_resources(state, &request);
-    let engine = request_engine(state, &resources)?;
-    let mut request_context = RequestContext::default();
-    if let Some(context) = request.extensions().get::<TenantContext>() {
-        request_context.tenant_id = Some(context.tenant_id.clone());
-    }
-    if engine.allows_internal_auth() {
-        if let Some(internal_api_key) = state.internal_api_key.clone() {
-            request_context.internal_api_key = Some(internal_api_key);
-        }
-    }
-    request.extensions_mut().insert(request_context);
-    match engine.handle_request(request).await {
-        Ok(response) => Ok(response),
-        Err(err) => {
-            let message = err.to_string();
-            if message.contains("no endpoint matched") {
-                Err(ApiError::not_found(message))
-            } else {
-                Err(ApiError::internal(message))
-            }
-        }
-    }
-}
-
-async fn inject_default_resources(
-    State(state): State<AppState>,
-    mut request: Request<axum::body::Body>,
-    next: Next,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    if request.extensions().get::<Arc<TenantResources>>().is_none() {
-        request
-            .extensions_mut()
-            .insert(state.default_resources.clone());
-    }
-    Ok(next.run(request).await)
 }
 
 #[cfg(test)]
