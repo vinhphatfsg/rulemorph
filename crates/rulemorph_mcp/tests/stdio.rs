@@ -6,7 +6,9 @@ use tempfile::tempdir;
 
 mod common;
 
-use common::stdio::{McpServer, core_fixtures_dir, initialize};
+use common::stdio::{
+    McpServer, content_json, content_text, core_fixtures_dir, initialize, tool_call_request,
+};
 
 #[test]
 fn initialize_and_list_tools() {
@@ -171,24 +173,17 @@ mappings:
     .expect("write rules");
     fs::write(&input_path, r#"{"id": 1}"#).expect("write input");
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 3,
-        "method": "tools/call",
-        "params": {
-            "name": "transform",
-            "arguments": {
-                "rules_path": rules_path.to_string_lossy(),
-                "input_path": input_path.to_string_lossy()
-            }
-        }
-    });
+    let request = tool_call_request(
+        3,
+        "transform",
+        json!({
+            "rules_path": rules_path.to_string_lossy(),
+            "input_path": input_path.to_string_lossy()
+        }),
+    );
 
     let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let output: Value = serde_json::from_str(output_text).expect("output json");
+    let output = content_json(&response);
 
     assert_eq!(output, json!([{ "id": 1 }]));
     assert!(response["result"]["isError"].is_null() || response["result"]["isError"] == false);
@@ -215,25 +210,18 @@ mappings:
     source: "empty"
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 32,
-        "method": "tools/call",
-        "params": {
-            "name": "transform",
-            "arguments": {
-                "rules_text": rules_text,
-                "input_text": "id,flag,empty\n001,true,\n",
-                "format": "csv"
-            }
-        }
-    });
+    let request = tool_call_request(
+        32,
+        "transform",
+        json!({
+            "rules_text": rules_text,
+            "input_text": "id,flag,empty\n001,true,\n",
+            "format": "csv"
+        }),
+    );
 
     let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let output: Value = serde_json::from_str(output_text).expect("output json");
+    let output = content_json(&response);
     assert_eq!(
         output,
         json!([{ "id": "001", "flag": "true", "empty": "" }])
@@ -421,24 +409,20 @@ fn transform_accepts_json_rules_text_with_rules_format() {
     let mut server = McpServer::start();
     initialize(&mut server);
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 33,
-        "method": "tools/call",
-        "params": {
-            "name": "transform",
-            "arguments": {
-                "rules_text": r#"{
-                  "version": 2,
-                  "input": { "format": "json", "json": {} },
-                  "mappings": [{ "target": "id", "source": "id" }]
-                }"#,
-                "rules_format": "json",
-                "input_json": { "id": 1 },
-                "return_output_json": true
-            }
-        }
-    });
+    let request = tool_call_request(
+        33,
+        "transform",
+        json!({
+            "rules_text": r#"{
+              "version": 2,
+              "input": { "format": "json", "json": {} },
+              "mappings": [{ "target": "id", "source": "id" }]
+            }"#,
+            "rules_format": "json",
+            "input_json": { "id": 1 },
+            "return_output_json": true
+        }),
+    );
 
     let response = server.send(&request);
     assert!(response.get("error").is_none(), "response: {response}");
@@ -1042,23 +1026,16 @@ mappings:
     source: "id"
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 8,
-        "method": "tools/call",
-        "params": {
-            "name": "validate_rules",
-            "arguments": {
-                "rules_text": rules_text
-            }
-        }
-    });
+    let request = tool_call_request(
+        8,
+        "validate_rules",
+        json!({
+            "rules_text": rules_text
+        }),
+    );
 
     let response = server.send(&request);
-    let text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("result text");
-    assert_eq!(text, "ok");
+    assert_eq!(content_text(&response), "ok");
 
     server.shutdown();
 }
@@ -1074,17 +1051,13 @@ input:
 mappings: []
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 9,
-        "method": "tools/call",
-        "params": {
-            "name": "validate_rules",
-            "arguments": {
-                "rules_text": rules_text
-            }
-        }
-    });
+    let request = tool_call_request(
+        9,
+        "validate_rules",
+        json!({
+            "rules_text": rules_text
+        }),
+    );
 
     let response = server.send(&request);
     assert_eq!(response["result"]["isError"], true);
@@ -1107,24 +1080,17 @@ mappings:
     source: "id"
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 10,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_dto",
-            "arguments": {
-                "rules_text": rules_text,
-                "language": "typescript"
-            }
-        }
-    });
+    let request = tool_call_request(
+        10,
+        "generate_dto",
+        json!({
+            "rules_text": rules_text,
+            "language": "typescript"
+        }),
+    );
 
     let response = server.send(&request);
-    let text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("dto text");
-    assert!(text.contains("export interface"));
+    assert!(content_text(&response).contains("export interface"));
 
     server.shutdown();
 }
@@ -1143,18 +1109,14 @@ mappings:
     source: "id"
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 101,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_dto",
-            "arguments": {
-                "rules_text": rules_text,
-                "language": "ruby"
-            }
-        }
-    });
+    let request = tool_call_request(
+        101,
+        "generate_dto",
+        json!({
+            "rules_text": rules_text,
+            "language": "ruby"
+        }),
+    );
 
     let response = server.send(&request);
     assert_eq!(response["error"]["code"], -32602);
@@ -1171,15 +1133,7 @@ fn list_ops_success() {
     let mut server = McpServer::start();
     initialize(&mut server);
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 11,
-        "method": "tools/call",
-        "params": {
-            "name": "list_ops",
-            "arguments": {}
-        }
-    });
+    let request = tool_call_request(11, "list_ops", json!({}));
 
     let response = server.send(&request);
     assert!(response["result"]["meta"]["ops"]["type_casts"].is_array());

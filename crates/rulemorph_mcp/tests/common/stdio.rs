@@ -87,6 +87,28 @@ pub fn initialize(server: &mut McpServer) {
     assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
 }
 
+pub fn tool_call_request(id: u64, name: &str, arguments: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/call",
+        "params": {
+            "name": name,
+            "arguments": arguments
+        }
+    })
+}
+
+pub fn content_text(response: &Value) -> &str {
+    response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("content text")
+}
+
+pub fn content_json(response: &Value) -> Value {
+    serde_json::from_str(content_text(response)).expect("content json")
+}
+
 pub fn core_fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
