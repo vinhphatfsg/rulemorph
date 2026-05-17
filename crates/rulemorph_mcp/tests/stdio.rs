@@ -2588,6 +2588,129 @@ fn generate_rules_from_dto_kotlin_single_line_annotations() {
 }
 
 #[test]
+fn generate_rules_from_dto_jvm_multiline_model_shape() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let java_dto = r#"
+public record Record(
+    @JsonProperty("user_id")
+    String id,
+    Optional<String> name,
+    @Nullable
+    Profile profile,
+    boolean active,
+    long count,
+    double ratio
+) {}
+
+public class Profile {
+    @JsonProperty("city_name")
+    public String city;
+}
+"#;
+    let kotlin_dto = r#"
+data class Record(
+    @Json(name = "user_id")
+    val id: String,
+    val name: String?,
+    val profile: Profile?,
+    val active: Boolean,
+    val count: Long,
+    val ratio: Double
+)
+
+data class Profile(
+    @SerialName("city_name")
+    val city: String
+)
+"#;
+
+    for (id, language, dto_text) in [(2301, "java", java_dto), (2302, "kotlin", kotlin_dto)] {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {
+                "name": "generate_rules_from_dto",
+                "arguments": {
+                    "dto_text": dto_text,
+                    "dto_language": language,
+                    "input_json": {
+                        "user_id": "001",
+                        "name": "Ada",
+                        "profile": {
+                            "city_name": "Tokyo"
+                        },
+                        "active": true,
+                        "count": 7,
+                        "ratio": 1.5
+                    }
+                }
+            }
+        });
+
+        let response = server.send(&request);
+        let output_text = response["result"]["content"][0]["text"]
+            .as_str()
+            .expect("output text");
+        let rule = parse_rule_file(output_text).expect("parse output rules");
+
+        let id_mapping = rule
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target == "user_id")
+            .expect("user_id mapping");
+        assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
+        assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
+        assert!(id_mapping.required);
+
+        let name_mapping = rule
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target == "name")
+            .expect("name mapping");
+        assert_eq!(name_mapping.source.as_deref(), Some("name"));
+        assert!(!name_mapping.required);
+
+        let profile_city_mapping = rule
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target == "profile.city_name")
+            .expect("profile.city_name mapping");
+        assert_eq!(
+            profile_city_mapping.source.as_deref(),
+            Some("profile.city_name")
+        );
+        assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
+        assert!(!profile_city_mapping.required);
+
+        let active_mapping = rule
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target == "active")
+            .expect("active mapping");
+        assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
+
+        let count_mapping = rule
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target == "count")
+            .expect("count mapping");
+        assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
+
+        let ratio_mapping = rule
+            .mappings
+            .iter()
+            .find(|mapping| mapping.target == "ratio")
+            .expect("ratio mapping");
+        assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
+    }
+
+    server.shutdown();
+}
+
+#[test]
 fn generate_rules_from_dto_swift_single_line_coding_keys() {
     let mut server = McpServer::start();
     initialize(&mut server);
