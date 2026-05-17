@@ -45,3 +45,55 @@ fn dto_generation_sanitizes_type_name_and_escapes_json_keys() {
     assert!(go.contains(r#""json:\"bad\\\"key\"""#));
     assert!(go.contains(r#""json:\"tick`key\"""#));
 }
+
+#[test]
+fn dto_generation_stabilizes_identifier_collisions_and_digit_prefixes() {
+    let rule = parse_rule_file(
+        r#"version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "foo-bar"
+    value: "x"
+  - target: "foo_bar"
+    value: "x"
+  - target: "['1name']"
+    value: "x"
+  - target: "class"
+    value: "x"
+"#,
+    )
+    .expect("parse rule");
+
+    let rust = generate_dto(&rule, DtoLanguage::Rust, None).expect("generate rust dto");
+    assert!(rust.contains("pub foo_bar: Value,"), "{rust}");
+    assert!(rust.contains("pub foo_bar_2: Value,"), "{rust}");
+    assert!(rust.contains("pub _1name: Value,"), "{rust}");
+    assert!(rust.contains("pub class: Value,"), "{rust}");
+
+    let typescript =
+        generate_dto(&rule, DtoLanguage::TypeScript, None).expect("generate typescript dto");
+    assert!(typescript.contains("fooBar: unknown;"), "{typescript}");
+    assert!(typescript.contains("fooBar_2: unknown;"), "{typescript}");
+    assert!(typescript.contains("_1name: unknown;"), "{typescript}");
+    assert!(typescript.contains("class_: unknown;"), "{typescript}");
+
+    let go = generate_dto(&rule, DtoLanguage::Go, None).expect("generate go dto");
+    assert!(
+        go.contains("FooBar json.RawMessage `json:\"foo-bar\"`"),
+        "{go}"
+    );
+    assert!(
+        go.contains("FooBar_2 json.RawMessage `json:\"foo_bar\"`"),
+        "{go}"
+    );
+    assert!(
+        go.contains("Field1name json.RawMessage `json:\"1name\"`"),
+        "{go}"
+    );
+    assert!(
+        go.contains("Class json.RawMessage `json:\"class\"`"),
+        "{go}"
+    );
+}
