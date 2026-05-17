@@ -3,23 +3,25 @@
 //! This module provides compile-time validation for v2 expressions,
 //! catching errors that previously only occurred at runtime.
 
+#[cfg(test)]
 use crate::error::ErrorCode;
 #[cfg(test)]
+use crate::v2_model::V2OpStep;
+#[cfg(test)]
 use crate::v2_model::V2Ref;
-use crate::v2_model::{V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Start, V2Step};
-use crate::v2_operator::{
-    V2OperatorArgScope, is_valid_operator, operator_arg_range, operator_arg_scope,
-};
+use crate::v2_model::{V2Expr, V2IfStep, V2LetStep, V2MapStep, V2Pipe, V2Start, V2Step};
 
 mod conditions;
 mod context;
 mod dependencies;
+mod operators;
 mod references;
 mod types;
 
 pub use self::conditions::validate_v2_condition;
 pub use self::context::{V2Scope, V2ValidationCtx};
 pub use self::dependencies::{collect_out_references, validate_no_cyclic_dependencies};
+pub(crate) use self::operators::is_valid_op;
 pub use self::references::validate_v2_ref;
 pub use self::types::{V2Type, infer_v2_expr_type};
 
@@ -84,38 +86,11 @@ fn validate_v2_step(
     ctx: &mut V2ValidationCtx<'_>,
 ) {
     match step {
-        V2Step::Op(op_step) => validate_v2_op_step(op_step, base_path, scope, ctx),
+        V2Step::Op(op_step) => operators::validate_v2_op_step(op_step, base_path, scope, ctx),
         V2Step::Let(let_step) => validate_v2_let_step(let_step, base_path, scope, ctx),
         V2Step::If(if_step) => validate_v2_if_step(if_step, base_path, scope, ctx),
         V2Step::Map(map_step) => validate_v2_map_step(map_step, base_path, scope, ctx),
         V2Step::Ref(v2_ref) => validate_v2_ref(v2_ref, base_path, scope, ctx),
-    }
-}
-
-/// Validate a v2 op step
-fn validate_v2_op_step(
-    op_step: &V2OpStep,
-    base_path: &str,
-    scope: &V2Scope,
-    ctx: &mut V2ValidationCtx<'_>,
-) {
-    // Check if op is known
-    if !is_valid_op(&op_step.op) {
-        ctx.push_error(
-            ErrorCode::UnknownOp,
-            format!("unknown operation: {}", op_step.op),
-            base_path,
-        );
-    }
-
-    // Validate argument count
-    validate_op_args_count(&op_step.op, op_step.args.len(), base_path, ctx);
-
-    // Validate each argument expression
-    for (i, arg) in op_step.args.iter().enumerate() {
-        let arg_path = format!("{}.args[{}]", base_path, i);
-        let arg_scope = get_arg_scope_for_op(&op_step.op, i, op_step.args.len(), scope);
-        validate_v2_expr(arg, &arg_path, &arg_scope, ctx);
     }
 }
 
@@ -175,63 +150,6 @@ fn validate_v2_map_step(
         let step_path = format!("{}.map[{}]", base_path, i);
         validate_v2_step(step, &step_path, &mut map_scope, ctx);
     }
-}
-
-// =============================================================================
-// Operation Validation
-// =============================================================================
-
-pub(crate) fn is_valid_op(op: &str) -> bool {
-    is_valid_operator(op)
-}
-
-/// Get the appropriate scope for an operation argument
-fn get_arg_scope_for_op(
-    op: &str,
-    arg_index: usize,
-    arg_count: usize,
-    parent_scope: &V2Scope,
-) -> V2Scope {
-    match operator_arg_scope(op, arg_index, arg_count) {
-        Some(V2OperatorArgScope::Item) => V2Scope::with_parent(parent_scope).with_item(),
-        Some(V2OperatorArgScope::ItemAndAcc) => {
-            V2Scope::with_parent(parent_scope).with_item().with_acc()
-        }
-        _ => parent_scope.clone(),
-    }
-}
-
-/// Validate operation argument count
-fn validate_op_args_count(op: &str, count: usize, base_path: &str, ctx: &mut V2ValidationCtx<'_>) {
-    let (min, max) = get_op_arg_range(op);
-
-    if count < min {
-        ctx.push_error(
-            ErrorCode::InvalidArgs,
-            format!(
-                "{} requires at least {} argument(s), got {}",
-                op, min, count
-            ),
-            base_path,
-        );
-    } else if let Some(max_val) = max {
-        if count > max_val {
-            ctx.push_error(
-                ErrorCode::InvalidArgs,
-                format!(
-                    "{} accepts at most {} argument(s), got {}",
-                    op, max_val, count
-                ),
-                base_path,
-            );
-        }
-    }
-}
-
-/// Get the valid argument count range for an operation
-/// Returns (min, max) where max is None for unlimited
-fn get_op_arg_range(op: &str) -> (usize, Option<usize>) {
-    operator_arg_range(op)
 }
 
 // =============================================================================
@@ -300,12 +218,12 @@ mod tests {
     fn test_is_valid_op() {
         for metadata in crate::v2_operator::V2_OPERATORS {
             assert!(
-                is_valid_op(metadata.name),
+                operators::is_valid_op(metadata.name),
                 "{} must be valid",
                 metadata.name
             );
         }
-        assert!(!is_valid_op("nonexistent_op"));
+        assert!(!operators::is_valid_op("nonexistent_op"));
     }
 
     #[test]
@@ -350,27 +268,27 @@ mod tests {
 
     #[test]
     fn test_op_arg_range() {
-        assert_eq!(get_op_arg_range("trim"), (0, Some(0)));
-        assert_eq!(get_op_arg_range("multiply"), (1, None));
-        assert_eq!(get_op_arg_range("subtract"), (1, None));
-        assert_eq!(get_op_arg_range("divide"), (1, None));
-        assert_eq!(get_op_arg_range("concat"), (1, None));
-        assert_eq!(get_op_arg_range("lookup_first"), (2, Some(4)));
-        assert_eq!(get_op_arg_range("split"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("pad_start"), (1, Some(2)));
-        assert_eq!(get_op_arg_range("round"), (0, Some(1)));
-        assert_eq!(get_op_arg_range("zip"), (1, None));
-        assert_eq!(get_op_arg_range("gt"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("gte"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("lt"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("lte"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("eq"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("ne"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("match"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("zip_with"), (2, None));
-        assert_eq!(get_op_arg_range("reduce"), (1, Some(1)));
-        assert_eq!(get_op_arg_range("fold"), (2, Some(2)));
-        assert_eq!(get_op_arg_range("to_unixtime"), (0, Some(2)));
+        assert_eq!(operators::get_op_arg_range("trim"), (0, Some(0)));
+        assert_eq!(operators::get_op_arg_range("multiply"), (1, None));
+        assert_eq!(operators::get_op_arg_range("subtract"), (1, None));
+        assert_eq!(operators::get_op_arg_range("divide"), (1, None));
+        assert_eq!(operators::get_op_arg_range("concat"), (1, None));
+        assert_eq!(operators::get_op_arg_range("lookup_first"), (2, Some(4)));
+        assert_eq!(operators::get_op_arg_range("split"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("pad_start"), (1, Some(2)));
+        assert_eq!(operators::get_op_arg_range("round"), (0, Some(1)));
+        assert_eq!(operators::get_op_arg_range("zip"), (1, None));
+        assert_eq!(operators::get_op_arg_range("gt"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("gte"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("lt"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("lte"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("eq"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("ne"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("match"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("zip_with"), (2, None));
+        assert_eq!(operators::get_op_arg_range("reduce"), (1, Some(1)));
+        assert_eq!(operators::get_op_arg_range("fold"), (2, Some(2)));
+        assert_eq!(operators::get_op_arg_range("to_unixtime"), (0, Some(2)));
     }
 
     #[test]
