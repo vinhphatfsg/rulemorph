@@ -1,5 +1,3 @@
-use serde_json::json;
-
 use super::*;
 use crate::v2_model::{V2Condition, V2Ref, V2Step};
 
@@ -143,6 +141,7 @@ mod v2_ref_parser_tests {
 
 mod v2_step_parser_tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_parse_let_step() {
