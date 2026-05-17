@@ -1,3 +1,8 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use crate::trace_backend::TraceBackend;
+
 use super::*;
 
 #[derive(Clone)]
