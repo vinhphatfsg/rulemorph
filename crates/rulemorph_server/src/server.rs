@@ -1,14 +1,12 @@
 use std::sync::Arc;
 
 use axum::{
-    Json, Router,
+    Router,
     extract::{DefaultBodyLimit, State},
-    http::{Request, StatusCode},
+    http::Request,
     middleware::{Next, from_fn_with_state},
-    response::IntoResponse,
     routing::{any, get, post},
 };
-use serde_json::json;
 
 use crate::{TenantContext, TenantResolver};
 use rulemorph_endpoint::{ApiMode, EndpointEngine, RequestContext};
@@ -18,6 +16,7 @@ use rulemorph_trace::TraceStore;
 mod api_import;
 mod api_key_routes;
 mod auth;
+mod error;
 mod import_zip;
 mod rate_limit;
 mod tenant_registry;
@@ -36,6 +35,7 @@ use self::auth::{
     ensure_pre_auth_rate_limit_for_request, internal_auth, internal_auth_required, internal_tenant,
     pre_auth_rate_limit, rate_limit_key, v1_auth,
 };
+use self::error::ApiError;
 #[cfg(test)]
 use self::import_zip::copy_zip_entry_bounded;
 #[cfg(test)]
@@ -268,62 +268,6 @@ async fn inject_default_resources(
             .insert(state.default_resources.clone());
     }
     Ok(next.run(request).await)
-}
-
-struct ApiError {
-    status: StatusCode,
-    message: String,
-}
-
-impl ApiError {
-    fn internal(err: impl std::fmt::Display) -> Self {
-        Self {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: err.to_string(),
-        }
-    }
-
-    fn service_unavailable(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::SERVICE_UNAVAILABLE,
-            message: message.into(),
-        }
-    }
-
-    fn unauthorized(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::UNAUTHORIZED,
-            message: message.into(),
-        }
-    }
-
-    fn too_many_requests(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            message: message.into(),
-        }
-    }
-
-    fn bad_request(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            message: message.into(),
-        }
-    }
-
-    fn not_found(message: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::NOT_FOUND,
-            message: message.into(),
-        }
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> axum::response::Response {
-        let body = Json(json!({ "error": self.message }));
-        (self.status, body).into_response()
-    }
 }
 
 #[cfg(test)]
