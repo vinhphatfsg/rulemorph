@@ -1932,6 +1932,122 @@ fn generate_rules_from_dto_single_line_rust_struct() {
 }
 
 #[test]
+fn generate_rules_from_dto_rust_multiline_struct_shape() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dto_text = r#"
+pub struct Record {
+    #[serde(rename = "user_id")]
+    pub id: String,
+    pub name: Option<String>,
+    pub active: bool,
+    pub count: i64,
+    pub ratio: f32,
+    pub profile: Option<Profile>,
+    pub metadata: serde_json::Value,
+}
+
+pub struct Profile {
+    #[serde(rename = "city_name")]
+    pub city: String,
+}
+"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1901,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_dto",
+            "arguments": {
+                "dto_text": dto_text,
+                "dto_language": "rust",
+                "input_json": {
+                    "user_id": "001",
+                    "name": "Ada",
+                    "active": true,
+                    "count": 7,
+                    "ratio": 1.5,
+                    "profile": {
+                        "city_name": "Tokyo"
+                    },
+                    "metadata": {
+                        "team": "core"
+                    }
+                }
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let rule = parse_rule_file(output_text).expect("parse output rules");
+
+    let id_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "user_id")
+        .expect("user_id mapping");
+    assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
+    assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
+    assert!(id_mapping.required);
+
+    let name_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "name")
+        .expect("name mapping");
+    assert_eq!(name_mapping.source.as_deref(), Some("name"));
+    assert!(!name_mapping.required);
+
+    let active_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "active")
+        .expect("active mapping");
+    assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
+
+    let count_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "count")
+        .expect("count mapping");
+    assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
+
+    let ratio_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "ratio")
+        .expect("ratio mapping");
+    assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
+
+    let profile_city_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "profile.city_name")
+        .expect("profile.city_name mapping");
+    assert_eq!(
+        profile_city_mapping.source.as_deref(),
+        Some("profile.city_name")
+    );
+    assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
+    assert!(!profile_city_mapping.required);
+
+    let metadata_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "metadata")
+        .expect("metadata mapping");
+    assert_eq!(metadata_mapping.source, None);
+    assert_eq!(metadata_mapping.value_type, None);
+
+    server.shutdown();
+}
+
+#[test]
 fn generate_rules_from_dto_python_single_line_alias() {
     let mut server = McpServer::start();
     initialize(&mut server);
