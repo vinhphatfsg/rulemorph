@@ -2040,6 +2040,135 @@ fn generate_rules_from_dto_go_single_line_tags() {
 }
 
 #[test]
+fn generate_rules_from_dto_go_multiline_struct_shape() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dto_text = r#"
+type Record struct {
+    ID string
+    Name *string `json:"name,omitempty"`
+    Internal string `json:"-"`
+    Profile Profile `json:"profile"`
+    Tags []string `json:"tags"`
+    Metadata map[string]string `json:"metadata"`
+    Active bool `json:"active"`
+    Count int64 `json:"count"`
+    Ratio float32 `json:"ratio"`
+}
+
+type Profile struct {
+    City string `json:"city"`
+}
+"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 2101,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_dto",
+            "arguments": {
+                "dto_text": dto_text,
+                "dto_language": "go",
+                "input_json": {
+                    "ID": "001",
+                    "name": "Ada",
+                    "profile": {
+                        "city": "Tokyo"
+                    },
+                    "tags": ["admin"],
+                    "metadata": {
+                        "team": "core"
+                    },
+                    "active": true,
+                    "count": 7,
+                    "ratio": 1.5
+                }
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let rule = parse_rule_file(output_text).expect("parse output rules");
+
+    assert!(
+        !rule
+            .mappings
+            .iter()
+            .any(|mapping| mapping.target == "Internal")
+    );
+
+    let id_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "ID")
+        .expect("ID mapping");
+    assert_eq!(id_mapping.source.as_deref(), Some("ID"));
+    assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
+    assert!(id_mapping.required);
+
+    let name_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "name")
+        .expect("name mapping");
+    assert_eq!(name_mapping.source.as_deref(), Some("name"));
+    assert!(!name_mapping.required);
+
+    let profile_city_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "profile.city")
+        .expect("profile.city mapping");
+    assert_eq!(profile_city_mapping.source.as_deref(), Some("profile.city"));
+    assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
+    assert!(profile_city_mapping.required);
+
+    let tags_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "tags")
+        .expect("tags mapping");
+    assert_eq!(tags_mapping.source.as_deref(), Some("tags"));
+    assert_eq!(tags_mapping.value_type, None);
+
+    let metadata_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "metadata")
+        .expect("metadata mapping");
+    assert_eq!(metadata_mapping.source, None);
+    assert_eq!(metadata_mapping.value_type, None);
+
+    let active_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "active")
+        .expect("active mapping");
+    assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
+
+    let count_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "count")
+        .expect("count mapping");
+    assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
+
+    let ratio_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "ratio")
+        .expect("ratio mapping");
+    assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
+
+    server.shutdown();
+}
+
+#[test]
 fn generate_rules_from_dto_java_single_line_annotations() {
     let mut server = McpServer::start();
     initialize(&mut server);
