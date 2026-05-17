@@ -3,14 +3,6 @@
 //! This module provides the evaluation context and functions for v2 expressions,
 //! including pipe value tracking, let bindings, and item/acc scopes.
 
-#[cfg(test)]
-use serde_json::Value as JsonValue;
-
-#[cfg(test)]
-use crate::error::TransformErrorKind;
-#[cfg(test)]
-use crate::v2_model::{V2Expr, V2OpStep, V2Pipe, V2Start};
-
 mod cast;
 mod collection;
 mod comparison;

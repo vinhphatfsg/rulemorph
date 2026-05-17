@@ -1,7 +1,10 @@
 use super::*;
+use crate::error::TransformErrorKind;
 use crate::v2_model::{
-    V2Comparison, V2ComparisonOp, V2Condition, V2IfStep, V2LetStep, V2MapStep, V2Ref, V2Step,
+    V2Comparison, V2ComparisonOp, V2Condition, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep,
+    V2Pipe, V2Ref, V2Start, V2Step,
 };
+use serde_json::Value as JsonValue;
 
 #[cfg(test)]
 mod v2_ref_eval_tests {
