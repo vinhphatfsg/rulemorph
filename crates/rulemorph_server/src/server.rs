@@ -1,16 +1,14 @@
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Extension, FromRequest, Multipart, State},
-    http::{HeaderMap, Method, Request, StatusCode},
+    extract::{DefaultBodyLimit, State},
+    http::{Request, StatusCode},
     middleware::{Next, from_fn_with_state},
     response::IntoResponse,
     routing::{any, get, post},
 };
-use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::{Mutex, OnceCell, broadcast};
@@ -19,8 +17,9 @@ use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 use rulemorph_endpoint::{
     ApiMode, EndpointEngine, EngineConfig, RequestContext, validate_rules_dir,
 };
-use rulemorph_trace::{ImportResult, TraceStore, start_trace_watcher};
+use rulemorph_trace::{TraceStore, start_trace_watcher};
 
+mod api_import;
 mod api_key_routes;
 mod auth;
 mod import_zip;
@@ -28,19 +27,22 @@ mod rate_limit;
 mod trace_routes;
 mod ui;
 
+use self::api_import::{
+    handle_api_import_only, handle_api_import_or_rules, handle_api_import_or_rules_strict,
+    import_bundle_path,
+};
 use self::api_key_routes::{issue_api_key, list_api_keys, revoke_api_key, rotate_api_key};
 #[cfg(test)]
 use self::auth::pre_auth_rate_limit_key;
 use self::auth::{
-    DispatchInvalidApiKeyForRules, InternalApiRateLimitScope, api_rate_limit,
-    apply_internal_tenant_context, apply_v1_auth_context, enforce_api_rate_limit,
-    ensure_internal_auth, ensure_internal_auth_required, ensure_pre_auth_rate_limit_for_request,
-    internal_auth, internal_auth_required, internal_tenant,
-    maybe_apply_v1_auth_context_for_dispatch, pre_auth_rate_limit, rate_limit_key, v1_auth,
+    DispatchInvalidApiKeyForRules, api_rate_limit, apply_v1_auth_context, enforce_api_rate_limit,
+    ensure_pre_auth_rate_limit_for_request, internal_auth, internal_auth_required, internal_tenant,
+    pre_auth_rate_limit, rate_limit_key, v1_auth,
 };
 #[cfg(test)]
 use self::import_zip::copy_zip_entry_bounded;
-use self::import_zip::{extract_zip, resolve_bundle_root, validate_bundle_path};
+#[cfg(test)]
+use self::import_zip::extract_zip;
 pub use self::rate_limit::RateLimiter;
 use self::trace_routes::{
     get_api_graph, get_trace, get_trace_finalize, get_trace_manifest, get_trace_nodes_chunk,
@@ -319,81 +321,6 @@ fn request_engine<'a>(
         .ok_or_else(|| ApiError::internal("api engine not configured"))
 }
 
-fn is_multipart_form_data(headers: &HeaderMap) -> bool {
-    headers
-        .get(axum::http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(';')
-                .next()
-                .is_some_and(|part| part.trim().eq_ignore_ascii_case("multipart/form-data"))
-        })
-        .unwrap_or(false)
-}
-
-fn is_zip_import_request(request: &Request<axum::body::Body>) -> bool {
-    request.method() == Method::POST
-        && request.uri().path() == "/api/import"
-        && is_multipart_form_data(request.headers())
-}
-
-async fn handle_api_import_only(
-    State(state): State<AppState>,
-    request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    if !is_zip_import_request(&request) {
-        return Err(ApiError::not_found("no endpoint matched"));
-    }
-    run_api_import_request(&state, request, false).await
-}
-
-async fn handle_api_import_or_rules(
-    State(state): State<AppState>,
-    request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    handle_api_import_or_rules_with_auth_mode(state, request, false).await
-}
-
-async fn handle_api_import_or_rules_strict(
-    State(state): State<AppState>,
-    request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    handle_api_import_or_rules_with_auth_mode(state, request, true).await
-}
-
-async fn handle_api_import_or_rules_with_auth_mode(
-    state: AppState,
-    mut request: Request<axum::body::Body>,
-    require_internal_key: bool,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    if !is_zip_import_request(&request) {
-        return run_rules_api_request(&state, request).await;
-    }
-    if state.tenant_resolver.is_some() && state.rate_limiter.is_some() {
-        ensure_pre_auth_rate_limit_for_request(&state, &mut request).await?;
-    }
-    if state.tenant_resolver.is_none() || request.headers().contains_key("x-tenant-id") {
-        if require_internal_key {
-            ensure_internal_auth_required(&state, request.headers())?;
-        } else {
-            ensure_internal_auth(&state, request.headers())?;
-        }
-        if state.tenant_resolver.is_some() {
-            apply_internal_tenant_context(&state, &mut request).await?;
-        }
-    }
-    maybe_apply_v1_auth_context_for_dispatch(&state, &mut request).await?;
-    let resources = request_resources(&state, &request);
-    let has_rule = request_engine(&state, &resources)
-        .map(|engine| engine.has_endpoint(request.method(), request.uri().path()))
-        .unwrap_or(false);
-    if has_rule {
-        return run_rules_api_request(&state, request).await;
-    }
-    run_api_import_request(&state, request, require_internal_key).await
-}
-
 async fn run_rules_api_request(
     state: &AppState,
     mut request: Request<axum::body::Body>,
@@ -416,30 +343,6 @@ async fn run_rules_api_request(
         enforce_api_rate_limit(state, key).await?;
     }
     handle_rules_api_core(state, request).await
-}
-
-async fn run_api_import_request(
-    state: &AppState,
-    mut request: Request<axum::body::Body>,
-    require_internal_key: bool,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    if state.rate_limiter.is_some() {
-        ensure_pre_auth_rate_limit_for_request(state, &mut request).await?;
-    }
-    if require_internal_key {
-        ensure_internal_auth_required(state, request.headers())?;
-    } else {
-        ensure_internal_auth(state, request.headers())?;
-    }
-    if state.tenant_resolver.is_some() {
-        apply_internal_tenant_context(state, &mut request).await?;
-    }
-    if state.rate_limiter.is_some() {
-        request.extensions_mut().insert(InternalApiRateLimitScope);
-        let key = rate_limit_key(state, &request);
-        enforce_api_rate_limit(state, key).await?;
-    }
-    import_bundle_zip_from_request(state, request).await
 }
 
 async fn handle_rules_api(
@@ -489,83 +392,6 @@ async fn inject_default_resources(
             .insert(state.default_resources.clone());
     }
     Ok(next.run(request).await)
-}
-
-#[derive(Deserialize)]
-struct ImportPathRequest {
-    bundle_path: String,
-}
-
-async fn import_bundle_path(
-    Extension(resources): Extension<Arc<TenantResources>>,
-    Json(payload): Json<ImportPathRequest>,
-) -> std::result::Result<Json<ImportResult>, ApiError> {
-    let bundle_path = validate_bundle_path(&PathBuf::from(payload.bundle_path))?;
-    let result = resources
-        .store
-        .import_bundle(&bundle_path)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(Json(result))
-}
-
-async fn import_bundle_zip_from_request(
-    state: &AppState,
-    request: Request<axum::body::Body>,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    let resources = request_resources(state, &request);
-    let multipart = Multipart::from_request(request, state)
-        .await
-        .map_err(|err| ApiError::bad_request(format!("multipart error: {}", err)))?;
-    let result = import_bundle_zip_with_resources(resources, multipart).await?;
-    Ok(Json(result).into_response())
-}
-
-async fn import_bundle_zip_with_resources(
-    resources: Arc<TenantResources>,
-    mut multipart: Multipart,
-) -> std::result::Result<ImportResult, ApiError> {
-    let mut zip_file: Option<tempfile::NamedTempFile> = None;
-    let mut total_bytes: u64 = 0;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|err| ApiError::bad_request(format!("multipart error: {}", err)))?
-    {
-        let name = field.name().map(|value| value.to_string());
-        if name.as_deref() != Some("bundle") {
-            continue;
-        }
-        let mut handle =
-            tempfile::NamedTempFile::new().map_err(|err| ApiError::internal(err.to_string()))?;
-        let mut field = field;
-        while let Some(chunk) = field
-            .chunk()
-            .await
-            .map_err(|err| ApiError::bad_request(format!("upload error: {}", err)))?
-        {
-            total_bytes = total_bytes.saturating_add(chunk.len() as u64);
-            if total_bytes > IMPORT_ZIP_MAX_TOTAL_BYTES {
-                return Err(ApiError::bad_request("zip exceeds max size"));
-            }
-            handle
-                .write_all(&chunk)
-                .map_err(|err| ApiError::internal(err.to_string()))?;
-        }
-        zip_file = Some(handle);
-        break;
-    }
-    let zip_file = zip_file.ok_or_else(|| ApiError::bad_request("missing bundle file"))?;
-    let extract_dir =
-        tempfile::TempDir::new().map_err(|err| ApiError::internal(err.to_string()))?;
-    extract_zip(zip_file.path(), extract_dir.path()).map_err(ApiError::bad_request)?;
-    let bundle_root = resolve_bundle_root(extract_dir.path())?;
-    let result = resources
-        .store
-        .import_bundle(&bundle_root)
-        .await
-        .map_err(ApiError::internal)?;
-    Ok(result)
 }
 
 struct ApiError {
