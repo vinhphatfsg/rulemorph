@@ -1789,6 +1789,65 @@ export interface Profile {
 }
 
 #[test]
+fn generate_rules_from_dto_typescript_json_comment_rename() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dto_text = r#"export interface Record {
+  /* json: "user_id" */ id: string;
+  profile?: Profile;
+}
+
+export interface Profile {
+  /* json: "city_name" */ city: string;
+}"#;
+
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1502,
+        "method": "tools/call",
+        "params": {
+            "name": "generate_rules_from_dto",
+            "arguments": {
+                "dto_text": dto_text,
+                "dto_language": "typescript",
+                "input_json": {
+                    "user_id": "001",
+                    "profile": {
+                        "city_name": "Tokyo"
+                    }
+                }
+            }
+        }
+    });
+
+    let response = server.send(&request);
+    let output_text = response["result"]["content"][0]["text"]
+        .as_str()
+        .expect("output text");
+    let rule = parse_rule_file(output_text).expect("parse output rules");
+
+    let id_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "user_id")
+        .expect("user_id mapping");
+    assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
+    assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
+    assert!(id_mapping.required);
+
+    let city_mapping = rule
+        .mappings
+        .iter()
+        .find(|mapping| mapping.target == "profile.city_name")
+        .expect("profile.city_name mapping");
+    assert_eq!(city_mapping.source.as_deref(), Some("profile.city_name"));
+    assert!(!city_mapping.required);
+
+    server.shutdown();
+}
+
+#[test]
 fn generate_rules_from_dto_invalid_language_returns_json_rpc_error() {
     let mut server = McpServer::start();
     initialize(&mut server);
