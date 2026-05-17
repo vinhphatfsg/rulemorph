@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::fs;
 
 use common::trace_writer::{
-    create_temp_dir, read_manifest, read_manifest_payload, read_manifest_value, sampling_bucket,
-    trace_dir, unique_temp_dir,
+    assert_no_detail_artifacts, create_temp_dir, read_manifest, read_manifest_payload,
+    read_manifest_value, read_ndjson_lines, read_ndjson_values, sampling_bucket, trace_dir,
+    unique_temp_dir, write_ndjson_lines,
 };
 use rulemorph_trace::{
     TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TraceCompression, TraceDetailLevel,
@@ -44,19 +45,7 @@ async fn write_trace_bundle_downgrades_on_budget_exceeded() -> anyhow::Result<()
     assert!(detail.records.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = trace_dir(&manifest_path);
-    for entry in fs::read_dir(trace_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with("records-")
-                && !name.starts_with("nodes-")
-                && !name.starts_with("finalize.json")
-                && !name.contains(".tmp-"),
-            "unexpected detail file: {name}"
-        );
-    }
+    assert_no_detail_artifacts(&manifest_path)?;
 
     Ok(())
 }
@@ -118,19 +107,7 @@ async fn write_trace_bundle_downgrades_on_oversized_record_line() -> anyhow::Res
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = trace_dir(&manifest_path);
-    for entry in fs::read_dir(trace_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with("records-")
-                && !name.starts_with("nodes-")
-                && !name.starts_with("finalize.json")
-                && !name.contains(".tmp-"),
-            "unexpected detail file: {name}"
-        );
-    }
+    assert_no_detail_artifacts(&manifest_path)?;
 
     Ok(())
 }
@@ -169,19 +146,7 @@ async fn write_trace_bundle_downgrades_on_chunk_count_exceeded() -> anyhow::Resu
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = trace_dir(&manifest_path);
-    for entry in fs::read_dir(trace_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with("records-")
-                && !name.starts_with("nodes-")
-                && !name.starts_with("finalize.json")
-                && !name.contains(".tmp-"),
-            "unexpected detail file: {name}"
-        );
-    }
+    assert_no_detail_artifacts(&manifest_path)?;
 
     Ok(())
 }
@@ -253,19 +218,7 @@ async fn write_trace_bundle_sampling_skips_success() -> anyhow::Result<()> {
     assert!(detail.nodes.is_empty());
     assert!(detail.finalize.is_none());
 
-    let trace_dir = trace_dir(&manifest_path);
-    for entry in fs::read_dir(trace_dir)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with("records-")
-                && !name.starts_with("nodes-")
-                && !name.starts_with("finalize.json")
-                && !name.contains(".tmp-"),
-            "unexpected detail file: {name}"
-        );
-    }
+    assert_no_detail_artifacts(&manifest_path)?;
 
     Ok(())
 }
@@ -427,22 +380,12 @@ async fn write_trace_bundle_splits_nodes() -> anyhow::Result<()> {
 
     let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
-    let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
-    for line in record_payload.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let record: serde_json::Value = serde_json::from_str(line)?;
+    for record in read_ndjson_values(trace_dir.join(&record_chunk.path))? {
         assert!(record.get("nodes").is_none());
     }
 
     let node_chunk = &detail.nodes[0];
-    let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
-    for line in node_payload.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let node: serde_json::Value = serde_json::from_str(line)?;
+    for node in read_ndjson_values(trace_dir.join(&node_chunk.path))? {
         assert!(node.get("record_index").is_some());
         assert!(node.get("id").is_some());
         assert!(node.get("kind").is_some());
@@ -507,18 +450,13 @@ async fn write_trace_bundle_recovers_nodes_without_record_index() -> anyhow::Res
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let mut second: serde_json::Value = serde_json::from_str(&lines[1])?;
     if let Some(obj) = second.as_object_mut() {
         obj.remove("record_index");
     }
     lines[1] = serde_json::to_string(&second)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -577,12 +515,10 @@ async fn write_trace_bundle_preserves_node_owned_record_index() -> anyhow::Resul
     let detail = manifest.detail.expect("detail should exist");
     let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
-    let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
-    let first_line = node_payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let raw_entry = read_ndjson_values(trace_dir.join(&node_chunk.path))?
+        .into_iter()
+        .next()
         .expect("node line should exist");
-    let raw_entry: serde_json::Value = serde_json::from_str(first_line)?;
     assert_eq!(
         raw_entry
             .get("record_index")
@@ -653,12 +589,7 @@ async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let original: serde_json::Value = serde_json::from_str(&lines[0])?;
     let record_index = original
         .get("record_index")
@@ -673,7 +604,7 @@ async fn write_trace_bundle_reads_legacy_node_wrapper() -> anyhow::Result<()> {
         "node": node
     });
     lines[0] = serde_json::to_string(&wrapped)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -725,12 +656,7 @@ async fn write_trace_bundle_keeps_node_key_with_sibling_fields() -> anyhow::Resu
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let original: serde_json::Value = serde_json::from_str(&lines[0])?;
     let record_index = original
         .get("record_index")
@@ -746,7 +672,7 @@ async fn write_trace_bundle_keeps_node_key_with_sibling_fields() -> anyhow::Resu
         "extra": "ignored"
     });
     lines[0] = serde_json::to_string(&wrapped)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -887,12 +813,7 @@ async fn write_trace_bundle_inherits_record_index_for_legacy_wrapper() -> anyhow
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let first: serde_json::Value = serde_json::from_str(&lines[0])?;
     let wrapper_first = json!({
         "record_index": first.get("record_index").cloned().unwrap_or(json!(0)),
@@ -908,7 +829,7 @@ async fn write_trace_bundle_inherits_record_index_for_legacy_wrapper() -> anyhow
         serde_json::to_string(&wrapper_first)?,
         serde_json::to_string(&wrapper_second)?,
     ];
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -1484,12 +1405,7 @@ async fn write_trace_bundle_parses_string_record_index() -> anyhow::Result<()> {
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
-    let record_payload = fs::read_to_string(&record_chunk_path)?;
-    let mut lines: Vec<String> = record_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&record_chunk_path)?;
     let mut record: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = record.as_object_mut() {
         obj.insert(
@@ -1498,7 +1414,7 @@ async fn write_trace_bundle_parses_string_record_index() -> anyhow::Result<()> {
         );
     }
     lines[0] = serde_json::to_string(&record)?;
-    fs::write(&record_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&record_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -1595,12 +1511,7 @@ async fn write_trace_bundle_skips_invalid_record_index() -> anyhow::Result<()> {
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let mut second: serde_json::Value = serde_json::from_str(&lines[1])?;
     if let Some(obj) = second.as_object_mut() {
         obj.insert(
@@ -1609,7 +1520,7 @@ async fn write_trace_bundle_skips_invalid_record_index() -> anyhow::Result<()> {
         );
     }
     lines[1] = serde_json::to_string(&second)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -1663,12 +1574,7 @@ async fn write_trace_bundle_skips_null_record_index_keeps_inheritance() -> anyho
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let first: serde_json::Value = serde_json::from_str(&lines[0])?;
     let mut second: serde_json::Value = serde_json::from_str(&lines[1])?;
     if let Some(obj) = second.as_object_mut() {
@@ -1691,7 +1597,7 @@ async fn write_trace_bundle_skips_null_record_index_keeps_inheritance() -> anyho
         serde_json::to_string(&second)?,
         serde_json::to_string(&third)?,
     ];
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -1749,12 +1655,7 @@ async fn write_trace_bundle_treats_node_key_with_core_fields_as_normal_node() ->
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let mut first: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = first.as_object_mut() {
         obj.insert(
@@ -1775,7 +1676,7 @@ async fn write_trace_bundle_treats_node_key_with_core_fields_as_normal_node() ->
         );
     }
     lines[0] = serde_json::to_string(&first)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -1823,12 +1724,10 @@ async fn write_trace_bundle_wraps_non_object_nodes() -> anyhow::Result<()> {
     let detail = manifest.detail.expect("detail should exist");
     let trace_dir = trace_dir(&manifest_path);
     let node_chunk = &detail.nodes[0];
-    let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
-    let first_line = node_payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let node = read_ndjson_values(trace_dir.join(&node_chunk.path))?
+        .into_iter()
+        .next()
         .expect("node line should exist");
-    let node: serde_json::Value = serde_json::from_str(first_line)?;
     assert_eq!(
         node.get("value").and_then(|value| value.as_str()),
         Some("raw-node")
@@ -1873,12 +1772,7 @@ async fn write_trace_bundle_dedupes_duplicate_record_index() -> anyhow::Result<(
     let trace_dir = trace_dir(&manifest_path);
 
     let record_chunk = &detail.records[0];
-    let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
-    let mut record_indices: Vec<u64> = record_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<serde_json::Value>(line))
-        .collect::<Result<Vec<_>, _>>()?
+    let mut record_indices: Vec<u64> = read_ndjson_values(trace_dir.join(&record_chunk.path))?
         .iter()
         .filter_map(|record| record.get("index").and_then(|value| value.as_u64()))
         .collect();
@@ -1886,12 +1780,7 @@ async fn write_trace_bundle_dedupes_duplicate_record_index() -> anyhow::Result<(
     assert_eq!(record_indices, vec![1, 2]);
 
     let node_chunk = &detail.nodes[0];
-    let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
-    let mut node_indices: Vec<u64> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| serde_json::from_str::<serde_json::Value>(line))
-        .collect::<Result<Vec<_>, _>>()?
+    let mut node_indices: Vec<u64> = read_ndjson_values(trace_dir.join(&node_chunk.path))?
         .iter()
         .filter_map(|node| node.get("record_index").and_then(|value| value.as_u64()))
         .collect();
@@ -1931,18 +1820,13 @@ async fn write_trace_bundle_skips_missing_first_record_index() -> anyhow::Result
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let mut first: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = first.as_object_mut() {
         obj.remove("record_index");
     }
     lines[0] = serde_json::to_string(&first)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -1995,24 +1879,20 @@ async fn write_trace_bundle_accepts_string_record_index() -> anyhow::Result<()> 
     let trace_dir = trace_dir(&manifest_path);
 
     let record_chunk = &detail.records[0];
-    let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
-    let record_line = record_payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let record = read_ndjson_values(trace_dir.join(&record_chunk.path))?
+        .into_iter()
+        .next()
         .expect("record line should exist");
-    let record: serde_json::Value = serde_json::from_str(record_line)?;
     assert_eq!(
         record.get("index").and_then(|value| value.as_u64()),
         Some(2)
     );
 
     let node_chunk = &detail.nodes[0];
-    let node_payload = fs::read_to_string(trace_dir.join(&node_chunk.path))?;
-    let node_line = node_payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let node = read_ndjson_values(trace_dir.join(&node_chunk.path))?
+        .into_iter()
+        .next()
         .expect("node line should exist");
-    let node: serde_json::Value = serde_json::from_str(node_line)?;
     assert_eq!(
         node.get("record_index").and_then(|value| value.as_u64()),
         Some(2)
@@ -2048,12 +1928,7 @@ async fn write_trace_bundle_merges_inline_nodes_with_chunk() -> anyhow::Result<(
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
-    let record_payload = fs::read_to_string(&record_chunk_path)?;
-    let mut lines: Vec<String> = record_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&record_chunk_path)?;
     let mut record: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = record.as_object_mut() {
         obj.insert(
@@ -2066,7 +1941,7 @@ async fn write_trace_bundle_merges_inline_nodes_with_chunk() -> anyhow::Result<(
         );
     }
     lines[0] = serde_json::to_string(&record)?;
-    fs::write(&record_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&record_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -2122,12 +1997,7 @@ async fn write_trace_bundle_first_wins_duplicate_record_index() -> anyhow::Resul
 
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
-    let record_payload = fs::read_to_string(&record_chunk_path)?;
-    let mut record_lines: Vec<String> = record_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut record_lines = read_ndjson_lines(&record_chunk_path)?;
     for line in &mut record_lines {
         let mut record: serde_json::Value = serde_json::from_str(line)?;
         if let Some(obj) = record.as_object_mut() {
@@ -2135,16 +2005,11 @@ async fn write_trace_bundle_first_wins_duplicate_record_index() -> anyhow::Resul
         }
         *line = serde_json::to_string(&record)?;
     }
-    fs::write(&record_chunk_path, format!("{}\n", record_lines.join("\n")))?;
+    write_ndjson_lines(&record_chunk_path, &record_lines)?;
 
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut node_lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut node_lines = read_ndjson_lines(&node_chunk_path)?;
     for line in &mut node_lines {
         let mut node: serde_json::Value = serde_json::from_str(line)?;
         if let Some(obj) = node.as_object_mut() {
@@ -2152,7 +2017,7 @@ async fn write_trace_bundle_first_wins_duplicate_record_index() -> anyhow::Resul
         }
         *line = serde_json::to_string(&node)?;
     }
-    fs::write(&node_chunk_path, format!("{}\n", node_lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &node_lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -2205,18 +2070,13 @@ async fn write_trace_bundle_skips_missing_record_index_across_chunks() -> anyhow
     let trace_dir = trace_dir(&manifest_path);
     let second_chunk = &detail.nodes[1];
     let second_chunk_path = trace_dir.join(&second_chunk.path);
-    let node_payload = fs::read_to_string(&second_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&second_chunk_path)?;
     let mut node: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = node.as_object_mut() {
         obj.remove("record_index");
     }
     lines[0] = serde_json::to_string(&node)?;
-    fs::write(&second_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&second_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -2269,12 +2129,7 @@ async fn write_trace_bundle_parses_string_record_index_in_nodes() -> anyhow::Res
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let mut node: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = node.as_object_mut() {
         obj.insert(
@@ -2283,7 +2138,7 @@ async fn write_trace_bundle_parses_string_record_index_in_nodes() -> anyhow::Res
         );
     }
     lines[0] = serde_json::to_string(&node)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -2336,12 +2191,7 @@ async fn write_trace_bundle_skips_invalid_record_index_in_record() -> anyhow::Re
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
-    let record_payload = fs::read_to_string(&record_chunk_path)?;
-    let mut lines: Vec<String> = record_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&record_chunk_path)?;
     let mut record: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = record.as_object_mut() {
         obj.insert(
@@ -2350,7 +2200,7 @@ async fn write_trace_bundle_skips_invalid_record_index_in_record() -> anyhow::Re
         );
     }
     lines[0] = serde_json::to_string(&record)?;
-    fs::write(&record_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&record_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -2472,12 +2322,10 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes() -> anyhow::Result<()
     let detail = manifest.detail.expect("detail should exist");
     let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
-    let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
-    let record_line = record_payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let record = read_ndjson_values(trace_dir.join(&record_chunk.path))?
+        .into_iter()
+        .next()
         .expect("record line should exist");
-    let record: serde_json::Value = serde_json::from_str(record_line)?;
     let nodes = record
         .get("nodes")
         .and_then(|value| value.as_array())
@@ -2515,12 +2363,10 @@ async fn write_trace_bundle_wraps_inline_scalar_nodes_value() -> anyhow::Result<
     let detail = manifest.detail.expect("detail should exist");
     let trace_dir = trace_dir(&manifest_path);
     let record_chunk = &detail.records[0];
-    let record_payload = fs::read_to_string(trace_dir.join(&record_chunk.path))?;
-    let record_line = record_payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
+    let record = read_ndjson_values(trace_dir.join(&record_chunk.path))?
+        .into_iter()
+        .next()
         .expect("record line should exist");
-    let record: serde_json::Value = serde_json::from_str(record_line)?;
     let nodes = record
         .get("nodes")
         .and_then(|value| value.as_array())
@@ -2562,12 +2408,7 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes_on_read() -> anyhow::R
     let record_chunk = &detail.records[0];
     let record_chunk_path = trace_dir.join(&record_chunk.path);
 
-    let record_payload = fs::read_to_string(&record_chunk_path)?;
-    let mut lines: Vec<String> = record_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&record_chunk_path)?;
     let mut record: serde_json::Value = serde_json::from_str(&lines[0])?;
     if let Some(obj) = record.as_object_mut() {
         obj.insert(
@@ -2576,7 +2417,7 @@ async fn write_trace_bundle_wraps_inline_non_object_nodes_on_read() -> anyhow::R
         );
     }
     lines[0] = serde_json::to_string(&record)?;
-    fs::write(&record_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&record_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
@@ -2630,12 +2471,7 @@ async fn write_trace_bundle_invalid_record_index_keeps_inheritance() -> anyhow::
     let node_chunk = &detail.nodes[0];
     let node_chunk_path = trace_dir.join(&node_chunk.path);
 
-    let node_payload = fs::read_to_string(&node_chunk_path)?;
-    let mut lines: Vec<String> = node_payload
-        .lines()
-        .filter(|line| !line.trim().is_empty())
-        .map(|line| line.to_string())
-        .collect();
+    let mut lines = read_ndjson_lines(&node_chunk_path)?;
     let mut second: serde_json::Value = serde_json::from_str(&lines[1])?;
     if let Some(obj) = second.as_object_mut() {
         obj.insert(
@@ -2649,7 +2485,7 @@ async fn write_trace_bundle_invalid_record_index_keeps_inheritance() -> anyhow::
         obj.remove("record_index");
     }
     lines[2] = serde_json::to_string(&third)?;
-    fs::write(&node_chunk_path, format!("{}\n", lines.join("\n")))?;
+    write_ndjson_lines(&node_chunk_path, &lines)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
     let loaded = store
