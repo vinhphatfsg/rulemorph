@@ -2035,7 +2035,17 @@ async fn internal_import_path_rejects_non_temp_bundle_path_after_auth() -> Resul
         rate_limiter: None,
     };
     let app = build_router(state, true);
-    let non_temp_dir = std::env::current_dir().expect("current dir");
+    let temp_root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap_or_else(|_| std::env::temp_dir());
+    let non_temp_dir = temp_root
+        .parent()
+        .expect("temp dir has a parent")
+        .to_path_buf();
+    assert!(
+        !non_temp_dir.starts_with(&temp_root),
+        "test fixture path must be outside temp dir"
+    );
 
     let response = app
         .clone()
