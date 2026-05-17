@@ -1,4 +1,3 @@
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use axum::{
@@ -10,20 +9,18 @@ use axum::{
     routing::{any, get, post},
 };
 use serde_json::json;
-use std::collections::HashMap;
-use tokio::sync::{Mutex, OnceCell, broadcast};
 
-use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
-use rulemorph_endpoint::{
-    ApiMode, EndpointEngine, EngineConfig, RequestContext, validate_rules_dir,
-};
-use rulemorph_trace::{TraceStore, start_trace_watcher};
+use crate::{TenantContext, TenantResolver};
+use rulemorph_endpoint::{ApiMode, EndpointEngine, RequestContext};
+#[cfg(test)]
+use rulemorph_trace::TraceStore;
 
 mod api_import;
 mod api_key_routes;
 mod auth;
 mod import_zip;
 mod rate_limit;
+mod tenant_registry;
 mod trace_routes;
 mod ui;
 
@@ -44,23 +41,14 @@ use self::import_zip::copy_zip_entry_bounded;
 #[cfg(test)]
 use self::import_zip::extract_zip;
 pub use self::rate_limit::RateLimiter;
+pub(crate) use self::tenant_registry::internal_auth_path_allowlist;
+pub use self::tenant_registry::{TenantRegistry, TenantResources};
 use self::trace_routes::{
     get_api_graph, get_trace, get_trace_finalize, get_trace_manifest, get_trace_nodes_chunk,
     get_trace_records_chunk, list_traces, stream_traces,
 };
 pub use self::ui::UiSource;
 use self::ui::apply_ui_source_fallback;
-
-#[derive(Clone)]
-pub struct TenantResources {
-    pub tenant_id: String,
-    pub data_dir: PathBuf,
-    pub rules_dir: PathBuf,
-    pub auth_dir: PathBuf,
-    pub store: Arc<TraceStore>,
-    pub api_engine: Option<Arc<EndpointEngine>>,
-    pub trace_events: broadcast::Sender<()>,
-}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -74,121 +62,9 @@ pub struct AppState {
     pub rate_limiter: Option<Arc<RateLimiter>>,
 }
 
-pub(crate) fn internal_auth_path_allowlist() -> Vec<String> {
-    vec![
-        "/internal/traces".to_string(),
-        "/internal/traces/".to_string(),
-        "/internal/api-graph".to_string(),
-        "/internal/import".to_string(),
-        "/internal/stream".to_string(),
-    ]
-}
-
-pub struct TenantRegistry {
-    base_dir: PathBuf,
-    rules_dir: Option<PathBuf>,
-    api_mode: ApiMode,
-    ui_enabled: bool,
-    port: u16,
-    ssrf_allowlist: Vec<String>,
-    ssrf_allow_private: bool,
-    internal_api_key: Option<String>,
-    tenants: Mutex<HashMap<String, Arc<OnceCell<Arc<TenantResources>>>>>,
-}
-
 const IMPORT_ZIP_MAX_FILE_BYTES: u64 = 20 * 1024 * 1024;
 const IMPORT_ZIP_MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 const IMPORT_ZIP_MAX_ENTRIES: usize = 4096;
-
-impl TenantRegistry {
-    pub fn new(
-        base_dir: PathBuf,
-        rules_dir: Option<PathBuf>,
-        api_mode: ApiMode,
-        ui_enabled: bool,
-        port: u16,
-        ssrf_allowlist: Vec<String>,
-        ssrf_allow_private: bool,
-        internal_api_key: Option<String>,
-    ) -> Self {
-        Self {
-            base_dir,
-            rules_dir,
-            api_mode,
-            ui_enabled,
-            port,
-            ssrf_allowlist,
-            ssrf_allow_private,
-            internal_api_key,
-            tenants: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub async fn get_or_init(&self, tenant_id: &str) -> anyhow::Result<Arc<TenantResources>> {
-        validate_tenant_id(tenant_id)?;
-        let cell = {
-            let mut guard = self.tenants.lock().await;
-            guard
-                .entry(tenant_id.to_string())
-                .or_insert_with(|| Arc::new(OnceCell::new()))
-                .clone()
-        };
-        let resources = cell
-            .get_or_try_init(|| async { self.init_resources(tenant_id).await })
-            .await?;
-        Ok(resources.clone())
-    }
-
-    async fn init_resources(&self, tenant_id: &str) -> anyhow::Result<Arc<TenantResources>> {
-        let layout = TenantLayout::new(self.base_dir.clone(), tenant_id)?;
-        tokio::fs::create_dir_all(layout.api_rules_dir()).await?;
-        tokio::fs::create_dir_all(layout.auth_dir()).await?;
-
-        let store = TraceStore::new(layout.data_dir()).await?;
-        let (trace_events, _) = broadcast::channel(64);
-        if self.ui_enabled {
-            start_trace_watcher(layout.data_dir(), trace_events.clone());
-        }
-
-        let rules_dir = self.resolve_rules_dir(&layout);
-        let api_engine = match self.api_mode {
-            ApiMode::UiOnly => None,
-            ApiMode::Rules => {
-                if let Err(errs) = validate_rules_dir(&rules_dir) {
-                    return Err(errs.into());
-                }
-                let internal_base = format!("http://localhost:{}", self.port);
-                let mut config = EngineConfig::new(internal_base, layout.data_dir())
-                    .with_ssrf_allowlist(self.ssrf_allowlist.clone())
-                    .with_ssrf_allow_private(self.ssrf_allow_private)
-                    .with_internal_auth_enabled(true)
-                    .with_internal_auth_path_allowlist(internal_auth_path_allowlist());
-                if let Some(internal_api_key) = self.internal_api_key.clone() {
-                    config = config.with_internal_api_key(internal_api_key);
-                }
-                Some(Arc::new(EndpointEngine::load(rules_dir.clone(), config)?))
-            }
-        };
-
-        Ok(Arc::new(TenantResources {
-            tenant_id: tenant_id.to_string(),
-            data_dir: layout.data_dir(),
-            rules_dir,
-            auth_dir: layout.auth_dir(),
-            store: Arc::new(store),
-            api_engine,
-            trace_events,
-        }))
-    }
-
-    fn resolve_rules_dir(&self, layout: &TenantLayout) -> PathBuf {
-        match &self.rules_dir {
-            Some(path) if path.is_absolute() => path.clone(),
-            Some(path) => path.clone(),
-            None => layout.api_rules_dir(),
-        }
-    }
-}
 
 pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
     let api = match state.api_mode {
@@ -453,7 +329,6 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
-    use std::path::PathBuf;
     use std::sync::Arc;
 
     use async_trait::async_trait;
@@ -461,7 +336,6 @@ mod tests {
     use axum::http::{HeaderValue, Request, header::AUTHORIZATION};
 
     use crate::{TenantContext, TenantResolver};
-    use crate::{TenantLayout, TenantRegistry};
 
     use super::{
         ApiMode, AppState, IMPORT_ZIP_MAX_ENTRIES, TenantResources, TraceStore, build_router,
@@ -537,27 +411,6 @@ mod tests {
 
         let key = pre_auth_rate_limit_key(&request);
         assert_eq!(key, "preauth:ip:127.0.0.1");
-    }
-
-    #[test]
-    fn tenant_registry_keeps_configured_relative_rules_dir_relative_to_cwd() {
-        let registry = TenantRegistry::new(
-            PathBuf::from("/tmp/rulemorph-data"),
-            Some(PathBuf::from("./assets/api_rules")),
-            ApiMode::Rules,
-            false,
-            8080,
-            Vec::new(),
-            false,
-            None,
-        );
-        let layout = TenantLayout::new(PathBuf::from("/tmp/rulemorph-data"), "tenant-a")
-            .expect("tenant layout");
-
-        assert_eq!(
-            registry.resolve_rules_dir(&layout),
-            PathBuf::from("./assets/api_rules")
-        );
     }
 
     #[test]
