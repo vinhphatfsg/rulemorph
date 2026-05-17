@@ -6,20 +6,18 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
-use async_trait::async_trait;
-
-use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
-
 const API_KEY_VERSION: u8 = 1;
 
 mod crypto;
 mod file_lock;
+mod resolver;
 
 use self::crypto::{
     API_KEY_PREFIX, ID_BYTES, PREFIX_VISIBLE_CHARS, SALT_BYTES, SECRET_BYTES, hash_key,
     random_base64,
 };
 use self::file_lock::ApiKeyFileLock;
+pub use self::resolver::{ApiKeyResolver, ParsedApiKey, parse_api_key};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ApiKeyRecord {
@@ -64,47 +62,6 @@ pub struct ApiKeyStore {
     path: PathBuf,
     salt: String,
     keys: Vec<ApiKeyRecord>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ParsedApiKey {
-    pub tenant_id: String,
-    pub secret: String,
-    pub full_key: String,
-}
-
-#[derive(Clone)]
-pub struct ApiKeyResolver {
-    base_dir: PathBuf,
-}
-
-impl ApiKeyResolver {
-    pub fn new(base_dir: PathBuf) -> Self {
-        Self { base_dir }
-    }
-}
-
-#[async_trait]
-impl TenantResolver for ApiKeyResolver {
-    async fn resolve(&self, api_key: &str) -> Result<Option<TenantContext>> {
-        let parsed = match parse_api_key(api_key) {
-            Some(parsed) => parsed,
-            None => return Ok(None),
-        };
-        if validate_tenant_id(&parsed.tenant_id).is_err() {
-            return Ok(None);
-        }
-        let layout = TenantLayout::new(self.base_dir.clone(), &parsed.tenant_id)?;
-        let store = ApiKeyStore::load(layout.api_keys_path(), &parsed.tenant_id)?;
-        let Some(store) = store else {
-            return Ok(None);
-        };
-        if store.verify(&parsed.full_key)? {
-            Ok(Some(TenantContext::new(parsed.tenant_id)))
-        } else {
-            Ok(None)
-        }
-    }
 }
 
 impl ApiKeyStore {
@@ -276,25 +233,6 @@ impl ApiKeyStore {
     }
 }
 
-pub fn parse_api_key(value: &str) -> Option<ParsedApiKey> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with(API_KEY_PREFIX) {
-        return None;
-    }
-    let rest = trimmed.strip_prefix(API_KEY_PREFIX)?;
-    let mut parts = rest.splitn(2, '.');
-    let tenant_id = parts.next()?.trim();
-    let secret = parts.next()?.trim();
-    if tenant_id.is_empty() || secret.is_empty() {
-        return None;
-    }
-    Some(ParsedApiKey {
-        tenant_id: tenant_id.to_string(),
-        secret: secret.to_string(),
-        full_key: trimmed.to_string(),
-    })
-}
-
 fn tmp_path(path: &Path) -> PathBuf {
     let file_name = path
         .file_name()
@@ -345,7 +283,9 @@ mod tests {
     use anyhow::Result;
     use tempfile::tempdir;
 
-    use super::{ApiKeyStore, file_lock::lock_path};
+    use crate::{TenantLayout, TenantResolver};
+
+    use super::{ApiKeyResolver, ApiKeyStore, file_lock::lock_path};
 
     #[test]
     fn api_key_store_persists_multiple_updates() -> Result<()> {
@@ -393,6 +333,38 @@ mod tests {
         let final_store = ApiKeyStore::load(path, tenant_id)?.expect("api key store should exist");
         assert!(!final_store.verify(&first.key)?);
         assert!(final_store.verify(&second.key)?);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn api_key_resolver_resolves_tenant_bound_store() -> Result<()> {
+        let temp = tempdir()?;
+        let base_dir = temp.path().join("data");
+        let tenant_id = "tenant-a";
+        let layout = TenantLayout::new(base_dir.clone(), tenant_id)?;
+        let mut store = ApiKeyStore::load_or_init(layout.api_keys_path(), tenant_id)?;
+        let issued = store.issue(Some("tenant key".to_string()))?;
+        let other_tenant_id = "tenant-b";
+        let other_layout = TenantLayout::new(base_dir.clone(), other_tenant_id)?;
+        let mut other_store =
+            ApiKeyStore::load_or_init(other_layout.api_keys_path(), other_tenant_id)?;
+        let _other_issued = other_store.issue(Some("other tenant key".to_string()))?;
+        let resolver = ApiKeyResolver::new(base_dir);
+
+        let resolved = resolver
+            .resolve(&issued.key)
+            .await?
+            .expect("issued key resolves tenant");
+        assert_eq!(resolved.tenant_id, tenant_id);
+
+        let original_key_prefix = format!("{}{}.", super::crypto::API_KEY_PREFIX, tenant_id);
+        let tampered_key_prefix = format!("{}{}.", super::crypto::API_KEY_PREFIX, other_tenant_id);
+        let tampered_tenant_key =
+            issued
+                .key
+                .replacen(&original_key_prefix, &tampered_key_prefix, 1);
+        assert!(resolver.resolve(&tampered_tenant_key).await?.is_none());
+        assert!(resolver.resolve("rmk_bad/tenant.secret").await?.is_none());
         Ok(())
     }
 
