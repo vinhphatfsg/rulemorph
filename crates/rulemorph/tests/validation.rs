@@ -5,12 +5,9 @@ use rulemorph::{
     validate_rule_file_with_source,
 };
 
-#[path = "common/validation.rs"]
-mod validation_common;
+mod common;
 
-use validation_common::{
-    fixtures_dir, load_expected_errors, load_rule, normalize_errors, normalize_expected,
-};
+use common::validation::{fixtures_dir, load_expected_errors, load_rule, normalize_errors};
 
 #[test]
 fn valid_rules_should_pass_validation() {
@@ -77,7 +74,7 @@ fn invalid_rules_should_match_expected_errors() {
 
     for case in cases {
         let rule = load_rule(case);
-        let expected = normalize_expected(load_expected_errors(case));
+        let expected = load_expected_errors(case);
         let errors = validate_rule_file(&rule).unwrap_err();
         let actual = normalize_errors(errors);
         assert_eq!(actual, expected, "error mismatch for fixture {}", case);
@@ -445,7 +442,7 @@ fn v2_invalid_rules_should_fail_validation() {
 
     for case in cases {
         let rule = load_rule(case);
-        let expected = normalize_expected(load_expected_errors(case));
+        let expected = load_expected_errors(case);
         let errors = validate_rule_file(&rule).unwrap_err();
         let actual = normalize_errors(errors);
         assert_eq!(actual, expected, "error mismatch for {}", case);
@@ -456,7 +453,7 @@ fn v2_invalid_rules_should_fail_validation() {
 fn v2_forward_out_ref_should_fail_validation() {
     // tv26_v02_forward_out_ref should fail with ForwardOutReference error
     let rule = load_rule("tv26_v02_forward_out_ref");
-    let expected = normalize_expected(load_expected_errors("tv26_v02_forward_out_ref"));
+    let expected = load_expected_errors("tv26_v02_forward_out_ref");
     let errors = validate_rule_file(&rule).unwrap_err();
     let actual = normalize_errors(errors);
     assert_eq!(
