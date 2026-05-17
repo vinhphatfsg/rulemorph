@@ -1,10 +1,6 @@
 use std::io::Write;
 use std::path::PathBuf;
-#[cfg(feature = "server")]
-use std::time::Duration;
 
-#[cfg(feature = "server")]
-use clap::ArgAction;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
     DtoLanguage, InputData, NormalizationOptions, RuleFile, generate_dto,
@@ -12,21 +8,15 @@ use rulemorph::{
     transform_input_with_warnings_with_base_dir_and_options,
     transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
 };
-#[cfg(feature = "server")]
-use rulemorph_server::{
-    ApiMode, RulesDirErrors, ServerConfig, run as run_server, validate_rules_dir,
-};
-#[cfg(feature = "server")]
-use rulemorph_trace::TraceStore;
 
 #[cfg(feature = "server")]
 mod api_keys;
 mod emit;
 mod input;
 mod output;
-
 #[cfg(feature = "server")]
-use self::emit::emit_rules_dir_errors;
+mod server_commands;
+
 use self::emit::{emit_transform_error, emit_transform_warnings, emit_validation_errors};
 use self::input::{
     apply_format_override, load_context, load_input_bytes_with_limit, load_normalization_options,
@@ -48,14 +38,14 @@ struct Cli {
 enum Commands {
     Validate(ValidateArgs),
     #[cfg(feature = "server")]
-    ValidateRulesDir(ValidateRulesDirArgs),
+    ValidateRulesDir(server_commands::ValidateRulesDirArgs),
     Preflight(PreflightArgs),
     Transform(TransformArgs),
     Generate(GenerateArgs),
     #[cfg(feature = "server")]
-    Ui(UiArgs),
+    Ui(server_commands::UiArgs),
     #[cfg(feature = "server")]
-    PurgeTraces(PurgeTracesArgs),
+    PurgeTraces(server_commands::PurgeTracesArgs),
     #[cfg(feature = "server")]
     ApiKeys(api_keys::ApiKeysArgs),
 }
@@ -66,15 +56,6 @@ struct ValidateArgs {
     rules: PathBuf,
     #[arg(long)]
     rules_format: Option<RulesFormatArg>,
-    #[arg(short = 'e', long, default_value = "text")]
-    error_format: ErrorFormat,
-}
-
-#[cfg(feature = "server")]
-#[derive(Args)]
-struct ValidateRulesDirArgs {
-    #[arg(short = 'r', long)]
-    rules_dir: PathBuf,
     #[arg(short = 'e', long, default_value = "text")]
     error_format: ErrorFormat,
 }
@@ -146,46 +127,6 @@ struct GenerateArgs {
     output: Option<PathBuf>,
 }
 
-#[cfg(feature = "server")]
-#[derive(Args)]
-struct UiArgs {
-    #[arg(long, default_value_t = 8080)]
-    port: u16,
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
-    #[arg(long)]
-    ui_dir: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = UiApiMode::Rules)]
-    api_mode: UiApiMode,
-    #[arg(long)]
-    rules_dir: Option<PathBuf>,
-    #[arg(long, default_value_t = 60)]
-    rate_limit_per_sec: u64,
-    #[arg(long, action = ArgAction::Append)]
-    ssrf_allowlist: Vec<String>,
-    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
-    ssrf_allow_private: bool,
-    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
-    ssrf_allow_any: bool,
-    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
-    no_ui: bool,
-    #[arg(long)]
-    internal_api_key: Option<String>,
-    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
-    allow_unauth_internal: bool,
-}
-
-#[cfg(feature = "server")]
-#[derive(Args)]
-struct PurgeTracesArgs {
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
-    #[arg(long)]
-    retention_days: u64,
-    #[arg(long, action = ArgAction::SetTrue, default_value_t = false)]
-    dry_run: bool,
-}
-
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ErrorFormat {
     Text,
@@ -222,27 +163,19 @@ enum DtoLanguageArg {
     Swift,
 }
 
-#[cfg(feature = "server")]
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum UiApiMode {
-    #[value(name = "ui-only", alias = "ui_only", alias = "native")]
-    UiOnly,
-    Rules,
-}
-
 fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
         Commands::Validate(args) => run_validate(args),
         #[cfg(feature = "server")]
-        Commands::ValidateRulesDir(args) => run_validate_rules_dir(args),
+        Commands::ValidateRulesDir(args) => server_commands::run_validate_rules_dir(args),
         Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
         Commands::Generate(args) => run_generate(args),
         #[cfg(feature = "server")]
-        Commands::Ui(args) => run_ui(args),
+        Commands::Ui(args) => server_commands::run_ui(args),
         #[cfg(feature = "server")]
-        Commands::PurgeTraces(args) => run_purge_traces(args),
+        Commands::PurgeTraces(args) => server_commands::run_purge_traces(args),
         #[cfg(feature = "server")]
         Commands::ApiKeys(args) => api_keys::run(args),
     };
@@ -259,17 +192,6 @@ fn run_validate(args: ValidateArgs) -> i32 {
         Ok(()) => 0,
         Err(errors) => {
             emit_validation_errors(&errors, args.error_format);
-            2
-        }
-    }
-}
-
-#[cfg(feature = "server")]
-fn run_validate_rules_dir(args: ValidateRulesDirArgs) -> i32 {
-    match validate_rules_dir(&args.rules_dir) {
-        Ok(()) => 0,
-        Err(errs) => {
-            emit_rules_dir_errors(&errs, args.error_format);
             2
         }
     }
@@ -489,121 +411,4 @@ fn run_generate(args: GenerateArgs) -> i32 {
     }
 
     0
-}
-
-#[cfg(feature = "server")]
-fn run_ui(args: UiArgs) -> i32 {
-    let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
-    let ui_dir = args.ui_dir;
-    let api_mode = match args.api_mode {
-        UiApiMode::UiOnly => ApiMode::UiOnly,
-        UiApiMode::Rules => ApiMode::Rules,
-    };
-    let ui_enabled = !args.no_ui;
-    if !ui_enabled && api_mode == ApiMode::UiOnly {
-        eprintln!("ui-only mode cannot be used with --no-ui");
-        return 1;
-    }
-
-    let config = ServerConfig {
-        port: args.port,
-        data_dir,
-        ui_dir,
-        rules_dir: args.rules_dir,
-        api_mode,
-        ui_enabled,
-        tenant_resolver: None,
-        internal_api_key: args
-            .internal_api_key
-            .as_ref()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string()),
-        allow_unauth_internal: args.allow_unauth_internal,
-        rate_limit_per_sec: if args.rate_limit_per_sec == 0 {
-            None
-        } else {
-            Some(args.rate_limit_per_sec)
-        },
-        ssrf_allowlist: args
-            .ssrf_allowlist
-            .into_iter()
-            .filter(|entry| !entry.trim().is_empty())
-            .collect(),
-        ssrf_allow_private: args.ssrf_allow_private,
-        ssrf_allow_any: args.ssrf_allow_any,
-    };
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("failed to start runtime: {}", err);
-            return 1;
-        }
-    };
-
-    if let Err(err) = runtime.block_on(run_server(config)) {
-        if let Some(errs) = err.downcast_ref::<RulesDirErrors>() {
-            eprintln!("{}", errs);
-            return 2;
-        }
-        eprintln!("server error: {}", err);
-        return 1;
-    }
-
-    0
-}
-
-#[cfg(feature = "server")]
-fn run_purge_traces(args: PurgeTracesArgs) -> i32 {
-    if args.retention_days == 0 {
-        eprintln!("--retention-days must be greater than 0");
-        return 1;
-    }
-
-    let data_dir = args.data_dir.unwrap_or_else(ServerConfig::default_data_dir);
-    let retention = Duration::from_secs(args.retention_days.saturating_mul(86_400));
-
-    let runtime = match tokio::runtime::Runtime::new() {
-        Ok(runtime) => runtime,
-        Err(err) => {
-            eprintln!("failed to start runtime: {}", err);
-            return 1;
-        }
-    };
-
-    let result = runtime.block_on(async {
-        let store = TraceStore::new(data_dir).await?;
-        store.purge_traces(retention, args.dry_run).await
-    });
-
-    match result {
-        Ok(report) => {
-            let purged = report.purged;
-            if args.dry_run {
-                println!("dry-run: {} trace(s) would be removed", purged.len());
-            } else {
-                println!("removed {} trace(s)", purged.len());
-            }
-            for trace in purged {
-                let timestamp = trace.timestamp.as_deref().unwrap_or("unknown timestamp");
-                println!("- {} ({}) {}", trace.trace_id, timestamp, trace.path);
-            }
-            if !report.failed.is_empty() {
-                eprintln!("failed to remove {} trace(s)", report.failed.len());
-                for failure in report.failed {
-                    eprintln!(
-                        "- {} ({}) {}",
-                        failure.trace_id, failure.error, failure.path
-                    );
-                }
-                return 2;
-            }
-            0
-        }
-        Err(err) => {
-            eprintln!("purge failed: {}", err);
-            1
-        }
-    }
 }
