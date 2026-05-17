@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
 use tokio::sync::{Mutex, OnceCell, broadcast};
-use tower_http::services::{ServeDir, ServeFile};
 
 use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 use rulemorph_endpoint::{
@@ -22,19 +21,12 @@ use rulemorph_endpoint::{
 };
 use rulemorph_trace::{ImportResult, TraceStore, start_trace_watcher};
 
-#[cfg(feature = "embedded-ui")]
-use axum::extract::OriginalUri;
-#[cfg(feature = "embedded-ui")]
-use include_dir::{Dir, include_dir};
-
-#[cfg(feature = "embedded-ui")]
-static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../rulemorph_ui/ui/dist");
-
 mod api_key_routes;
 mod auth;
 mod import_zip;
 mod rate_limit;
 mod trace_routes;
+mod ui;
 
 use self::api_key_routes::{issue_api_key, list_api_keys, revoke_api_key, rotate_api_key};
 #[cfg(test)]
@@ -54,13 +46,8 @@ use self::trace_routes::{
     get_api_graph, get_trace, get_trace_finalize, get_trace_manifest, get_trace_nodes_chunk,
     get_trace_records_chunk, list_traces, stream_traces,
 };
-
-#[derive(Clone)]
-pub enum UiSource {
-    Filesystem(PathBuf),
-    #[cfg(feature = "embedded-ui")]
-    Embedded,
-}
+pub use self::ui::UiSource;
+use self::ui::apply_ui_source_fallback;
 
 #[derive(Clone)]
 pub struct TenantResources {
@@ -302,58 +289,12 @@ pub fn build_router(state: AppState, ui_enabled: bool) -> Router {
         app = app.merge(internal);
         app = app.merge(internal_admin);
         if let Some(ui_source) = state.ui_source.clone() {
-            app = match ui_source {
-                UiSource::Filesystem(dir) => {
-                    let static_service =
-                        ServeDir::new(dir.clone()).fallback(ServeFile::new(dir.join("index.html")));
-                    app.fallback_service(static_service)
-                }
-                #[cfg(feature = "embedded-ui")]
-                UiSource::Embedded => app.fallback(serve_embedded_ui),
-            };
+            app = apply_ui_source_fallback(app, ui_source);
         }
     }
 
     app.layer(from_fn_with_state(state.clone(), inject_default_resources))
         .with_state(state)
-}
-
-#[cfg(feature = "embedded-ui")]
-async fn serve_embedded_ui(OriginalUri(uri): OriginalUri) -> impl IntoResponse {
-    let mut path = uri.path().trim_start_matches('/').to_string();
-    if path.is_empty() {
-        path = "index.html".to_string();
-    }
-
-    if let Some(file) = UI_DIR.get_file(&path) {
-        return embedded_response(file.path().to_str(), file.contents());
-    }
-
-    if let Some(index) = UI_DIR.get_file("index.html") {
-        return embedded_response(Some("index.html"), index.contents());
-    }
-
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "embedded ui missing index.html",
-    )
-        .into_response()
-}
-
-#[cfg(feature = "embedded-ui")]
-fn embedded_response(path: Option<&str>, contents: &'static [u8]) -> axum::response::Response {
-    let mut headers = HeaderMap::new();
-    let mime = match path {
-        Some(path) => mime_guess::from_path(path).first_or_octet_stream(),
-        None => mime_guess::mime::APPLICATION_OCTET_STREAM,
-    };
-    headers.insert(
-        axum::http::header::CONTENT_TYPE,
-        mime.as_ref()
-            .parse()
-            .unwrap_or_else(|_| axum::http::HeaderValue::from_static("application/octet-stream")),
-    );
-    (headers, contents).into_response()
 }
 
 fn request_resources(
