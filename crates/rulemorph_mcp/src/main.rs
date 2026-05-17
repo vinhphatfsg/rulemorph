@@ -1,7 +1,6 @@
 use std::io::{self, BufReader};
 
-use rulemorph::{generate_dto, validate_rule_file_with_source};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 mod args;
 mod diagnostics;
@@ -22,26 +21,22 @@ mod sandbox;
 mod schemas;
 mod tools;
 
-use self::args::get_optional_string;
-use self::diagnostics::{
-    collect_rule_warnings, rule_warnings_to_json, validation_errors_to_values,
-};
-use self::dto_language::{dto_error_json, dto_language_to_str, parse_dto_language};
 use self::errors::{CallError, tool_error_result};
 use self::prompts::{prompts_get_result, prompts_list_result};
 use self::protocol::{OutputMode, read_message, write_message};
 use self::resources::{resources_list_result, resources_read_result};
-use self::rule_source::load_rule_from_source;
 use self::schemas::{
     analyze_input_input_schema, generate_dto_input_schema, generate_rules_from_base_input_schema,
     generate_rules_from_dto_input_schema, list_ops_input_schema, transform_input_schema,
     validate_rules_input_schema,
 };
 use self::tools::analyze_input::run_analyze_input_tool;
+use self::tools::generate_dto::run_generate_dto_tool;
 use self::tools::generate_rules_from_base::run_generate_rules_from_base_tool;
 use self::tools::generate_rules_from_dto::run_generate_rules_from_dto_tool;
 use self::tools::list_ops::run_list_ops_tool;
 use self::tools::transform::run_transform_tool;
+use self::tools::validate::run_validate_rules_tool;
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -239,117 +234,4 @@ fn handle_tools_call(params: &Value) -> Result<Value, CallError> {
         "generate_rules_from_dto" => run_generate_rules_from_dto_tool(args),
         _ => Ok(tool_error_result(&format!("unknown tool: {}", name), None)),
     }
-}
-
-fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
-    let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
-    let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
-    let rules_format =
-        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
-
-    let rule_source_count = rules_path.is_some() as u8 + rules_text.is_some() as u8;
-    if rule_source_count == 0 {
-        return Err(CallError::InvalidParams(
-            "rules_path or rules_text is required".to_string(),
-        ));
-    }
-    if rule_source_count > 1 {
-        return Err(CallError::InvalidParams(
-            "rules_path and rules_text are mutually exclusive".to_string(),
-        ));
-    }
-
-    let (rule, yaml, _) = load_rule_from_source(
-        rules_path.as_deref(),
-        rules_text.as_deref(),
-        rules_format.as_deref(),
-    )?;
-    match validate_rule_file_with_source(&rule, &yaml) {
-        Ok(_) => {
-            let warnings = collect_rule_warnings(&rule);
-            let mut result = json!({
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "ok"
-                    }
-                ]
-            });
-            if !warnings.is_empty() {
-                result["meta"] = json!({
-                    "warnings": rule_warnings_to_json(&warnings)
-                });
-            }
-            Ok(result)
-        }
-        Err(errors) => {
-            let error_values = validation_errors_to_values(&errors);
-            Ok(json!({
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "validation failed"
-                    }
-                ],
-                "isError": true,
-                "meta": {
-                    "errors": error_values
-                }
-            }))
-        }
-    }
-}
-
-fn run_generate_dto_tool(args: &Map<String, Value>) -> Result<Value, CallError> {
-    let rules_path = get_optional_string(args, "rules_path").map_err(CallError::InvalidParams)?;
-    let rules_text = get_optional_string(args, "rules_text").map_err(CallError::InvalidParams)?;
-    let rules_format =
-        get_optional_string(args, "rules_format").map_err(CallError::InvalidParams)?;
-    let language = get_optional_string(args, "language").map_err(CallError::InvalidParams)?;
-    let name = get_optional_string(args, "name").map_err(CallError::InvalidParams)?;
-
-    let rule_source_count = rules_path.is_some() as u8 + rules_text.is_some() as u8;
-    if rule_source_count == 0 {
-        return Err(CallError::InvalidParams(
-            "rules_path or rules_text is required".to_string(),
-        ));
-    }
-    if rule_source_count > 1 {
-        return Err(CallError::InvalidParams(
-            "rules_path and rules_text are mutually exclusive".to_string(),
-        ));
-    }
-
-    let language =
-        language.ok_or_else(|| CallError::InvalidParams("language is required".to_string()))?;
-    let language = parse_dto_language(&language).map_err(CallError::InvalidParams)?;
-
-    let (rule, _, _) = load_rule_from_source(
-        rules_path.as_deref(),
-        rules_text.as_deref(),
-        rules_format.as_deref(),
-    )?;
-    let dto = generate_dto(&rule, language, name.as_deref()).map_err(|err| {
-        let message = format!("failed to generate dto: {}", err);
-        CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![dto_error_json(&message)]),
-        }
-    })?;
-
-    let mut meta = serde_json::Map::new();
-    meta.insert("language".to_string(), json!(dto_language_to_str(language)));
-    if let Some(name) = name {
-        meta.insert("name".to_string(), json!(name));
-    }
-
-    Ok(json!({
-        "content": [
-            {
-                "type": "text",
-                "text": dto
-            }
-        ],
-        "meta": meta
-    }))
 }
