@@ -1,35 +1,56 @@
 use std::collections::HashSet;
 
 use crate::error::ErrorCode;
-use crate::model::{Expr, ExprOp};
+use crate::model::{Expr, ExprChain, ExprOp};
 use crate::path::PathToken;
 
-use super::ValidationCtx;
-use super::expr_args::{validate_lookup_args, validate_path_arg, validate_path_array_arg};
-use super::op_inventory::{element_expr_scope, is_valid_op};
-use super::refs::validate_ref;
-use super::scope::LocalScope;
+use super::super::ValidationCtx;
+use super::super::expr_args::{
+    validate_lookup_args_chain, validate_path_arg, validate_path_array_arg,
+};
+use super::super::op_inventory::{element_expr_scope, is_valid_op};
+use super::super::scope::LocalScope;
+use super::validate_expr;
 
-mod chain;
-
-pub(super) fn validate_expr(
-    expr: &Expr,
+pub(super) fn validate_chain(
+    expr_chain: &ExprChain,
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
     ctx: &mut ValidationCtx<'_>,
     scope: LocalScope,
 ) {
-    match expr {
-        Expr::Ref(expr_ref) => validate_ref(expr_ref, base_path, produced_targets, ctx, scope),
-        Expr::Op(expr_op) => validate_op(expr_op, base_path, produced_targets, ctx, scope),
-        Expr::Chain(expr_chain) => {
-            chain::validate_chain(expr_chain, base_path, produced_targets, ctx, scope)
+    if expr_chain.chain.is_empty() {
+        ctx.push(
+            ErrorCode::InvalidExprShape,
+            "expr.chain must be a non-empty array",
+            format!("{}.chain", base_path),
+        );
+        return;
+    }
+
+    for (index, item) in expr_chain.chain.iter().enumerate() {
+        let item_path = format!("{}.chain[{}]", base_path, index);
+        if index == 0 {
+            validate_expr(item, &item_path, produced_targets, ctx, scope);
+            continue;
         }
-        Expr::Literal(_) => {}
+
+        match item {
+            Expr::Op(expr_op) => {
+                validate_chain_op(expr_op, &item_path, produced_targets, ctx, scope);
+            }
+            _ => {
+                ctx.push(
+                    ErrorCode::InvalidExprShape,
+                    "expr.chain items after first must be op",
+                    item_path,
+                );
+            }
+        }
     }
 }
 
-fn validate_op(
+fn validate_chain_op(
     expr_op: &ExprOp,
     base_path: &str,
     produced_targets: &HashSet<Vec<PathToken>>,
@@ -44,17 +65,10 @@ fn validate_op(
         );
     }
 
-    if expr_op.args.is_empty() {
-        ctx.push(
-            ErrorCode::InvalidArgs,
-            "expr.args must be a non-empty array",
-            format!("{}.args", base_path),
-        );
-    }
-
+    let args_len = expr_op.args.len() + 1;
     match expr_op.op.as_str() {
-        "trim" | "lowercase" | "uppercase" | "to_string" | "len" => {
-            if expr_op.args.len() != 1 {
+        "trim" | "lowercase" | "uppercase" | "to_string" | "len" | "not" => {
+            if args_len != 1 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly one item",
@@ -63,7 +77,7 @@ fn validate_op(
             }
         }
         "replace" => {
-            if !(3..=4).contains(&expr_op.args.len()) {
+            if !(3..=4).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain three or four items",
@@ -72,7 +86,7 @@ fn validate_op(
             }
         }
         "split" => {
-            if expr_op.args.len() != 2 {
+            if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly two items",
@@ -81,7 +95,7 @@ fn validate_op(
             }
         }
         "pad_start" | "pad_end" => {
-            if !(2..=3).contains(&expr_op.args.len()) {
+            if !(2..=3).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain two or three items",
@@ -90,10 +104,10 @@ fn validate_op(
             }
         }
         "lookup" | "lookup_first" => {
-            validate_lookup_args(expr_op, base_path, ctx);
+            validate_lookup_args_chain(expr_op, base_path, ctx);
         }
         "merge" | "deep_merge" => {
-            if expr_op.args.len() < 2 {
+            if args_len < 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain at least two items",
@@ -102,18 +116,18 @@ fn validate_op(
             }
         }
         "get" => {
-            if expr_op.args.len() != 2 {
+            if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly two items",
                     format!("{}.args", base_path),
                 );
             } else {
-                validate_path_arg(&expr_op.args[1], &format!("{}.args[1]", base_path), ctx);
+                validate_path_arg(&expr_op.args[0], &format!("{}.args[0]", base_path), ctx);
             }
         }
         "pick" | "omit" => {
-            if expr_op.args.len() != 2 {
+            if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly two items",
@@ -122,15 +136,15 @@ fn validate_op(
             } else {
                 let allow_terminal_index = expr_op.op == "pick";
                 validate_path_array_arg(
-                    &expr_op.args[1],
-                    &format!("{}.args[1]", base_path),
+                    &expr_op.args[0],
+                    &format!("{}.args[0]", base_path),
                     allow_terminal_index,
                     ctx,
                 );
             }
         }
         "keys" | "values" | "entries" | "object_flatten" | "object_unflatten" => {
-            if expr_op.args.len() != 1 {
+            if args_len != 1 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly one item",
@@ -139,7 +153,7 @@ fn validate_op(
             }
         }
         "from_entries" => {
-            if !(1..=2).contains(&expr_op.args.len()) {
+            if !(1..=2).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain one or two items",
@@ -149,7 +163,7 @@ fn validate_op(
         }
         "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
         | "find" | "find_index" => {
-            if expr_op.args.len() != 2 {
+            if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly two items",
@@ -158,7 +172,7 @@ fn validate_op(
             }
         }
         "flatten" => {
-            if !(1..=2).contains(&expr_op.args.len()) {
+            if !(1..=2).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain one or two items",
@@ -167,7 +181,7 @@ fn validate_op(
             }
         }
         "take" | "drop" | "chunk" | "index_of" | "contains" | "reduce" => {
-            if expr_op.args.len() != 2 {
+            if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly two items",
@@ -176,7 +190,7 @@ fn validate_op(
             }
         }
         "slice" => {
-            if !(2..=3).contains(&expr_op.args.len()) {
+            if !(2..=3).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain two or three items",
@@ -185,7 +199,7 @@ fn validate_op(
             }
         }
         "zip" => {
-            if expr_op.args.len() < 2 {
+            if args_len < 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain at least two items",
@@ -194,7 +208,7 @@ fn validate_op(
             }
         }
         "zip_with" => {
-            if expr_op.args.len() < 3 {
+            if args_len < 3 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain at least three items",
@@ -203,7 +217,7 @@ fn validate_op(
             }
         }
         "unzip" | "unique" | "sum" | "avg" | "min" | "max" => {
-            if expr_op.args.len() != 1 {
+            if args_len != 1 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly one item",
@@ -212,7 +226,7 @@ fn validate_op(
             }
         }
         "sort_by" => {
-            if !(2..=3).contains(&expr_op.args.len()) {
+            if !(2..=3).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain two or three items",
@@ -221,7 +235,7 @@ fn validate_op(
             }
         }
         "fold" => {
-            if expr_op.args.len() != 3 {
+            if args_len != 3 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly three items",
@@ -229,8 +243,8 @@ fn validate_op(
                 );
             }
         }
-        "+" | "*" => {
-            if expr_op.args.len() < 2 {
+        "+" | "*" | "and" | "or" => {
+            if args_len < 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain at least two items",
@@ -238,8 +252,8 @@ fn validate_op(
                 );
             }
         }
-        "-" | "/" | "to_base" => {
-            if expr_op.args.len() != 2 {
+        "-" | "/" | "to_base" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
+            if args_len != 2 {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain exactly two items",
@@ -248,7 +262,7 @@ fn validate_op(
             }
         }
         "round" => {
-            if !(1..=2).contains(&expr_op.args.len()) {
+            if !(1..=2).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain one or two items",
@@ -257,7 +271,7 @@ fn validate_op(
             }
         }
         "date_format" => {
-            if !(2..=4).contains(&expr_op.args.len()) {
+            if !(2..=4).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain two to four items",
@@ -266,7 +280,7 @@ fn validate_op(
             }
         }
         "to_unixtime" => {
-            if !(1..=3).contains(&expr_op.args.len()) {
+            if !(1..=3).contains(&args_len) {
                 ctx.push(
                     ErrorCode::InvalidArgs,
                     "expr.args must contain one to three items",
@@ -274,37 +288,10 @@ fn validate_op(
                 );
             }
         }
-        "and" | "or" => {
-            if expr_op.args.len() < 2 {
-                ctx.push(
-                    ErrorCode::InvalidArgs,
-                    "expr.args must contain at least two items",
-                    format!("{}.args", base_path),
-                );
-            }
-        }
-        "not" => {
-            if expr_op.args.len() != 1 {
-                ctx.push(
-                    ErrorCode::InvalidArgs,
-                    "expr.args must contain exactly one item",
-                    format!("{}.args", base_path),
-                );
-            }
-        }
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
-            if expr_op.args.len() != 2 {
-                ctx.push(
-                    ErrorCode::InvalidArgs,
-                    "expr.args must contain exactly two items",
-                    format!("{}.args", base_path),
-                );
-            }
-        }
         _ => {}
     }
 
-    let expr_scope = element_expr_scope(&expr_op.op, false, expr_op.args.len(), scope);
+    let expr_scope = element_expr_scope(&expr_op.op, true, expr_op.args.len(), scope);
     for (index, arg) in expr_op.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", base_path, index);
         let arg_scope = match expr_scope {
