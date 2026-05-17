@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use super::{ApiKeyStore, crypto::API_KEY_PREFIX};
+use super::{crypto::API_KEY_PREFIX, store::ApiKeyStore};
 use crate::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 
 #[derive(Clone, Debug)]
