@@ -12,15 +12,13 @@ use rulemorph_trace::ImportResult;
 use serde::Deserialize;
 
 use super::auth::{
-    InternalApiRateLimitScope, apply_internal_tenant_context, ensure_internal_auth,
-    ensure_internal_auth_required, ensure_pre_auth_rate_limit_for_request,
+    InternalApiRateLimitScope, apply_internal_tenant_context, enforce_api_rate_limit,
+    ensure_internal_auth, ensure_internal_auth_required, ensure_pre_auth_rate_limit_for_request,
     maybe_apply_v1_auth_context_for_dispatch, rate_limit_key,
 };
 use super::import_zip::{extract_zip, resolve_bundle_root, validate_bundle_path};
-use super::{
-    ApiError, AppState, IMPORT_ZIP_MAX_TOTAL_BYTES, TenantResources, enforce_api_rate_limit,
-    request_engine, request_resources, run_rules_api_request,
-};
+use super::rules_api::{request_engine, request_resources, run_rules_api_request};
+use super::{ApiError, AppState, IMPORT_ZIP_MAX_TOTAL_BYTES, TenantResources};
 
 fn is_multipart_form_data(headers: &HeaderMap) -> bool {
     headers
