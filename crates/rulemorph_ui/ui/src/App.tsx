@@ -35,99 +35,31 @@ import {
   resolveTraceDurationUs,
   type DurationUnit,
   type TimeRange,
-  type TraceListItem,
-  type TraceSummary
+  type TraceListItem
 } from "./trace_list_helpers";
+import {
+  mergeNodesIntoRecords,
+  normalizeRecord,
+  normalizeTracePayload,
+  parseNumericIndex,
+  type EndpointRule,
+  type TraceDetailRef,
+  type TraceManifest,
+  type TraceNode,
+  type TraceNodeChunkEntry,
+  type TracePayload,
+  type TraceRecord
+} from "./trace_payload";
 import { shouldResetInitialCenter } from "./view_mode";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
+export type { EndpointRule, EndpointSpec, TraceNode, TracePayload, TraceRecord } from "./trace_payload";
 
 export function __resetAuthCachesForTest(): void {
   resetAuthCachesForTest();
   __resetTenantCachesForTest();
 }
-
-export type TraceNode = {
-  id: string;
-  kind: string;
-  label: string;
-  status?: string;
-  duration_us?: number;
-  duration_ms?: number;
-  input?: unknown;
-  output?: unknown;
-  pipe_value?: unknown;
-  args?: unknown[];
-  pipe_steps?: { index: number; label: string; input?: unknown; output?: unknown }[];
-  children?: TraceNode[];
-  child_trace?: TracePayload;
-  error?: { code?: string; message?: string; path?: string };
-  meta?: Record<string, unknown>;
-};
-
-export type TraceRecord = {
-  index: number;
-  status?: string;
-  duration_us?: number;
-  duration_ms?: number;
-  input?: unknown;
-  output?: unknown;
-  nodes?: TraceNode[];
-  error?: { code?: string; message?: string; path?: string };
-};
-
-export type EndpointSpec = {
-  method: string;
-  path: string;
-  steps: { rule: string }[];
-  reply?: { status?: number; body?: string };
-};
-
-export type EndpointRule = {
-  version: number;
-  type: "endpoint";
-  endpoints: EndpointSpec[];
-};
-
-type TraceChunkRef = {
-  path: string;
-  format: string;
-  compression: string;
-  record_start?: number;
-  record_end?: number;
-  node_start?: number;
-  node_end?: number;
-  bytes?: number;
-};
-
-type TraceDetailRef = {
-  layout: string;
-  status: string;
-  reason?: string[];
-  records?: TraceChunkRef[];
-  nodes?: TraceChunkRef[];
-  finalize?: TraceChunkRef;
-};
-
-type TraceManifest = {
-  trace_schema_version: number;
-  trace_id: string;
-  timestamp?: string;
-  status?: string;
-  rule?: { name?: string; path?: string; type?: string; version?: number };
-  input_format?: string;
-  summary?: TraceSummary;
-  max_chunk_bytes_uncompressed?: number;
-  detail?: TraceDetailRef;
-  masking?: { enabled: boolean; rules?: string[] };
-  rule_source?: EndpointRule;
-};
-
-type TraceNodeChunkEntry = {
-  record_index: number;
-  node: TraceNode;
-};
 
 type TraceNodeData = {
   label: string;
@@ -143,26 +75,6 @@ function DetailNode({ data }: { data: TraceNodeData }) {
     </div>
   );
 }
-
-export type TracePayload = {
-  trace_id?: string;
-  timestamp?: string;
-  status?: string;
-  rule?: { name?: string; path?: string; type?: string; version?: number };
-  rule_source?: EndpointRule;
-  detail?: TraceDetailRef;
-  records?: TraceRecord[];
-  finalize?: {
-    nodes?: TraceNode[];
-    input?: unknown;
-    output?: unknown;
-    status?: string;
-    duration_us?: number;
-    duration_ms?: number;
-  };
-  summary?: TraceSummary;
-  input_format?: string;
-};
 
 type ApiGraphOp = {
   label: string;
@@ -234,86 +146,6 @@ async function fetchJson<T>(path: string, auth: FetchAuth = "api"): Promise<T | 
     console.error("fetch failed", err);
     return null;
   }
-}
-
-function parseNumericIndex(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    if (!Number.isNaN(parsed)) return parsed;
-  }
-  return null;
-}
-
-function normalizeRecordIndex(value: unknown, fallback: number) {
-  const parsed = parseNumericIndex(value);
-  return parsed ?? fallback;
-}
-
-function normalizeInlineNodeValue(value: unknown, fallbackId: string): TraceNode {
-  const node =
-    value && typeof value === "object" && !Array.isArray(value)
-      ? { ...(value as Record<string, unknown>) }
-      : { value };
-  if (typeof node.id !== "string" || node.id.length === 0) {
-    node.id = fallbackId;
-  }
-  if (typeof node.kind !== "string" || node.kind.length === 0) {
-    node.kind = "value";
-  }
-  if (typeof node.label !== "string" || node.label.length === 0) {
-    node.label =
-      typeof node.value === "string" ? node.value : node.kind ?? "value";
-  }
-  return node as TraceNode;
-}
-
-function normalizeInlineNodes(value: unknown, prefix: string): TraceNode[] {
-  if (Array.isArray(value)) {
-    return value.map((node, index) =>
-      normalizeInlineNodeValue(node, `${prefix}-${index}`)
-    );
-  }
-  if (value === null || value === undefined) {
-    return [];
-  }
-  return [normalizeInlineNodeValue(value, `${prefix}-0`)];
-}
-
-function normalizeRecord(record: TraceRecord, fallbackIndex: number): TraceRecord {
-  const index = normalizeRecordIndex(record.index, fallbackIndex);
-  const nodes =
-    record.nodes === undefined
-      ? undefined
-      : normalizeInlineNodes(record.nodes as unknown, `record-${index}`);
-  return { ...record, index, nodes };
-}
-
-function normalizeTracePayload(trace: TracePayload | null): TracePayload | null {
-  if (!trace?.records) return trace;
-  return {
-    ...trace,
-    records: trace.records.map((record, index) => normalizeRecord(record, index))
-  };
-}
-
-function mergeNodesIntoRecords(
-  records: TraceRecord[],
-  nodesByRecord: Map<number, TraceNode[]>
-) {
-  return records.map((record, position) => {
-    const recordIndex = normalizeRecordIndex(record.index, position);
-    const nodes = nodesByRecord.get(recordIndex);
-    if (!nodes || nodes.length === 0) {
-      return { ...record, index: recordIndex };
-    }
-    const existing = normalizeInlineNodes(record.nodes as unknown, `record-${recordIndex}`);
-    return {
-      ...record,
-      index: recordIndex,
-      nodes: [...existing, ...nodes]
-    };
-  });
 }
 
 async function loadRecordChunks(traceId: string, detail: TraceDetailRef): Promise<TraceRecord[]> {
