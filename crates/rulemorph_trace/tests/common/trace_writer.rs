@@ -55,3 +55,41 @@ pub fn read_manifest_value(manifest_path: impl AsRef<Path>) -> anyhow::Result<se
 pub fn trace_dir(manifest_path: &Path) -> &Path {
     manifest_path.parent().expect("trace dir should exist")
 }
+
+pub fn assert_no_detail_artifacts(manifest_path: &Path) -> anyhow::Result<()> {
+    for entry in fs::read_dir(trace_dir(manifest_path))? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        assert!(
+            !name.starts_with("records-")
+                && !name.starts_with("nodes-")
+                && !name.starts_with("finalize.json")
+                && !name.contains(".tmp-"),
+            "unexpected detail file: {name}"
+        );
+    }
+
+    Ok(())
+}
+
+pub fn read_ndjson_lines(path: impl AsRef<Path>) -> anyhow::Result<Vec<String>> {
+    let payload = fs::read_to_string(path)?;
+    Ok(payload
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| line.to_string())
+        .collect())
+}
+
+pub fn read_ndjson_values(path: impl AsRef<Path>) -> anyhow::Result<Vec<serde_json::Value>> {
+    read_ndjson_lines(path)?
+        .into_iter()
+        .map(|line| Ok(serde_json::from_str(&line)?))
+        .collect()
+}
+
+pub fn write_ndjson_lines(path: impl AsRef<Path>, lines: &[String]) -> anyhow::Result<()> {
+    fs::write(path, format!("{}\n", lines.join("\n")))?;
+    Ok(())
+}
