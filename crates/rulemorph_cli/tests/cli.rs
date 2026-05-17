@@ -1,21 +1,15 @@
 use std::fs;
-use std::path::PathBuf;
 
 use assert_cmd::cargo::cargo_bin_cmd;
 
-fn fixtures_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("rulemorph")
-        .join("tests")
-        .join("fixtures")
-}
+#[path = "common/cli.rs"]
+mod cli_common;
 
-fn read_json(path: &PathBuf) -> serde_json::Value {
-    let data =
-        fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
-    serde_json::from_str(&data).unwrap_or_else(|_| panic!("invalid json: {}", path.display()))
-}
+#[cfg(feature = "server")]
+use cli_common::stdout_json;
+use cli_common::{
+    assert_json_stdout_eq, fixtures_dir, read_json, stderr_json, stderr_string, stdout_string,
+};
 
 #[test]
 fn validate_success_returns_zero() {
@@ -41,9 +35,7 @@ fn validate_json_errors() {
         .unwrap();
     assert_eq!(output.status.code(), Some(2));
 
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value =
-        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value = stderr_json(output);
     assert_eq!(value[0]["type"], "validation");
     assert_eq!(value[0]["code"], "MissingMappingValue");
 }
@@ -80,7 +72,7 @@ fn preflight_rejects_input_over_limit_override_before_transform() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = stderr_string(output);
     assert!(stderr.contains("max_input_bytes"));
 }
 
@@ -140,9 +132,7 @@ fn preflight_json_errors() {
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
 
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value =
-        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value = stderr_json(output);
     assert_eq!(value[0]["type"], "transform");
     assert_eq!(value[0]["kind"], "TypeCastFailed");
 }
@@ -168,10 +158,7 @@ fn transform_outputs_json() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let actual: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
-    assert_eq!(actual, expected);
+    assert_json_stdout_eq(output, &expected);
 }
 
 #[test]
@@ -190,10 +177,7 @@ fn transform_accepts_json_rule_file_by_extension() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let actual: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
-    assert_eq!(actual, expected);
+    assert_json_stdout_eq(output, &expected);
 }
 
 #[test]
@@ -279,7 +263,7 @@ fn cli_rejects_input_over_byte_limit_before_transform() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    let stderr = stderr_string(output);
     assert!(stderr.contains("max_input_bytes"));
 }
 
@@ -303,9 +287,7 @@ fn cli_reports_invalid_utf8_as_transform_error() {
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
 
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value =
-        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value = stderr_json(output);
     assert_eq!(value[0]["type"], "transform");
     assert_eq!(value[0]["kind"], "InvalidInput");
     assert!(value[0]["message"].as_str().unwrap().contains("UTF-8"));
@@ -506,10 +488,7 @@ fn assert_simple_transform(rules: &std::path::Path, input: &std::path::Path) {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let actual: serde_json::Value =
-        serde_json::from_str(&stdout).unwrap_or_else(|_| panic!("invalid json stdout: {}", stdout));
-    assert_eq!(actual, serde_json::json!([{ "id": "1", "name": "Alice" }]));
+    assert_json_stdout_eq(output, &serde_json::json!([{ "id": "1", "name": "Alice" }]));
 }
 
 #[test]
@@ -532,7 +511,7 @@ fn transform_outputs_ndjson() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = stdout_string(output);
     assert_eq!(stdout, expected);
 }
 
@@ -585,9 +564,7 @@ fn transform_emits_warnings_json() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(0));
-    let stderr = String::from_utf8(output.stderr).unwrap();
-    let value: serde_json::Value =
-        serde_json::from_str(&stderr).unwrap_or_else(|_| panic!("invalid json stderr: {}", stderr));
+    let value = stderr_json(output);
     assert_eq!(value[0]["type"], "warning");
     assert_eq!(value[0]["kind"], "ExprError");
 }
@@ -628,7 +605,7 @@ fn generate_outputs_rust_dto() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(0));
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = stdout_string(output);
     assert!(stdout.contains("struct Record"));
 }
 
@@ -652,9 +629,7 @@ fn api_keys_issue_list_and_revoke_json() {
         .unwrap();
     assert_eq!(issue.status.code(), Some(0));
 
-    let issue_stdout = String::from_utf8(issue.stdout).unwrap();
-    let issued: serde_json::Value = serde_json::from_str(&issue_stdout)
-        .unwrap_or_else(|_| panic!("invalid issue json stdout: {}", issue_stdout));
+    let issued = stdout_json(issue);
     let id = issued["id"].as_str().expect("issued id").to_string();
     assert_eq!(issued["label"], "alpha");
     assert!(issued["key"].as_str().is_some_and(|key| !key.is_empty()));
@@ -672,9 +647,7 @@ fn api_keys_issue_list_and_revoke_json() {
         .unwrap();
     assert_eq!(list.status.code(), Some(0));
 
-    let list_stdout = String::from_utf8(list.stdout).unwrap();
-    let keys: serde_json::Value = serde_json::from_str(&list_stdout)
-        .unwrap_or_else(|_| panic!("invalid list json stdout: {}", list_stdout));
+    let keys = stdout_json(list);
     assert_eq!(keys.as_array().expect("api key array").len(), 1);
     assert_eq!(keys[0]["id"], id);
     assert_eq!(keys[0]["label"], "alpha");
@@ -695,8 +668,6 @@ fn api_keys_issue_list_and_revoke_json() {
         .unwrap();
     assert_eq!(revoke.status.code(), Some(0));
 
-    let revoke_stdout = String::from_utf8(revoke.stdout).unwrap();
-    let revoked: serde_json::Value = serde_json::from_str(&revoke_stdout)
-        .unwrap_or_else(|_| panic!("invalid revoke json stdout: {}", revoke_stdout));
+    let revoked = stdout_json(revoke);
     assert_eq!(revoked["revoked"], true);
 }
