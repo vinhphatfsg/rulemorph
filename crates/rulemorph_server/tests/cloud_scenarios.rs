@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Cursor, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -368,6 +369,25 @@ async fn wait_for_tenant_trace_list(app: &Router, tenant_id: &str) -> Value {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("tenant trace not found after waiting: {tenant_id}");
+}
+
+async fn default_test_resources(
+    data_dir: PathBuf,
+    rules_dir: PathBuf,
+) -> Result<Arc<TenantResources>> {
+    let store = TraceStore::new(data_dir.clone()).await?;
+    let (trace_events, _) = broadcast::channel(16);
+    let auth_dir = data_dir.join("auth");
+    fs::create_dir_all(&auth_dir)?;
+    Ok(Arc::new(TenantResources {
+        tenant_id: "default".to_string(),
+        data_dir,
+        rules_dir,
+        auth_dir,
+        store: Arc::new(store),
+        api_engine: None,
+        trace_events,
+    }))
 }
 
 struct StaticTenantResolver {
@@ -854,23 +874,11 @@ finalize:
 async fn internal_requires_key_when_configured() {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone())
+    let default_resources = default_test_resources(data_dir.clone(), data_dir.join("api_rules"))
         .await
-        .expect("trace store");
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+        .expect("default resources");
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -912,27 +920,15 @@ async fn internal_requires_key_when_configured() {
 async fn internal_requires_key_when_tenant_resolver_set() {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone())
-        .await
-        .expect("trace store");
-    let (trace_events, _) = broadcast::channel(16);
     let resolver = Arc::new(StaticTenantResolver {
         api_key: "valid-key".to_string(),
         tenant_id: "tenant-1".to_string(),
     });
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources = default_test_resources(data_dir.clone(), data_dir.join("api_rules"))
+        .await
+        .expect("default resources");
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -1010,27 +1006,15 @@ async fn internal_unauthorized_request_does_not_initialize_tenant() {
 async fn internal_requires_tenant_id_when_resolver_set() {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone())
+    let default_resources = default_test_resources(data_dir.clone(), data_dir.join("api_rules"))
         .await
-        .expect("trace store");
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+        .expect("default resources");
     let resolver = Arc::new(StaticTenantResolver {
         api_key: "valid-key".to_string(),
         tenant_id: "tenant-1".to_string(),
     });
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -1059,23 +1043,11 @@ async fn internal_requires_tenant_id_when_resolver_set() {
 async fn internal_api_key_issue_is_serialized_per_store() {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone())
+    let default_resources = default_test_resources(data_dir.clone(), data_dir.join("api_rules"))
         .await
-        .expect("trace store");
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+        .expect("default resources");
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -1300,21 +1272,10 @@ fn build_zip_import_payload(trace_id: &str) -> Result<(String, Vec<u8>)> {
 async fn api_import_zip_bundle_adds_traces() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::Rules,
@@ -1720,21 +1681,10 @@ finalize:
 async fn api_import_requires_internal_key() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::Rules,
@@ -1788,21 +1738,10 @@ async fn api_import_requires_internal_key() -> Result<()> {
 async fn api_import_requires_tenant_id_when_resolver_set() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::Rules,
@@ -1840,19 +1779,8 @@ async fn api_import_requires_tenant_id_when_resolver_set() -> Result<()> {
 async fn api_import_dispatch_rate_limits_before_tenant_resolver() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let calls = Arc::new(AtomicUsize::new(0));
     let resolver = Arc::new(CountingTenantResolver {
         api_key: "internal-key".to_string(),
@@ -1860,7 +1788,7 @@ async fn api_import_dispatch_rate_limits_before_tenant_resolver() -> Result<()> 
         calls: calls.clone(),
     });
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::Rules,
@@ -1917,21 +1845,10 @@ async fn api_import_dispatch_rate_limits_before_tenant_resolver() -> Result<()> 
 async fn internal_import_zip_route_is_removed() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -1963,21 +1880,10 @@ async fn internal_import_zip_route_is_removed() -> Result<()> {
 async fn internal_import_path_requires_auth_before_bundle_validation() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -2011,21 +1917,10 @@ async fn internal_import_path_requires_auth_before_bundle_validation() -> Result
 async fn internal_import_path_rejects_non_temp_bundle_path_after_auth() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
@@ -2071,21 +1966,10 @@ async fn internal_import_path_rejects_non_temp_bundle_path_after_auth() -> Resul
 async fn api_import_requires_internal_key_without_ui() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::Rules,
@@ -2122,21 +2006,10 @@ async fn api_import_requires_internal_key_without_ui() -> Result<()> {
 async fn api_import_route_works_without_ui_when_internal_key_provided() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::Rules,
@@ -2177,21 +2050,10 @@ async fn api_import_route_works_without_ui_when_internal_key_provided() -> Resul
 async fn api_import_route_works_in_ui_only_mode() -> Result<()> {
     let temp = tempdir().expect("tempdir");
     let data_dir = temp.path().join("data");
-    let store = TraceStore::new(data_dir.clone()).await?;
-    let (trace_events, _) = broadcast::channel(16);
-    let auth_dir = data_dir.join("auth");
-    fs::create_dir_all(&auth_dir).expect("create auth dir");
-    let resources = TenantResources {
-        tenant_id: "default".to_string(),
-        data_dir: data_dir.clone(),
-        rules_dir: data_dir.join("api_rules"),
-        auth_dir,
-        store: Arc::new(store),
-        api_engine: None,
-        trace_events,
-    };
+    let default_resources =
+        default_test_resources(data_dir.clone(), data_dir.join("api_rules")).await?;
     let state = AppState {
-        default_resources: Arc::new(resources),
+        default_resources,
         tenant_registry: None,
         ui_source: None,
         api_mode: ApiMode::UiOnly,
