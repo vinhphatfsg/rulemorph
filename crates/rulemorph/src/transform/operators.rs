@@ -8,6 +8,7 @@ mod json;
 mod lookup;
 mod number;
 mod shared;
+mod simple;
 mod string;
 mod value;
 
@@ -35,6 +36,7 @@ use self::number::{eval_numeric_op, eval_round, eval_to_base};
 pub(super) use self::shared::{
     SortKey, SortKeyKind, compare_sort_keys, locals_with_item, locals_with_precomputed_args,
 };
+use self::simple::{eval_coalesce, eval_concat};
 use self::string::{eval_pad, eval_replace, eval_split, eval_unary_string_op};
 pub(super) use self::value::{cast_value, value_as_bool, value_to_string};
 use self::value::{
@@ -61,61 +63,8 @@ pub(crate) fn eval_op(
     }
 
     match expr_op.op.as_str() {
-        "concat" => {
-            let mut parts = Vec::new();
-            for index in 0..total_len {
-                let arg_path = format!("{}.args[{}]", base_path, index);
-                let value = eval_expr_at_index(
-                    index,
-                    &expr_op.args,
-                    injected,
-                    record,
-                    context,
-                    out,
-                    base_path,
-                    locals,
-                )?;
-                match value {
-                    EvalValue::Missing => return Ok(EvalValue::Missing),
-                    EvalValue::Value(value) => {
-                        if value.is_null() {
-                            return Err(TransformError::new(
-                                TransformErrorKind::ExprError,
-                                "concat does not accept null",
-                            )
-                            .with_path(arg_path));
-                        }
-                        let part = value_to_string(&value, &arg_path)?;
-                        parts.push(part);
-                    }
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::String(parts.join(""))))
-        }
-        "coalesce" => {
-            for index in 0..total_len {
-                let value = eval_expr_at_index(
-                    index,
-                    &expr_op.args,
-                    injected,
-                    record,
-                    context,
-                    out,
-                    base_path,
-                    locals,
-                )?;
-                match value {
-                    EvalValue::Missing => continue,
-                    EvalValue::Value(value) => {
-                        if value.is_null() {
-                            continue;
-                        }
-                        return Ok(EvalValue::Value(value));
-                    }
-                }
-            }
-            Ok(EvalValue::Missing)
-        }
+        "concat" => eval_concat(expr_op, injected, record, context, out, base_path, locals),
+        "coalesce" => eval_coalesce(expr_op, injected, record, context, out, base_path, locals),
         "to_string" => eval_unary_string_op(
             &expr_op.args,
             injected,
