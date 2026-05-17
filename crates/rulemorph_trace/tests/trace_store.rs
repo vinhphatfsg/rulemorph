@@ -1,3 +1,6 @@
+#[path = "common/trace_store.rs"]
+mod trace_store_common;
+
 use anyhow::Result;
 use rulemorph_trace::{
     TRACE_CHUNK_BYTES_COMPRESSED_OVERHEAD_MAX, TRACE_JSON_MAX_BYTES, TRACE_NODE_COUNT_HARD_MAX,
@@ -8,22 +11,25 @@ use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::symlink;
 use tempfile::tempdir;
+use trace_store_common::{
+    assert_detail_array_empty, assert_detail_reason, assert_detail_status, assert_finalize_absent,
+    assert_top_level_array_empty, create_trace_dir, write_trace_json,
+};
 
 #[tokio::test]
 async fn trace_store_ignores_blobs_in_index() -> Result<()> {
     let temp = tempdir()?;
     let data_dir = temp.path();
 
-    let trace_dir = data_dir.join("traces/2026/01/01/trace-main");
-    fs::create_dir_all(&trace_dir)?;
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
+    let trace_dir = create_trace_dir(data_dir, "traces/2026/01/01/trace-main")?;
+    write_trace_json(
+        &trace_dir,
+        &json!({
             "trace_schema_version": 1,
             "trace_id": "trace-main",
             "status": "ok",
             "timestamp": "2026-01-01T00:00:00Z"
-        }))?,
+        }),
     )?;
 
     let blob_dir = trace_dir.join("blobs");
@@ -65,8 +71,7 @@ async fn trace_store_ignores_oversized_trace_json() -> Result<()> {
     let temp = tempdir()?;
     let data_dir = temp.path();
 
-    let trace_dir = data_dir.join("traces/2026/01/03/trace-large");
-    fs::create_dir_all(&trace_dir)?;
+    let trace_dir = create_trace_dir(data_dir, "traces/2026/01/03/trace-large")?;
     let padding_len = TRACE_JSON_MAX_BYTES as usize;
     let payload = format!(
         "{{\"trace_id\":\"trace-large\",\"status\":\"ok\",\"records\":[],\"padding\":\"{}\"}}",
@@ -74,16 +79,15 @@ async fn trace_store_ignores_oversized_trace_json() -> Result<()> {
     );
     fs::write(trace_dir.join("trace.json"), payload)?;
 
-    let small_dir = data_dir.join("traces/2026/01/03/trace-small");
-    fs::create_dir_all(&small_dir)?;
-    fs::write(
-        small_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
+    let small_dir = create_trace_dir(data_dir, "traces/2026/01/03/trace-small")?;
+    write_trace_json(
+        &small_dir,
+        &json!({
             "trace_schema_version": 1,
             "trace_id": "trace-small",
             "status": "ok",
             "timestamp": "2026-01-03T00:00:00Z"
-        }))?,
+        }),
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -137,30 +141,9 @@ async fn trace_store_downgrades_on_record_count_limit() -> Result<()> {
         .get("trace-record-limit")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("budget_exceeded"))
-    );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "budget_exceeded");
+    assert_detail_array_empty(&trace, "records");
 
     Ok(())
 }
@@ -207,24 +190,8 @@ async fn trace_store_downgrades_on_node_count_limit() -> Result<()> {
         .get("trace-node-limit")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("budget_exceeded"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "budget_exceeded");
 
     Ok(())
 }
@@ -277,24 +244,8 @@ async fn trace_store_downgrades_on_inline_node_count_limit() -> Result<()> {
         .get("trace-inline-node-limit")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("budget_exceeded"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "budget_exceeded");
 
     Ok(())
 }
@@ -332,44 +283,12 @@ async fn trace_store_downgrades_detail_on_missing_chunk() -> Result<()> {
         .get("trace-missing")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
-    assert!(detail.get("finalize").is_none());
-    let records = trace
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
-    assert!(trace.get("finalize").is_none());
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
+    assert_detail_array_empty(&trace, "records");
+    assert_detail_array_empty(&trace, "nodes");
+    assert_top_level_array_empty(&trace, "records");
+    assert_finalize_absent(&trace);
 
     Ok(())
 }
@@ -415,12 +334,7 @@ async fn trace_store_accepts_compressed_chunk_overhead() -> Result<()> {
         .get("trace-compressed-overhead")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    let detail_status = detail.get("status").and_then(|value| value.as_str());
-    assert_eq!(detail_status, Some("full"));
+    assert_detail_status(&trace, "full");
     let records = trace
         .get("records")
         .and_then(|value| value.as_array())
@@ -468,44 +382,12 @@ async fn trace_store_downgrades_detail_on_oversized_uncompressed_chunk() -> Resu
         .get("trace-oversized-none")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
-    assert!(detail.get("finalize").is_none());
-    let records = trace
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
-    assert!(trace.get("finalize").is_none());
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
+    assert_detail_array_empty(&trace, "records");
+    assert_detail_array_empty(&trace, "nodes");
+    assert_top_level_array_empty(&trace, "records");
+    assert_finalize_absent(&trace);
 
     Ok(())
 }
@@ -550,24 +432,8 @@ async fn trace_store_downgrades_on_oversized_compressed_chunk() -> Result<()> {
         .get("trace-compressed-oversize")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_too_large"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_too_large");
 
     Ok(())
 }
@@ -610,24 +476,8 @@ async fn trace_store_downgrades_on_invalid_utf8_chunk() -> Result<()> {
         .get("trace-invalid-utf8")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
 
     Ok(())
 }
@@ -667,24 +517,8 @@ async fn trace_store_downgrades_on_invalid_ndjson() -> Result<()> {
         .get("trace-invalid-ndjson")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
 
     Ok(())
 }
@@ -724,24 +558,8 @@ async fn trace_store_downgrades_on_unsupported_compression() -> Result<()> {
         .get("trace-unsupported-compression")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
 
     Ok(())
 }
@@ -781,24 +599,8 @@ async fn trace_store_downgrades_on_unsupported_format() -> Result<()> {
         .get("trace-unsupported-format")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
 
     Ok(())
 }
@@ -842,47 +644,12 @@ async fn trace_store_downgrades_detail_on_chunk_budget_exceeded() -> Result<()> 
         .get("trace-chunk-budget")
         .await?
         .expect("trace should exist");
-    let detail = trace
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
-    assert_eq!(
-        detail.get("status").and_then(|value| value.as_str()),
-        Some("basic")
-    );
-    let reasons = detail
-        .get("reason")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("chunk_error"))
-    );
-    assert!(
-        reasons
-            .iter()
-            .any(|value| value.as_str() == Some("budget_exceeded"))
-    );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
-    let records = trace
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
+    assert_detail_status(&trace, "basic");
+    assert_detail_reason(&trace, "chunk_error");
+    assert_detail_reason(&trace, "budget_exceeded");
+    assert_detail_array_empty(&trace, "records");
+    assert_detail_array_empty(&trace, "nodes");
+    assert_top_level_array_empty(&trace, "records");
 
     Ok(())
 }
