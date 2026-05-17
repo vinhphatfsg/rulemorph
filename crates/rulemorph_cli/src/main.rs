@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use rulemorph::{
-    DtoLanguage, InputData, NormalizationOptions, RuleFile, generate_dto,
+    InputData, NormalizationOptions, RuleFile,
     preflight_validate_input_with_warnings_with_base_dir_and_options,
     transform_input_with_warnings_with_base_dir_and_options,
     transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
@@ -12,6 +12,7 @@ use rulemorph::{
 #[cfg(feature = "server")]
 mod api_keys;
 mod emit;
+mod generate;
 mod input;
 mod output;
 #[cfg(feature = "server")]
@@ -41,7 +42,7 @@ enum Commands {
     ValidateRulesDir(server_commands::ValidateRulesDirArgs),
     Preflight(PreflightArgs),
     Transform(TransformArgs),
-    Generate(GenerateArgs),
+    Generate(generate::GenerateArgs),
     #[cfg(feature = "server")]
     Ui(server_commands::UiArgs),
     #[cfg(feature = "server")]
@@ -113,20 +114,6 @@ struct TransformArgs {
     limits_file: Option<PathBuf>,
 }
 
-#[derive(Args)]
-struct GenerateArgs {
-    #[arg(short = 'r', long)]
-    rules: PathBuf,
-    #[arg(long)]
-    rules_format: Option<RulesFormatArg>,
-    #[arg(short = 'l', long)]
-    lang: DtoLanguageArg,
-    #[arg(short = 'n', long)]
-    name: Option<String>,
-    #[arg(short = 'o', long)]
-    output: Option<PathBuf>,
-}
-
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum ErrorFormat {
     Text,
@@ -151,18 +138,6 @@ enum LimitsProfileArg {
     Large,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum DtoLanguageArg {
-    Rust,
-    #[value(alias = "ts")]
-    TypeScript,
-    Python,
-    Go,
-    Java,
-    Kotlin,
-    Swift,
-}
-
 fn main() {
     let cli = Cli::parse();
     let exit_code = match cli.command {
@@ -171,7 +146,7 @@ fn main() {
         Commands::ValidateRulesDir(args) => server_commands::run_validate_rules_dir(args),
         Commands::Preflight(args) => run_preflight(args),
         Commands::Transform(args) => run_transform(args),
-        Commands::Generate(args) => run_generate(args),
+        Commands::Generate(args) => generate::run(args),
         #[cfg(feature = "server")]
         Commands::Ui(args) => server_commands::run_ui(args),
         #[cfg(feature = "server")]
@@ -376,37 +351,6 @@ fn run_transform_ndjson(
 
     if let Err(err) = writer.flush() {
         eprintln!("failed to write output: {}", err);
-        return 1;
-    }
-
-    0
-}
-
-fn run_generate(args: GenerateArgs) -> i32 {
-    let (rule, _) = match load_rule(&args.rules, args.rules_format) {
-        Ok(value) => value,
-        Err(code) => return code,
-    };
-
-    let lang = match args.lang {
-        DtoLanguageArg::Rust => DtoLanguage::Rust,
-        DtoLanguageArg::TypeScript => DtoLanguage::TypeScript,
-        DtoLanguageArg::Python => DtoLanguage::Python,
-        DtoLanguageArg::Go => DtoLanguage::Go,
-        DtoLanguageArg::Java => DtoLanguage::Java,
-        DtoLanguageArg::Kotlin => DtoLanguage::Kotlin,
-        DtoLanguageArg::Swift => DtoLanguage::Swift,
-    };
-
-    let output = match generate_dto(&rule, lang, args.name.as_deref()) {
-        Ok(text) => text,
-        Err(err) => {
-            eprintln!("failed to generate dto: {}", err);
-            return 1;
-        }
-    };
-
-    if output::emit_text_output(&output, args.output.as_ref()).is_err() {
         return 1;
     }
 
