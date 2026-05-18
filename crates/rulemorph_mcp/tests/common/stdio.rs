@@ -2,6 +2,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
+use rulemorph::{Mapping, RuleFile, parse_rule_file};
 use serde_json::{Value, json};
 
 pub struct McpServer {
@@ -107,6 +108,30 @@ pub fn content_text(response: &Value) -> &str {
 
 pub fn content_json(response: &Value) -> Value {
     serde_json::from_str(content_text(response)).expect("content json")
+}
+
+pub fn call_tool(server: &mut McpServer, id: u64, name: &str, arguments: Value) -> Value {
+    let request = tool_call_request(id, name, arguments);
+    server.send(&request)
+}
+
+pub fn call_tool_text(server: &mut McpServer, id: u64, name: &str, arguments: Value) -> String {
+    content_text(&call_tool(server, id, name, arguments)).to_string()
+}
+
+pub fn call_tool_rule(server: &mut McpServer, id: u64, name: &str, arguments: Value) -> RuleFile {
+    parse_generated_rule(&call_tool_text(server, id, name, arguments))
+}
+
+pub fn parse_generated_rule(output_text: &str) -> RuleFile {
+    parse_rule_file(output_text).expect("parse output rules")
+}
+
+pub fn mapping_by_target<'a>(rule: &'a RuleFile, target: &str) -> &'a Mapping {
+    rule.mappings
+        .iter()
+        .find(|mapping| mapping.target == target)
+        .unwrap_or_else(|| panic!("{target} mapping"))
 }
 
 pub fn core_fixtures_dir() -> PathBuf {

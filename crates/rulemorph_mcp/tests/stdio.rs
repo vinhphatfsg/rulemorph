@@ -1,13 +1,13 @@
 use std::fs;
 
-use rulemorph::parse_rule_file;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 
 mod common;
 
 use common::stdio::{
-    McpServer, content_json, content_text, core_fixtures_dir, initialize, tool_call_request,
+    McpServer, call_tool, call_tool_rule, content_json, content_text, core_fixtures_dir,
+    initialize, mapping_by_target, tool_call_request,
 };
 
 #[test]
@@ -1566,27 +1566,18 @@ mappings:
     source: "old_name"
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 14,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_base",
-            "arguments": {
-                "rules_text": rules_text,
-                "input_json": {
-                    "id": 1,
-                    "name": "Ada"
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        14,
+        "generate_rules_from_base",
+        json!({
+            "rules_text": rules_text,
+            "input_json": {
+                "id": 1,
+                "name": "Ada"
             }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
+        }),
+    );
     assert_eq!(rule.mappings[0].source.as_deref(), Some("id"));
     assert_eq!(rule.mappings[1].source.as_deref(), Some("name"));
 
@@ -1608,25 +1599,16 @@ mappings:
     type: float
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 141,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_base",
-            "arguments": {
-                "rules_text": rules_text,
-                "input_text": "price_text,price_value\nabc,12.5\n",
-                "format": "csv"
-            }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
+    let rule = call_tool_rule(
+        &mut server,
+        141,
+        "generate_rules_from_base",
+        json!({
+            "rules_text": rules_text,
+            "input_text": "price_text,price_value\nabc,12.5\n",
+            "format": "csv"
+        }),
+    );
     assert_eq!(rule.mappings[0].source.as_deref(), Some("price_value"));
 
     server.shutdown();
@@ -1642,28 +1624,19 @@ fn generate_rules_from_dto_success() {
   name?: string;
 }"#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 15,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "typescript",
-                "input_json": {
-                    "id": 1,
-                    "name": "Ada"
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        15,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "typescript",
+            "input_json": {
+                "id": 1,
+                "name": "Ada"
             }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
+        }),
+    );
     assert_eq!(rule.mappings[0].source.as_deref(), Some("id"));
     assert_eq!(rule.mappings[1].source.as_deref(), Some("name"));
 
@@ -1685,53 +1658,32 @@ export interface Profile {
   score?: number;
 }"#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1501,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "typescript",
-                "input_json": {
-                    "id": "001",
-                    "profile": {
-                        "name": "Ada",
-                        "score": 98.5
-                    }
+    let rule = call_tool_rule(
+        &mut server,
+        1501,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "typescript",
+            "input_json": {
+                "id": "001",
+                "profile": {
+                    "name": "Ada",
+                    "score": 98.5
                 }
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "id")
-        .expect("id mapping");
+    let id_mapping = mapping_by_target(&rule, "id");
     assert_eq!(id_mapping.source.as_deref(), Some("id"));
     assert!(id_mapping.required);
 
-    let profile_name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.name")
-        .expect("profile.name mapping");
+    let profile_name_mapping = mapping_by_target(&rule, "profile.name");
     assert_eq!(profile_name_mapping.source.as_deref(), Some("profile.name"));
     assert!(!profile_name_mapping.required);
 
-    let profile_score_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.score")
-        .expect("profile.score mapping");
+    let profile_score_mapping = mapping_by_target(&rule, "profile.score");
     assert_eq!(
         profile_score_mapping.source.as_deref(),
         Some("profile.score")
@@ -1756,45 +1708,28 @@ export interface Profile {
   /* json: "city_name" */ city: string;
 }"#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1502,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "typescript",
-                "input_json": {
-                    "user_id": "001",
-                    "profile": {
-                        "city_name": "Tokyo"
-                    }
+    let rule = call_tool_rule(
+        &mut server,
+        1502,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "typescript",
+            "input_json": {
+                "user_id": "001",
+                "profile": {
+                    "city_name": "Tokyo"
                 }
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "user_id")
-        .expect("user_id mapping");
+    let id_mapping = mapping_by_target(&rule, "user_id");
     assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
     assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
     assert!(id_mapping.required);
 
-    let city_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.city_name")
-        .expect("profile.city_name mapping");
+    let city_mapping = mapping_by_target(&rule, "profile.city_name");
     assert_eq!(city_mapping.source.as_deref(), Some("profile.city_name"));
     assert!(!city_mapping.required);
 
@@ -1806,23 +1741,18 @@ fn generate_rules_from_dto_invalid_language_returns_json_rpc_error() {
     let mut server = McpServer::start();
     initialize(&mut server);
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1510,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": "type Record = { id: string }",
-                "dto_language": "ruby",
-                "input_json": {
-                    "id": 1
-                }
+    let response = call_tool(
+        &mut server,
+        1510,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": "type Record = { id: string }",
+            "dto_language": "ruby",
+            "input_json": {
+                "id": 1
             }
-        }
-    });
-
-    let response = server.send(&request);
+        }),
+    );
     assert_eq!(response["error"]["code"], -32602);
     assert_eq!(
         response["error"]["message"],
@@ -1842,31 +1772,18 @@ interface Product {
   price: number;
 }
 "#;
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 151,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "typescript",
-                "input_text": "price_text,price_value\nabc,12.5\n",
-                "format": "csv"
-            }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-    let price_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "price")
-        .expect("price mapping");
+    let rule = call_tool_rule(
+        &mut server,
+        151,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "typescript",
+            "input_text": "price_text,price_value\nabc,12.5\n",
+            "format": "csv"
+        }),
+    );
+    let price_mapping = mapping_by_target(&rule, "price");
     assert_eq!(price_mapping.source.as_deref(), Some("price_value"));
 
     server.shutdown();
@@ -1879,28 +1796,19 @@ fn generate_rules_from_dto_single_line_interface() {
 
     let dto_text = "export interface Record { id: string; name?: string; }";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 16,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "typescript",
-                "input_json": {
-                    "id": 1,
-                    "name": "Ada"
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        16,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "typescript",
+            "input_json": {
+                "id": 1,
+                "name": "Ada"
             }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
+        }),
+    );
     assert_eq!(rule.mappings[0].source.as_deref(), Some("id"));
     assert_eq!(rule.mappings[1].source.as_deref(), Some("name"));
 
@@ -1914,29 +1822,20 @@ fn generate_rules_from_dto_single_line_rust_struct() {
 
     let dto_text = "pub struct Record { pub id: String, pub name: Option<String>, pub price: f64 }";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 19,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "rust",
-                "input_json": {
-                    "id": "001",
-                    "name": "Ada",
-                    "price": 100.0
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        19,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "rust",
+            "input_json": {
+                "id": "001",
+                "name": "Ada",
+                "price": 100.0
             }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
+        }),
+    );
     assert_eq!(rule.mappings[0].source.as_deref(), Some("id"));
     assert_eq!(rule.mappings[1].source.as_deref(), Some("name"));
     assert_eq!(rule.mappings[2].source.as_deref(), Some("price"));
@@ -1967,81 +1866,48 @@ pub struct Profile {
 }
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 1901,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "rust",
-                "input_json": {
-                    "user_id": "001",
-                    "name": "Ada",
-                    "active": true,
-                    "count": 7,
-                    "ratio": 1.5,
-                    "profile": {
-                        "city_name": "Tokyo"
-                    },
-                    "metadata": {
-                        "team": "core"
-                    }
+    let rule = call_tool_rule(
+        &mut server,
+        1901,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "rust",
+            "input_json": {
+                "user_id": "001",
+                "name": "Ada",
+                "active": true,
+                "count": 7,
+                "ratio": 1.5,
+                "profile": {
+                    "city_name": "Tokyo"
+                },
+                "metadata": {
+                    "team": "core"
                 }
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "user_id")
-        .expect("user_id mapping");
+    let id_mapping = mapping_by_target(&rule, "user_id");
     assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
     assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "name");
     assert_eq!(name_mapping.source.as_deref(), Some("name"));
     assert!(!name_mapping.required);
 
-    let active_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "active")
-        .expect("active mapping");
+    let active_mapping = mapping_by_target(&rule, "active");
     assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
 
-    let count_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "count")
-        .expect("count mapping");
+    let count_mapping = mapping_by_target(&rule, "count");
     assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
 
-    let ratio_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "ratio")
-        .expect("ratio mapping");
+    let ratio_mapping = mapping_by_target(&rule, "ratio");
     assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
 
-    let profile_city_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.city_name")
-        .expect("profile.city_name mapping");
+    let profile_city_mapping = mapping_by_target(&rule, "profile.city_name");
     assert_eq!(
         profile_city_mapping.source.as_deref(),
         Some("profile.city_name")
@@ -2049,11 +1915,7 @@ pub struct Profile {
     assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
     assert!(!profile_city_mapping.required);
 
-    let metadata_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "metadata")
-        .expect("metadata mapping");
+    let metadata_mapping = mapping_by_target(&rule, "metadata");
     assert_eq!(metadata_mapping.source, None);
     assert_eq!(metadata_mapping.value_type, None);
 
@@ -2067,51 +1929,30 @@ fn generate_rules_from_dto_python_single_line_alias() {
 
     let dto_text = "class Record(BaseModel): id: str; name: Optional[str] = None; price: float = Field(alias=\"price_cents\")";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 20,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "python",
-                "input_json": {
-                    "id": "001",
-                    "name": "Ada",
-                    "price_cents": 100.0
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        20,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "python",
+            "input_json": {
+                "id": "001",
+                "name": "Ada",
+                "price_cents": 100.0
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "id")
-        .expect("id mapping");
+    let id_mapping = mapping_by_target(&rule, "id");
     assert_eq!(id_mapping.source.as_deref(), Some("id"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "name");
     assert_eq!(name_mapping.source.as_deref(), Some("name"));
     assert!(!name_mapping.required);
 
-    let price_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "price_cents")
-        .expect("price mapping");
+    let price_mapping = mapping_by_target(&rule, "price_cents");
     assert_eq!(price_mapping.source.as_deref(), Some("price_cents"));
     assert!(price_mapping.required);
 
@@ -2142,113 +1983,68 @@ class Profile(BaseModel):
     nickname: str | None = None
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 20,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "python",
-                "input_json": {
-                    "user_id": "001",
-                    "name": "Ada",
-                    "active": true,
-                    "count": 3,
-                    "ratio": 1.5,
-                    "profile": {
-                        "city_name": "Paris",
-                        "nickname": null
-                    },
-                    "metadata": { "source": "api" },
-                    "tags": ["vip"]
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        20,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "python",
+            "input_json": {
+                "user_id": "001",
+                "name": "Ada",
+                "active": true,
+                "count": 3,
+                "ratio": 1.5,
+                "profile": {
+                    "city_name": "Paris",
+                    "nickname": null
+                },
+                "metadata": { "source": "api" },
+                "tags": ["vip"]
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "user_id")
-        .expect("user_id mapping");
+    let id_mapping = mapping_by_target(&rule, "user_id");
     assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
     assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "name");
     assert_eq!(name_mapping.source.as_deref(), Some("name"));
     assert_eq!(name_mapping.value_type.as_deref(), Some("string"));
     assert!(!name_mapping.required);
 
-    let active_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "active")
-        .expect("active mapping");
+    let active_mapping = mapping_by_target(&rule, "active");
     assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
     assert!(active_mapping.required);
 
-    let count_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "count")
-        .expect("count mapping");
+    let count_mapping = mapping_by_target(&rule, "count");
     assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
 
-    let ratio_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "ratio")
-        .expect("ratio mapping");
+    let ratio_mapping = mapping_by_target(&rule, "ratio");
     assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
 
-    let profile_city_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.city_name")
-        .expect("profile.city_name mapping");
+    let profile_city_mapping = mapping_by_target(&rule, "profile.city_name");
     assert_eq!(
         profile_city_mapping.source.as_deref(),
         Some("profile.city_name")
     );
     assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
 
-    let profile_nickname_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.nickname")
-        .expect("profile.nickname mapping");
+    let profile_nickname_mapping = mapping_by_target(&rule, "profile.nickname");
     assert_eq!(
         profile_nickname_mapping.source.as_deref(),
         Some("profile.nickname")
     );
     assert!(!profile_nickname_mapping.required);
 
-    let metadata_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "metadata")
-        .expect("metadata mapping");
+    let metadata_mapping = mapping_by_target(&rule, "metadata");
     assert_eq!(metadata_mapping.source, None);
     assert_eq!(metadata_mapping.value_type, None);
 
-    let tags_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "tags")
-        .expect("tags mapping");
+    let tags_mapping = mapping_by_target(&rule, "tags");
     assert_eq!(tags_mapping.source.as_deref(), Some("tags"));
     assert_eq!(tags_mapping.value_type, None);
 
@@ -2262,43 +2058,26 @@ fn generate_rules_from_dto_go_single_line_tags() {
 
     let dto_text = "type Record struct { ID string `json:\"id\"` Name *string `json:\"name,omitempty\"` Price float64 `json:\"price\"` }";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 21,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "go",
-                "input_json": {
-                    "id": "001",
-                    "name": "Ada",
-                    "price": 100.0
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        21,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "go",
+            "input_json": {
+                "id": "001",
+                "name": "Ada",
+                "price": 100.0
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "id")
-        .expect("id mapping");
+    let id_mapping = mapping_by_target(&rule, "id");
     assert_eq!(id_mapping.source.as_deref(), Some("id"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "name");
     assert_eq!(name_mapping.source.as_deref(), Some("name"));
     assert!(!name_mapping.required);
 
@@ -2328,38 +2107,29 @@ type Profile struct {
 }
 "#;
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 2101,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "go",
-                "input_json": {
-                    "ID": "001",
-                    "name": "Ada",
-                    "profile": {
-                        "city": "Tokyo"
-                    },
-                    "tags": ["admin"],
-                    "metadata": {
-                        "team": "core"
-                    },
-                    "active": true,
-                    "count": 7,
-                    "ratio": 1.5
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        2101,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "go",
+            "input_json": {
+                "ID": "001",
+                "name": "Ada",
+                "profile": {
+                    "city": "Tokyo"
+                },
+                "tags": ["admin"],
+                "metadata": {
+                    "team": "core"
+                },
+                "active": true,
+                "count": 7,
+                "ratio": 1.5
             }
-        }
-    });
-
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
+        }),
+    );
 
     assert!(
         !rule
@@ -2368,67 +2138,35 @@ type Profile struct {
             .any(|mapping| mapping.target == "Internal")
     );
 
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "ID")
-        .expect("ID mapping");
+    let id_mapping = mapping_by_target(&rule, "ID");
     assert_eq!(id_mapping.source.as_deref(), Some("ID"));
     assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "name");
     assert_eq!(name_mapping.source.as_deref(), Some("name"));
     assert!(!name_mapping.required);
 
-    let profile_city_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "profile.city")
-        .expect("profile.city mapping");
+    let profile_city_mapping = mapping_by_target(&rule, "profile.city");
     assert_eq!(profile_city_mapping.source.as_deref(), Some("profile.city"));
     assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
     assert!(profile_city_mapping.required);
 
-    let tags_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "tags")
-        .expect("tags mapping");
+    let tags_mapping = mapping_by_target(&rule, "tags");
     assert_eq!(tags_mapping.source.as_deref(), Some("tags"));
     assert_eq!(tags_mapping.value_type, None);
 
-    let metadata_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "metadata")
-        .expect("metadata mapping");
+    let metadata_mapping = mapping_by_target(&rule, "metadata");
     assert_eq!(metadata_mapping.source, None);
     assert_eq!(metadata_mapping.value_type, None);
 
-    let active_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "active")
-        .expect("active mapping");
+    let active_mapping = mapping_by_target(&rule, "active");
     assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
 
-    let count_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "count")
-        .expect("count mapping");
+    let count_mapping = mapping_by_target(&rule, "count");
     assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
 
-    let ratio_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "ratio")
-        .expect("ratio mapping");
+    let ratio_mapping = mapping_by_target(&rule, "ratio");
     assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
 
     server.shutdown();
@@ -2441,42 +2179,25 @@ fn generate_rules_from_dto_java_single_line_annotations() {
 
     let dto_text = "public class Record { @JsonProperty(\"user_id\") private String id; @SerializedName(\"full_name\") private Optional<String> name; }";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 22,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "java",
-                "input_json": {
-                    "user_id": "001",
-                    "full_name": "Ada"
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        22,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "java",
+            "input_json": {
+                "user_id": "001",
+                "full_name": "Ada"
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "user_id")
-        .expect("id mapping");
+    let id_mapping = mapping_by_target(&rule, "user_id");
     assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "full_name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "full_name");
     assert_eq!(name_mapping.source.as_deref(), Some("full_name"));
     assert!(!name_mapping.required);
 
@@ -2490,51 +2211,30 @@ fn generate_rules_from_dto_kotlin_single_line_annotations() {
 
     let dto_text = "data class Record(@SerialName(\"user_id\") val id: String, @Json(name = \"full_name\") val name: String?, val price: Double)";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 23,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "kotlin",
-                "input_json": {
-                    "user_id": "001",
-                    "full_name": "Ada",
-                    "price": 100.0
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        23,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "kotlin",
+            "input_json": {
+                "user_id": "001",
+                "full_name": "Ada",
+                "price": 100.0
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "user_id")
-        .expect("id mapping");
+    let id_mapping = mapping_by_target(&rule, "user_id");
     assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "full_name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "full_name");
     assert_eq!(name_mapping.source.as_deref(), Some("full_name"));
     assert!(!name_mapping.required);
 
-    let price_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "price")
-        .expect("price mapping");
+    let price_mapping = mapping_by_target(&rule, "price");
     assert_eq!(price_mapping.source.as_deref(), Some("price"));
     assert!(price_mapping.required);
 
@@ -2581,57 +2281,36 @@ data class Profile(
 "#;
 
     for (id, language, dto_text) in [(2301, "java", java_dto), (2302, "kotlin", kotlin_dto)] {
-        let request = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": "tools/call",
-            "params": {
-                "name": "generate_rules_from_dto",
-                "arguments": {
-                    "dto_text": dto_text,
-                    "dto_language": language,
-                    "input_json": {
-                        "user_id": "001",
-                        "name": "Ada",
-                        "profile": {
-                            "city_name": "Tokyo"
-                        },
-                        "active": true,
-                        "count": 7,
-                        "ratio": 1.5
-                    }
+        let rule = call_tool_rule(
+            &mut server,
+            id,
+            "generate_rules_from_dto",
+            json!({
+                "dto_text": dto_text,
+                "dto_language": language,
+                "input_json": {
+                    "user_id": "001",
+                    "name": "Ada",
+                    "profile": {
+                        "city_name": "Tokyo"
+                    },
+                    "active": true,
+                    "count": 7,
+                    "ratio": 1.5
                 }
-            }
-        });
+            }),
+        );
 
-        let response = server.send(&request);
-        let output_text = response["result"]["content"][0]["text"]
-            .as_str()
-            .expect("output text");
-        let rule = parse_rule_file(output_text).expect("parse output rules");
-
-        let id_mapping = rule
-            .mappings
-            .iter()
-            .find(|mapping| mapping.target == "user_id")
-            .expect("user_id mapping");
+        let id_mapping = mapping_by_target(&rule, "user_id");
         assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
         assert_eq!(id_mapping.value_type.as_deref(), Some("string"));
         assert!(id_mapping.required);
 
-        let name_mapping = rule
-            .mappings
-            .iter()
-            .find(|mapping| mapping.target == "name")
-            .expect("name mapping");
+        let name_mapping = mapping_by_target(&rule, "name");
         assert_eq!(name_mapping.source.as_deref(), Some("name"));
         assert!(!name_mapping.required);
 
-        let profile_city_mapping = rule
-            .mappings
-            .iter()
-            .find(|mapping| mapping.target == "profile.city_name")
-            .expect("profile.city_name mapping");
+        let profile_city_mapping = mapping_by_target(&rule, "profile.city_name");
         assert_eq!(
             profile_city_mapping.source.as_deref(),
             Some("profile.city_name")
@@ -2639,25 +2318,13 @@ data class Profile(
         assert_eq!(profile_city_mapping.value_type.as_deref(), Some("string"));
         assert!(!profile_city_mapping.required);
 
-        let active_mapping = rule
-            .mappings
-            .iter()
-            .find(|mapping| mapping.target == "active")
-            .expect("active mapping");
+        let active_mapping = mapping_by_target(&rule, "active");
         assert_eq!(active_mapping.value_type.as_deref(), Some("bool"));
 
-        let count_mapping = rule
-            .mappings
-            .iter()
-            .find(|mapping| mapping.target == "count")
-            .expect("count mapping");
+        let count_mapping = mapping_by_target(&rule, "count");
         assert_eq!(count_mapping.value_type.as_deref(), Some("int"));
 
-        let ratio_mapping = rule
-            .mappings
-            .iter()
-            .find(|mapping| mapping.target == "ratio")
-            .expect("ratio mapping");
+        let ratio_mapping = mapping_by_target(&rule, "ratio");
         assert_eq!(ratio_mapping.value_type.as_deref(), Some("float"));
     }
 
@@ -2671,51 +2338,30 @@ fn generate_rules_from_dto_swift_single_line_coding_keys() {
 
     let dto_text = "struct Record: Codable { let id: String; let name: String?; let price: Double; enum CodingKeys: String, CodingKey { case id = \"user_id\", name, price = \"price_cents\" } }";
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 24,
-        "method": "tools/call",
-        "params": {
-            "name": "generate_rules_from_dto",
-            "arguments": {
-                "dto_text": dto_text,
-                "dto_language": "swift",
-                "input_json": {
-                    "user_id": "001",
-                    "name": "Ada",
-                    "price_cents": 100.0
-                }
+    let rule = call_tool_rule(
+        &mut server,
+        24,
+        "generate_rules_from_dto",
+        json!({
+            "dto_text": dto_text,
+            "dto_language": "swift",
+            "input_json": {
+                "user_id": "001",
+                "name": "Ada",
+                "price_cents": 100.0
             }
-        }
-    });
+        }),
+    );
 
-    let response = server.send(&request);
-    let output_text = response["result"]["content"][0]["text"]
-        .as_str()
-        .expect("output text");
-    let rule = parse_rule_file(output_text).expect("parse output rules");
-
-    let id_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "user_id")
-        .expect("id mapping");
+    let id_mapping = mapping_by_target(&rule, "user_id");
     assert_eq!(id_mapping.source.as_deref(), Some("user_id"));
     assert!(id_mapping.required);
 
-    let name_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "name")
-        .expect("name mapping");
+    let name_mapping = mapping_by_target(&rule, "name");
     assert_eq!(name_mapping.source.as_deref(), Some("name"));
     assert!(!name_mapping.required);
 
-    let price_mapping = rule
-        .mappings
-        .iter()
-        .find(|mapping| mapping.target == "price_cents")
-        .expect("price mapping");
+    let price_mapping = mapping_by_target(&rule, "price_cents");
     assert_eq!(price_mapping.source.as_deref(), Some("price_cents"));
     assert!(price_mapping.required);
 
