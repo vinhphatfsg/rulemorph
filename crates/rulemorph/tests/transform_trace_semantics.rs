@@ -3,30 +3,15 @@ use std::fs;
 mod common;
 
 use common::trace::{
-    assert_trace_shape, attr_bool, attr_number, iter_trace_events, unique_temp_dir,
+    assert_trace_shape, assert_traced_output_matches_normal, attr_bool, attr_number,
+    iter_trace_events, parse_rule, transform_text_raw_trace, unique_temp_dir,
 };
 use rulemorph::{
     InputData, TraceAttributeValue, TraceEventKind, TransformTraceOptions, parse_rule_file,
     transform, transform_input_with_trace, transform_input_with_trace_with_base_dir_and_options,
     transform_record, transform_record_with_trace, transform_with_base_dir,
 };
-use serde_json::{Value as JsonValue, json};
-
-fn assert_traced_output_matches_normal(yaml: &str, input: &str, expected: JsonValue) {
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let normal = transform(&rule, input, None).expect("normal transform");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(input),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
-
-    assert_eq!(normal, expected);
-    assert_eq!(traced.output, normal);
-    assert_trace_shape(&traced.trace);
-}
+use serde_json::json;
 
 #[test]
 fn trace_v2_eager_operator_emits_arg_eval_for_actual_args() {
@@ -40,14 +25,8 @@ mappings:
       - "@input.first"
       - concat: ["@input.second"]
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"first":"A","second":"B"}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{"first":"A","second":"B"}]"#);
 
     assert_eq!(traced.output, json!([{ "label": "AB" }]));
     assert!(
@@ -80,7 +59,7 @@ mappings:
   - target: "copied_id"
     source: "out.id"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let context = json!({ "tenant": "acme" });
     let traced = transform_input_with_trace(
         &rule,
@@ -189,15 +168,9 @@ mappings:
         - { ref: "input.missing" }
         - { ref: "item.value" }
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let normal = transform(&rule, r#"[{}]"#, None).expect("normal transform");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let traced = transform_text_raw_trace(&rule, r#"[{}]"#);
 
     assert_eq!(normal, json!([{}]));
     assert_eq!(traced.output, normal);
@@ -221,14 +194,8 @@ mappings:
   - target: "name"
     source: "name"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"name":"alice"}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{"name":"alice"}]"#);
 
     let output_write = iter_trace_events(&traced.trace)
         .into_iter()
@@ -494,14 +461,9 @@ mappings:
       eq: ["@input.enabled", true]
     source: "name"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"kind":"keep","enabled":true,"name":"alice"}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced =
+        transform_text_raw_trace(&rule, r#"[{"kind":"keep","enabled":true,"name":"alice"}]"#);
 
     assert_eq!(traced.output, json!([{ "name": "alice" }]));
     let events = iter_trace_events(&traced.trace);
@@ -550,7 +512,7 @@ finalize:
     by: "score"
     order: "desc"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let traced = transform_input_with_trace(
         &rule,
         InputData::Text(
@@ -918,14 +880,8 @@ mappings:
         - { ref: "input.name" }
         - { ref: "item.value" }
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"name":"alice"}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{"name":"alice"}]"#);
 
     assert_eq!(traced.output, json!([{ "name": "alice" }]));
     let arg_eval_indexes = iter_trace_events(&traced.trace)
@@ -955,14 +911,8 @@ mappings:
         - false
         - { ref: "item.value" }
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{}]"#);
 
     assert_eq!(traced.output, json!([{ "flag": false }]));
     let arg_eval_indexes = iter_trace_events(&traced.trace)
@@ -992,14 +942,9 @@ mappings:
         - { ref: "input.users" }
         - { ref: "item.value.name" }
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"users":[{"name":"alice"},{"name":"bob"}]}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced =
+        transform_text_raw_trace(&rule, r#"[{"users":[{"name":"alice"},{"name":"bob"}]}]"#);
 
     assert_eq!(traced.output, json!([{ "names": ["alice", "bob"] }]));
     assert!(
@@ -1026,14 +971,8 @@ mappings:
         - { ref: "input.values" }
         - { op: "+", args: [ { ref: "acc.value" }, { ref: "item.value" } ] }
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"values":[1,2,3]}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{"values":[1,2,3]}]"#);
 
     assert_eq!(traced.output, json!([{ "total": 6 }]));
     assert!(
@@ -1091,14 +1030,8 @@ mappings:
       - coalesce: ["@input.secondary", "@item.name"]
 "#;
 
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"secondary":"fallback"}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{"secondary":"fallback"}]"#);
 
     assert_eq!(traced.output, json!([{ "name": "fallback" }]));
     let arg_eval_indexes = iter_trace_events(&traced.trace)
@@ -1129,14 +1062,8 @@ mappings:
       - "@input.enabled"
       - and: ["@item.enabled"]
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
-    let traced = transform_input_with_trace(
-        &rule,
-        InputData::Text(r#"[{"enabled":false}]"#),
-        None,
-        &TransformTraceOptions::raw(),
-    )
-    .expect("traced transform");
+    let rule = parse_rule(yaml);
+    let traced = transform_text_raw_trace(&rule, r#"[{"enabled":false}]"#);
 
     assert!(
         iter_trace_events(&traced.trace)
@@ -1158,7 +1085,7 @@ mappings:
       - "@input.enabled"
       - and: ["@item.enabled"]
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let input = r#"[{"enabled":true}]"#;
 
     let normal = transform(&rule, input, None).expect_err("normal error");
@@ -1187,7 +1114,7 @@ mappings:
       - map:
           - divide: [0]
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         transform_input_with_trace(
             &rule,
@@ -1216,7 +1143,7 @@ finalize:
   wrap:
     data: "@out"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let record = json!({"name":"alice"});
 
     let normal = transform_record(&rule, &record, None).expect("normal record transform");
@@ -1247,7 +1174,7 @@ finalize:
   wrap:
     data: "@out"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let record = json!({"name":"alice"});
 
     let normal = transform_record(&rule, &record, None).expect("normal record transform");
@@ -1292,7 +1219,7 @@ steps:
       then: child.yaml
       return: true
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let input = r#"[{"name":"alice"}]"#;
 
     let normal = transform_with_base_dir(&rule, input, None, &dir).expect("normal transform");
@@ -1342,7 +1269,7 @@ steps:
       then: child.yaml
       return: true
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let input = r#"[{"name":"alice"}]"#;
 
     let normal = transform_with_base_dir(&rule, input, None, &dir).expect("normal transform");
@@ -1394,7 +1321,7 @@ steps:
       then: child.yaml
       return: false
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule(yaml);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         transform_input_with_trace_with_base_dir_and_options(
             &rule,

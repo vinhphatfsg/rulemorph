@@ -5,7 +5,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rulemorph::{TraceAttributeValue, TraceEvent, TraceEventKind, TransformTrace};
+use rulemorph::{
+    InputData, RuleFile, TraceAttributeValue, TraceEvent, TraceEventKind, TransformTrace,
+    TransformTraceOptions, TransformTraceResult, parse_rule_file, transform,
+    transform_input_with_trace,
+};
+use serde_json::Value as JsonValue;
 
 pub(crate) fn iter_trace_events(trace: &TransformTrace) -> Vec<&TraceEvent> {
     trace
@@ -14,6 +19,30 @@ pub(crate) fn iter_trace_events(trace: &TransformTrace) -> Vec<&TraceEvent> {
         .flat_map(|record| record.events.iter())
         .chain(trace.finalize.iter().flatten())
         .collect()
+}
+
+pub(crate) fn parse_rule(yaml: &str) -> RuleFile {
+    parse_rule_file(yaml).expect("parse rule")
+}
+
+pub(crate) fn transform_text_raw_trace(rule: &RuleFile, input: &str) -> TransformTraceResult {
+    transform_input_with_trace(
+        rule,
+        InputData::Text(input),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("traced transform")
+}
+
+pub(crate) fn assert_traced_output_matches_normal(yaml: &str, input: &str, expected: JsonValue) {
+    let rule = parse_rule(yaml);
+    let normal = transform(&rule, input, None).expect("normal transform");
+    let traced = transform_text_raw_trace(&rule, input);
+
+    assert_eq!(normal, expected);
+    assert_eq!(traced.output, normal);
+    assert_trace_shape(&traced.trace);
 }
 
 pub(crate) fn assert_operator_lifecycle(trace: &TransformTrace, operator: &str) {
