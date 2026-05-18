@@ -6,8 +6,9 @@ use tempfile::tempdir;
 mod common;
 
 use common::stdio::{
-    McpServer, call_tool, call_tool_rule, content_json, content_text, core_fixtures_dir,
-    initialize, mapping_by_target, tool_call_request,
+    McpServer, assert_tool_schema_enum, assert_tool_schema_required, call_tool, call_tool_rule,
+    content_json, content_text, core_fixtures_dir, initialize, list_tools, mapping_by_target,
+    tool_by_name, tool_call_request, tool_schema_property, tools_array,
 };
 
 #[test]
@@ -15,14 +16,9 @@ fn initialize_and_list_tools() {
     let mut server = McpServer::start();
     initialize(&mut server);
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "id": 2,
-        "method": "tools/list"
-    });
-    let response = server.send(&request);
+    let response = list_tools(&mut server, 2);
 
-    let tools = response["result"]["tools"].as_array().expect("tools array");
+    let tools = tools_array(&response);
     let expected = [
         "transform",
         "validate_rules",
@@ -46,41 +42,30 @@ fn initialize_and_list_tools() {
         "generate_dto",
         "generate_rules_from_base",
     ] {
-        let tool = tools
-            .iter()
-            .find(|tool| tool["name"] == name)
-            .expect("tool");
+        let tool = tool_by_name(tools, name);
         assert_eq!(
-            tool["inputSchema"]["properties"]["rules_format"]["enum"],
+            tool_schema_property(tool, "rules_format")["enum"],
             json!(["yaml", "json"]),
             "rules_format schema missing for {name}"
         );
     }
-    let transform_tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "transform")
-        .expect("transform tool");
-    assert_eq!(
-        transform_tool["inputSchema"]["properties"]["format"]["enum"],
-        json!(["csv", "json", "yaml", "toml", "xml", "html", "excel"])
+    let transform_tool = tool_by_name(tools, "transform");
+    assert_tool_schema_enum(
+        transform_tool,
+        "format",
+        json!(["csv", "json", "yaml", "toml", "xml", "html", "excel"]),
     );
-    let input_json_description =
-        transform_tool["inputSchema"]["properties"]["input_json"]["description"]
-            .as_str()
-            .expect("input_json description");
+    let input_json_description = tool_schema_property(transform_tool, "input_json")["description"]
+        .as_str()
+        .expect("input_json description");
     assert!(input_json_description.contains("Inline typed JSON value"));
     assert!(input_json_description.contains("Duplicate-key validation"));
 
-    let generate_dto_tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "generate_dto")
-        .expect("generate_dto tool");
-    assert_eq!(
-        generate_dto_tool["inputSchema"]["required"],
-        json!(["language"])
-    );
-    assert_eq!(
-        generate_dto_tool["inputSchema"]["properties"]["language"]["enum"],
+    let generate_dto_tool = tool_by_name(tools, "generate_dto");
+    assert_tool_schema_required(generate_dto_tool, json!(["language"]));
+    assert_tool_schema_enum(
+        generate_dto_tool,
+        "language",
         json!([
             "rust",
             "typescript",
@@ -89,34 +74,22 @@ fn initialize_and_list_tools() {
             "java",
             "kotlin",
             "swift"
-        ])
+        ]),
     );
 
-    let list_ops_tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "list_ops")
-        .expect("list_ops tool");
+    let list_ops_tool = tool_by_name(tools, "list_ops");
     assert_eq!(list_ops_tool["inputSchema"]["properties"], json!({}));
 
-    let analyze_input_tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "analyze_input")
-        .expect("analyze_input tool");
+    let analyze_input_tool = tool_by_name(tools, "analyze_input");
+    assert_tool_schema_enum(analyze_input_tool, "format", json!(["csv", "json"]));
     assert_eq!(
-        analyze_input_tool["inputSchema"]["properties"]["format"]["enum"],
-        json!(["csv", "json"])
-    );
-    assert_eq!(
-        analyze_input_tool["inputSchema"]["properties"]["max_paths"]["minimum"],
+        tool_schema_property(analyze_input_tool, "max_paths")["minimum"],
         json!(1)
     );
 
-    let generate_rules_from_base_tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "generate_rules_from_base")
-        .expect("generate_rules_from_base tool");
+    let generate_rules_from_base_tool = tool_by_name(tools, "generate_rules_from_base");
     assert_eq!(
-        generate_rules_from_base_tool["inputSchema"]["properties"]["max_candidates"]["minimum"],
+        tool_schema_property(generate_rules_from_base_tool, "max_candidates")["minimum"],
         json!(1)
     );
     assert!(
@@ -126,16 +99,14 @@ fn initialize_and_list_tools() {
             .contains_key("records_path")
     );
 
-    let generate_rules_from_dto_tool = tools
-        .iter()
-        .find(|tool| tool["name"] == "generate_rules_from_dto")
-        .expect("generate_rules_from_dto tool");
-    assert_eq!(
-        generate_rules_from_dto_tool["inputSchema"]["required"],
-        json!(["dto_text", "dto_language"])
+    let generate_rules_from_dto_tool = tool_by_name(tools, "generate_rules_from_dto");
+    assert_tool_schema_required(
+        generate_rules_from_dto_tool,
+        json!(["dto_text", "dto_language"]),
     );
-    assert_eq!(
-        generate_rules_from_dto_tool["inputSchema"]["properties"]["dto_language"]["enum"],
+    assert_tool_schema_enum(
+        generate_rules_from_dto_tool,
+        "dto_language",
         json!([
             "rust",
             "typescript",
@@ -144,7 +115,7 @@ fn initialize_and_list_tools() {
             "java",
             "kotlin",
             "swift"
-        ])
+        ]),
     );
 
     server.shutdown();
