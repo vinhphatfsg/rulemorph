@@ -1,23 +1,47 @@
-use super::args::args_len;
-use super::boolean::{eval_bool_and_or, eval_bool_not, eval_compare};
-use super::date::{eval_date_format, eval_to_unixtime};
-use super::json::{
-    eval_json_entries, eval_json_from_entries, eval_json_get, eval_json_keys, eval_json_merge,
-    eval_json_object_flatten, eval_json_object_unflatten, eval_json_omit, eval_json_pick,
-    eval_json_values, eval_len,
+use super::super::array::{
+    eval_array_avg, eval_array_chunk, eval_array_contains, eval_array_distinct_by, eval_array_drop,
+    eval_array_filter, eval_array_find, eval_array_find_index, eval_array_flat_map,
+    eval_array_flatten, eval_array_fold, eval_array_group_by, eval_array_index_of,
+    eval_array_key_by, eval_array_map, eval_array_max, eval_array_min, eval_array_partition,
+    eval_array_reduce, eval_array_slice, eval_array_sort_by, eval_array_sum, eval_array_take,
+    eval_array_unique, eval_array_unzip, eval_array_zip, eval_array_zip_with,
 };
-use super::lookup::eval_lookup;
-use super::number::{eval_numeric_op, eval_round, eval_to_base};
-use super::simple::{eval_coalesce, eval_concat};
-use super::string::{eval_pad, eval_replace, eval_split, eval_unary_string_op};
-use super::value::{value_as_string, value_to_string};
-use super::*;
+use super::super::*;
 
-mod array_dispatch;
+pub(super) fn is_array_operator(op: &str) -> bool {
+    matches!(
+        op,
+        "map"
+            | "filter"
+            | "flat_map"
+            | "flatten"
+            | "take"
+            | "drop"
+            | "slice"
+            | "chunk"
+            | "zip"
+            | "zip_with"
+            | "unzip"
+            | "group_by"
+            | "key_by"
+            | "partition"
+            | "unique"
+            | "distinct_by"
+            | "sort_by"
+            | "find"
+            | "find_index"
+            | "index_of"
+            | "contains"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "reduce"
+            | "fold"
+    )
+}
 
-use self::array_dispatch::{eval_array_dispatch, is_array_operator};
-
-pub(crate) fn eval_op(
+pub(super) fn eval_array_dispatch(
     expr_op: &ExprOp,
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -26,68 +50,8 @@ pub(crate) fn eval_op(
     injected: Option<&EvalValue>,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    let total_len = args_len(&expr_op.args, injected);
-    if total_len == 0 {
-        return Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "expr.args must be a non-empty array",
-        )
-        .with_path(format!("{}.args", base_path)));
-    }
-
     match expr_op.op.as_str() {
-        "concat" => eval_concat(expr_op, injected, record, context, out, base_path, locals),
-        "coalesce" => eval_coalesce(expr_op, injected, record, context, out, base_path, locals),
-        "to_string" => eval_unary_string_op(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-            |value, path| value_to_string(value, path).map(JsonValue::String),
-        ),
-        "trim" => eval_unary_string_op(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-            |value, path| {
-                let s = value_as_string(value, path)?;
-                Ok(JsonValue::String(s.trim().to_string()))
-            },
-        ),
-        "lowercase" => eval_unary_string_op(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-            |value, path| {
-                let s = value_as_string(value, path)?;
-                Ok(JsonValue::String(s.to_lowercase()))
-            },
-        ),
-        "uppercase" => eval_unary_string_op(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-            |value, path| {
-                let s = value_as_string(value, path)?;
-                Ok(JsonValue::String(s.to_uppercase()))
-            },
-        ),
-        "replace" => eval_replace(
+        "map" => eval_array_map(
             &expr_op.args,
             injected,
             record,
@@ -96,7 +60,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "split" => eval_split(
+        "filter" => eval_array_filter(
             &expr_op.args,
             injected,
             record,
@@ -105,67 +69,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "pad_start" => eval_pad(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            true,
-            locals,
-        ),
-        "pad_end" => eval_pad(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            false,
-            locals,
-        ),
-        "lookup" => eval_lookup(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            false,
-            locals,
-        ),
-        "lookup_first" => eval_lookup(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            true,
-            locals,
-        ),
-        "merge" => eval_json_merge(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            false,
-            locals,
-        ),
-        "deep_merge" => eval_json_merge(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            true,
-            locals,
-        ),
-        "get" => eval_json_get(
+        "flat_map" => eval_array_flat_map(
             &expr_op.args,
             injected,
             record,
@@ -174,7 +78,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "pick" => eval_json_pick(
+        "flatten" => eval_array_flatten(
             &expr_op.args,
             injected,
             record,
@@ -183,7 +87,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "omit" => eval_json_omit(
+        "take" => eval_array_take(
             &expr_op.args,
             injected,
             record,
@@ -192,7 +96,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "keys" => eval_json_keys(
+        "drop" => eval_array_drop(
             &expr_op.args,
             injected,
             record,
@@ -201,7 +105,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "values" => eval_json_values(
+        "slice" => eval_array_slice(
             &expr_op.args,
             injected,
             record,
@@ -210,7 +114,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "entries" => eval_json_entries(
+        "chunk" => eval_array_chunk(
             &expr_op.args,
             injected,
             record,
@@ -219,7 +123,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "len" => eval_len(
+        "zip" => eval_array_zip(
             &expr_op.args,
             injected,
             record,
@@ -228,7 +132,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "from_entries" => eval_json_from_entries(
+        "zip_with" => eval_array_zip_with(
             &expr_op.args,
             injected,
             record,
@@ -237,7 +141,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "object_flatten" => eval_json_object_flatten(
+        "unzip" => eval_array_unzip(
             &expr_op.args,
             injected,
             record,
@@ -246,7 +150,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "object_unflatten" => eval_json_object_unflatten(
+        "group_by" => eval_array_group_by(
             &expr_op.args,
             injected,
             record,
@@ -255,13 +159,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        op if is_array_operator(op) => {
-            eval_array_dispatch(expr_op, record, context, out, base_path, injected, locals)
-        }
-        "+" | "-" | "*" | "/" => {
-            eval_numeric_op(expr_op, injected, record, context, out, base_path, locals)
-        }
-        "round" => eval_round(
+        "key_by" => eval_array_key_by(
             &expr_op.args,
             injected,
             record,
@@ -270,7 +168,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "to_base" => eval_to_base(
+        "partition" => eval_array_partition(
             &expr_op.args,
             injected,
             record,
@@ -279,7 +177,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "date_format" => eval_date_format(
+        "unique" => eval_array_unique(
             &expr_op.args,
             injected,
             record,
@@ -288,7 +186,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "to_unixtime" => eval_to_unixtime(
+        "distinct_by" => eval_array_distinct_by(
             &expr_op.args,
             injected,
             record,
@@ -297,27 +195,7 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "and" => eval_bool_and_or(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            true,
-            locals,
-        ),
-        "or" => eval_bool_and_or(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            false,
-            locals,
-        ),
-        "not" => eval_bool_not(
+        "sort_by" => eval_array_sort_by(
             &expr_op.args,
             injected,
             record,
@@ -326,12 +204,96 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
-            eval_compare(expr_op, injected, record, context, out, base_path, locals)
-        }
-        _ => Err(
-            TransformError::new(TransformErrorKind::ExprError, "expr.op is not supported")
-                .with_path(format!("{}.op", base_path)),
+        "find" => eval_array_find(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
         ),
+        "find_index" => eval_array_find_index(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "index_of" => eval_array_index_of(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "contains" => eval_array_contains(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "sum" => eval_array_sum(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "avg" => eval_array_avg(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "min" => eval_array_min(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "max" => eval_array_max(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "reduce" => eval_array_reduce(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "fold" => eval_array_fold(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        _ => unreachable!("array dispatch called for non-array operator"),
     }
 }
