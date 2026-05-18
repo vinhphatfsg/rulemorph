@@ -259,6 +259,100 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
+        "map" | "filter" | "flat_map" | "flatten" | "take" | "drop" | "slice" | "chunk" | "zip"
+        | "zip_with" | "unzip" | "group_by" | "key_by" | "partition" | "unique" | "distinct_by"
+        | "sort_by" | "find" | "find_index" | "index_of" | "contains" | "sum" | "avg" | "min"
+        | "max" | "reduce" | "fold" => {
+            eval_array_dispatch(expr_op, record, context, out, base_path, injected, locals)
+        }
+        "+" | "-" | "*" | "/" => {
+            eval_numeric_op(expr_op, injected, record, context, out, base_path, locals)
+        }
+        "round" => eval_round(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "to_base" => eval_to_base(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "date_format" => eval_date_format(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "to_unixtime" => eval_to_unixtime(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "and" => eval_bool_and_or(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            true,
+            locals,
+        ),
+        "or" => eval_bool_and_or(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            false,
+            locals,
+        ),
+        "not" => eval_bool_not(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
+            eval_compare(expr_op, injected, record, context, out, base_path, locals)
+        }
+        _ => Err(
+            TransformError::new(TransformErrorKind::ExprError, "expr.op is not supported")
+                .with_path(format!("{}.op", base_path)),
+        ),
+    }
+}
+
+fn eval_array_dispatch(
+    expr_op: &ExprOp,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    base_path: &str,
+    injected: Option<&EvalValue>,
+    locals: Option<&EvalLocals<'_>>,
+) -> Result<EvalValue, TransformError> {
+    match expr_op.op.as_str() {
         "map" => eval_array_map(
             &expr_op.args,
             injected,
@@ -502,80 +596,6 @@ pub(crate) fn eval_op(
             base_path,
             locals,
         ),
-        "+" | "-" | "*" | "/" => {
-            eval_numeric_op(expr_op, injected, record, context, out, base_path, locals)
-        }
-        "round" => eval_round(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "to_base" => eval_to_base(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "date_format" => eval_date_format(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "to_unixtime" => eval_to_unixtime(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "and" => eval_bool_and_or(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            true,
-            locals,
-        ),
-        "or" => eval_bool_and_or(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            false,
-            locals,
-        ),
-        "not" => eval_bool_not(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {
-            eval_compare(expr_op, injected, record, context, out, base_path, locals)
-        }
-        _ => Err(
-            TransformError::new(TransformErrorKind::ExprError, "expr.op is not supported")
-                .with_path(format!("{}.op", base_path)),
-        ),
+        _ => unreachable!("array dispatch called for non-array operator"),
     }
 }
