@@ -3,7 +3,7 @@ fn cli_transform_yaml_input() {
     let temp_dir = tempfile::tempdir().unwrap();
     let rules = temp_dir.path().join("rules.yaml");
     let input = temp_dir.path().join("input.yaml");
-    fs::write(
+    std::fs::write(
         &rules,
         r#"
 version: 2
@@ -19,7 +19,7 @@ mappings:
 "#,
     )
     .unwrap();
-    fs::write(
+    std::fs::write(
         &input,
         r#"
 users:
@@ -36,7 +36,7 @@ fn cli_transform_toml_input() {
     let temp_dir = tempfile::tempdir().unwrap();
     let rules = temp_dir.path().join("rules.yaml");
     let input = temp_dir.path().join("input.toml");
-    fs::write(
+    std::fs::write(
         &rules,
         r#"
 version: 2
@@ -52,7 +52,7 @@ mappings:
 "#,
     )
     .unwrap();
-    fs::write(
+    std::fs::write(
         &input,
         r#"
 [[users]]
@@ -69,7 +69,7 @@ fn cli_transform_xml_input() {
     let temp_dir = tempfile::tempdir().unwrap();
     let rules = temp_dir.path().join("rules.yaml");
     let input = temp_dir.path().join("input.xml");
-    fs::write(
+    std::fs::write(
         &rules,
         r##"
 version: 2
@@ -87,7 +87,7 @@ mappings:
 "##,
     )
     .unwrap();
-    fs::write(
+    std::fs::write(
         &input,
         r#"<users><user id="1"><name>Alice</name></user></users>"#,
     )
@@ -100,7 +100,7 @@ fn cli_transform_html_input() {
     let temp_dir = tempfile::tempdir().unwrap();
     let rules = temp_dir.path().join("rules.yaml");
     let input = temp_dir.path().join("input.html");
-    fs::write(
+    std::fs::write(
         &rules,
         r#"
 version: 2
@@ -123,7 +123,7 @@ mappings:
 "#,
     )
     .unwrap();
-    fs::write(
+    std::fs::write(
         &input,
         r#"<table id="users"><tbody><tr><td>1</td><td>Alice</td></tr></tbody></table>"#,
     )
@@ -132,7 +132,7 @@ mappings:
 }
 
 fn assert_simple_transform(rules: &std::path::Path, input: &std::path::Path) {
-    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let mut cmd = assert_cmd::cargo::cargo_bin_cmd!("rulemorph");
     let output = cmd
         .arg("transform")
         .arg("-r")
@@ -142,5 +142,8 @@ fn assert_simple_transform(rules: &std::path::Path, input: &std::path::Path) {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(0));
-    assert_json_stdout_eq(output, &serde_json::json!([{ "id": "1", "name": "Alice" }]));
+    cli_common::assert_json_stdout_eq(
+        output,
+        &serde_json::json!([{ "id": "1", "name": "Alice" }]),
+    );
 }
