@@ -13,7 +13,8 @@ use std::os::unix::fs::symlink;
 use tempfile::tempdir;
 use trace_store_common::{
     assert_detail_array_empty, assert_detail_reason, assert_detail_status, assert_finalize_absent,
-    assert_top_level_array_empty, create_trace_dir, write_trace_json,
+    assert_top_level_array_empty, create_trace_dir, write_records_inline_trace_json,
+    write_trace_json,
 };
 
 #[tokio::test]
@@ -257,25 +258,13 @@ async fn trace_store_downgrades_detail_on_missing_chunk() -> Result<()> {
     let trace_dir = data_dir.join("traces/2026/01/02/trace-missing");
     fs::create_dir_all(&trace_dir)?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-missing",
-            "status": "ok",
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson",
-                        "format": "ndjson",
-                        "compression": "none"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-missing",
+        "records-0001.ndjson",
+        "ndjson",
+        "none",
+        None,
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -307,26 +296,13 @@ async fn trace_store_accepts_compressed_chunk_overhead() -> Result<()> {
     assert!(max_chunk_bytes_uncompressed >= payload.len());
     fs::write(trace_dir.join("records-0001.ndjson.zst"), compressed)?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-compressed-overhead",
-            "status": "ok",
-            "max_chunk_bytes_uncompressed": max_chunk_bytes_uncompressed,
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson.zst",
-                        "format": "ndjson",
-                        "compression": "zstd"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-compressed-overhead",
+        "records-0001.ndjson.zst",
+        "ndjson",
+        "zstd",
+        Some(max_chunk_bytes_uncompressed),
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -355,26 +331,13 @@ async fn trace_store_downgrades_detail_on_oversized_uncompressed_chunk() -> Resu
     let payload = format!("{{\"index\":0,\"payload\":\"{}\"}}\n", "x".repeat(64));
     fs::write(trace_dir.join("records-0001.ndjson"), payload)?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-oversized-none",
-            "status": "ok",
-            "max_chunk_bytes_uncompressed": 32,
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson",
-                        "format": "ndjson",
-                        "compression": "none"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-oversized-none",
+        "records-0001.ndjson",
+        "ndjson",
+        "none",
+        Some(32),
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -405,26 +368,13 @@ async fn trace_store_downgrades_on_oversized_compressed_chunk() -> Result<()> {
         vec![0u8; oversized],
     )?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-compressed-oversize",
-            "status": "ok",
-            "max_chunk_bytes_uncompressed": 1,
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson.zst",
-                        "format": "ndjson",
-                        "compression": "zstd"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-compressed-oversize",
+        "records-0001.ndjson.zst",
+        "ndjson",
+        "zstd",
+        Some(1),
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -450,25 +400,13 @@ async fn trace_store_downgrades_on_invalid_utf8_chunk() -> Result<()> {
         vec![0xff, 0xfe, 0xfd],
     )?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-invalid-utf8",
-            "status": "ok",
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson",
-                        "format": "ndjson",
-                        "compression": "none"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-invalid-utf8",
+        "records-0001.ndjson",
+        "ndjson",
+        "none",
+        None,
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -491,25 +429,13 @@ async fn trace_store_downgrades_on_invalid_ndjson() -> Result<()> {
 
     fs::write(trace_dir.join("records-0001.ndjson"), b"not_json\n")?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-invalid-ndjson",
-            "status": "ok",
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson",
-                        "format": "ndjson",
-                        "compression": "none"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-invalid-ndjson",
+        "records-0001.ndjson",
+        "ndjson",
+        "none",
+        None,
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -532,25 +458,13 @@ async fn trace_store_downgrades_on_unsupported_compression() -> Result<()> {
 
     fs::write(trace_dir.join("records-0001.ndjson"), b"0\n")?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-unsupported-compression",
-            "status": "ok",
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.ndjson",
-                        "format": "ndjson",
-                        "compression": "gzip"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-unsupported-compression",
+        "records-0001.ndjson",
+        "ndjson",
+        "gzip",
+        None,
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
@@ -573,25 +487,13 @@ async fn trace_store_downgrades_on_unsupported_format() -> Result<()> {
 
     fs::write(trace_dir.join("records-0001.json"), b"0\n")?;
 
-    fs::write(
-        trace_dir.join("trace.json"),
-        serde_json::to_vec(&json!({
-            "trace_schema_version": 1,
-            "trace_id": "trace-unsupported-format",
-            "status": "ok",
-            "detail": {
-                "layout": "records_inline",
-                "status": "full",
-                "records": [
-                    {
-                        "path": "records-0001.json",
-                        "format": "json",
-                        "compression": "none"
-                    }
-                ],
-                "nodes": []
-            }
-        }))?,
+    write_records_inline_trace_json(
+        &trace_dir,
+        "trace-unsupported-format",
+        "records-0001.json",
+        "json",
+        "none",
+        None,
     )?;
 
     let store = TraceStore::new(data_dir.to_path_buf()).await?;
