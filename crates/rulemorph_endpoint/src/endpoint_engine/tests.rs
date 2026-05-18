@@ -2,11 +2,13 @@
 use super::*;
 use futures_util::stream;
 use rulemorph::parse_rule_file;
-use rulemorph_trace::TraceStore;
 use serde_json::json;
 use std::fs::File;
 use std::io::Write;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+mod support;
+use support::*;
 
 #[test]
 fn endpoint_path_matches_and_captures() {
@@ -598,8 +600,8 @@ endpoints:
 async fn request_body_too_large_writes_trace() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -610,8 +612,7 @@ endpoints:
     reply:
       status: 200
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
     let engine = EndpointEngine::load(
         rules_dir.to_path_buf(),
@@ -634,17 +635,7 @@ endpoints:
         .expect_err("handle request should fail");
     assert!(format!("{err}").contains("payload too large"));
 
-    let store = TraceStore::new(rules_dir.to_path_buf())
-        .await
-        .expect("trace store");
-    let mut items = Vec::new();
-    for _ in 0..20 {
-        items = store.list().await.expect("trace list");
-        if !items.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    let items = wait_for_trace_items(rules_dir).await;
     assert!(!items.is_empty());
     assert!(items.iter().any(|item| item.status == "error"));
 }
@@ -699,11 +690,10 @@ endpoints:
 async fn step_catch_inherits_with_params() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -720,8 +710,7 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
     std::fs::write(
         rules_subdir.join("failing_network.yaml"),
@@ -782,11 +771,10 @@ mappings:
 async fn endpoint_duplicate_query_runs_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -800,58 +788,35 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "handled"
     value: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/test?dup=1&dup=2")
-        .body(axum::body::Body::empty())
-        .expect("build request");
+    let request = empty_request("GET", "/api/test?dup=1&dup=2");
 
     let response = engine
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 }
 
 #[tokio::test]
 async fn endpoint_invalid_json_runs_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -865,29 +830,17 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "handled"
     value: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
     let request = Request::builder()
         .method("POST")
@@ -900,24 +853,17 @@ mappings:
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 }
 
 #[tokio::test]
 async fn endpoint_invalid_json_keeps_query_in_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -931,29 +877,17 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "query"
     expr: "@input.query"
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
     let request = Request::builder()
         .method("POST")
@@ -966,24 +900,17 @@ mappings:
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "query": { "token": "abc" } }));
+    assert_json_response(response, 200, json!({ "query": { "token": "abc" } })).await;
 }
 
 #[tokio::test]
 async fn endpoint_input_mapping_error_runs_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -1001,58 +928,35 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "handled"
     value: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
-    let request = Request::builder()
-        .method("POST")
-        .uri("/api/test")
-        .body(axum::body::Body::empty())
-        .expect("build request");
+    let request = empty_request("POST", "/api/test");
 
     let response = engine
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 }
 
 #[tokio::test]
 async fn reply_eval_error_runs_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -1066,61 +970,38 @@ endpoints:
       status: "@input.status"
       body: "@input.body"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "status"
     value: 200
   - target: "body"
     value:
       handled: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/test")
-        .body(axum::body::Body::empty())
-        .expect("build request");
+    let request = empty_request("GET", "/api/test");
 
     let response = engine
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 }
 
 #[tokio::test]
 async fn network_url_eval_error_runs_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -1133,11 +1014,11 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("network.yaml"),
+    write_rule_yaml(
+        &rules_subdir,
+        "network.yaml",
         r#"
 version: 2
 type: network
@@ -1148,58 +1029,35 @@ timeout: 1s
 catch:
   default: ./catch.yaml
 "#,
-    )
-    .expect("write network.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "handled"
     value: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/test")
-        .body(axum::body::Body::empty())
-        .expect("build request");
+    let request = empty_request("GET", "/api/test");
 
     let response = engine
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 }
 
 #[tokio::test]
 async fn network_body_build_error_runs_catch() {
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -1212,11 +1070,11 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("network.yaml"),
+    write_rule_yaml(
+        &rules_subdir,
+        "network.yaml",
         r#"
 version: 2
 type: network
@@ -1231,47 +1089,25 @@ body_map:
 catch:
   default: ./catch.yaml
 "#,
-    )
-    .expect("write network.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "handled"
     value: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
-    let request = Request::builder()
-        .method("POST")
-        .uri("/api/test")
-        .body(axum::body::Body::empty())
-        .expect("build request");
+    let request = empty_request("POST", "/api/test");
 
     let response = engine
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 }
 
 #[tokio::test]
@@ -1295,11 +1131,10 @@ async fn network_select_error_runs_catch() {
 
     let temp = tempfile::tempdir().expect("tempdir");
     let rules_dir = temp.path();
-    let rules_subdir = rules_dir.join("rules");
-    std::fs::create_dir_all(&rules_subdir).expect("create rules dir");
+    let rules_subdir = create_rules_dir(rules_dir);
 
-    std::fs::write(
-        rules_dir.join("endpoint.yaml"),
+    write_endpoint_yaml(
+        rules_dir,
         r#"
 version: 2
 type: endpoint
@@ -1312,12 +1147,12 @@ endpoints:
       status: 200
       body: "@input"
 "#,
-    )
-    .expect("write endpoint.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("network.yaml"),
-        format!(
+    write_rule_yaml(
+        &rules_subdir,
+        "network.yaml",
+        &format!(
             r#"
 version: 2
 type: network
@@ -1331,47 +1166,25 @@ catch:
 "#,
             host
         ),
-    )
-    .expect("write network.yaml");
+    );
 
-    std::fs::write(
-        rules_subdir.join("catch.yaml"),
+    write_default_catch_rule(
+        &rules_subdir,
         r#"
-version: 2
-input:
-  format: json
-  json: {}
-mappings:
   - target: "handled"
     value: true
 "#,
-    )
-    .expect("write catch.yaml");
+    );
 
-    let engine = EndpointEngine::load(
-        rules_dir.to_path_buf(),
-        EngineConfig::new("http://localhost".to_string(), rules_dir.to_path_buf())
-            .with_ssrf_allow_private(true),
-    )
-    .expect("load engine");
+    let engine = load_test_engine(rules_dir);
 
-    let request = Request::builder()
-        .method("GET")
-        .uri("/api/test")
-        .body(axum::body::Body::empty())
-        .expect("build request");
+    let request = empty_request("GET", "/api/test");
 
     let response = engine
         .handle_request(request)
         .await
         .expect("handle request");
-    assert_eq!(response.status().as_u16(), 200);
-
-    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read body");
-    let body: JsonValue = serde_json::from_slice(&bytes).expect("parse body");
-    assert_eq!(body, json!({ "handled": true }));
+    assert_json_response(response, 200, json!({ "handled": true })).await;
 
     let _ = shutdown_tx.send(());
     let _ = server_handle.await;
@@ -1694,17 +1507,7 @@ timeout: 1s
         .expect_err("handle request should fail");
     assert!(format!("{err}").contains("payload too large"));
 
-    let store = TraceStore::new(rules_dir.to_path_buf())
-        .await
-        .expect("trace store");
-    let mut items = Vec::new();
-    for _ in 0..20 {
-        items = store.list().await.expect("trace list");
-        if !items.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    let items = wait_for_trace_items(rules_dir).await;
     assert!(!items.is_empty());
     assert!(items.iter().any(|item| item.status == "error"));
 
