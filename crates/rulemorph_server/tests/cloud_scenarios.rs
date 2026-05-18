@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use axum::response::Response;
 use http_body_util::BodyExt;
 use rulemorph_endpoint::{EndpointEngine, EngineConfig};
 use rulemorph_server::{
@@ -18,6 +19,7 @@ use rulemorph_server::{
     build_router,
 };
 use rulemorph_trace::{ImportResult, TraceStore};
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tempfile::tempdir;
 use tokio::sync::broadcast;
@@ -325,6 +327,36 @@ async fn request_json_post_with_headers(
         serde_json::from_slice(&body).expect("json")
     };
     (status, value)
+}
+
+async fn post_api_import(
+    app: &Router,
+    label: &str,
+    authorization: Option<&str>,
+    import_kind: Option<&str>,
+    boundary: &str,
+    body: Vec<u8>,
+) -> Response {
+    let mut builder = Request::builder().method("POST").uri("/api/import").header(
+        "content-type",
+        format!("multipart/form-data; boundary={boundary}"),
+    );
+    if let Some(authorization) = authorization {
+        builder = builder.header("authorization", authorization);
+    }
+    if let Some(import_kind) = import_kind {
+        builder = builder.header("x-rulemorph-import", import_kind);
+    }
+
+    app.clone()
+        .oneshot(builder.body(Body::from(body)).unwrap())
+        .await
+        .unwrap_or_else(|_| panic!("{label}"))
+}
+
+async fn read_json<T: DeserializeOwned>(response: Response) -> Result<T> {
+    let payload = response.into_body().collect().await?.to_bytes();
+    Ok(serde_json::from_slice(&payload)?)
 }
 
 async fn wait_for_trace_id(app: &Router) -> String {
@@ -845,26 +877,17 @@ finalize:
     assert_eq!(api_response.status(), StatusCode::OK);
 
     let (boundary, body) = build_zip_import_payload("zip-rate-bucket-001")?;
-    let import_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("import response");
+    let import_response = post_api_import(
+        &app,
+        "import response",
+        Some("Bearer internal-key"),
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(import_response.status(), StatusCode::OK);
-    let payload = import_response.into_body().collect().await?.to_bytes();
-    let result: ImportResult = serde_json::from_slice(&payload)?;
+    let result = read_json::<ImportResult>(import_response).await?;
     assert_eq!(result.imported, 1);
 
     Ok(())
@@ -1287,27 +1310,18 @@ async fn api_import_zip_bundle_adds_traces() -> Result<()> {
     let app = build_router(state, true);
     let (boundary, body) = build_zip_import_payload("zip-001")?;
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "api import response",
+        Some("Bearer internal-key"),
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
 
-    let payload = response.into_body().collect().await?.to_bytes();
-    let result: ImportResult = serde_json::from_slice(&payload)?;
+    let result = read_json::<ImportResult>(response).await?;
     assert_eq!(result.imported, 1);
 
     let (status, list) = request_json_with_headers(
@@ -1404,45 +1418,29 @@ finalize:
     );
 
     let (boundary, zip_body) = build_zip_import_payload("zip-shadow-unauth")?;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(zip_body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "shadow unauth response",
+        None,
+        Some("zip"),
+        &boundary,
+        zip_body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let (boundary, zip_body) = build_zip_import_payload("zip-shadow-001")?;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(zip_body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "shadow import response",
+        Some("Bearer internal-key"),
+        Some("zip"),
+        &boundary,
+        zip_body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = response.into_body().collect().await?.to_bytes();
-    let body: Value = serde_json::from_slice(&payload)?;
+    let body = read_json::<Value>(response).await?;
     assert_eq!(
         body.get("kind").and_then(|value| value.as_str()),
         Some("rule")
@@ -1556,26 +1554,17 @@ finalize:
     let app = build_router(state, true);
 
     let (boundary, body) = build_zip_import_payload("zip-tenant-rule-001")?;
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer tenant-key")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "tenant import response",
+        Some("Bearer tenant-key"),
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = response.into_body().collect().await?.to_bytes();
-    let body: Value = serde_json::from_slice(&payload)?;
+    let body = read_json::<Value>(response).await?;
     assert_eq!(
         body.get("kind").and_then(|value| value.as_str()),
         Some("tenant-rule")
@@ -1658,19 +1647,15 @@ finalize:
     };
     let app = build_router(state, true);
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer invalid")
-                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "invalid api key response",
+        Some("Bearer invalid"),
+        None,
+        "BOUNDARY",
+        Vec::new(),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -1696,39 +1681,26 @@ async fn api_import_requires_internal_key() -> Result<()> {
     let app = build_router(state, true);
     let (boundary, body) = build_zip_import_payload("zip-auth-001")?;
 
-    let missing = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body.clone()))
-                .unwrap(),
-        )
-        .await
-        .expect("missing auth response");
+    let missing = post_api_import(
+        &app,
+        "missing auth response",
+        None,
+        None,
+        &boundary,
+        body.clone(),
+    )
+    .await;
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
 
-    let invalid = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer invalid")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("invalid auth response");
+    let invalid = post_api_import(
+        &app,
+        "invalid auth response",
+        Some("Bearer invalid"),
+        None,
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
 
     Ok(())
@@ -1753,23 +1725,15 @@ async fn api_import_requires_tenant_id_when_resolver_set() -> Result<()> {
     let app = build_router(state, true);
     let (boundary, body) = build_zip_import_payload("zip-tenant-001")?;
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "tenant id response",
+        Some("Bearer internal-key"),
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
     Ok(())
@@ -1800,41 +1764,27 @@ async fn api_import_dispatch_rate_limits_before_tenant_resolver() -> Result<()> 
     let app = build_router(state, true);
     let (boundary, body) = build_zip_import_payload("zip-rate-limit-001")?;
 
-    let first = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body.clone()))
-                .unwrap(),
-        )
-        .await
-        .expect("first response");
+    let first = post_api_import(
+        &app,
+        "first response",
+        Some("Bearer internal-key"),
+        None,
+        &boundary,
+        body.clone(),
+    )
+    .await;
     assert_eq!(first.status(), StatusCode::BAD_REQUEST);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
-    let second = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("second response");
+    let second = post_api_import(
+        &app,
+        "second response",
+        Some("Bearer internal-key"),
+        None,
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 
@@ -1981,22 +1931,15 @@ async fn api_import_requires_internal_key_without_ui() -> Result<()> {
     let app = build_router(state, false);
     let (boundary, body) = build_zip_import_payload("zip-no-ui-001")?;
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "no ui import response",
+        None,
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 
     Ok(())
@@ -2021,26 +1964,17 @@ async fn api_import_route_works_without_ui_when_internal_key_provided() -> Resul
     let app = build_router(state, false);
     let (boundary, body) = build_zip_import_payload("zip-no-ui-auth-001")?;
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("authorization", "Bearer internal-key")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "no ui auth response",
+        Some("Bearer internal-key"),
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = response.into_body().collect().await?.to_bytes();
-    let result: ImportResult = serde_json::from_slice(&payload)?;
+    let result = read_json::<ImportResult>(response).await?;
     assert_eq!(result.imported, 1);
 
     Ok(())
@@ -2065,25 +1999,17 @@ async fn api_import_route_works_in_ui_only_mode() -> Result<()> {
     let app = build_router(state, true);
     let (boundary, body) = build_zip_import_payload("zip-ui-only-001")?;
 
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/import")
-                .header("x-rulemorph-import", "zip")
-                .header(
-                    "content-type",
-                    format!("multipart/form-data; boundary={boundary}"),
-                )
-                .body(Body::from(body))
-                .unwrap(),
-        )
-        .await
-        .expect("response");
+    let response = post_api_import(
+        &app,
+        "ui only import response",
+        None,
+        Some("zip"),
+        &boundary,
+        body,
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
-    let payload = response.into_body().collect().await?.to_bytes();
-    let result: ImportResult = serde_json::from_slice(&payload)?;
+    let result = read_json::<ImportResult>(response).await?;
     assert_eq!(result.imported, 1);
 
     Ok(())
