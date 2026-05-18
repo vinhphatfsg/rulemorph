@@ -8,14 +8,16 @@ mod cli_common;
 #[cfg(feature = "server")]
 use cli_common::stdout_json;
 use cli_common::{
-    assert_json_stdout_eq, fixtures_dir, read_json, stderr_json, stderr_string, stdout_string,
+    assert_json_stdout_eq, fixtures_dir, read_json, rulemorph_output, stderr_json, stderr_string,
+    stdout_string,
 };
 
 #[test]
 fn validate_success_returns_zero() {
     let rules = fixtures_dir().join("t01_csv_basic").join("rules.yaml");
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd.arg("validate").arg("-r").arg(rules).output().unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("validate").arg("-r").arg(rules);
+    });
     assert_eq!(output.status.code(), Some(0));
 }
 
@@ -24,15 +26,13 @@ fn validate_json_errors() {
     let rules = fixtures_dir()
         .join("v01_missing_mapping_value")
         .join("rules.yaml");
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("validate")
-        .arg("-r")
-        .arg(rules)
-        .arg("-e")
-        .arg("json")
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("validate")
+            .arg("-r")
+            .arg(rules)
+            .arg("-e")
+            .arg("json");
+    });
     assert_eq!(output.status.code(), Some(2));
 
     let value = stderr_json(output);
@@ -45,32 +45,28 @@ fn preflight_success_returns_zero() {
     let base = fixtures_dir().join("p01_preflight_ok");
     let rules = base.join("rules.yaml");
     let input = base.join("input.json");
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("preflight")
-        .arg("-r")
-        .arg(rules)
-        .arg("-i")
-        .arg(input)
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("preflight")
+            .arg("-r")
+            .arg(rules)
+            .arg("-i")
+            .arg(input);
+    });
     assert_eq!(output.status.code(), Some(0));
 }
 
 #[test]
 fn preflight_rejects_input_over_limit_override_before_transform() {
     let base = fixtures_dir().join("p01_preflight_ok");
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("preflight")
-        .arg("-r")
-        .arg(base.join("rules.yaml"))
-        .arg("-i")
-        .arg(base.join("input.json"))
-        .arg("--limit")
-        .arg("input-bytes=4")
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("preflight")
+            .arg("-r")
+            .arg(base.join("rules.yaml"))
+            .arg("-i")
+            .arg(base.join("input.json"))
+            .arg("--limit")
+            .arg("input-bytes=4");
+    });
     assert_eq!(output.status.code(), Some(1));
     let stderr = stderr_string(output);
     assert!(stderr.contains("max_input_bytes"));
@@ -79,17 +75,15 @@ fn preflight_rejects_input_over_limit_override_before_transform() {
 #[test]
 fn preflight_limits_profile_large_is_accepted() {
     let base = fixtures_dir().join("p01_preflight_ok");
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("preflight")
-        .arg("-r")
-        .arg(base.join("rules.yaml"))
-        .arg("-i")
-        .arg(base.join("input.json"))
-        .arg("--limits-profile")
-        .arg("large")
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("preflight")
+            .arg("-r")
+            .arg(base.join("rules.yaml"))
+            .arg("-i")
+            .arg(base.join("input.json"))
+            .arg("--limits-profile")
+            .arg("large");
+    });
     assert_eq!(output.status.code(), Some(0));
 }
 
@@ -100,17 +94,15 @@ fn preflight_limits_file_is_accepted() {
     let limits_path = temp_dir.path().join("limits.toml");
     fs::write(&limits_path, "input-bytes = 1000000\n").unwrap();
 
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("preflight")
-        .arg("-r")
-        .arg(base.join("rules.yaml"))
-        .arg("-i")
-        .arg(base.join("input.json"))
-        .arg("--limits-file")
-        .arg(limits_path)
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("preflight")
+            .arg("-r")
+            .arg(base.join("rules.yaml"))
+            .arg("-i")
+            .arg(base.join("input.json"))
+            .arg("--limits-file")
+            .arg(limits_path);
+    });
     assert_eq!(output.status.code(), Some(0));
 }
 
@@ -119,17 +111,15 @@ fn preflight_json_errors() {
     let base = fixtures_dir().join("p03_preflight_type_cast_failed");
     let rules = base.join("rules.yaml");
     let input = base.join("input.json");
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("preflight")
-        .arg("-r")
-        .arg(rules)
-        .arg("-i")
-        .arg(input)
-        .arg("-e")
-        .arg("json")
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("preflight")
+            .arg("-r")
+            .arg(rules)
+            .arg("-i")
+            .arg(input)
+            .arg("-e")
+            .arg("json");
+    });
     assert_eq!(output.status.code(), Some(3));
 
     let value = stderr_json(output);
@@ -145,17 +135,15 @@ fn transform_outputs_json() {
     let context = base.join("context.json");
     let expected = read_json(&base.join("expected.json"));
 
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("transform")
-        .arg("-r")
-        .arg(rules)
-        .arg("-i")
-        .arg(input)
-        .arg("-c")
-        .arg(context)
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("transform")
+            .arg("-r")
+            .arg(rules)
+            .arg("-i")
+            .arg(input)
+            .arg("-c")
+            .arg(context);
+    });
 
     assert_eq!(output.status.code(), Some(0));
     assert_json_stdout_eq(output, &expected);
@@ -166,15 +154,13 @@ fn transform_accepts_json_rule_file_by_extension() {
     let base = fixtures_dir().join("t30_json_rule_file");
     let expected = read_json(&base.join("expected.json"));
 
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("transform")
-        .arg("-r")
-        .arg(base.join("rules.json"))
-        .arg("-i")
-        .arg(base.join("input.json"))
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("transform")
+            .arg("-r")
+            .arg(base.join("rules.json"))
+            .arg("-i")
+            .arg(base.join("input.json"));
+    });
 
     assert_eq!(output.status.code(), Some(0));
     assert_json_stdout_eq(output, &expected);
@@ -594,15 +580,13 @@ fn transform_validate_flag_reports_validation_error() {
 fn generate_outputs_rust_dto() {
     let rules = fixtures_dir().join("t01_csv_basic").join("rules.yaml");
 
-    let mut cmd = cargo_bin_cmd!("rulemorph");
-    let output = cmd
-        .arg("generate")
-        .arg("-r")
-        .arg(rules)
-        .arg("-l")
-        .arg("rust")
-        .output()
-        .unwrap();
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("generate")
+            .arg("-r")
+            .arg(rules)
+            .arg("-l")
+            .arg("rust");
+    });
 
     assert_eq!(output.status.code(), Some(0));
     let stdout = stdout_string(output);
