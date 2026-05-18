@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use common::trace_writer::{
-    assert_no_detail_artifacts, create_temp_dir, read_manifest, read_manifest_payload,
+    array_field, array_member, assert_no_detail_artifacts, create_temp_dir, first_record_object,
+    load_trace, object_field, object_member, read_manifest, read_manifest_payload,
     read_manifest_value, read_ndjson_lines, read_ndjson_values, sampling_bucket, trace_dir,
     unique_temp_dir, write_ndjson_lines,
 };
@@ -3178,27 +3179,12 @@ async fn write_trace_bundle_masks_sensitive_fields() -> anyhow::Result<()> {
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store.get("trace-mask").await?.expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-mask").await?;
 
-    let record = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .and_then(|records| records.first())
-        .and_then(|value| value.as_object())
-        .expect("record object");
-    let input = record
-        .get("input")
-        .and_then(|value| value.as_object())
-        .expect("input object");
-    let nested = input
-        .get("nested")
-        .and_then(|value| value.as_object())
-        .expect("nested object");
-    let output = record
-        .get("output")
-        .and_then(|value| value.as_object())
-        .expect("output object");
+    let record = first_record_object(&loaded);
+    let input = object_member(record, "input");
+    let nested = object_member(input, "nested");
+    let output = object_member(record, "output");
 
     assert_eq!(
         input.get("authorization").and_then(|value| value.as_str()),
@@ -3250,53 +3236,25 @@ async fn write_trace_bundle_masks_rule_source_when_basic() -> anyhow::Result<()>
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-mask-basic-rule-source")
-        .await?
-        .expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-mask-basic-rule-source").await?;
 
-    let detail = loaded
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
+    let detail = object_field(&loaded, "detail");
     assert_eq!(
         detail.get("status").and_then(|value| value.as_str()),
         Some("basic")
     );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
+    assert!(array_member(detail, "records").is_empty());
+    assert!(array_member(detail, "nodes").is_empty());
     assert!(detail.get("finalize").is_none());
 
-    let records = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
+    assert!(array_field(&loaded, "records").is_empty());
 
-    let rule_source = loaded
-        .get("rule_source")
-        .and_then(|value| value.as_object())
-        .expect("rule_source object");
+    let rule_source = object_field(&loaded, "rule_source");
     assert_eq!(
         rule_source.get("token").and_then(|value| value.as_str()),
         Some("[masked]")
     );
-    let headers = rule_source
-        .get("headers")
-        .and_then(|value| value.as_object())
-        .expect("headers object");
+    let headers = object_member(rule_source, "headers");
     assert_eq!(
         headers
             .get("Authorization")
@@ -3334,45 +3292,20 @@ async fn write_trace_bundle_masks_rule_source_when_off() -> anyhow::Result<()> {
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-mask-off-rule-source")
-        .await?
-        .expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-mask-off-rule-source").await?;
 
-    let detail = loaded
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
+    let detail = object_field(&loaded, "detail");
     assert_eq!(
         detail.get("status").and_then(|value| value.as_str()),
         Some("dropped")
     );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
+    assert!(array_member(detail, "records").is_empty());
+    assert!(array_member(detail, "nodes").is_empty());
     assert!(detail.get("finalize").is_none());
 
-    let records = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
+    assert!(array_field(&loaded, "records").is_empty());
 
-    let rule_source = loaded
-        .get("rule_source")
-        .and_then(|value| value.as_object())
-        .expect("rule_source object");
+    let rule_source = object_field(&loaded, "rule_source");
     assert_eq!(
         rule_source.get("token").and_then(|value| value.as_str()),
         Some("[masked]")
@@ -3409,45 +3342,20 @@ async fn write_trace_bundle_basic_without_masking_strips_detail() -> anyhow::Res
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-basic-no-mask")
-        .await?
-        .expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-basic-no-mask").await?;
 
-    let detail = loaded
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
+    let detail = object_field(&loaded, "detail");
     assert_eq!(
         detail.get("status").and_then(|value| value.as_str()),
         Some("basic")
     );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
+    assert!(array_member(detail, "records").is_empty());
+    assert!(array_member(detail, "nodes").is_empty());
     assert!(detail.get("finalize").is_none());
 
-    let records = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
+    assert!(array_field(&loaded, "records").is_empty());
 
-    let rule_source = loaded
-        .get("rule_source")
-        .and_then(|value| value.as_object())
-        .expect("rule_source object");
+    let rule_source = object_field(&loaded, "rule_source");
     assert_eq!(
         rule_source.get("token").and_then(|value| value.as_str()),
         Some("secret")
@@ -3484,45 +3392,20 @@ async fn write_trace_bundle_off_without_masking_strips_detail() -> anyhow::Resul
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-off-no-mask")
-        .await?
-        .expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-off-no-mask").await?;
 
-    let detail = loaded
-        .get("detail")
-        .and_then(|value| value.as_object())
-        .expect("detail object");
+    let detail = object_field(&loaded, "detail");
     assert_eq!(
         detail.get("status").and_then(|value| value.as_str()),
         Some("dropped")
     );
-    let detail_records = detail
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_records.is_empty());
-    let detail_nodes = detail
-        .get("nodes")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(detail_nodes.is_empty());
+    assert!(array_member(detail, "records").is_empty());
+    assert!(array_member(detail, "nodes").is_empty());
     assert!(detail.get("finalize").is_none());
 
-    let records = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .cloned()
-        .unwrap_or_default();
-    assert!(records.is_empty());
+    assert!(array_field(&loaded, "records").is_empty());
 
-    let rule_source = loaded
-        .get("rule_source")
-        .and_then(|value| value.as_object())
-        .expect("rule_source object");
+    let rule_source = object_field(&loaded, "rule_source");
     assert_eq!(
         rule_source.get("token").and_then(|value| value.as_str()),
         Some("secret")
@@ -3553,22 +3436,10 @@ async fn write_trace_bundle_masks_url_query_params() -> anyhow::Result<()> {
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-mask-url")
-        .await?
-        .expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-mask-url").await?;
 
-    let record = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .and_then(|records| records.first())
-        .and_then(|value| value.as_object())
-        .expect("record object");
-    let input = record
-        .get("input")
-        .and_then(|value| value.as_object())
-        .expect("input object");
+    let record = first_record_object(&loaded);
+    let input = object_member(record, "input");
 
     assert_eq!(
         input.get("url").and_then(|value| value.as_str()),
@@ -3602,20 +3473,10 @@ async fn write_trace_bundle_masks_url_fragment_params() -> anyhow::Result<()> {
     };
 
     let _manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-mask-url-fragment")
-        .await?
-        .expect("trace should load");
+    let loaded = load_trace(&temp_dir, "trace-mask-url-fragment").await?;
 
-    let input = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .and_then(|records| records.first())
-        .and_then(|value| value.as_object())
-        .and_then(|record| record.get("input"))
-        .and_then(|value| value.as_object())
-        .expect("input object");
+    let record = first_record_object(&loaded);
+    let input = object_member(record, "input");
 
     assert_eq!(
         input.get("fragment_only").and_then(|value| value.as_str()),
@@ -3689,18 +3550,9 @@ async fn write_trace_bundle_externalizes_large_payloads() -> anyhow::Result<()> 
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store.get("trace-blob").await?.expect("trace should load");
-    let record = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .and_then(|records| records.first())
-        .and_then(|value| value.as_object())
-        .expect("record object");
-    let input = record
-        .get("input")
-        .and_then(|value| value.as_object())
-        .expect("input object");
+    let loaded = load_trace(&temp_dir, "trace-blob").await?;
+    let record = first_record_object(&loaded);
+    let input = object_member(record, "input");
 
     let blob_ref = input
         .get("blob_ref")
@@ -3822,21 +3674,9 @@ async fn write_trace_bundle_masks_preview_for_externalized_payloads() -> anyhow:
     };
 
     let manifest_path = write_trace_bundle(&temp_dir, &trace, Some(options)).await?;
-    let store = TraceStore::new(temp_dir.clone()).await?;
-    let loaded = store
-        .get("trace-blob-mask-preview")
-        .await?
-        .expect("trace should load");
-    let record = loaded
-        .get("records")
-        .and_then(|value| value.as_array())
-        .and_then(|records| records.first())
-        .and_then(|value| value.as_object())
-        .expect("record object");
-    let input = record
-        .get("input")
-        .and_then(|value| value.as_object())
-        .expect("input object");
+    let loaded = load_trace(&temp_dir, "trace-blob-mask-preview").await?;
+    let record = first_record_object(&loaded);
+    let input = object_member(record, "input");
     let preview = input
         .get("preview")
         .and_then(|value| value.as_str())

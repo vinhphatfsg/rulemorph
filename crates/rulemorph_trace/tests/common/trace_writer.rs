@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rulemorph_trace::TraceManifest;
+use rulemorph_trace::{TraceManifest, TraceStore};
+use serde_json::{Map, Value};
 
 pub fn unique_temp_dir() -> PathBuf {
     let nanos = SystemTime::now()
@@ -92,4 +93,44 @@ pub fn read_ndjson_values(path: impl AsRef<Path>) -> anyhow::Result<Vec<serde_js
 pub fn write_ndjson_lines(path: impl AsRef<Path>, lines: &[String]) -> anyhow::Result<()> {
     fs::write(path, format!("{}\n", lines.join("\n")))?;
     Ok(())
+}
+
+pub async fn load_trace(data_dir: impl AsRef<Path>, trace_id: &str) -> anyhow::Result<Value> {
+    let store = TraceStore::new(data_dir.as_ref().to_path_buf()).await?;
+    Ok(store.get(trace_id).await?.expect("trace should load"))
+}
+
+pub fn object_field<'a>(value: &'a Value, field: &str) -> &'a Map<String, Value> {
+    value
+        .get(field)
+        .and_then(|value| value.as_object())
+        .unwrap_or_else(|| panic!("{field} object"))
+}
+
+pub fn object_member<'a>(object: &'a Map<String, Value>, field: &str) -> &'a Map<String, Value> {
+    object
+        .get(field)
+        .and_then(|value| value.as_object())
+        .unwrap_or_else(|| panic!("{field} object"))
+}
+
+pub fn array_field<'a>(value: &'a Value, field: &str) -> &'a Vec<Value> {
+    value
+        .get(field)
+        .and_then(|value| value.as_array())
+        .unwrap_or_else(|| panic!("{field} array"))
+}
+
+pub fn array_member<'a>(object: &'a Map<String, Value>, field: &str) -> &'a Vec<Value> {
+    object
+        .get(field)
+        .and_then(|value| value.as_array())
+        .unwrap_or_else(|| panic!("{field} array"))
+}
+
+pub fn first_record_object(value: &Value) -> &Map<String, Value> {
+    array_field(value, "records")
+        .first()
+        .and_then(|value| value.as_object())
+        .expect("record object")
 }
