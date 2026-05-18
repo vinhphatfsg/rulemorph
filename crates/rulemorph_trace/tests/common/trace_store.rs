@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, bail};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 pub fn create_trace_dir(data_dir: &Path, relative_trace_dir: impl AsRef<Path>) -> Result<PathBuf> {
     let relative_trace_dir = relative_trace_dir.as_ref();
@@ -22,6 +22,37 @@ pub fn create_trace_dir(data_dir: &Path, relative_trace_dir: impl AsRef<Path>) -
 pub fn write_trace_json(trace_dir: &Path, payload: &Value) -> Result<()> {
     fs::write(trace_dir.join("trace.json"), serde_json::to_vec(payload)?)?;
     Ok(())
+}
+
+pub fn write_records_inline_trace_json(
+    trace_dir: &Path,
+    trace_id: &str,
+    record_path: &str,
+    format: &str,
+    compression: &str,
+    max_chunk_bytes_uncompressed: Option<usize>,
+) -> Result<()> {
+    let mut payload = json!({
+        "trace_schema_version": 1,
+        "trace_id": trace_id,
+        "status": "ok",
+        "detail": {
+            "layout": "records_inline",
+            "status": "full",
+            "records": [
+                {
+                    "path": record_path,
+                    "format": format,
+                    "compression": compression
+                }
+            ],
+            "nodes": []
+        }
+    });
+    if let Some(max_chunk_bytes_uncompressed) = max_chunk_bytes_uncompressed {
+        payload["max_chunk_bytes_uncompressed"] = json!(max_chunk_bytes_uncompressed);
+    }
+    write_trace_json(trace_dir, &payload)
 }
 
 pub fn detail_object(trace: &Value) -> &serde_json::Map<String, Value> {
