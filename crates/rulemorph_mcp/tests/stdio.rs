@@ -15,6 +15,8 @@ include!("stdio/catalog.rs");
 
 include!("stdio/transform.rs");
 
+include!("stdio/transform_paths.rs");
+
 #[test]
 fn tools_call_unknown_tool_returns_tool_error_payload() {
     let mut server = McpServer::start();
