@@ -28,7 +28,7 @@ mappings:
 
 #[test]
 fn toml_datetime_is_string() {
-    let yaml = r#"
+    let toml_rule = r#"
 version: 2
 input:
   format: toml
@@ -38,7 +38,7 @@ mappings:
   - target: "created_at"
     source: "created_at"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule_file(toml_rule).expect("parse rule");
     let input = "[[users]]\ncreated_at = 2026-05-08T12:00:00Z\n";
     let output = transform(&rule, input, None).expect("transform");
     assert_eq!(
@@ -49,7 +49,7 @@ mappings:
 
 #[test]
 fn toml_quoted_private_datetime_key_stays_object() {
-    let yaml = r#"
+    let toml_rule = r#"
 version: 2
 input:
   format: toml
@@ -59,7 +59,7 @@ mappings:
   - target: "metadata"
     source: "metadata"
 "#;
-    let rule = parse_rule_file(yaml).expect("parse rule");
+    let rule = parse_rule_file(toml_rule).expect("parse rule");
     let input = "[[users]]\n[users.metadata]\n'$__toml_private_datetime' = 2026-05-08T12:00:00Z\n";
     let records = normalize_records_with_options(
         &rule,
