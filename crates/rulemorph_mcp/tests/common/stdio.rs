@@ -100,6 +100,38 @@ pub fn tool_call_request(id: u64, name: &str, arguments: Value) -> Value {
     })
 }
 
+pub fn list_tools(server: &mut McpServer, id: u64) -> Value {
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "tools/list"
+    });
+    server.send(&request)
+}
+
+pub fn tools_array(response: &Value) -> &[Value] {
+    response["result"]["tools"].as_array().expect("tools array")
+}
+
+pub fn tool_by_name<'a>(tools: &'a [Value], name: &str) -> &'a Value {
+    tools
+        .iter()
+        .find(|tool| tool["name"] == name)
+        .unwrap_or_else(|| panic!("{name} tool"))
+}
+
+pub fn tool_schema_property<'a>(tool: &'a Value, property: &str) -> &'a Value {
+    &tool["inputSchema"]["properties"][property]
+}
+
+pub fn assert_tool_schema_enum(tool: &Value, property: &str, expected: Value) {
+    assert_eq!(tool_schema_property(tool, property)["enum"], expected);
+}
+
+pub fn assert_tool_schema_required(tool: &Value, expected: Value) {
+    assert_eq!(tool["inputSchema"]["required"], expected);
+}
+
 pub fn content_text(response: &Value) -> &str {
     response["result"]["content"][0]["text"]
         .as_str()
