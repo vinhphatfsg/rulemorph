@@ -2,6 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use assert_cmd::{Command, cargo::cargo_bin_cmd};
+
 pub fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -14,6 +16,12 @@ pub fn read_json(path: &Path) -> serde_json::Value {
     let data =
         fs::read_to_string(path).unwrap_or_else(|_| panic!("failed to read {}", path.display()));
     serde_json::from_str(&data).unwrap_or_else(|_| panic!("invalid json: {}", path.display()))
+}
+
+pub fn rulemorph_output(configure: impl FnOnce(&mut Command)) -> Output {
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    configure(&mut cmd);
+    cmd.output().unwrap()
 }
 
 pub fn stdout_string(output: Output) -> String {
