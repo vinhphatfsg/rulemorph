@@ -7,10 +7,12 @@ mod sequence;
 
 pub(super) use self::aggregate::{eval_array_avg, eval_array_max, eval_array_min, eval_array_sum};
 pub(super) use self::equality::{eval_array_contains, eval_array_index_of, eval_array_unique};
+pub(super) use self::scoped::predicate::{
+    eval_array_filter, eval_array_find, eval_array_find_index, eval_array_partition,
+};
 pub(super) use self::scoped::{
-    eval_array_distinct_by, eval_array_filter, eval_array_find, eval_array_find_index,
-    eval_array_flat_map, eval_array_fold, eval_array_group_by, eval_array_key_by, eval_array_map,
-    eval_array_partition, eval_array_reduce, eval_array_sort_by,
+    eval_array_distinct_by, eval_array_flat_map, eval_array_fold, eval_array_group_by,
+    eval_array_key_by, eval_array_map, eval_array_reduce, eval_array_sort_by,
 };
 pub(super) use self::sequence::{
     eval_array_chunk, eval_array_drop, eval_array_flatten, eval_array_slice, eval_array_take,
