@@ -21,7 +21,7 @@ use super::index::build_trace_index;
 use super::legacy::{apply_legacy_limits, looks_like_legacy_trace};
 use super::manifest_budget::{apply_manifest_budget, apply_record_total_budget_for_get};
 use super::manifest_trace::build_trace_from_manifest_async;
-use super::meta::{is_manifest, read_trace_json_with_limit_async};
+use super::meta::{is_manifest, read_trace_value_with_limit_async};
 use super::purge::purge_trace_metas;
 use super::{ImportResult, PurgeReport, TraceMeta, TraceNodeChunkEntry, rules_dir, traces_dir};
 
@@ -70,15 +70,7 @@ impl FileTraceBackend {
             None => return Ok(None),
         };
         let path = PathBuf::from(&meta.path);
-        let raw = read_trace_json_with_limit_async(&path).await?;
-        let parse_result = tokio::task::spawn_blocking({
-            let raw = raw.clone();
-            move || serde_json::from_str::<Value>(&raw)
-        })
-        .await
-        .map_err(|err| anyhow::anyhow!("trace json parse task failed: {}", err))?;
-        let value: Value =
-            parse_result.with_context(|| format!("invalid trace json: {}", path.display()))?;
+        let value = read_trace_value_with_limit_async(&path).await?;
         if is_manifest(&value) {
             let mut manifest: TraceManifest = serde_json::from_value(value)
                 .with_context(|| format!("invalid trace manifest: {}", path.display()))?;
@@ -155,15 +147,7 @@ impl FileTraceBackend {
             None => return Ok(None),
         };
         let path = PathBuf::from(&meta.path);
-        let raw = read_trace_json_with_limit_async(&path).await?;
-        let parse_result = tokio::task::spawn_blocking({
-            let raw = raw.clone();
-            move || serde_json::from_str::<Value>(&raw)
-        })
-        .await
-        .map_err(|err| anyhow::anyhow!("trace json parse task failed: {}", err))?;
-        let value: Value =
-            parse_result.with_context(|| format!("invalid trace json: {}", path.display()))?;
+        let value = read_trace_value_with_limit_async(&path).await?;
         if !is_manifest(&value) {
             return Ok(None);
         }

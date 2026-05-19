@@ -26,6 +26,17 @@ pub(super) async fn read_trace_json_with_limit_async(path: &Path) -> Result<Stri
         .with_context(|| format!("failed to read trace: {}", path.display()))
 }
 
+pub(super) async fn read_trace_value_with_limit_async(path: &Path) -> Result<Value> {
+    let raw = read_trace_json_with_limit_async(path).await?;
+    let parse_result = tokio::task::spawn_blocking({
+        let raw = raw.clone();
+        move || serde_json::from_str::<Value>(&raw)
+    })
+    .await
+    .map_err(|err| anyhow::anyhow!("trace json parse task failed: {}", err))?;
+    parse_result.with_context(|| format!("invalid trace json: {}", path.display()))
+}
+
 fn read_trace_json_with_limit(path: &Path) -> Result<String> {
     let metadata = std::fs::metadata(path)
         .with_context(|| format!("failed to read trace metadata: {}", path.display()))?;
