@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -6,11 +5,14 @@ use serde_json::Value;
 use tracing::warn;
 
 use super::chunk_read::{
-    ChunkBudget, count_inline_nodes, normalize_inline_nodes_value, parse_node_chunk_entry,
-    parse_record_index, read_json_chunk, read_ndjson_chunk,
+    ChunkBudget, count_inline_nodes, normalize_inline_nodes_value, read_json_chunk,
+    read_ndjson_chunk,
 };
 use super::manifest_budget::resolve_max_chunk_bytes;
 use crate::trace_schema::{TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX, TraceManifest};
+
+mod nodes;
+use nodes::attach_node_chunks;
 
 fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Result<Value> {
     build_trace_from_manifest_with_budget(manifest, base_dir, ChunkBudget::new())
@@ -123,143 +125,22 @@ pub(super) fn build_trace_from_manifest_with_budget(
         );
     }
     if !detail.nodes.is_empty() && detail.layout == "records_nodes_split" && !chunk_error {
-        let mut nodes_by_record: HashMap<u64, Vec<Value>> = HashMap::new();
-        for chunk in &detail.nodes {
-            let mut last_record_index: Option<u64> = None;
-            if !budget.consume_chunk() {
-                budget_exceeded = true;
-                chunk_error = true;
-                break;
-            }
-            let lines = read_ndjson_chunk(base_dir, chunk, max_chunk_bytes, remaining_nodes)?;
-            if lines.had_error {
-                chunk_error = true;
-            }
-            if lines.size_exceeded {
-                size_exceeded = true;
-                chunk_error = true;
-                break;
-            }
-            if lines.limit_exceeded {
-                budget_exceeded = true;
-                chunk_error = true;
-                break;
-            }
-            if !budget.consume_bytes(lines.bytes) {
-                budget_exceeded = true;
-                chunk_error = true;
-            }
-            if !budget_exceeded {
-                remaining_nodes = remaining_nodes.saturating_sub(lines.value.len());
-            }
-            for value in lines.value {
-                let entry = parse_node_chunk_entry(value);
-                if entry.record_index.is_none() && entry.record_index_present {
-                    warn!("node chunk entry has invalid record_index; skipping");
-                    continue;
-                }
-                let record_index = match entry.record_index.or(last_record_index) {
-                    Some(index) => index,
-                    None => {
-                        warn!("node chunk entry missing record_index; skipping");
-                        continue;
-                    }
-                };
-                if entry.record_index.is_some() {
-                    last_record_index = entry.record_index;
-                }
-                nodes_by_record
-                    .entry(record_index)
-                    .or_default()
-                    .push(entry.node);
-            }
-            if budget_exceeded {
-                break;
-            }
+        let outcome = attach_node_chunks(
+            &mut records,
+            &detail.nodes,
+            base_dir,
+            max_chunk_bytes,
+            &mut budget,
+            &mut remaining_nodes,
+        )?;
+        if outcome.chunk_error {
+            chunk_error = true;
         }
-        let mut seen_record_indices: HashMap<u64, usize> = HashMap::new();
-        let mut used_record_indices: HashMap<u64, usize> = HashMap::new();
-        for (position, record) in records.iter_mut().enumerate() {
-            let index_value = record.get("index");
-            let parsed_index = index_value.and_then(parse_record_index);
-            if parsed_index.is_none() && index_value.is_some() {
-                warn!(
-                    "invalid record_index in trace record; skipping node attach at position {}",
-                    position
-                );
-                continue;
-            }
-            let record_index = parsed_index.unwrap_or(position as u64);
-            if let Some(prev) = seen_record_indices.insert(record_index, position) {
-                warn!(
-                    "duplicate record_index in trace records: {} (at {} and {})",
-                    record_index, prev, position
-                );
-            }
-            let nodes_from_chunk = nodes_by_record.get(&record_index).cloned();
-            if let Some(nodes) = nodes_from_chunk {
-                if used_record_indices.contains_key(&record_index) {
-                    warn!(
-                        "node chunk entries already attached for record_index {}; skipping duplicate record",
-                        record_index
-                    );
-                } else {
-                    let mut attached = false;
-                    if let Some(obj) = record.as_object_mut() {
-                        match obj.get_mut("nodes") {
-                            Some(existing) => {
-                                if let Some(existing_nodes) = existing.as_array_mut() {
-                                    if !nodes.is_empty() {
-                                        warn!(
-                                            "record has inline nodes and node chunk entries; merged record_index={}",
-                                            record_index
-                                        );
-                                        existing_nodes.extend(nodes.clone());
-                                        attached = true;
-                                    }
-                                } else {
-                                    let previous =
-                                        std::mem::replace(existing, Value::Array(Vec::new()));
-                                    let mut combined = Vec::new();
-                                    combined.push(previous);
-                                    combined.extend(nodes.clone());
-                                    *existing = Value::Array(combined);
-                                    warn!(
-                                        "record has non-array inline nodes and node chunk entries; merged record_index={}",
-                                        record_index
-                                    );
-                                    attached = true;
-                                }
-                            }
-                            None => {
-                                obj.insert("nodes".to_string(), Value::Array(nodes.clone()));
-                                attached = true;
-                            }
-                        }
-                    } else {
-                        warn!(
-                            "record is non-object; skipping node attach for record_index={}",
-                            record_index
-                        );
-                    }
-                    if attached {
-                        *used_record_indices.entry(record_index).or_insert(0) += 1;
-                    }
-                }
-            }
+        if outcome.size_exceeded {
+            size_exceeded = true;
         }
-        if !nodes_by_record.is_empty() {
-            let orphan_count: usize = nodes_by_record
-                .iter()
-                .filter(|(key, _)| !used_record_indices.contains_key(key))
-                .map(|(_, nodes)| nodes.len())
-                .sum();
-            if orphan_count > 0 {
-                warn!(
-                    "node chunk entries not attached to records: {}",
-                    orphan_count
-                );
-            }
+        if outcome.budget_exceeded {
+            budget_exceeded = true;
         }
     }
 
