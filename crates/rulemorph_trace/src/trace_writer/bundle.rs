@@ -3,7 +3,6 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 
-use super::atomic::write_atomic;
 use super::chunk_write::{
     max_ndjson_line_bytes, total_chunk_bytes, write_finalize_chunk, write_node_chunks,
     write_record_chunks,
@@ -21,9 +20,12 @@ use super::trace_dir::{
 };
 use super::trace_identity::resolve_trace_id;
 use crate::trace_schema::{
-    TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TRACE_NODE_COUNT_HARD_MAX,
-    TRACE_RECORD_COUNT_HARD_MAX, TraceDetailRef, TraceManifest, TraceMasking,
+    TRACE_CHUNK_COUNT_HARD_MAX, TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
+    TraceDetailRef, TraceManifest, TraceMasking,
 };
+
+mod manifest_payload;
+use self::manifest_payload::write_manifest_payload;
 
 const TRACE_SCHEMA_VERSION: u8 = 1;
 
@@ -336,29 +338,7 @@ pub(crate) fn write_trace_bundle_sync(
     }
 
     let manifest_path = trace_dir.join("trace.json");
-    let mut manifest_payload = serde_json::to_string_pretty(&manifest)?;
-    if manifest_payload.len() as u64 > TRACE_JSON_MAX_BYTES {
-        if manifest.rule_source.is_some() {
-            manifest.rule_source = None;
-            if !detail
-                .reason
-                .iter()
-                .any(|reason| reason == "rule_source_dropped")
-            {
-                detail.reason.push("rule_source_dropped".to_string());
-            }
-            manifest.detail = Some(detail.clone());
-            manifest_payload = serde_json::to_string_pretty(&manifest)?;
-        }
-        if manifest_payload.len() as u64 > TRACE_JSON_MAX_BYTES {
-            return Err(anyhow::anyhow!(
-                "trace json exceeds max bytes: {} > {}",
-                manifest_payload.len(),
-                TRACE_JSON_MAX_BYTES
-            ));
-        }
-    }
-    write_atomic(&manifest_path, manifest_payload.as_bytes())?;
+    write_manifest_payload(&manifest_path, &mut manifest, &mut detail)?;
     trace_dir_guard.commit();
 
     Ok(manifest_path)
