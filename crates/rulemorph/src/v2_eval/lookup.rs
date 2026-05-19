@@ -15,420 +15,285 @@ pub(super) fn eval_lookup_op<'a>(
     ctx: &V2EvalContext<'a>,
 ) -> Result<EvalValue, TransformError> {
     match op_step.op.as_str() {
-        // Lookup operations - v2 keyword format: lookup_first: {from: ..., match: [...], get: ...}
-        // For v2, lookup args are parsed from V2OpStep with special handling
-        // Explicit from:
-        // args[0] = from (array to search in)
-        // args[1] = match key (field name in array items to match)
-        // args[2] = match value (value to match against)
-        // args[3] = get (optional - field to extract from matched item)
-        // Implicit from (pipe value):
-        // args[0] = match key
-        // args[1] = match value
-        // args[2] = get (optional)
-        "lookup_first" => {
-            if op_step.args.len() < 2 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "lookup_first requires at least 2 arguments: match_key, match_value",
-                )
-                .with_path(path));
-            }
-
-            let args = &op_step.args;
-            let from_path = format!("{}.from", path);
-            let match_key_path = format!("{}.match_key", path);
-            let get_path = format!("{}.get", path);
-
-            let (from_value, match_key_value, match_value, get_field) = match args.len() {
-                0 | 1 => unreachable!("guarded above"),
-                2 => {
-                    let match_key_value = eval_v2_expr(
-                        &args[0],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[0]", path),
-                        ctx,
-                    )?;
-                    let match_value = eval_v2_expr(
-                        &args[1],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[1]", path),
-                        ctx,
-                    )?;
-                    (pipe_value.clone(), match_key_value, match_value, None)
-                }
-                3 => {
-                    if matches!(pipe_value, EvalValue::Missing) {
-                        let first_value = eval_v2_expr(
-                            &args[0],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[0]", path),
-                            ctx,
-                        )?;
-                        let use_explicit_from =
-                            matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
-                        if !use_explicit_from {
-                            return Ok(EvalValue::Missing);
-                        }
-                        let match_key_value = eval_v2_expr(
-                            &args[1],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[1]", path),
-                            ctx,
-                        )?;
-                        let match_value = eval_v2_expr(
-                            &args[2],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[2]", path),
-                            ctx,
-                        )?;
-                        (first_value, match_key_value, match_value, None)
-                    } else {
-                        let first_value = eval_v2_expr(
-                            &args[0],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[0]", path),
-                            ctx,
-                        )?;
-                        let use_explicit_from = matches!(
-                            first_value,
-                            EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing
-                        );
-                        if use_explicit_from {
-                            let match_key_value = eval_v2_expr(
-                                &args[1],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[1]", path),
-                                ctx,
-                            )?;
-                            let match_value = eval_v2_expr(
-                                &args[2],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[2]", path),
-                                ctx,
-                            )?;
-                            (first_value, match_key_value, match_value, None)
-                        } else {
-                            let match_value = eval_v2_expr(
-                                &args[1],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[1]", path),
-                                ctx,
-                            )?;
-                            let get_value = eval_v2_expr(
-                                &args[2],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[2]", path),
-                                ctx,
-                            )?;
-                            let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
-                            (pipe_value.clone(), first_value, match_value, get_field)
-                        }
-                    }
-                }
-                _ => {
-                    let from_value = eval_v2_expr(
-                        &args[0],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[0]", path),
-                        ctx,
-                    )?;
-                    let match_key_value = eval_v2_expr(
-                        &args[1],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[1]", path),
-                        ctx,
-                    )?;
-                    let match_value = eval_v2_expr(
-                        &args[2],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[2]", path),
-                        ctx,
-                    )?;
-                    let get_value = eval_v2_expr(
-                        &args[3],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[3]", path),
-                        ctx,
-                    )?;
-                    let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
-                    (from_value, match_key_value, match_value, get_field)
-                }
-            };
-
-            // Evaluate 'from' - the array to search in
-            let arr = match &from_value {
-                EvalValue::Value(JsonValue::Array(arr)) => arr,
-                EvalValue::Missing => return Ok(EvalValue::Missing),
-                _ => {
-                    return Err(TransformError::new(
-                        TransformErrorKind::ExprError,
-                        "lookup_first 'from' must be an array",
-                    )
-                    .with_path(&from_path));
-                }
-            };
-
-            // Get match key as string
-            let match_key = eval_value_as_string(&match_key_value, &match_key_path)?;
-            if matches!(match_value, EvalValue::Missing) {
-                return Ok(EvalValue::Missing);
-            }
-
-            // Search for first matching item
-            for item in arr {
-                if let JsonValue::Object(obj) = item {
-                    if let Some(field_val) = obj.get(&match_key) {
-                        let item_val = EvalValue::Value(field_val.clone());
-                        if compare_values_eq(&item_val, &match_value) {
-                            // Found a match
-                            if let Some(ref get_key) = get_field {
-                                // Return specific field from matched item
-                                return match obj.get(get_key) {
-                                    Some(v) => Ok(EvalValue::Value(v.clone())),
-                                    None => Ok(EvalValue::Missing),
-                                };
-                            } else {
-                                // Return entire matched item
-                                return Ok(EvalValue::Value(item.clone()));
-                            }
-                        }
-                    }
-                }
-            }
-
-            Ok(EvalValue::Missing)
-        }
-
-        "lookup" => {
-            if op_step.args.len() < 2 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "lookup requires at least 2 arguments: match_key, match_value",
-                )
-                .with_path(path));
-            }
-
-            let args = &op_step.args;
-            let from_path = format!("{}.from", path);
-            let match_key_path = format!("{}.match_key", path);
-            let get_path = format!("{}.get", path);
-
-            let (from_value, match_key_value, match_value, get_field) = match args.len() {
-                0 | 1 => unreachable!("guarded above"),
-                2 => {
-                    let match_key_value = eval_v2_expr(
-                        &args[0],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[0]", path),
-                        ctx,
-                    )?;
-                    let match_value = eval_v2_expr(
-                        &args[1],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[1]", path),
-                        ctx,
-                    )?;
-                    (pipe_value.clone(), match_key_value, match_value, None)
-                }
-                3 => {
-                    if matches!(pipe_value, EvalValue::Missing) {
-                        let first_value = eval_v2_expr(
-                            &args[0],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[0]", path),
-                            ctx,
-                        )?;
-                        let use_explicit_from =
-                            matches!(first_value, EvalValue::Value(JsonValue::Array(_)));
-                        if !use_explicit_from {
-                            return Ok(EvalValue::Missing);
-                        }
-                        let match_key_value = eval_v2_expr(
-                            &args[1],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[1]", path),
-                            ctx,
-                        )?;
-                        let match_value = eval_v2_expr(
-                            &args[2],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[2]", path),
-                            ctx,
-                        )?;
-                        (first_value, match_key_value, match_value, None)
-                    } else {
-                        let first_value = eval_v2_expr(
-                            &args[0],
-                            record,
-                            context,
-                            out,
-                            &format!("{}.args[0]", path),
-                            ctx,
-                        )?;
-                        let use_explicit_from = matches!(
-                            first_value,
-                            EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing
-                        );
-                        if use_explicit_from {
-                            let match_key_value = eval_v2_expr(
-                                &args[1],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[1]", path),
-                                ctx,
-                            )?;
-                            let match_value = eval_v2_expr(
-                                &args[2],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[2]", path),
-                                ctx,
-                            )?;
-                            (first_value, match_key_value, match_value, None)
-                        } else {
-                            let match_value = eval_v2_expr(
-                                &args[1],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[1]", path),
-                                ctx,
-                            )?;
-                            let get_value = eval_v2_expr(
-                                &args[2],
-                                record,
-                                context,
-                                out,
-                                &format!("{}.args[2]", path),
-                                ctx,
-                            )?;
-                            let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
-                            (pipe_value.clone(), first_value, match_value, get_field)
-                        }
-                    }
-                }
-                _ => {
-                    let from_value = eval_v2_expr(
-                        &args[0],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[0]", path),
-                        ctx,
-                    )?;
-                    let match_key_value = eval_v2_expr(
-                        &args[1],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[1]", path),
-                        ctx,
-                    )?;
-                    let match_value = eval_v2_expr(
-                        &args[2],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[2]", path),
-                        ctx,
-                    )?;
-                    let get_value = eval_v2_expr(
-                        &args[3],
-                        record,
-                        context,
-                        out,
-                        &format!("{}.args[3]", path),
-                        ctx,
-                    )?;
-                    let get_field = Some(eval_value_as_string(&get_value, &get_path)?);
-                    (from_value, match_key_value, match_value, get_field)
-                }
-            };
-
-            // Evaluate 'from' - the array to search in
-            let arr = match &from_value {
-                EvalValue::Value(JsonValue::Array(arr)) => arr,
-                EvalValue::Missing => return Ok(EvalValue::Missing),
-                _ => {
-                    return Err(TransformError::new(
-                        TransformErrorKind::ExprError,
-                        "lookup 'from' must be an array",
-                    )
-                    .with_path(&from_path));
-                }
-            };
-
-            // Get match key as string
-            let match_key = eval_value_as_string(&match_key_value, &match_key_path)?;
-            if matches!(match_value, EvalValue::Missing) {
-                return Ok(EvalValue::Missing);
-            }
-
-            // Search for ALL matching items
-            let mut results = Vec::new();
-            for item in arr {
-                if let JsonValue::Object(obj) = item {
-                    if let Some(field_val) = obj.get(&match_key) {
-                        let item_val = EvalValue::Value(field_val.clone());
-                        if compare_values_eq(&item_val, &match_value) {
-                            // Found a match
-                            if let Some(ref get_key) = get_field {
-                                // Add specific field from matched item
-                                if let Some(v) = obj.get(get_key) {
-                                    results.push(v.clone());
-                                }
-                            } else {
-                                // Add entire matched item
-                                results.push(item.clone());
-                            }
-                        }
-                    }
-                }
-            }
-
-            Ok(EvalValue::Value(JsonValue::Array(results)))
-        }
+        "lookup_first" => eval_lookup_first(op_step, pipe_value, record, context, out, path, ctx),
+        "lookup" => eval_lookup(op_step, pipe_value, record, context, out, path, ctx),
         _ => unreachable!("lookup dispatcher only calls lookup operators"),
     }
+}
+
+struct LookupArgs {
+    from_value: EvalValue,
+    match_key_value: EvalValue,
+    match_value: EvalValue,
+    get_field: Option<String>,
+}
+
+fn eval_lookup_first<'a>(
+    op_step: &V2OpStep,
+    pipe_value: EvalValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    path: &str,
+    ctx: &V2EvalContext<'a>,
+) -> Result<EvalValue, TransformError> {
+    let Some(args) = resolve_lookup_args(op_step, pipe_value, record, context, out, path, ctx)?
+    else {
+        return Ok(EvalValue::Missing);
+    };
+    let Some(arr) = lookup_array(&args.from_value, op_step.op.as_str(), path)? else {
+        return Ok(EvalValue::Missing);
+    };
+    let match_key = lookup_match_key(&args.match_key_value, path)?;
+    if matches!(args.match_value, EvalValue::Missing) {
+        return Ok(EvalValue::Missing);
+    }
+
+    for item in arr {
+        if let Some(value) =
+            lookup_matched_value(item, &match_key, &args.match_value, &args.get_field)
+        {
+            return match value {
+                Some(value) => Ok(EvalValue::Value(value)),
+                None => Ok(EvalValue::Missing),
+            };
+        }
+    }
+
+    Ok(EvalValue::Missing)
+}
+
+fn eval_lookup<'a>(
+    op_step: &V2OpStep,
+    pipe_value: EvalValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    path: &str,
+    ctx: &V2EvalContext<'a>,
+) -> Result<EvalValue, TransformError> {
+    let Some(args) = resolve_lookup_args(op_step, pipe_value, record, context, out, path, ctx)?
+    else {
+        return Ok(EvalValue::Missing);
+    };
+    let Some(arr) = lookup_array(&args.from_value, op_step.op.as_str(), path)? else {
+        return Ok(EvalValue::Missing);
+    };
+    let match_key = lookup_match_key(&args.match_key_value, path)?;
+    if matches!(args.match_value, EvalValue::Missing) {
+        return Ok(EvalValue::Missing);
+    }
+
+    let mut results = Vec::new();
+    for item in arr {
+        if let Some(Some(value)) =
+            lookup_matched_value(item, &match_key, &args.match_value, &args.get_field)
+        {
+            results.push(value);
+        }
+    }
+
+    Ok(EvalValue::Value(JsonValue::Array(results)))
+}
+
+fn resolve_lookup_args<'a>(
+    op_step: &V2OpStep,
+    pipe_value: EvalValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    path: &str,
+    ctx: &V2EvalContext<'a>,
+) -> Result<Option<LookupArgs>, TransformError> {
+    if op_step.args.len() < 2 {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            format!(
+                "{} requires at least 2 arguments: match_key, match_value",
+                op_step.op
+            ),
+        )
+        .with_path(path));
+    }
+
+    let args = &op_step.args;
+    let get_path = format!("{}.get", path);
+    let resolved = match args.len() {
+        0 | 1 => unreachable!("guarded above"),
+        2 => {
+            let match_key_value = eval_v2_expr(
+                &args[0],
+                record,
+                context,
+                out,
+                &format!("{}.args[0]", path),
+                ctx,
+            )?;
+            let match_value = eval_v2_expr(
+                &args[1],
+                record,
+                context,
+                out,
+                &format!("{}.args[1]", path),
+                ctx,
+            )?;
+            LookupArgs {
+                from_value: pipe_value,
+                match_key_value,
+                match_value,
+                get_field: None,
+            }
+        }
+        3 => {
+            let first_value = eval_v2_expr(
+                &args[0],
+                record,
+                context,
+                out,
+                &format!("{}.args[0]", path),
+                ctx,
+            )?;
+            if matches!(pipe_value, EvalValue::Missing)
+                && !matches!(first_value, EvalValue::Value(JsonValue::Array(_)))
+            {
+                return Ok(None);
+            }
+
+            let use_explicit_from = matches!(
+                first_value,
+                EvalValue::Value(JsonValue::Array(_)) | EvalValue::Missing
+            );
+            if use_explicit_from {
+                let match_key_value = eval_v2_expr(
+                    &args[1],
+                    record,
+                    context,
+                    out,
+                    &format!("{}.args[1]", path),
+                    ctx,
+                )?;
+                let match_value = eval_v2_expr(
+                    &args[2],
+                    record,
+                    context,
+                    out,
+                    &format!("{}.args[2]", path),
+                    ctx,
+                )?;
+                LookupArgs {
+                    from_value: first_value,
+                    match_key_value,
+                    match_value,
+                    get_field: None,
+                }
+            } else {
+                let match_value = eval_v2_expr(
+                    &args[1],
+                    record,
+                    context,
+                    out,
+                    &format!("{}.args[1]", path),
+                    ctx,
+                )?;
+                let get_value = eval_v2_expr(
+                    &args[2],
+                    record,
+                    context,
+                    out,
+                    &format!("{}.args[2]", path),
+                    ctx,
+                )?;
+                LookupArgs {
+                    from_value: pipe_value,
+                    match_key_value: first_value,
+                    match_value,
+                    get_field: Some(eval_value_as_string(&get_value, &get_path)?),
+                }
+            }
+        }
+        _ => {
+            let from_value = eval_v2_expr(
+                &args[0],
+                record,
+                context,
+                out,
+                &format!("{}.args[0]", path),
+                ctx,
+            )?;
+            let match_key_value = eval_v2_expr(
+                &args[1],
+                record,
+                context,
+                out,
+                &format!("{}.args[1]", path),
+                ctx,
+            )?;
+            let match_value = eval_v2_expr(
+                &args[2],
+                record,
+                context,
+                out,
+                &format!("{}.args[2]", path),
+                ctx,
+            )?;
+            let get_value = eval_v2_expr(
+                &args[3],
+                record,
+                context,
+                out,
+                &format!("{}.args[3]", path),
+                ctx,
+            )?;
+            LookupArgs {
+                from_value,
+                match_key_value,
+                match_value,
+                get_field: Some(eval_value_as_string(&get_value, &get_path)?),
+            }
+        }
+    };
+
+    Ok(Some(resolved))
+}
+
+fn lookup_array<'a>(
+    from_value: &'a EvalValue,
+    op_name: &str,
+    path: &str,
+) -> Result<Option<&'a Vec<JsonValue>>, TransformError> {
+    match from_value {
+        EvalValue::Value(JsonValue::Array(arr)) => Ok(Some(arr)),
+        EvalValue::Missing => Ok(None),
+        _ => Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            format!("{} 'from' must be an array", op_name),
+        )
+        .with_path(&format!("{}.from", path))),
+    }
+}
+
+fn lookup_match_key(match_key_value: &EvalValue, path: &str) -> Result<String, TransformError> {
+    eval_value_as_string(match_key_value, &format!("{}.match_key", path))
+}
+
+fn lookup_matched_value(
+    item: &JsonValue,
+    match_key: &str,
+    match_value: &EvalValue,
+    get_field: &Option<String>,
+) -> Option<Option<JsonValue>> {
+    let JsonValue::Object(obj) = item else {
+        return None;
+    };
+    let field_val = obj.get(match_key)?;
+    let item_val = EvalValue::Value(field_val.clone());
+    if !compare_values_eq(&item_val, match_value) {
+        return None;
+    }
+
+    if let Some(get_key) = get_field {
+        return Some(obj.get(get_key).cloned());
+    }
+
+    Some(Some(item.clone()))
 }
