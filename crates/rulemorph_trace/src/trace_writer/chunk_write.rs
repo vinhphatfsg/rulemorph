@@ -7,17 +7,13 @@ use crate::trace_schema::TraceChunkRef;
 
 use super::{TraceCompression, TraceWriteOptions, reserve_budget, write_atomic};
 
+mod finalize;
+pub(super) use finalize::write_finalize_chunk;
+
 pub(super) struct ChunkWriteResult {
     pub(super) chunks: Vec<TraceChunkRef>,
     pub(super) files: Vec<PathBuf>,
     pub(super) budget_exceeded: bool,
-}
-
-pub(super) struct FinalizeWriteResult {
-    pub(super) chunk: Option<TraceChunkRef>,
-    pub(super) file: Option<PathBuf>,
-    pub(super) budget_exceeded: bool,
-    pub(super) size_exceeded: bool,
 }
 
 pub(super) fn write_record_chunks(
@@ -245,89 +241,4 @@ pub(super) fn max_ndjson_line_bytes(items: &[JsonValue], label: &str) -> Result<
 
 pub(super) fn total_chunk_bytes(chunks: &[TraceChunkRef]) -> u64 {
     chunks.iter().filter_map(|chunk| chunk.bytes).sum()
-}
-
-pub(super) fn write_finalize_chunk(
-    trace_dir: &Path,
-    trace: &JsonValue,
-    options: &TraceWriteOptions,
-    budget_remaining: &mut u64,
-    chunk_budget_remaining: &mut usize,
-) -> Result<FinalizeWriteResult> {
-    let finalize = match trace.get("finalize") {
-        Some(value) => value,
-        None => {
-            return Ok(FinalizeWriteResult {
-                chunk: None,
-                file: None,
-                budget_exceeded: false,
-                size_exceeded: false,
-            });
-        }
-    };
-
-    if *chunk_budget_remaining == 0 {
-        return Ok(FinalizeWriteResult {
-            chunk: None,
-            file: None,
-            budget_exceeded: true,
-            size_exceeded: false,
-        });
-    }
-
-    let filename = format!(
-        "finalize.json{}",
-        match options.compression {
-            TraceCompression::Zstd => ".zst",
-            TraceCompression::None => "",
-        }
-    );
-    let path = trace_dir.join(&filename);
-    let payload = serde_json::to_vec(finalize)?;
-    if payload.len() > options.max_chunk_bytes_uncompressed {
-        return Ok(FinalizeWriteResult {
-            chunk: None,
-            file: None,
-            budget_exceeded: false,
-            size_exceeded: true,
-        });
-    }
-    let raw_bytes = payload.as_slice();
-    let (bytes, payload) = match options.compression {
-        TraceCompression::Zstd => {
-            let compressed = zstd::stream::encode_all(raw_bytes, 3)?;
-            (compressed.len() as u64, compressed)
-        }
-        TraceCompression::None => (raw_bytes.len() as u64, raw_bytes.to_vec()),
-    };
-    if !reserve_budget(budget_remaining, bytes) {
-        return Ok(FinalizeWriteResult {
-            chunk: None,
-            file: None,
-            budget_exceeded: true,
-            size_exceeded: false,
-        });
-    }
-    write_atomic(&path, payload.as_slice())?;
-    *chunk_budget_remaining = chunk_budget_remaining.saturating_sub(1);
-    let chunk = TraceChunkRef {
-        path: filename,
-        format: "json".to_string(),
-        compression: match options.compression {
-            TraceCompression::Zstd => "zstd".to_string(),
-            TraceCompression::None => "none".to_string(),
-        },
-        record_start: None,
-        record_end: None,
-        node_start: None,
-        node_end: None,
-        bytes: Some(bytes),
-        bytes_uncompressed: Some(raw_bytes.len() as u64),
-    };
-    Ok(FinalizeWriteResult {
-        chunk: Some(chunk),
-        file: Some(path),
-        budget_exceeded: false,
-        size_exceeded: false,
-    })
 }
