@@ -7,8 +7,10 @@ use super::{
 use crate::error::{TransformError, TransformErrorKind};
 use crate::v2_model::{V2Expr, V2OpStep};
 
+mod predicate;
 mod sort;
 
+use predicate::{eval_filter, eval_find, eval_find_index, eval_partition};
 use sort::eval_sort_by;
 
 pub(super) fn eval_collection_op<'a>(
@@ -57,35 +59,7 @@ pub(super) fn eval_collection_op<'a>(
             }
             Ok(EvalValue::Value(JsonValue::Array(results)))
         }
-        "filter" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "filter requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            let mut results = Vec::new();
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )? {
-                    results.push(item.clone());
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::Array(results)))
-        }
+        "filter" => eval_filter(op_step, pipe_value, record, context, out, path, ctx),
         "flat_map" => {
             if op_step.args.len() != 1 {
                 return Err(TransformError::new(
@@ -178,41 +152,7 @@ pub(super) fn eval_collection_op<'a>(
             }
             Ok(EvalValue::Value(JsonValue::Object(results)))
         }
-        "partition" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "partition requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            let mut matched = Vec::new();
-            let mut unmatched = Vec::new();
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )? {
-                    matched.push(item.clone());
-                } else {
-                    unmatched.push(item.clone());
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::Array(vec![
-                JsonValue::Array(matched),
-                JsonValue::Array(unmatched),
-            ])))
-        }
+        "partition" => eval_partition(op_step, pipe_value, record, context, out, path, ctx),
         "distinct_by" => {
             if op_step.args.len() != 1 {
                 return Err(TransformError::new(
@@ -245,62 +185,8 @@ pub(super) fn eval_collection_op<'a>(
             Ok(EvalValue::Value(JsonValue::Array(results)))
         }
         "sort_by" => eval_sort_by(op_step, pipe_value, record, context, out, path, ctx),
-        "find" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "find requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )? {
-                    return Ok(EvalValue::Value(item.clone()));
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::Null))
-        }
-        "find_index" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "find_index requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                if eval_v2_predicate_expr(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )? {
-                    return Ok(EvalValue::Value(JsonValue::Number((index as i64).into())));
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::Number((-1).into())))
-        }
+        "find" => eval_find(op_step, pipe_value, record, context, out, path, ctx),
+        "find_index" => eval_find_index(op_step, pipe_value, record, context, out, path, ctx),
         "reduce" => {
             if op_step.args.len() != 1 {
                 return Err(TransformError::new(
