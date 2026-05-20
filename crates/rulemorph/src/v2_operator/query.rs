@@ -1,10 +1,10 @@
-use super::inventory::V2_OPERATORS;
+use super::inventory::operators;
 #[cfg(test)]
 use super::types::V2OperatorTrace;
 use super::types::{V2OperatorArgScope, V2OperatorArgSelector, V2OperatorMetadata};
 
 pub(crate) fn operator(name: &str) -> Option<&'static V2OperatorMetadata> {
-    V2_OPERATORS.iter().find(|metadata| metadata.name == name)
+    operators().find(|metadata| metadata.name == name)
 }
 
 pub(crate) fn is_valid_operator(name: &str) -> bool {
