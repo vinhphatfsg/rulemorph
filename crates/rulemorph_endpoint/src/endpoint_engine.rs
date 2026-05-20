@@ -35,6 +35,7 @@ mod multipart_import;
 mod network_exec;
 mod network_rule;
 mod reply_context;
+mod request_body;
 mod request_input;
 mod request_runtime;
 mod rule_exec;

@@ -3,32 +3,15 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 use axum::http::Request;
 use axum::response::Response;
-use http_body_util::LengthLimitError;
 use rulemorph::v2_eval::{V2EvalContext, eval_v2_condition};
 use serde_json::Value as JsonValue;
 use tracing::warn;
 
 use super::error::EndpointError;
 use super::expr::apply_mappings_via_rule;
-use super::multipart_import::build_multipart_import_body;
-use super::request_input::{
-    build_input, build_input_from_parts, is_multipart_import_request, parse_query,
-};
+use super::request_body::read_request_body;
+use super::request_input::{build_input, build_input_from_parts, parse_query};
 use super::{EndpointEngine, empty_object};
-
-fn is_length_limit_error(err: &axum::Error) -> bool {
-    let mut current: &(dyn std::error::Error + 'static) = err;
-    if current.is::<LengthLimitError>() {
-        return true;
-    }
-    while let Some(source) = current.source() {
-        if source.is::<LengthLimitError>() {
-            return true;
-        }
-        current = source;
-    }
-    false
-}
 
 impl EndpointEngine {
     pub async fn handle_request(&self, request: Request<axum::body::Body>) -> Result<Response> {
@@ -46,31 +29,21 @@ impl EndpointEngine {
             .endpoint_rule
             .match_endpoint(&method, &path)
             .ok_or_else(|| anyhow!("no endpoint matched"))?;
-        let is_multipart = is_multipart_import_request(&method, &path, &parts.headers);
         let mut _multipart_temp_dir: Option<tempfile::TempDir> = None;
-        let body_value = if is_multipart {
-            match build_multipart_import_body(&parts.headers, body).await {
-                Ok((body, temp_dir)) => {
-                    _multipart_temp_dir = Some(temp_dir);
-                    Ok(Some(body))
-                }
-                Err(err) => Err(err),
+        let body_value = match read_request_body(
+            &method,
+            &path,
+            &parts.headers,
+            body,
+            self.config.max_body_bytes,
+        )
+        .await
+        {
+            Ok(body) => {
+                _multipart_temp_dir = body.multipart_temp_dir;
+                Ok(body.value)
             }
-        } else {
-            let body_limit = self.config.max_body_bytes;
-            match axum::body::to_bytes(body, body_limit).await {
-                Ok(body_bytes) if body_bytes.is_empty() => Ok(None),
-                Ok(body_bytes) => serde_json::from_slice::<JsonValue>(&body_bytes)
-                    .map(Some)
-                    .map_err(|err| EndpointError::invalid(err.to_string())),
-                Err(err) if is_length_limit_error(&err) => {
-                    Err(EndpointError::payload_too_large(body_limit))
-                }
-                Err(err) => Err(EndpointError::network(format!(
-                    "request body read error: {}",
-                    err
-                ))),
-            }
+            Err(err) => Err(err),
         };
 
         let endpoint = endpoint_match.endpoint;
