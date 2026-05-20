@@ -12,6 +12,7 @@ use super::stream::{
 use super::{BranchContext, apply_finalize, apply_rule_to_record};
 
 mod preflight;
+mod record;
 mod trace;
 
 pub use preflight::{
@@ -20,6 +21,11 @@ pub use preflight::{
     preflight_validate_input_with_warnings_with_base_dir_and_options,
     preflight_validate_with_base_dir, preflight_validate_with_warnings,
     preflight_validate_with_warnings_with_base_dir,
+};
+pub(super) use record::transform_record_with_warnings_inner;
+pub use record::{
+    transform_record, transform_record_with_base_dir, transform_record_with_warnings,
+    transform_record_with_warnings_with_base_dir,
 };
 pub use trace::{
     transform_input_with_trace, transform_input_with_trace_with_base_dir_and_options,
@@ -229,74 +235,5 @@ fn transform_with_warnings_inner(
         output = apply_finalize(finalize, output, context)?;
     }
 
-    Ok((output, warnings))
-}
-
-pub fn transform_record(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-) -> Result<Option<JsonValue>, TransformError> {
-    let (output, _warnings) = transform_record_with_warnings(rule, record, context)?;
-    Ok(output)
-}
-
-pub fn transform_record_with_base_dir(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    base_dir: &Path,
-) -> Result<Option<JsonValue>, TransformError> {
-    let (output, _warnings) =
-        transform_record_with_warnings_with_base_dir(rule, record, context, base_dir)?;
-    Ok(output)
-}
-
-pub fn transform_record_with_warnings(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
-    let mut branch_context = BranchContext::default();
-    transform_record_with_warnings_inner(rule, record, context, None, &mut branch_context)
-}
-
-pub fn transform_record_with_warnings_with_base_dir(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    base_dir: &Path,
-) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
-    let mut branch_context = BranchContext::default();
-    transform_record_with_warnings_inner(rule, record, context, Some(base_dir), &mut branch_context)
-}
-
-pub(super) fn transform_record_with_warnings_inner(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    base_dir: Option<&Path>,
-    branch_context: &mut BranchContext,
-) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
-    let mut warnings = Vec::new();
-    let output = apply_rule_to_record(
-        rule,
-        record,
-        context,
-        &mut warnings,
-        base_dir,
-        branch_context,
-    )?;
-    if output.is_none() {
-        return Ok((None, warnings));
-    }
-    if let Some(finalize) = &rule.finalize {
-        let mut records = Vec::new();
-        if let Some(value) = output {
-            records.push(value);
-        }
-        let finalized = apply_finalize(finalize, JsonValue::Array(records), context)?;
-        return Ok((Some(finalized), warnings));
-    }
     Ok((output, warnings))
 }
