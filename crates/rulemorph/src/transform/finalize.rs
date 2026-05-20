@@ -1,5 +1,11 @@
 use super::*;
 
+mod sort;
+mod wrap;
+
+pub(super) use sort::sort_key_from_value;
+use wrap::eval_wrap_value;
+
 pub(super) fn apply_finalize(
     finalize: &FinalizeSpec,
     output: JsonValue,
@@ -273,61 +279,4 @@ pub(super) fn apply_finalize_traced(
     }
 
     Ok(output)
-}
-
-fn eval_wrap_value(
-    value: &JsonValue,
-    out: &JsonValue,
-    context: Option<&JsonValue>,
-    path: &str,
-) -> Result<JsonValue, TransformError> {
-    match value {
-        JsonValue::Object(map) => {
-            let mut out_map = serde_json::Map::new();
-            for (key, value) in map {
-                let child_path = format!("{}.{}", path, key);
-                out_map.insert(
-                    key.clone(),
-                    eval_wrap_value(value, out, context, &child_path)?,
-                );
-            }
-            Ok(JsonValue::Object(out_map))
-        }
-        _ => {
-            let expr = parse_v2_expr(value).map_err(|err| {
-                TransformError::new(
-                    TransformErrorKind::ExprError,
-                    format!("invalid v2 expr: {}", err),
-                )
-                .with_path(path)
-            })?;
-            let ctx = V2EvalContext::new();
-            match eval_v2_expr(&expr, out, context, out, path, &ctx)? {
-                V2EvalValue::Missing => Ok(JsonValue::Null),
-                V2EvalValue::Value(value) => Ok(value),
-            }
-        }
-    }
-}
-
-pub(super) fn sort_key_from_value(
-    value: &JsonValue,
-    path: &str,
-) -> Result<SortKey, TransformError> {
-    match value {
-        JsonValue::Number(number) => number.as_f64().map(SortKey::Number).ok_or_else(|| {
-            TransformError::new(
-                TransformErrorKind::ExprError,
-                "sort key must be a finite number",
-            )
-            .with_path(path)
-        }),
-        JsonValue::String(value) => Ok(SortKey::String(value.clone())),
-        JsonValue::Bool(value) => Ok(SortKey::Bool(*value)),
-        _ => Err(TransformError::new(
-            TransformErrorKind::ExprError,
-            "sort key must be string/number/bool",
-        )
-        .with_path(path)),
-    }
 }
