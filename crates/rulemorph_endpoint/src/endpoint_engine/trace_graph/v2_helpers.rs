@@ -3,97 +3,15 @@ use rulemorph::v2_eval::{
     eval_v2_pipe, eval_v2_ref, eval_v2_start,
 };
 use rulemorph::v2_model::V2Step;
-use rulemorph::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref};
-use rulemorph::{Expr, PathToken, get_path, parse_path};
+use rulemorph::{PathToken, get_path, parse_path};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
+mod expr_json;
 mod labels;
+pub(super) use self::expr_json::{
+    expr_to_json_for_v2_condition, expr_to_json_for_v2_pipe, expr_to_json_value,
+};
 use self::labels::{v2_start_label, v2_step_label};
-
-pub(super) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
-    match expr {
-        Expr::Literal(JsonValue::Array(arr)) => Some(JsonValue::Array(arr.clone())),
-        Expr::Literal(JsonValue::String(value)) => {
-            if is_v2_ref(value) || is_pipe_value(value) || is_literal_escape(value) {
-                Some(JsonValue::String(value.clone()))
-            } else {
-                None
-            }
-        }
-        Expr::Ref(expr_ref)
-            if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) =>
-        {
-            Some(JsonValue::Array(vec![JsonValue::String(
-                expr_ref.ref_path.clone(),
-            )]))
-        }
-        Expr::Chain(chain) => {
-            if let Some(first) = chain.chain.first() {
-                if let Expr::Ref(reference) = first {
-                    if reference.ref_path.starts_with('@') {
-                        let items: Vec<JsonValue> =
-                            chain.chain.iter().map(expr_to_json_value).collect();
-                        return Some(JsonValue::Array(items));
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-pub(super) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
-    match expr {
-        Expr::Literal(value) => Some(value.clone()),
-        Expr::Ref(reference)
-            if reference.ref_path.starts_with('@') || is_literal_escape(&reference.ref_path) =>
-        {
-            Some(JsonValue::String(reference.ref_path.clone()))
-        }
-        Expr::Chain(chain) => {
-            if let Some(first) = chain.chain.first() {
-                if let Expr::Ref(reference) = first {
-                    if reference.ref_path.starts_with('@') {
-                        let items: Vec<JsonValue> = chain
-                            .chain
-                            .iter()
-                            .map(expr_to_json_value_for_condition)
-                            .collect();
-                        return Some(JsonValue::Array(items));
-                    }
-                }
-            }
-            None
-        }
-        _ => None,
-    }
-}
-
-fn expr_to_json_value_for_condition(expr: &Expr) -> JsonValue {
-    match expr {
-        Expr::Ref(reference) => JsonValue::String(reference.ref_path.clone()),
-        Expr::Literal(value) => value.clone(),
-        Expr::Op(op) => {
-            let args: Vec<JsonValue> = op
-                .args
-                .iter()
-                .map(expr_to_json_value_for_condition)
-                .collect();
-            let mut obj = JsonMap::new();
-            obj.insert(op.op.clone(), JsonValue::Array(args));
-            JsonValue::Object(obj)
-        }
-        Expr::Chain(chain) => {
-            let items: Vec<JsonValue> = chain
-                .chain
-                .iter()
-                .map(expr_to_json_value_for_condition)
-                .collect();
-            JsonValue::Array(items)
-        }
-    }
-}
 
 pub(super) fn build_pipe_steps(
     pipe: &rulemorph::v2_model::V2Pipe,
@@ -291,19 +209,4 @@ pub(super) fn set_path_value(root: &mut JsonValue, path: &str, value: JsonValue)
         current = next;
     }
     Err(())
-}
-
-pub(super) fn expr_to_json_value(expr: &Expr) -> JsonValue {
-    match expr {
-        Expr::Ref(reference) => json!({ "ref": reference.ref_path }),
-        Expr::Op(op) => {
-            let args: Vec<JsonValue> = op.args.iter().map(expr_to_json_value).collect();
-            json!({ "op": op.op, "args": args })
-        }
-        Expr::Chain(chain) => {
-            let items: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
-            JsonValue::Array(items)
-        }
-        Expr::Literal(value) => value.clone(),
-    }
 }
