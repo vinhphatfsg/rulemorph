@@ -1,13 +1,15 @@
 use super::*;
 
+mod keyed;
 mod predicate;
 mod sort;
 
+use keyed::eval_v2_keyed_collection_traced;
 use predicate::eval_v2_predicate_collection_traced;
 use sort::eval_v2_sort_by_traced;
 pub(in crate::transform) use sort::sort_key_to_json;
 
-fn v2_eval_array_from_value(
+pub(super) fn v2_eval_array_from_value(
     value: V2EvalValue,
     path: &str,
 ) -> Result<Vec<JsonValue>, TransformError> {
@@ -67,7 +69,7 @@ fn eval_v2_predicate_expr_traced<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn eval_v2_key_expr_string_traced<'a>(
+pub(super) fn eval_v2_key_expr_string_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,
     context: Option<&'a JsonValue>,
@@ -96,7 +98,7 @@ fn eval_v2_key_expr_string_traced<'a>(
     value_to_string(&value, path)
 }
 
-fn emit_v2_collection_item_start(
+pub(super) fn emit_v2_collection_item_start(
     collector: &mut TraceCollector,
     item_path: &str,
     operator: &str,
@@ -114,7 +116,7 @@ fn emit_v2_collection_item_start(
         .finish(collector);
 }
 
-fn finish_v2_collection_item(
+pub(super) fn finish_v2_collection_item(
     collector: &mut TraceCollector,
     item_path: &str,
     operator: &str,
@@ -223,78 +225,9 @@ pub(in crate::transform) fn eval_v2_collection_op_traced<'a>(
             }
             Ok(V2EvalValue::Value(JsonValue::Array(results)))
         }
-        "group_by" | "key_by" | "distinct_by" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    format!("{operator} requires exactly one argument"),
-                )
-                .with_path(path));
-            }
-            let array = v2_eval_array_from_value(pipe_value, path)?;
-            let arg_path = format!("{}.args[0]", path);
-            let mut grouped = serde_json::Map::new();
-            let mut keyed = serde_json::Map::new();
-            let mut distinct = Vec::new();
-            let mut seen = HashSet::new();
-            for (index, item) in array.iter().enumerate() {
-                let item_path = format!("{}[{}]", path, index);
-                emit_v2_collection_item_start(collector, &item_path, operator, index, item);
-                let item_ctx = step_ctx
-                    .clone()
-                    .with_pipe_value(V2EvalValue::Value(item.clone()))
-                    .with_item(V2EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string_traced(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                    collector,
-                )?;
-                let key_output = V2EvalValue::Value(JsonValue::String(key.clone()));
-                emit_v2_arg_eval(collector, &arg_path, 0, operator, &key_output);
-                let selected = match operator {
-                    "group_by" => {
-                        let entry = grouped
-                            .entry(key)
-                            .or_insert_with(|| JsonValue::Array(Vec::new()));
-                        if let JsonValue::Array(items) = entry {
-                            items.push(item.clone());
-                        }
-                        true
-                    }
-                    "key_by" => {
-                        keyed.insert(key, item.clone());
-                        true
-                    }
-                    "distinct_by" => {
-                        if seen.insert(key) {
-                            distinct.push(item.clone());
-                            true
-                        } else {
-                            false
-                        }
-                    }
-                    _ => unreachable!(),
-                };
-                finish_v2_collection_item(
-                    collector,
-                    &item_path,
-                    operator,
-                    index,
-                    &key_output,
-                    Some(("selected", selected)),
-                );
-            }
-            match operator {
-                "group_by" => Ok(V2EvalValue::Value(JsonValue::Object(grouped))),
-                "key_by" => Ok(V2EvalValue::Value(JsonValue::Object(keyed))),
-                "distinct_by" => Ok(V2EvalValue::Value(JsonValue::Array(distinct))),
-                _ => unreachable!(),
-            }
-        }
+        "group_by" | "key_by" | "distinct_by" => eval_v2_keyed_collection_traced(
+            op_step, pipe_value, record, context, out, path, &step_ctx, collector,
+        ),
         "sort_by" => eval_v2_sort_by_traced(
             op_step, pipe_value, record, context, out, path, &step_ctx, collector,
         ),
