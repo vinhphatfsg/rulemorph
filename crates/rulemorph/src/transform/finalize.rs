@@ -1,8 +1,10 @@
 use super::*;
 
+mod pagination;
 mod sort;
 mod wrap;
 
+use pagination::{apply_limit, apply_limit_traced, apply_offset, apply_offset_traced};
 pub(super) use sort::sort_key_from_value;
 use wrap::eval_wrap_value;
 
@@ -97,17 +99,11 @@ pub(super) fn apply_finalize(
     }
 
     if let Some(offset) = finalize.offset {
-        if offset > 0 && offset < records.len() {
-            records = records.split_off(offset);
-        } else if offset >= records.len() {
-            records = Vec::new();
-        }
+        apply_offset(&mut records, offset);
     }
 
     if let Some(limit) = finalize.limit {
-        if limit < records.len() {
-            records.truncate(limit);
-        }
+        apply_limit(&mut records, limit);
     }
 
     let output = JsonValue::Array(records);
@@ -245,27 +241,11 @@ pub(super) fn apply_finalize_traced(
     }
 
     if let Some(offset) = finalize.offset {
-        if offset > 0 && offset < records.len() {
-            records = records.split_off(offset);
-        } else if offset >= records.len() {
-            records = Vec::new();
-        }
-        collector
-            .emit(TraceEventKind::FinalizeOffset, TracePhase::Instant)
-            .rule_path("finalize.offset")
-            .attr_index("offset", offset)
-            .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
+        apply_offset_traced(&mut records, offset, collector);
     }
 
     if let Some(limit) = finalize.limit {
-        if limit < records.len() {
-            records.truncate(limit);
-        }
-        collector
-            .emit(TraceEventKind::FinalizeLimit, TracePhase::Instant)
-            .rule_path("finalize.limit")
-            .attr_count("limit", limit)
-            .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
+        apply_limit_traced(&mut records, limit, collector);
     }
 
     let output = JsonValue::Array(records);
