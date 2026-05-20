@@ -4,13 +4,12 @@ use anyhow::Result;
 use serde_json::Value as JsonValue;
 
 use super::chunk_write::{
-    max_ndjson_line_bytes, total_chunk_bytes, write_finalize_chunk, write_node_chunks,
-    write_record_chunks,
+    max_ndjson_line_bytes, write_finalize_chunk, write_node_chunks, write_record_chunks,
 };
-use super::cleanup::{TraceDirGuard, cleanup_detail_files};
+use super::cleanup::TraceDirGuard;
 use super::detail::{detail_status_for_level, initial_detail_reasons, strip_trace_detail};
 use super::externalize::externalize_trace_payloads;
-use super::manifest::{blob_total_bytes, count_inline_nodes, parse_rule_meta, parse_summary};
+use super::manifest::{count_inline_nodes, parse_rule_meta, parse_summary};
 use super::masking::{apply_masking, normalize_masking_rules};
 use super::options::{TraceDetailLevel, TraceWriteOptions, clamp_max_chunk_bytes_uncompressed};
 use super::record_nodes::{normalize_inline_records, split_records_and_nodes};
@@ -24,7 +23,9 @@ use crate::trace_schema::{
     TraceDetailRef, TraceManifest, TraceMasking,
 };
 
+mod detail_cleanup;
 mod manifest_payload;
+use self::detail_cleanup::{add_detail_reason, reset_detail_to_basic, total_detail_bytes};
 use self::manifest_payload::write_manifest_payload;
 
 const TRACE_SCHEMA_VERSION: u8 = 1;
@@ -220,49 +221,39 @@ pub(crate) fn write_trace_bundle_sync(
     }
 
     if budget_exceeded || chunk_too_large {
-        cleanup_detail_files(
+        reset_detail_to_basic(
             &mut record_files,
             &mut node_files,
             &mut finalize_file,
             &mut blob_files,
+            &mut record_chunks,
+            &mut node_chunks,
+            &mut finalize_chunk,
+            &mut detail_status,
+            &mut detail_layout,
         );
-        record_chunks.clear();
-        node_chunks.clear();
-        finalize_chunk = None;
-        detail_status = "basic".to_string();
-        detail_layout = "records_inline".to_string();
-        if budget_exceeded
-            && !detail_reason
-                .iter()
-                .any(|reason| reason == "budget_exceeded")
-        {
-            detail_reason.push("budget_exceeded".to_string());
+        if budget_exceeded {
+            add_detail_reason(&mut detail_reason, "budget_exceeded");
         }
-        if chunk_too_large
-            && !detail_reason
-                .iter()
-                .any(|reason| reason == "chunk_too_large")
-        {
-            detail_reason.push("chunk_too_large".to_string());
+        if chunk_too_large {
+            add_detail_reason(&mut detail_reason, "chunk_too_large");
         }
     }
 
-    let detail_bytes = total_chunk_bytes(&record_chunks)
-        .saturating_add(total_chunk_bytes(&node_chunks))
-        .saturating_add(finalize_chunk.as_ref().and_then(|c| c.bytes).unwrap_or(0))
-        .saturating_add(blob_total_bytes(&blob_files));
+    let detail_bytes =
+        total_detail_bytes(&record_chunks, &node_chunks, &finalize_chunk, &blob_files);
     if detail_status == "full" && detail_bytes > options.max_bytes_per_trace as u64 {
-        cleanup_detail_files(
+        reset_detail_to_basic(
             &mut record_files,
             &mut node_files,
             &mut finalize_file,
             &mut blob_files,
+            &mut record_chunks,
+            &mut node_chunks,
+            &mut finalize_chunk,
+            &mut detail_status,
+            &mut detail_layout,
         );
-        record_chunks.clear();
-        node_chunks.clear();
-        finalize_chunk = None;
-        detail_status = "basic".to_string();
-        detail_layout = "records_inline".to_string();
         detail_reason.push("budget_exceeded".to_string());
     }
 
