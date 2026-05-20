@@ -1,16 +1,18 @@
 use std::path::Path;
 use std::time::Instant;
 
-use rulemorph::{RuleFile, TransformError, TransformErrorKind, transform_record_with_base_dir};
+use rulemorph::{RuleFile, TransformError, TransformErrorKind};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 use self::branch_trace::apply_branch_trace_meta;
+use self::step_outputs::collect_step_outputs;
 use super::condition::eval_trace_condition;
 use super::duration::sum_rule_trace_duration_us;
 use super::finalize::build_finalize_trace;
 use super::mapping_ops::build_mapping_ops_with_values;
 
 mod branch_trace;
+mod step_outputs;
 
 pub(in crate::endpoint_engine) struct RuleTraceNodes {
     pub(in crate::endpoint_engine) nodes: Vec<JsonValue>,
@@ -29,16 +31,7 @@ pub(in crate::endpoint_engine) fn build_rule_nodes_from_rule(
     let mut finalize_trace: Option<JsonValue> = None;
     let mut pre_finalize_output: Option<JsonValue> = None;
     if let Some(steps) = &rule.steps {
-        let mut step_outputs = Vec::with_capacity(steps.len());
-        for index in 0..steps.len() {
-            let mut partial_rule = rule.clone();
-            partial_rule.steps = Some(steps[..=index].to_vec());
-            partial_rule.finalize = None;
-            let started = Instant::now();
-            let result = transform_record_with_base_dir(&partial_rule, record, context, base_dir);
-            let duration_us = started.elapsed().as_micros() as u64;
-            step_outputs.push((result, duration_us));
-        }
+        let step_outputs = collect_step_outputs(rule, record, context, base_dir);
 
         let mut prev_output = JsonValue::Object(JsonMap::new());
         let mut halted = false;
