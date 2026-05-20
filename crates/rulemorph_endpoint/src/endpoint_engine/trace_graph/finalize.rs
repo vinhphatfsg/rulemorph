@@ -4,7 +4,7 @@ use std::time::Instant;
 use rulemorph::{RuleFile, transform_record_with_base_dir};
 use serde_json::{Value as JsonValue, json};
 
-use super::transform_error_to_trace;
+use super::rule_nodes::transform_error_to_trace;
 use super::v2_helpers::expr_to_json_value;
 
 pub(super) struct FinalizeTrace {
