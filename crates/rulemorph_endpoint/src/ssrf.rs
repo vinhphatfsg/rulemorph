@@ -3,6 +3,12 @@ use std::net::{IpAddr, SocketAddr};
 use tokio::net::lookup_host;
 use url::{Host, Url};
 
+mod hosts;
+mod private_ip;
+
+use hosts::{host_equals, host_matches, normalize_domain};
+use private_ip::is_private_ip;
+
 #[derive(Debug)]
 pub struct ResolvedSsrfTarget {
     pub host: String,
@@ -90,27 +96,6 @@ pub async fn resolve_ssrf_target(
     }
 }
 
-fn normalize_domain(domain: &str) -> String {
-    domain.trim().trim_end_matches('.').to_ascii_lowercase()
-}
-
-fn host_equals(host: &str, allow: &str) -> bool {
-    if allow.is_empty() {
-        return false;
-    }
-    host == allow
-}
-
-fn host_matches(host: &str, allow: &str) -> bool {
-    if allow.is_empty() {
-        return false;
-    }
-    if host == allow {
-        return true;
-    }
-    host.ends_with(&format!(".{allow}"))
-}
-
 async fn resolve_target_addr(
     host: &str,
     port: u16,
@@ -157,45 +142,6 @@ async fn lookup_host_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, Str
         .await
         .map(|iter| iter.collect())
         .map_err(|err| format!("dns lookup failed: {err}"))
-}
-
-fn is_private_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => is_private_v4(v4),
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4() {
-                return is_private_v4(v4);
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || v6.is_unique_local()
-                || v6.is_unicast_link_local()
-                || v6.is_multicast()
-        }
-    }
-}
-
-fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
-    if v4.is_private()
-        || v4.is_loopback()
-        || v4.is_link_local()
-        || v4.is_broadcast()
-        || v4.is_documentation()
-        || v4.is_unspecified()
-        || v4.is_multicast()
-    {
-        return true;
-    }
-    let octets = v4.octets();
-    let first = octets[0];
-    let second = octets[1];
-    match first {
-        100 if (64..=127).contains(&second) => true, // 100.64.0.0/10 CGNAT
-        198 if (18..=19).contains(&second) => true,  // 198.18.0.0/15 benchmarking
-        240..=255 => true,                           // 240.0.0.0/4 reserved + broadcast
-        192 if second == 0 && octets[2] == 0 => true, // 192.0.0.0/24 (IETF)
-        _ => false,
-    }
 }
 
 #[cfg(test)]
@@ -310,37 +256,37 @@ mod tests {
 
     #[test]
     fn private_allowlist_requires_exact_match() {
-        assert!(super::host_equals("localhost", "localhost"));
-        assert!(!super::host_equals("api.example.com", "example.com"));
+        assert!(super::hosts::host_equals("localhost", "localhost"));
+        assert!(!super::hosts::host_equals("api.example.com", "example.com"));
     }
 
     #[test]
     fn treats_ipv4_mapped_ipv6_as_private() {
         let ip = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001));
-        assert!(super::is_private_ip(ip));
+        assert!(super::private_ip::is_private_ip(ip));
     }
 
     #[test]
     fn treats_cgnat_as_private() {
         let ip = IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1));
-        assert!(super::is_private_ip(ip));
+        assert!(super::private_ip::is_private_ip(ip));
     }
 
     #[test]
     fn treats_benchmarking_as_private() {
         let ip = IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1));
-        assert!(super::is_private_ip(ip));
+        assert!(super::private_ip::is_private_ip(ip));
     }
 
     #[test]
     fn treats_reserved_high_range_as_private() {
         let ip = IpAddr::V4(Ipv4Addr::new(240, 0, 0, 1));
-        assert!(super::is_private_ip(ip));
+        assert!(super::private_ip::is_private_ip(ip));
     }
 
     #[test]
     fn allows_public_ipv4() {
         let ip = IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1));
-        assert!(!super::is_private_ip(ip));
+        assert!(!super::private_ip::is_private_ip(ip));
     }
 }
