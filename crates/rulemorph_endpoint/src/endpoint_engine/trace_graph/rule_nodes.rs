@@ -4,15 +4,13 @@ use std::time::Instant;
 use rulemorph::{RuleFile, TransformError, TransformErrorKind, transform_record_with_base_dir};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
+use self::branch_trace::apply_branch_trace_meta;
 use super::condition::eval_trace_condition;
 use super::duration::sum_rule_trace_duration_us;
-use super::envelope::build_rule_trace;
 use super::finalize::build_finalize_trace;
 use super::mapping_ops::build_mapping_ops_with_values;
-use crate::endpoint_engine::rule_loader::{RuleKind, load_rule_kind, yaml_source_to_json};
-use crate::endpoint_engine::{
-    empty_object, resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
-};
+
+mod branch_trace;
 
 pub(in crate::endpoint_engine) struct RuleTraceNodes {
     pub(in crate::endpoint_engine) nodes: Vec<JsonValue>,
@@ -174,20 +172,6 @@ pub(in crate::endpoint_engine) fn build_rule_nodes_from_rule(
 
             if step_active && status != "error" {
                 if let Some(branch) = step.branch.as_ref() {
-                    let mut refs = Vec::new();
-                    let mut labels = Vec::new();
-                    let then_ref = rule_ref_from_rule(base_dir, &branch.then);
-                    refs.push(then_ref.clone());
-                    labels.push("branch: then".to_string());
-                    let else_ref = branch
-                        .r#else
-                        .as_ref()
-                        .map(|other| rule_ref_from_rule(base_dir, other));
-                    if let Some(other_ref) = else_ref.as_ref() {
-                        refs.push(other_ref.clone());
-                        labels.push("branch: else".to_string());
-                    }
-
                     let branch_taken = match eval_trace_condition(
                         &branch.when,
                         record,
@@ -211,77 +195,18 @@ pub(in crate::endpoint_engine) fn build_rule_nodes_from_rule(
                             "none"
                         }
                     };
-                    meta.insert(
-                        "branch_taken".to_string(),
-                        JsonValue::String(branch_taken.to_string()),
-                    );
-                    meta.insert(
-                        "rule_refs".to_string(),
-                        JsonValue::Array(refs.iter().cloned().map(JsonValue::String).collect()),
-                    );
-                    meta.insert(
-                        "rule_ref_labels".to_string(),
-                        JsonValue::Array(labels.iter().cloned().map(JsonValue::String).collect()),
-                    );
                     if branch.return_ && branch_taken != "none" {
                         halted = true;
                     }
-
-                    let taken_ref = match branch_taken {
-                        "then" => Some((branch.then.as_str(), then_ref)),
-                        "else" => branch
-                            .r#else
-                            .as_deref()
-                            .and_then(|path| else_ref.map(|label| (path, label))),
-                        _ => None,
-                    };
-                    if let Some((target_path, ref_label)) = taken_ref {
-                        meta.insert("rule_ref".to_string(), JsonValue::String(ref_label.clone()));
-                        meta.insert(
-                            "rule_ref_label".to_string(),
-                            JsonValue::String(format!("branch: {}", branch_taken)),
-                        );
-                        let resolved = resolve_rule_path(base_dir, target_path);
-                        if let Ok(RuleKind::Normal(loaded)) = load_rule_kind(&resolved) {
-                            let rule_source = std::fs::read_to_string(&resolved)
-                                .ok()
-                                .and_then(|source| yaml_source_to_json(&source))
-                                .unwrap_or_else(|| json!({}));
-                            let child_rule_trace = build_rule_nodes_from_rule(
-                                &loaded.rule,
-                                &step_input,
-                                context,
-                                &loaded.base_dir,
-                            );
-                            let child_duration_us = child_rule_trace.duration_us;
-                            let child_output = transform_record_with_base_dir(
-                                &loaded.rule,
-                                &step_input,
-                                context,
-                                &loaded.base_dir,
-                            )
-                            .ok()
-                            .and_then(|value| value)
-                            .unwrap_or_else(empty_object);
-                            let trace_output = child_rule_trace
-                                .pre_finalize_output
-                                .clone()
-                                .unwrap_or_else(|| child_output.clone());
-                            child_trace = Some(build_rule_trace(
-                                "normal",
-                                rule_display_name(&resolved),
-                                rule_ref_from_path(base_dir, &resolved),
-                                loaded.rule.version,
-                                rule_source,
-                                step_input.clone(),
-                                trace_output,
-                                child_rule_trace.nodes,
-                                child_rule_trace.finalize,
-                                child_duration_us,
-                                "ok",
-                            ));
-                        }
-                    }
+                    child_trace = apply_branch_trace_meta(
+                        &branch.then,
+                        branch.r#else.as_deref(),
+                        branch_taken,
+                        base_dir,
+                        &step_input,
+                        context,
+                        &mut meta,
+                    );
                 }
             }
 
