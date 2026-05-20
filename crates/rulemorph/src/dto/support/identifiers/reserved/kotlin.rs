@@ -1,0 +1,31 @@
+pub(super) fn is_reserved_kotlin(value: &str) -> bool {
+    matches!(
+        value,
+        "as" | "break"
+            | "class"
+            | "continue"
+            | "do"
+            | "else"
+            | "false"
+            | "for"
+            | "fun"
+            | "if"
+            | "in"
+            | "interface"
+            | "is"
+            | "null"
+            | "object"
+            | "package"
+            | "return"
+            | "super"
+            | "this"
+            | "throw"
+            | "true"
+            | "try"
+            | "typealias"
+            | "val"
+            | "var"
+            | "when"
+            | "while"
+    )
+}
