@@ -1,5 +1,4 @@
 use serde_json::Value as JsonValue;
-use std::collections::HashSet;
 
 use super::{
     EvalItem, EvalValue, V2EvalContext, eval_v2_expr, eval_v2_expr_or_null, value_to_string,
@@ -7,9 +6,11 @@ use super::{
 use crate::error::{TransformError, TransformErrorKind};
 use crate::v2_model::{V2Expr, V2OpStep};
 
+mod keyed;
 mod predicate;
 mod sort;
 
+use keyed::eval_keyed_collection;
 use predicate::{eval_filter, eval_find, eval_find_index, eval_partition};
 use sort::eval_sort_by;
 
@@ -91,99 +92,10 @@ pub(super) fn eval_collection_op<'a>(
             }
             Ok(EvalValue::Value(JsonValue::Array(results)))
         }
-        "group_by" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "group_by requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            let mut results = serde_json::Map::new();
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )?;
-                let entry = results
-                    .entry(key)
-                    .or_insert_with(|| JsonValue::Array(Vec::new()));
-                if let JsonValue::Array(items) = entry {
-                    items.push(item.clone());
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::Object(results)))
-        }
-        "key_by" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "key_by requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            let mut results = serde_json::Map::new();
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )?;
-                results.insert(key, item.clone());
-            }
-            Ok(EvalValue::Value(JsonValue::Object(results)))
+        "group_by" | "key_by" | "distinct_by" => {
+            eval_keyed_collection(op_step, pipe_value, record, context, out, path, ctx)
         }
         "partition" => eval_partition(op_step, pipe_value, record, context, out, path, ctx),
-        "distinct_by" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "distinct_by requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let arg_path = format!("{}.args[0]", path);
-            let mut results = Vec::new();
-            let mut seen = HashSet::new();
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index });
-                let key = eval_v2_key_expr_string(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &arg_path,
-                    &item_ctx,
-                )?;
-                if seen.insert(key) {
-                    results.push(item.clone());
-                }
-            }
-            Ok(EvalValue::Value(JsonValue::Array(results)))
-        }
         "sort_by" => eval_sort_by(op_step, pipe_value, record, context, out, path, ctx),
         "find" => eval_find(op_step, pipe_value, record, context, out, path, ctx),
         "find_index" => eval_find_index(op_step, pipe_value, record, context, out, path, ctx),
@@ -327,7 +239,7 @@ fn eval_v2_predicate_expr<'a>(
     }
 }
 
-fn eval_v2_key_expr_string<'a>(
+pub(super) fn eval_v2_key_expr_string<'a>(
     expr: &V2Expr,
     record: &'a JsonValue,
     context: Option<&'a JsonValue>,
@@ -355,7 +267,7 @@ fn eval_v2_key_expr_string<'a>(
     value_to_string(&value, path)
 }
 
-fn eval_v2_array_from_eval_value(
+pub(super) fn eval_v2_array_from_eval_value(
     value: EvalValue,
     path: &str,
 ) -> Result<Vec<JsonValue>, TransformError> {
