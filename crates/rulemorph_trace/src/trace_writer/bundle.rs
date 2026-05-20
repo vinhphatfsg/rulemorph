@@ -24,9 +24,11 @@ use crate::trace_schema::{
 };
 
 mod detail_cleanup;
+mod detail_files;
 mod manifest_build;
 mod manifest_payload;
 use self::detail_cleanup::{add_detail_reason, reset_detail_to_basic, total_detail_bytes};
+use self::detail_files::ensure_detail_files_exist;
 use self::manifest_build::build_trace_manifest;
 use self::manifest_payload::write_manifest_payload;
 
@@ -273,27 +275,7 @@ pub(crate) fn write_trace_bundle_sync(
         &options,
     );
 
-    // Ensure any temporary files were created (record files already written).
-    if detail.status == "full" {
-        for path in record_files {
-            if !path.exists() {
-                return Err(anyhow::anyhow!("record chunk missing: {}", path.display()));
-            }
-        }
-        for path in node_files {
-            if !path.exists() {
-                return Err(anyhow::anyhow!("node chunk missing: {}", path.display()));
-            }
-        }
-        if let Some(path) = finalize_file {
-            if !path.exists() {
-                return Err(anyhow::anyhow!(
-                    "finalize chunk missing: {}",
-                    path.display()
-                ));
-            }
-        }
-    }
+    ensure_detail_files_exist(&detail.status, record_files, node_files, finalize_file)?;
 
     let manifest_path = trace_dir.join("trace.json");
     write_manifest_payload(&manifest_path, &mut manifest, &mut detail)?;
