@@ -8,38 +8,9 @@ use super::super::array::{
 };
 use super::super::*;
 
-pub(super) fn is_array_operator(op: &str) -> bool {
-    matches!(
-        op,
-        "map"
-            | "filter"
-            | "flat_map"
-            | "flatten"
-            | "take"
-            | "drop"
-            | "slice"
-            | "chunk"
-            | "zip"
-            | "zip_with"
-            | "unzip"
-            | "group_by"
-            | "key_by"
-            | "partition"
-            | "unique"
-            | "distinct_by"
-            | "sort_by"
-            | "find"
-            | "find_index"
-            | "index_of"
-            | "contains"
-            | "sum"
-            | "avg"
-            | "min"
-            | "max"
-            | "reduce"
-            | "fold"
-    )
-}
+mod inventory;
+
+pub(super) use inventory::is_array_operator;
 
 pub(super) fn eval_array_dispatch(
     expr_op: &ExprOp,
