@@ -92,7 +92,7 @@ mod tests {
     // Op validation tests
     #[test]
     fn test_is_valid_op() {
-        for metadata in crate::v2_operator::V2_OPERATORS {
+        for metadata in crate::v2_operator::operators() {
             assert!(
                 operators::is_valid_op(metadata.name),
                 "{} must be valid",
@@ -104,20 +104,19 @@ mod tests {
 
     #[test]
     fn test_v2_operator_metadata_covers_validation_and_trace_inventory() {
-        let names = crate::v2_operator::V2_OPERATORS
+        let inventory = crate::v2_operator::operators().collect::<Vec<_>>();
+        let names = inventory
             .iter()
             .map(|metadata| metadata.name)
             .collect::<std::collections::BTreeSet<_>>();
 
         assert_eq!(
             names.len(),
-            crate::v2_operator::V2_OPERATORS.len(),
+            inventory.len(),
             "v2 operator metadata must not contain duplicate names"
         );
         assert!(
-            crate::v2_operator::V2_OPERATORS
-                .iter()
-                .all(|metadata| metadata.validates),
+            inventory.iter().all(|metadata| metadata.validates),
             "all current v2 operators should remain validation-visible"
         );
         assert!(

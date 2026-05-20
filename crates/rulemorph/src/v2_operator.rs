@@ -3,7 +3,7 @@ mod query;
 mod types;
 
 #[cfg(test)]
-pub(crate) use self::inventory::V2_OPERATORS;
+pub(crate) use self::inventory::operators;
 pub(crate) use self::query::{is_valid_operator, operator, operator_arg_range, operator_arg_scope};
 #[cfg(test)]
 pub(crate) use self::query::{
