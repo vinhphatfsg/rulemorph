@@ -8,10 +8,12 @@ use crate::v2_model::{V2Expr, V2OpStep};
 
 mod keyed;
 mod predicate;
+mod reduce_fold;
 mod sort;
 
 use keyed::eval_keyed_collection;
 use predicate::{eval_filter, eval_find, eval_find_index, eval_partition};
+use reduce_fold::{eval_fold, eval_reduce};
 use sort::eval_sort_by;
 
 pub(super) fn eval_collection_op<'a>(
@@ -99,73 +101,8 @@ pub(super) fn eval_collection_op<'a>(
         "sort_by" => eval_sort_by(op_step, pipe_value, record, context, out, path, ctx),
         "find" => eval_find(op_step, pipe_value, record, context, out, path, ctx),
         "find_index" => eval_find_index(op_step, pipe_value, record, context, out, path, ctx),
-        "reduce" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "reduce requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            if array.is_empty() {
-                return Ok(EvalValue::Value(JsonValue::Null));
-            }
-            let expr_path = format!("{}.args[0]", path);
-            let mut acc = array[0].clone();
-            for (index, item) in array.iter().enumerate().skip(1) {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index })
-                    .with_acc(&acc);
-                let value = eval_v2_expr_or_null(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &expr_path,
-                    &item_ctx,
-                )?;
-                acc = value;
-            }
-            Ok(EvalValue::Value(acc))
-        }
-        "fold" => {
-            if op_step.args.len() != 2 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "fold requires exactly two arguments",
-                )
-                .with_path(path));
-            }
-            let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
-            let init_path = format!("{}.args[0]", path);
-            let initial =
-                match eval_v2_expr(&op_step.args[0], record, context, out, &init_path, ctx)? {
-                    EvalValue::Missing => return Ok(EvalValue::Missing),
-                    EvalValue::Value(value) => value,
-                };
-            let expr_path = format!("{}.args[1]", path);
-            let mut acc = initial;
-            for (index, item) in array.iter().enumerate() {
-                let item_ctx = ctx
-                    .clone()
-                    .with_pipe_value(EvalValue::Value(item.clone()))
-                    .with_item(EvalItem { value: item, index })
-                    .with_acc(&acc);
-                let value = eval_v2_expr_or_null(
-                    &op_step.args[1],
-                    record,
-                    context,
-                    out,
-                    &expr_path,
-                    &item_ctx,
-                )?;
-                acc = value;
-            }
-            Ok(EvalValue::Value(acc))
-        }
+        "reduce" => eval_reduce(op_step, pipe_value, record, context, out, path, ctx),
+        "fold" => eval_fold(op_step, pipe_value, record, context, out, path, ctx),
         "zip_with" => {
             if op_step.args.len() < 2 {
                 return Err(TransformError::new(
