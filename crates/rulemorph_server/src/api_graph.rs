@@ -4,12 +4,13 @@ use std::path::Path;
 use anyhow::Result;
 use rulemorph::serde_guard::parse_yaml_value_strict;
 use rulemorph::{RuleFormat, parse_rule_file_with_format};
-use serde::Serialize;
 use serde_yaml::Value as YamlValue;
 
+mod dto;
 mod ops;
 mod primitives;
 
+pub use self::dto::{ApiGraphEdge, ApiGraphNode, ApiGraphOp, ApiGraphResponse};
 use self::ops::{
     EndpointRuleFile, NetworkRuleFile, endpoint_ops, network_ops, normal_ops, resolve_rule_path,
 };
@@ -17,39 +18,6 @@ use self::primitives::{
     collect_rule_files, insert_placeholder, normalize_path, push_edge, rule_id, rule_label,
     rule_path_display,
 };
-
-#[derive(Debug, Serialize)]
-pub struct ApiGraphResponse {
-    pub nodes: Vec<ApiGraphNode>,
-    pub edges: Vec<ApiGraphEdge>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiGraphNode {
-    pub id: String,
-    pub label: String,
-    pub kind: String,
-    pub path: String,
-    pub ops: Vec<ApiGraphOp>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiGraphOp {
-    pub label: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty", default)]
-    pub refs: Vec<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ApiGraphEdge {
-    pub source: String,
-    pub target: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    pub kind: String,
-}
 
 pub fn build_api_graph(data_dir: &Path) -> Result<ApiGraphResponse> {
     let data_dir = normalize_path(data_dir);
