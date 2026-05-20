@@ -1,29 +1,9 @@
-use super::types::{
-    V2OperatorArgRange, V2OperatorArgScope, V2OperatorArgScopeRule, V2OperatorArgSelector,
-    V2OperatorMetadata, V2OperatorTrace,
+mod definitions;
+
+use self::definitions::{
+    ITEM_ACC_ARG_0, ITEM_ACC_ARG_1, ITEM_ARG_0, ITEM_LAST_ARG, NO_SCOPE, range,
 };
-
-const fn range(min: usize, max: Option<usize>) -> V2OperatorArgRange {
-    V2OperatorArgRange { min, max }
-}
-
-const NO_SCOPE: &[V2OperatorArgScopeRule] = &[];
-const ITEM_ARG_0: &[V2OperatorArgScopeRule] = &[V2OperatorArgScopeRule {
-    selector: V2OperatorArgSelector::Exact(0),
-    scope: V2OperatorArgScope::Item,
-}];
-const ITEM_ACC_ARG_0: &[V2OperatorArgScopeRule] = &[V2OperatorArgScopeRule {
-    selector: V2OperatorArgSelector::Exact(0),
-    scope: V2OperatorArgScope::ItemAndAcc,
-}];
-const ITEM_ACC_ARG_1: &[V2OperatorArgScopeRule] = &[V2OperatorArgScopeRule {
-    selector: V2OperatorArgSelector::Exact(1),
-    scope: V2OperatorArgScope::ItemAndAcc,
-}];
-const ITEM_LAST_ARG: &[V2OperatorArgScopeRule] = &[V2OperatorArgScopeRule {
-    selector: V2OperatorArgSelector::Last,
-    scope: V2OperatorArgScope::Item,
-}];
+use super::types::{V2OperatorMetadata, V2OperatorTrace};
 
 macro_rules! op {
     ($name:literal, $range:expr, $trace:ident, $skip_missing_pipe:expr, $stop_after_missing_arg:expr, $scopes:ident) => {
