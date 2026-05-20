@@ -9,7 +9,7 @@ use super::chunk_write::{
 use super::cleanup::TraceDirGuard;
 use super::detail::{detail_status_for_level, initial_detail_reasons, strip_trace_detail};
 use super::externalize::externalize_trace_payloads;
-use super::manifest::{count_inline_nodes, parse_rule_meta, parse_summary};
+use super::manifest::count_inline_nodes;
 use super::masking::{apply_masking, normalize_masking_rules};
 use super::options::{TraceDetailLevel, TraceWriteOptions, clamp_max_chunk_bytes_uncompressed};
 use super::record_nodes::{normalize_inline_records, split_records_and_nodes};
@@ -20,12 +20,14 @@ use super::trace_dir::{
 use super::trace_identity::resolve_trace_id;
 use crate::trace_schema::{
     TRACE_CHUNK_COUNT_HARD_MAX, TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
-    TraceDetailRef, TraceManifest, TraceMasking,
+    TraceMasking,
 };
 
 mod detail_cleanup;
+mod manifest_build;
 mod manifest_payload;
 use self::detail_cleanup::{add_detail_reason, reset_detail_to_basic, total_detail_bytes};
+use self::manifest_build::build_trace_manifest;
 use self::manifest_payload::write_manifest_payload;
 
 const TRACE_SCHEMA_VERSION: u8 = 1;
@@ -257,57 +259,22 @@ pub(crate) fn write_trace_bundle_sync(
         detail_reason.push("budget_exceeded".to_string());
     }
 
-    let summary = trace.get("summary").map(parse_summary);
-    let rule = trace.get("rule").map(parse_rule_meta);
-    let status = trace
-        .get("status")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let input_format = trace
-        .get("input_format")
-        .and_then(|value| value.as_str())
-        .map(|value| value.to_string());
-    let mut rule_source = trace.get("rule_source").cloned();
-    if let Some(rule_source_value) = rule_source.as_ref() {
-        let rule_source_bytes = serde_json::to_vec(rule_source_value)
-            .map(|payload| payload.len() as u64)
-            .unwrap_or(0);
-        if rule_source_bytes > options.max_bytes_per_trace as u64 {
-            rule_source = None;
-            if !detail_reason
-                .iter()
-                .any(|reason| reason == "rule_source_dropped")
-            {
-                detail_reason.push("rule_source_dropped".to_string());
-            }
-        }
-    }
-
-    let mut detail = TraceDetailRef {
-        layout: detail_layout,
-        status: detail_status.clone(),
-        reason: detail_reason,
-        records: record_chunks,
-        nodes: node_chunks,
-        finalize: finalize_chunk,
-    };
-
-    let mut manifest = TraceManifest {
-        trace_schema_version: TRACE_SCHEMA_VERSION,
-        trace_id: trace_id.clone(),
-        timestamp: Some(timestamp),
-        status,
-        rule,
-        input_format,
-        summary,
-        max_chunk_bytes_uncompressed: Some(options.max_chunk_bytes_uncompressed as u64),
-        detail: Some(detail.clone()),
+    let (mut manifest, mut detail) = build_trace_manifest(
+        &trace,
+        trace_id,
+        timestamp,
+        detail_layout,
+        detail_status,
+        detail_reason,
+        record_chunks,
+        node_chunks,
+        finalize_chunk,
         masking,
-        rule_source,
-    };
+        &options,
+    );
 
     // Ensure any temporary files were created (record files already written).
-    if detail_status == "full" {
+    if detail.status == "full" {
         for path in record_files {
             if !path.exists() {
                 return Err(anyhow::anyhow!("record chunk missing: {}", path.display()));
