@@ -2,10 +2,13 @@ use rulemorph::v2_eval::{
     EvalValue, V2EvalContext, eval_v2_if_step, eval_v2_let_step, eval_v2_map_step, eval_v2_op_step,
     eval_v2_pipe, eval_v2_ref, eval_v2_start,
 };
-use rulemorph::v2_model::{V2Ref, V2Start, V2Step};
+use rulemorph::v2_model::V2Step;
 use rulemorph::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref};
 use rulemorph::{Expr, PathToken, get_path, parse_path};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
+
+mod labels;
+use self::labels::{v2_start_label, v2_step_label};
 
 pub(super) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
     match expr {
@@ -190,44 +193,6 @@ pub(super) fn build_pipe_steps(
     }
 
     steps
-}
-
-fn v2_start_label(start: &V2Start) -> String {
-    match start {
-        V2Start::Ref(reference) => v2_ref_label(reference),
-        V2Start::PipeValue => "$".to_string(),
-        V2Start::Literal(value) => value.to_string(),
-        V2Start::V1Expr(_) => "v1_expr".to_string(),
-    }
-}
-
-fn v2_step_label(step: &V2Step) -> String {
-    match step {
-        V2Step::Op(op) => op.op.clone(),
-        V2Step::Let(let_step) => format!(
-            "let {}",
-            let_step
-                .bindings
-                .iter()
-                .map(|(name, _)| name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        V2Step::If(_) => "if".to_string(),
-        V2Step::Map(_) => "map".to_string(),
-        V2Step::Ref(reference) => v2_ref_label(reference),
-    }
-}
-
-fn v2_ref_label(reference: &V2Ref) -> String {
-    match reference {
-        V2Ref::Input(path) => format!("@input.{}", path),
-        V2Ref::Context(path) => format!("@context.{}", path),
-        V2Ref::Out(path) => format!("@out.{}", path),
-        V2Ref::Item(path) => format!("@item.{}", path),
-        V2Ref::Acc(path) => format!("@acc.{}", path),
-        V2Ref::Local(name) => format!("@{}", name),
-    }
 }
 
 pub(super) fn eval_v2_start_value(
