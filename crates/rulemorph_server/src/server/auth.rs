@@ -1,13 +1,24 @@
 use axum::{
-    extract::{ConnectInfo, State},
+    extract::State,
     http::{HeaderMap, Request},
     middleware::Next,
 };
-use sha2::{Digest, Sha256};
 
 use crate::{TenantContext, validate_tenant_id};
 
 use super::{ApiError, AppState};
+
+mod api_key;
+mod rate_limit;
+
+use self::api_key::extract_api_key;
+#[cfg(test)]
+pub(super) use self::rate_limit::pre_auth_rate_limit_key;
+pub(super) use self::rate_limit::{
+    DispatchInvalidApiKeyForRules, InternalApiRateLimitScope, api_rate_limit,
+    enforce_api_rate_limit, ensure_pre_auth_rate_limit_for_request, pre_auth_rate_limit,
+    rate_limit_key,
+};
 
 pub(super) async fn apply_v1_auth_context(
     state: &AppState,
@@ -185,140 +196,4 @@ pub(super) async fn internal_auth_required(
 ) -> std::result::Result<axum::response::Response, ApiError> {
     ensure_internal_auth_required(&state, request.headers())?;
     Ok(next.run(request).await)
-}
-
-#[derive(Clone, Copy, Debug)]
-struct PreAuthRateLimitApplied;
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct InternalApiRateLimitScope;
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct DispatchInvalidApiKeyForRules;
-
-pub(super) async fn ensure_pre_auth_rate_limit_for_request(
-    state: &AppState,
-    request: &mut Request<axum::body::Body>,
-) -> std::result::Result<(), ApiError> {
-    if state.rate_limiter.is_none()
-        || request
-            .extensions()
-            .get::<PreAuthRateLimitApplied>()
-            .is_some()
-    {
-        return Ok(());
-    }
-    let key = pre_auth_rate_limit_key(request);
-    enforce_pre_auth_rate_limit(state, key).await?;
-    request.extensions_mut().insert(PreAuthRateLimitApplied);
-    Ok(())
-}
-
-async fn enforce_pre_auth_rate_limit(
-    state: &AppState,
-    key: String,
-) -> std::result::Result<(), ApiError> {
-    if let Some(limiter) = state.rate_limiter.as_ref() {
-        if !limiter.allow(&key).await {
-            return Err(ApiError::too_many_requests("rate limit exceeded"));
-        }
-    }
-    Ok(())
-}
-
-pub(super) async fn pre_auth_rate_limit(
-    State(state): State<AppState>,
-    mut request: Request<axum::body::Body>,
-    next: Next,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    ensure_pre_auth_rate_limit_for_request(&state, &mut request).await?;
-    Ok(next.run(request).await)
-}
-
-#[cfg(test)]
-pub(super) fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
-    pre_auth_rate_limit_key_impl(request)
-}
-
-#[cfg(not(test))]
-fn pre_auth_rate_limit_key(request: &Request<axum::body::Body>) -> String {
-    pre_auth_rate_limit_key_impl(request)
-}
-
-fn pre_auth_rate_limit_key_impl(request: &Request<axum::body::Body>) -> String {
-    if let Some(api_key) = extract_api_key(request.headers())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-    {
-        return format!("preauth:key:{}", short_hash(&api_key));
-    }
-    if let Some(ConnectInfo(addr)) = request
-        .extensions()
-        .get::<ConnectInfo<std::net::SocketAddr>>()
-    {
-        return format!("preauth:ip:{}", addr.ip());
-    }
-    "preauth:anonymous".to_string()
-}
-
-fn short_hash(value: &str) -> String {
-    let digest = Sha256::digest(value.as_bytes());
-    digest[..16]
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
-pub(super) async fn enforce_api_rate_limit(
-    state: &AppState,
-    key: String,
-) -> std::result::Result<(), ApiError> {
-    if let Some(limiter) = state.rate_limiter.as_ref() {
-        if !limiter.allow(&key).await {
-            return Err(ApiError::too_many_requests("rate limit exceeded"));
-        }
-    }
-    Ok(())
-}
-
-pub(super) async fn api_rate_limit(
-    State(state): State<AppState>,
-    request: Request<axum::body::Body>,
-    next: Next,
-) -> std::result::Result<axum::response::Response, ApiError> {
-    let key = rate_limit_key(&state, &request);
-    enforce_api_rate_limit(&state, key).await?;
-    Ok(next.run(request).await)
-}
-
-pub(super) fn rate_limit_key(state: &AppState, request: &Request<axum::body::Body>) -> String {
-    if let Some(context) = request.extensions().get::<TenantContext>() {
-        return format!("tenant:{}", context.tenant_id);
-    }
-    if request
-        .extensions()
-        .get::<InternalApiRateLimitScope>()
-        .is_some()
-    {
-        return "internal".to_string();
-    }
-    if state.internal_api_key.is_some() && request.uri().path().starts_with("/internal") {
-        return "internal".to_string();
-    }
-    "global".to_string()
-}
-
-fn extract_api_key(headers: &HeaderMap) -> Option<String> {
-    if let Some(value) = headers.get(axum::http::header::AUTHORIZATION) {
-        let value = value.to_str().ok()?;
-        let mut parts = value.split_whitespace();
-        let scheme = parts.next()?;
-        if scheme.eq_ignore_ascii_case("bearer") {
-            return parts.next().map(|part| part.to_string());
-        }
-    }
-    headers
-        .get("x-api-key")
-        .and_then(|value| value.to_str().ok())
-        .map(|value| value.to_string())
 }
