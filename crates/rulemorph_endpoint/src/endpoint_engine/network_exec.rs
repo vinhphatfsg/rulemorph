@@ -1,22 +1,21 @@
-use std::path::Path;
 use std::time::Instant;
 
 use anyhow::Result;
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::Client;
-use rulemorph::v2_eval::EvalValue;
-use rulemorph::{get_path, parse_path, transform_record_with_base_dir};
-use serde_json::{Map as JsonMap, Value as JsonValue, json};
+use rulemorph::{get_path, parse_path};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::ssrf::{ResolvedSsrfTarget, resolve_ssrf_target};
 
+mod body;
+
 use super::config::RequestContext;
 use super::error::{EndpointError, EndpointErrorKind};
-use super::expr::{apply_mappings_via_rule, build_headers, eval_expr_string, eval_expr_value};
+use super::expr::{build_headers, eval_expr_string};
 use super::host::internal_hosts_match;
 use super::network_rule::CompiledNetworkRule;
 use super::ssrf_audit::build_ssrf_audit_log;
-use super::trace_graph::{build_rule_nodes_from_rule, build_rule_trace};
 use super::{EndpointEngine, NetworkExecution, empty_object};
 
 impl EndpointEngine {
@@ -155,78 +154,6 @@ impl EndpointEngine {
                 }
             }
         }
-    }
-
-    pub(super) fn build_network_body(
-        &self,
-        rule: &CompiledNetworkRule,
-        input: &JsonValue,
-        context: Option<&JsonValue>,
-    ) -> Result<Option<JsonValue>, EndpointError> {
-        if let Some(body_expr) = &rule.body {
-            let value = eval_expr_value(body_expr, input, context)
-                .map_err(|err| EndpointError::invalid(err.to_string()))?;
-            return Ok(match value {
-                EvalValue::Missing => None,
-                EvalValue::Value(val) => Some(val),
-            });
-        }
-        if let Some(mappings) = &rule.body_map {
-            let output = apply_mappings_via_rule(mappings, input, context)
-                .map_err(EndpointError::from_transform)?
-                .unwrap_or_else(empty_object);
-            return Ok(Some(output));
-        }
-        if let Some(body_rule) = &rule.body_rule {
-            let output = transform_record_with_base_dir(
-                &body_rule.rule,
-                input,
-                context,
-                &body_rule.base_dir,
-            )
-            .map_err(EndpointError::from_transform)?;
-            return Ok(output);
-        }
-        Ok(None)
-    }
-
-    fn build_body_rule_trace(
-        rule: &CompiledNetworkRule,
-        input: &JsonValue,
-        context: Option<&JsonValue>,
-        output: Option<&JsonValue>,
-    ) -> Option<JsonValue> {
-        let body_rule = rule.body_rule.as_ref()?;
-        let rule_ref = rule
-            .body_rule_ref
-            .clone()
-            .unwrap_or_else(|| "body_rule".to_string());
-        let name = Path::new(&rule_ref)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or("body_rule")
-            .to_string();
-        let rule_trace =
-            build_rule_nodes_from_rule(&body_rule.rule, input, context, &body_rule.base_dir);
-        let duration_us = rule_trace.duration_us;
-        let output_value = rule_trace
-            .pre_finalize_output
-            .clone()
-            .or_else(|| output.cloned())
-            .unwrap_or(JsonValue::Null);
-        Some(build_rule_trace(
-            "normal",
-            name,
-            rule_ref,
-            body_rule.rule.version,
-            json!({}),
-            input.clone(),
-            output_value,
-            rule_trace.nodes,
-            rule_trace.finalize,
-            duration_us,
-            "ok",
-        ))
     }
 
     fn build_resolved_client(&self, target: &ResolvedSsrfTarget) -> Result<Client, EndpointError> {
