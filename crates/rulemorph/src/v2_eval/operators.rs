@@ -1,9 +1,12 @@
 use serde_json::Value as JsonValue;
 
+mod number;
+
+use self::number::eval_number_op;
 use super::{
     EvalValue, V2EvalContext, eval_collection_op, eval_comparison_op, eval_lookup_op,
-    eval_type_cast, eval_v2_expr, eval_v2_op_with_v1_fallback, eval_v2_ref, eval_value_as_number,
-    eval_value_as_string, value_as_bool,
+    eval_type_cast, eval_v2_expr, eval_v2_op_with_v1_fallback, eval_v2_ref, eval_value_as_string,
+    value_as_bool,
 };
 use crate::error::{TransformError, TransformErrorKind};
 use crate::v2_model::{V2Expr, V2OpStep, V2Pipe, V2Start};
@@ -92,87 +95,8 @@ pub fn eval_v2_op_step<'a>(
         }
 
         // Numeric operations
-        "add" | "+" => {
-            if matches!(pipe_value, EvalValue::Missing) {
-                return Ok(EvalValue::Missing);
-            }
-            let mut result = eval_value_as_number(&pipe_value, path)?;
-            for (i, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, i);
-                let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
-                if matches!(arg_value, EvalValue::Missing) {
-                    return Ok(EvalValue::Missing);
-                }
-                result += eval_value_as_number(&arg_value, &arg_path)?;
-            }
-            Ok(EvalValue::Value(serde_json::json!(result)))
-        }
-        "subtract" | "-" => {
-            if op_step.args.is_empty() {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "subtract requires at least one argument",
-                )
-                .with_path(path));
-            }
-            if matches!(pipe_value, EvalValue::Missing) {
-                return Ok(EvalValue::Missing);
-            }
-            let mut result = eval_value_as_number(&pipe_value, path)?;
-            for (i, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, i);
-                let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
-                if matches!(arg_value, EvalValue::Missing) {
-                    return Ok(EvalValue::Missing);
-                }
-                result -= eval_value_as_number(&arg_value, &arg_path)?;
-            }
-            Ok(EvalValue::Value(serde_json::json!(result)))
-        }
-        "multiply" | "*" => {
-            if matches!(pipe_value, EvalValue::Missing) {
-                return Ok(EvalValue::Missing);
-            }
-            let mut result = eval_value_as_number(&pipe_value, path)?;
-            for (i, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, i);
-                let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
-                if matches!(arg_value, EvalValue::Missing) {
-                    return Ok(EvalValue::Missing);
-                }
-                result *= eval_value_as_number(&arg_value, &arg_path)?;
-            }
-            Ok(EvalValue::Value(serde_json::json!(result)))
-        }
-        "divide" | "/" => {
-            if op_step.args.is_empty() {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "divide requires at least one argument",
-                )
-                .with_path(path));
-            }
-            if matches!(pipe_value, EvalValue::Missing) {
-                return Ok(EvalValue::Missing);
-            }
-            let mut result = eval_value_as_number(&pipe_value, path)?;
-            for (i, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, i);
-                let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
-                if matches!(arg_value, EvalValue::Missing) {
-                    return Ok(EvalValue::Missing);
-                }
-                let divisor = eval_value_as_number(&arg_value, &arg_path)?;
-                if divisor == 0.0 {
-                    return Err(TransformError::new(
-                        TransformErrorKind::ExprError,
-                        "division by zero",
-                    )
-                    .with_path(&arg_path));
-                }
-                result /= divisor;
-            }
-            Ok(EvalValue::Value(serde_json::json!(result)))
+        "add" | "+" | "subtract" | "-" | "multiply" | "*" | "divide" | "/" => {
+            eval_number_op(op_step, pipe_value, record, context, out, path, &step_ctx)
         }
         "map" | "filter" | "flat_map" | "group_by" | "key_by" | "partition" | "distinct_by"
         | "sort_by" | "find" | "find_index" | "reduce" | "fold" | "zip_with" => {
