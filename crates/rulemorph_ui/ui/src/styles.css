@@ -2,6 +2,8 @@
 @import "./styles/topbar.css";
 @import "./styles/graph.css";
 @import "./styles/trace-panels.css";
+@import "./styles/trace-list.css";
+@import "./styles/record-panel.css";
 @import "./styles/overlays.css";
 @import "./styles/inspector.css";
 @import "./styles/inspector-pipe.css";
