@@ -7,11 +7,7 @@ import {
   getInternalKey
 } from "./auth";
 import { __resetTenantCachesForTest, getTenantId } from "./tenant";
-import {
-  API_BASE,
-  INTERNAL_BASE,
-  fetchJson
-} from "./api_client";
+import { API_BASE, fetchJson } from "./api_client";
 import {
   applyTraceFilters,
   type DurationUnit,
@@ -55,6 +51,11 @@ import {
 } from "./trace_graph";
 import { TraceListPanel, ZipImportModal } from "./trace_list_panel";
 import { runZipImport } from "./zip_import";
+import {
+  loadTraceList,
+  reconcileFilteredTraceSelection,
+  subscribeTraceListRefresh
+} from "./app_trace_list_refresh";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -142,14 +143,10 @@ export default function App() {
 
   const loadTraces = useCallback(
     async (preserveSelection: boolean) => {
-      const list = await fetchJson<{ traces: TraceListItem[] }>(`${API_BASE}/traces`);
-      const data = list?.traces?.length ? list.traces : [];
-      setTraces(data);
-      setSelectedId((prev) => {
-        if (preserveSelection && prev && data.some((item) => item.trace_id === prev)) {
-          return prev;
-        }
-        return data[0]?.trace_id ?? null;
+      await loadTraceList({
+        preserveSelection,
+        setTraces,
+        setSelectedId
       });
     },
     []
@@ -171,39 +168,18 @@ export default function App() {
   }, [loadTraces]);
 
   useEffect(() => {
-    if (!selectedId) {
-      if (filteredTraces.length > 0) {
-        setSelectedId(filteredTraces[0].trace_id ?? null);
-      }
-      return;
-    }
-    if (!filteredTraces.some((item) => item.trace_id === selectedId)) {
-      setSelectedId(filteredTraces[0]?.trace_id ?? null);
-    }
+    reconcileFilteredTraceSelection({
+      selectedId,
+      filteredTraces,
+      setSelectedId
+    });
   }, [filteredTraces, selectedId]);
 
   useEffect(() => {
-    const usePolling = API_BASE.startsWith("/api");
-    if (usePolling || internalKey) {
-      const timer = window.setInterval(() => {
-        loadTraces(true);
-      }, 5000);
-      return () => {
-        window.clearInterval(timer);
-      };
-    }
-    const source = new EventSource(`${INTERNAL_BASE}/stream`);
-    const onUpdate = () => {
-      loadTraces(true);
-    };
-    source.addEventListener("traces", onUpdate);
-    source.onerror = () => {
-      // keep EventSource alive; browser will retry automatically
-    };
-    return () => {
-      source.removeEventListener("traces", onUpdate);
-      source.close();
-    };
+    return subscribeTraceListRefresh({
+      internalKey,
+      loadTraces
+    });
   }, [loadTraces, internalKey]);
 
   useEffect(() => {
