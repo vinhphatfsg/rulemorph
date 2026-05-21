@@ -9,6 +9,7 @@ use super::op_inventory::{element_expr_scope, is_valid_op};
 use super::refs::validate_ref;
 use super::scope::LocalScope;
 
+mod arg_count;
 mod chain;
 mod op_args;
 
