@@ -1,8 +1,8 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+mod file;
+
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +12,7 @@ use super::crypto::{
 };
 use super::file_lock::ApiKeyFileLock;
 use super::resolver::parse_api_key;
+use file::{load_store_file, save_store_file};
 
 const API_KEY_VERSION: u8 = 1;
 
@@ -45,13 +46,6 @@ pub struct ApiKeyIssueResult {
     pub label: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ApiKeyFile {
-    version: u8,
-    salt: String,
-    keys: Vec<ApiKeyRecord>,
-}
-
 #[derive(Clone, Debug)]
 pub struct ApiKeyStore {
     tenant_id: String,
@@ -65,13 +59,7 @@ impl ApiKeyStore {
         if !path.exists() {
             return Ok(None);
         }
-        let raw = fs::read_to_string(&path)
-            .with_context(|| format!("failed to read api key store: {}", path.display()))?;
-        let file: ApiKeyFile = serde_json::from_str(&raw)
-            .with_context(|| format!("invalid api key store: {}", path.display()))?;
-        if file.version != API_KEY_VERSION {
-            anyhow::bail!("unsupported api key store version: {}", file.version);
-        }
+        let file = load_store_file(&path, API_KEY_VERSION)?;
         Ok(Some(Self {
             tenant_id: tenant_id.to_string(),
             path,
@@ -202,69 +190,11 @@ impl ApiKeyStore {
     }
 
     fn save_unlocked(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create api key dir: {}", parent.display()))?;
-        }
-        let file = ApiKeyFile {
-            version: API_KEY_VERSION,
-            salt: self.salt.clone(),
-            keys: self.keys.clone(),
-        };
-        let payload = serde_json::to_vec_pretty(&file)?;
-        let temp_path = tmp_path(&self.path);
-        let mut handle = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .with_context(|| format!("failed to open temp file: {}", temp_path.display()))?;
-        handle.write_all(&payload)?;
-        handle.sync_all()?;
-        replace_file(&temp_path, &self.path)?;
-        Ok(())
+        save_store_file(&self.path, API_KEY_VERSION, &self.salt, &self.keys)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
-    }
-}
-
-fn tmp_path(path: &Path) -> PathBuf {
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("api_keys.json");
-    let suffix = random_base64(6);
-    let tmp_name = format!("{}.tmp-{}", file_name, suffix);
-    path.with_file_name(tmp_name)
-}
-
-fn replace_file(temp_path: &Path, target_path: &Path) -> Result<()> {
-    match fs::rename(temp_path, target_path) {
-        Ok(()) => Ok(()),
-        Err(rename_err) => {
-            #[cfg(windows)]
-            {
-                if target_path.exists() {
-                    fs::remove_file(target_path).with_context(|| {
-                        format!(
-                            "failed to remove existing api key store: {}",
-                            target_path.display()
-                        )
-                    })?;
-                    fs::rename(temp_path, target_path).with_context(|| {
-                        format!(
-                            "failed to replace api key store after remove: {}",
-                            target_path.display()
-                        )
-                    })?;
-                    return Ok(());
-                }
-            }
-            Err(rename_err).with_context(|| {
-                format!("failed to replace api key store: {}", target_path.display())
-            })
-        }
     }
 }
 
