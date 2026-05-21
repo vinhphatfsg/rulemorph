@@ -3,11 +3,13 @@ use super::*;
 mod keyed;
 mod map;
 mod predicate;
+mod reduce_fold;
 mod sort;
 
 use keyed::eval_v2_keyed_collection_traced;
 use map::{eval_v2_flat_map_traced, eval_v2_map_traced};
 use predicate::eval_v2_predicate_collection_traced;
+use reduce_fold::eval_v2_reduce_fold_traced;
 use sort::eval_v2_sort_by_traced;
 pub(in crate::transform) use sort::sort_key_to_json;
 
@@ -167,93 +169,9 @@ pub(in crate::transform) fn eval_v2_collection_op_traced<'a>(
         "sort_by" => eval_v2_sort_by_traced(
             op_step, pipe_value, record, context, out, path, &step_ctx, collector,
         ),
-        "reduce" => {
-            if op_step.args.len() != 1 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "reduce requires exactly one argument",
-                )
-                .with_path(path));
-            }
-            let array = v2_eval_array_from_value(pipe_value, path)?;
-            if array.is_empty() {
-                return Ok(V2EvalValue::Value(JsonValue::Null));
-            }
-            let expr_path = format!("{}.args[0]", path);
-            let mut acc = array[0].clone();
-            for (index, item) in array.iter().enumerate().skip(1) {
-                let item_path = format!("{}[{}]", path, index);
-                emit_v2_collection_item_start(collector, &item_path, operator, index, item);
-                let item_ctx = step_ctx
-                    .clone()
-                    .with_pipe_value(V2EvalValue::Value(item.clone()))
-                    .with_item(V2EvalItem { value: item, index })
-                    .with_acc(&acc);
-                let value = eval_v2_expr_or_null_traced(
-                    &op_step.args[0],
-                    record,
-                    context,
-                    out,
-                    &expr_path,
-                    &item_ctx,
-                    collector,
-                )?;
-                let output = V2EvalValue::Value(value.clone());
-                emit_v2_arg_eval(collector, &expr_path, 0, operator, &output);
-                acc = value;
-                finish_v2_collection_item(collector, &item_path, operator, index, &output, None);
-            }
-            Ok(V2EvalValue::Value(acc))
-        }
-        "fold" => {
-            if op_step.args.len() != 2 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "fold requires exactly two arguments",
-                )
-                .with_path(path));
-            }
-            let array = v2_eval_array_from_value(pipe_value, path)?;
-            let init_path = format!("{}.args[0]", path);
-            let initial = eval_v2_expr_traced(
-                &op_step.args[0],
-                record,
-                context,
-                out,
-                &init_path,
-                &step_ctx,
-                collector,
-            )?;
-            emit_v2_arg_eval(collector, &init_path, 0, operator, &initial);
-            let mut acc = match initial {
-                V2EvalValue::Missing => return Ok(V2EvalValue::Missing),
-                V2EvalValue::Value(value) => value,
-            };
-            let expr_path = format!("{}.args[1]", path);
-            for (index, item) in array.iter().enumerate() {
-                let item_path = format!("{}[{}]", path, index);
-                emit_v2_collection_item_start(collector, &item_path, operator, index, item);
-                let item_ctx = step_ctx
-                    .clone()
-                    .with_pipe_value(V2EvalValue::Value(item.clone()))
-                    .with_item(V2EvalItem { value: item, index })
-                    .with_acc(&acc);
-                let value = eval_v2_expr_or_null_traced(
-                    &op_step.args[1],
-                    record,
-                    context,
-                    out,
-                    &expr_path,
-                    &item_ctx,
-                    collector,
-                )?;
-                let output = V2EvalValue::Value(value.clone());
-                emit_v2_arg_eval(collector, &expr_path, 1, operator, &output);
-                acc = value;
-                finish_v2_collection_item(collector, &item_path, operator, index, &output, None);
-            }
-            Ok(V2EvalValue::Value(acc))
-        }
+        "reduce" | "fold" => eval_v2_reduce_fold_traced(
+            op_step, pipe_value, record, context, out, path, &step_ctx, collector,
+        ),
         _ => eval_v2_op_step(op_step, pipe_value, record, context, out, path, ctx),
     }
 }
