@@ -2,14 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import "reactflow/dist/style.css";
 import {
   __resetAuthCachesForTest as resetAuthCachesForTest,
-  captureAuthSecretsFromLocation,
   getApiKey,
   getInternalKey
 } from "./auth";
 import { __resetTenantCachesForTest, getTenantId } from "./tenant";
 import {
   applyTraceFilters,
-  type DurationUnit,
   type TimeRange,
   type TraceListItem
 } from "./trace_list_helpers";
@@ -56,6 +54,7 @@ import {
 } from "./app_trace_list_refresh";
 import { loadApiGraph, resetApiGraphSelection } from "./app_api_graph_state";
 import { loadTraceDetailForSelection } from "./app_trace_detail_state";
+import { useAuthSecretCapture, useStoredDurationUnit } from "./app_runtime";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -68,23 +67,9 @@ export function __resetAuthCachesForTest(): void {
 }
 
 export default function App() {
-  captureAuthSecretsFromLocation();
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const capture = () => captureAuthSecretsFromLocation();
-    window.addEventListener("hashchange", capture);
-    window.addEventListener("popstate", capture);
-    return () => {
-      window.removeEventListener("hashchange", capture);
-      window.removeEventListener("popstate", capture);
-    };
-  }, []);
+  useAuthSecretCapture();
   const [viewMode, setViewMode] = useState<"trace" | "api">("trace");
-  const [durationUnit, setDurationUnit] = useState<DurationUnit>(() => {
-    if (typeof window === "undefined") return "us";
-    const stored = window.localStorage.getItem("traceDurationUnit");
-    return stored === "ms" ? "ms" : "us";
-  });
+  const [durationUnit, setDurationUnit] = useStoredDurationUnit();
   const [traces, setTraces] = useState<TraceListItem[]>([]);
   const [traceFilterStatus, setTraceFilterStatus] = useState("all");
   const [traceFilterRule, setTraceFilterRule] = useState("all");
@@ -262,10 +247,6 @@ export default function App() {
   );
   const activeGraph = viewMode === "api" ? apiMergedGraph : mergedGraph;
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem("traceDurationUnit", durationUnit);
-  }, [durationUnit]);
   const detailNodeMap = useMemo(() => collectDetailNodeMap(bundles), [bundles]);
   const apiDetailNodeMap = useMemo(() => collectApiDetailNodeMap(apiBundles), [apiBundles]);
   const detailStatus = resolveDetailStatus(traceManifest, trace);
