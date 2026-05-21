@@ -117,17 +117,22 @@ impl<'a> Iterator for TransformStream<'a> {
     }
 }
 
-pub fn transform_stream<'a>(
-    rule: &'a RuleFile,
-    input: &'a str,
-    context: Option<&'a JsonValue>,
-) -> Result<TransformStream<'a>, TransformError> {
+fn ensure_stream_supported(rule: &RuleFile) -> Result<(), TransformError> {
     if rule.finalize.is_some() {
         return Err(TransformError::new(
             TransformErrorKind::InvalidInput,
             "finalize is not supported in stream mode",
         ));
     }
+    Ok(())
+}
+
+pub fn transform_stream<'a>(
+    rule: &'a RuleFile,
+    input: &'a str,
+    context: Option<&'a JsonValue>,
+) -> Result<TransformStream<'a>, TransformError> {
+    ensure_stream_supported(rule)?;
     TransformStream::new(rule, input, context, None)
 }
 
@@ -136,12 +141,7 @@ pub fn transform_stream_input<'a>(
     input: InputData<'a>,
     context: Option<&'a JsonValue>,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new_with_input_and_options(
         rule,
         input,
@@ -157,12 +157,7 @@ pub fn transform_stream_with_base_dir<'a>(
     context: Option<&'a JsonValue>,
     base_dir: &'a Path,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new(rule, input, context, Some(base_dir))
 }
 
@@ -172,12 +167,7 @@ pub fn transform_stream_input_with_base_dir<'a>(
     context: Option<&'a JsonValue>,
     base_dir: &'a Path,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new_with_input_and_options(
         rule,
         input,
@@ -193,12 +183,7 @@ pub fn transform_stream_with_options<'a>(
     context: Option<&'a JsonValue>,
     options: &NormalizationOptions,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new_with_options(rule, input, context, None, options)
 }
 
@@ -208,12 +193,7 @@ pub fn transform_stream_input_with_options<'a>(
     context: Option<&'a JsonValue>,
     options: &NormalizationOptions,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new_with_input_and_options(rule, input, context, None, options)
 }
 
@@ -224,12 +204,7 @@ pub fn transform_stream_with_base_dir_and_options<'a>(
     base_dir: &'a Path,
     options: &NormalizationOptions,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new_with_options(rule, input, context, Some(base_dir), options)
 }
 
@@ -240,11 +215,6 @@ pub fn transform_stream_input_with_base_dir_and_options<'a>(
     base_dir: &'a Path,
     options: &NormalizationOptions,
 ) -> Result<TransformStream<'a>, TransformError> {
-    if rule.finalize.is_some() {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidInput,
-            "finalize is not supported in stream mode",
-        ));
-    }
+    ensure_stream_supported(rule)?;
     TransformStream::new_with_input_and_options(rule, input, context, Some(base_dir), options)
 }
