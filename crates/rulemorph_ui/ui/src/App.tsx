@@ -21,17 +21,13 @@ import {
   type TracePayload,
   type TraceRecord
 } from "./trace_payload";
-import { InspectorDrawer } from "./inspector_drawer";
-import { RecordPanel } from "./record_panel";
 import { Topbar } from "./topbar";
-import { TraceCanvas } from "./trace_canvas";
 import {
   buildOverviewGraph,
   type ApiGraphNode,
   type ApiGraphOp,
   type ApiGraphResponse
 } from "./trace_graph";
-import { TraceListPanel, ZipImportModal } from "./trace_list_panel";
 import { runZipImport } from "./zip_import";
 import {
   loadTraceList,
@@ -42,6 +38,7 @@ import { loadApiGraph, resetApiGraphSelection } from "./app_api_graph_state";
 import { loadTraceDetailForSelection } from "./app_trace_detail_state";
 import { useAuthSecretCapture, useStoredDurationUnit } from "./app_runtime";
 import { useAppGraphViewState } from "./app_graph_view_state";
+import { AppStage } from "./app_stage";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -232,110 +229,78 @@ export default function App() {
         apiEdgeCount={apiGraph?.edges.length ?? 0}
       />
 
-      <main className="stage">
-        <TraceCanvas
-          viewMode={viewMode}
-          trace={trace}
-          traceResetKey={selectedId}
-          activeGraph={activeGraph}
-          hasDetail={hasDetail}
-          apiHasDetail={apiHasDetail}
-          overviewGraph={overviewGraph}
-          expandedRuleIds={expandedRuleIds}
-          setExpandedRuleIds={setExpandedRuleIds}
-          setFocusedRuleId={setFocusedRuleId}
-          setRecordIndex={setRecordIndex}
-          setSelectedNode={setSelectedNode}
-          setSelectedOp={setSelectedOp}
-          setInspectorOpen={setInspectorOpen}
-          setTraceInspectorSections={setTraceInspectorSections}
-          detailNodeMap={detailNodeMap}
-          apiGraphNodeMap={apiGraphLayout.nodeMap}
-          apiDetailNodeMap={apiDetailNodeMap}
-          apiExpandedRuleIds={apiExpandedRuleIds}
-          setApiExpandedRuleIds={setApiExpandedRuleIds}
-          setApiFocusedRuleId={setApiFocusedRuleId}
-          setSelectedApiNode={setSelectedApiNode}
-          setSelectedApiOp={setSelectedApiOp}
-          pinnedPositions={pinnedPositions}
-          setPinnedPositions={setPinnedPositions}
-          apiPinnedPositions={apiPinnedPositions}
-          setApiPinnedPositions={setApiPinnedPositions}
-        />
-
-        {viewMode === "trace" && (
-          <TraceListPanel
-            traceListOpen={traceListOpen}
-            setTraceListOpen={setTraceListOpen}
-            internalKey={internalKey}
-            durationUnit={durationUnit}
-            setDurationUnit={setDurationUnit}
-            traceFilterQuery={traceFilterQuery}
-            setTraceFilterQuery={setTraceFilterQuery}
-            traceFilterStatus={traceFilterStatus}
-            setTraceFilterStatus={setTraceFilterStatus}
-            traceFilterRule={traceFilterRule}
-            setTraceFilterRule={setTraceFilterRule}
-            traceFilterRange={traceFilterRange}
-            setTraceFilterRange={setTraceFilterRange}
-            statusOptions={statusOptions}
-            ruleOptions={ruleOptions}
-            filteredTraces={filteredTraces}
-            traces={traces}
-            selectedId={selectedId}
-            setSelectedId={setSelectedId}
-            detailStatus={detailStatus}
-            detailError={detailError}
-            detailReason={detailReason}
-            setZipMessage={setZipMessage}
-            setZipModalOpen={setZipModalOpen}
-          />
-        )}
-
-        {hasDetail && viewMode === "trace" && (
-          <RecordPanel
-            currentTrace={currentTrace}
-            recordIndex={recordIndex}
-            setRecordIndex={setRecordIndex}
-            setSelectedNode={setSelectedNode}
-            setSelectedOp={setSelectedOp}
-            setInspectorOpen={setInspectorOpen}
-            finalizePayload={finalizePayload}
-            isFinalizeSelected={isFinalizeSelected}
-            durationUnit={durationUnit}
-          />
-        )}
-
-        <InspectorDrawer
-          inspectorOpen={inspectorOpen}
-          setInspectorOpen={setInspectorOpen}
-          viewMode={viewMode}
-          selectedNode={selectedNode}
-          selectedOp={selectedOp}
-          setSelectedOp={setSelectedOp}
-          selectedApiNode={selectedApiNode}
-          selectedApiOp={selectedApiOp}
-          traceInspectorSections={traceInspectorSections}
-          setTraceInspectorSections={setTraceInspectorSections}
-          apiInspectorSections={apiInspectorSections}
-          setApiInspectorSections={setApiInspectorSections}
-          isFinalizeSelected={isFinalizeSelected}
-          finalizePayload={finalizePayload}
-          durationUnit={durationUnit}
-        />
-        {zipModalOpen && (
-          <ZipImportModal
-            tenantId={tenantId}
-            zipMessage={zipMessage}
-            zipUploading={zipUploading}
-            zipFile={zipFile}
-            setZipFile={setZipFile}
-            setZipMessage={setZipMessage}
-            setZipModalOpen={setZipModalOpen}
-            handleZipImport={handleZipImport}
-          />
-        )}
-      </main>
+      <AppStage
+        viewMode={viewMode}
+        trace={trace}
+        traceResetKey={selectedId}
+        activeGraph={activeGraph}
+        hasDetail={hasDetail}
+        apiHasDetail={apiHasDetail}
+        overviewGraph={overviewGraph}
+        expandedRuleIds={expandedRuleIds}
+        setExpandedRuleIds={setExpandedRuleIds}
+        setFocusedRuleId={setFocusedRuleId}
+        recordIndex={recordIndex}
+        setRecordIndex={setRecordIndex}
+        selectedNode={selectedNode}
+        setSelectedNode={setSelectedNode}
+        selectedOp={selectedOp}
+        setSelectedOp={setSelectedOp}
+        inspectorOpen={inspectorOpen}
+        setInspectorOpen={setInspectorOpen}
+        traceInspectorSections={traceInspectorSections}
+        setTraceInspectorSections={setTraceInspectorSections}
+        detailNodeMap={detailNodeMap}
+        apiGraphNodeMap={apiGraphLayout.nodeMap}
+        apiDetailNodeMap={apiDetailNodeMap}
+        apiExpandedRuleIds={apiExpandedRuleIds}
+        setApiExpandedRuleIds={setApiExpandedRuleIds}
+        setApiFocusedRuleId={setApiFocusedRuleId}
+        selectedApiNode={selectedApiNode}
+        setSelectedApiNode={setSelectedApiNode}
+        selectedApiOp={selectedApiOp}
+        setSelectedApiOp={setSelectedApiOp}
+        pinnedPositions={pinnedPositions}
+        setPinnedPositions={setPinnedPositions}
+        apiPinnedPositions={apiPinnedPositions}
+        setApiPinnedPositions={setApiPinnedPositions}
+        traceListOpen={traceListOpen}
+        setTraceListOpen={setTraceListOpen}
+        internalKey={internalKey}
+        durationUnit={durationUnit}
+        setDurationUnit={setDurationUnit}
+        traceFilterQuery={traceFilterQuery}
+        setTraceFilterQuery={setTraceFilterQuery}
+        traceFilterStatus={traceFilterStatus}
+        setTraceFilterStatus={setTraceFilterStatus}
+        traceFilterRule={traceFilterRule}
+        setTraceFilterRule={setTraceFilterRule}
+        traceFilterRange={traceFilterRange}
+        setTraceFilterRange={setTraceFilterRange}
+        statusOptions={statusOptions}
+        ruleOptions={ruleOptions}
+        filteredTraces={filteredTraces}
+        traces={traces}
+        selectedId={selectedId}
+        setSelectedId={setSelectedId}
+        detailStatus={detailStatus}
+        detailError={detailError}
+        detailReason={detailReason}
+        setZipMessage={setZipMessage}
+        setZipModalOpen={setZipModalOpen}
+        currentTrace={currentTrace}
+        finalizePayload={finalizePayload}
+        isFinalizeSelected={isFinalizeSelected}
+        apiInspectorSections={apiInspectorSections}
+        setApiInspectorSections={setApiInspectorSections}
+        zipModalOpen={zipModalOpen}
+        tenantId={tenantId}
+        zipMessage={zipMessage}
+        zipUploading={zipUploading}
+        zipFile={zipFile}
+        setZipFile={setZipFile}
+        handleZipImport={handleZipImport}
+      />
     </div>
   );
 }
