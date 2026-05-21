@@ -12,19 +12,8 @@ import {
   type TraceListItem
 } from "./trace_list_helpers";
 import {
-  buildApiDetailBundles,
-  buildTraceDetailBundles,
-  collectApiDetailNodeMap,
-  collectDetailNodeMap,
   deriveRuleOptions,
-  deriveStatusOptions,
-  emptyOverviewGraph,
-  resolveCurrentTrace,
-  resolveDetailLabel,
-  resolveDetailReason,
-  resolveDetailStatus,
-  resolveEffectiveFocusedRuleId,
-  resolveRecordLabel
+  deriveStatusOptions
 } from "./app_derived_state";
 import {
   type TraceManifest,
@@ -37,9 +26,6 @@ import { RecordPanel } from "./record_panel";
 import { Topbar } from "./topbar";
 import { TraceCanvas } from "./trace_canvas";
 import {
-  buildApiGraph,
-  buildMergedApiGraph,
-  buildMergedGraph,
   buildOverviewGraph,
   type ApiGraphNode,
   type ApiGraphOp,
@@ -55,6 +41,7 @@ import {
 import { loadApiGraph, resetApiGraphSelection } from "./app_api_graph_state";
 import { loadTraceDetailForSelection } from "./app_trace_detail_state";
 import { useAuthSecretCapture, useStoredDurationUnit } from "./app_runtime";
+import { useAppGraphViewState } from "./app_graph_view_state";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -200,62 +187,34 @@ export default function App() {
     });
   }, [selectedId]);
 
-  const overviewGraph = useMemo(
-    () => (trace ? buildOverviewGraph(trace) : emptyOverviewGraph()),
-    [trace]
-  );
-  const effectiveFocusedRuleId = resolveEffectiveFocusedRuleId(focusedRuleId, expandedRuleIds);
-  const currentTrace = resolveCurrentTrace(effectiveFocusedRuleId, overviewGraph, trace);
-  const isFinalizeSelected = recordIndex < 0;
-  const currentRecord = recordIndex >= 0 ? currentTrace?.records?.[recordIndex] : undefined;
-  const finalizePayload = currentTrace?.finalize ?? null;
-  const bundles = useMemo(
-    () => buildTraceDetailBundles(expandedRuleIds, overviewGraph, recordIndex, effectiveFocusedRuleId),
-    [expandedRuleIds, overviewGraph, recordIndex, effectiveFocusedRuleId]
-  );
-  const apiGraphLayout = useMemo(() => {
-    if (!apiGraph) {
-      return { nodes: [], edges: [], nodeMap: new Map<string, ApiGraphNode>(), edgeLabelMap: new Map<string, string>() };
-    }
-    return buildApiGraph(apiGraph);
-  }, [apiGraph]);
-  const apiBundles = useMemo(
-    () => buildApiDetailBundles(apiExpandedRuleIds, apiGraphLayout),
-    [apiExpandedRuleIds, apiGraphLayout]
-  );
-  const mergedGraph = useMemo(
-    () =>
-      buildMergedGraph(
-        overviewGraph,
-        bundles,
-        expandedRuleIds,
-        pinnedPositions,
-        overviewGraph.endpointEdgeLabels
-      ),
-    [overviewGraph, bundles, expandedRuleIds, pinnedPositions]
-  );
-  const apiMergedGraph = useMemo(
-    () =>
-      buildMergedApiGraph(
-        { nodes: apiGraphLayout.nodes, edges: apiGraphLayout.edges },
-        apiBundles,
-        apiExpandedRuleIds,
-        apiPinnedPositions,
-        apiGraphLayout.edgeLabelMap
-      ),
-    [apiGraphLayout, apiBundles, apiExpandedRuleIds, apiPinnedPositions]
-  );
-  const activeGraph = viewMode === "api" ? apiMergedGraph : mergedGraph;
-
-  const detailNodeMap = useMemo(() => collectDetailNodeMap(bundles), [bundles]);
-  const apiDetailNodeMap = useMemo(() => collectApiDetailNodeMap(apiBundles), [apiBundles]);
-  const detailStatus = resolveDetailStatus(traceManifest, trace);
-  const detailReason = resolveDetailReason(traceManifest, trace);
-  const detailAvailable = detailStatus ? detailStatus === "full" : true;
-  const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0 && detailAvailable;
-  const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;
-  const recordLabel = resolveRecordLabel(isFinalizeSelected, currentRecord);
-  const detailLabel = resolveDetailLabel(detailStatus, detailLoading, hasDetail);
+  const {
+    overviewGraph,
+    currentTrace,
+    isFinalizeSelected,
+    finalizePayload,
+    activeGraph,
+    detailNodeMap,
+    apiGraphLayout,
+    apiDetailNodeMap,
+    detailStatus,
+    detailReason,
+    hasDetail,
+    apiHasDetail,
+    recordLabel,
+    detailLabel
+  } = useAppGraphViewState({
+    viewMode,
+    trace,
+    traceManifest,
+    detailLoading,
+    expandedRuleIds,
+    focusedRuleId,
+    recordIndex,
+    apiGraph,
+    apiExpandedRuleIds,
+    pinnedPositions,
+    apiPinnedPositions
+  });
 
   return (
     <div className="app">
