@@ -3,14 +3,13 @@ use std::time::Instant;
 use anyhow::{Result, anyhow};
 use axum::http::Request;
 use axum::response::Response;
-use rulemorph::v2_eval::{V2EvalContext, eval_v2_condition};
-use serde_json::Value as JsonValue;
 use tracing::warn;
 
+use super::EndpointEngine;
 use super::error::EndpointError;
-use super::{EndpointEngine, empty_object};
 
 mod input;
+mod steps;
 
 impl EndpointEngine {
     pub async fn handle_request(&self, request: Request<axum::body::Body>) -> Result<Response> {
@@ -42,143 +41,23 @@ impl EndpointEngine {
         .await?;
         let mut _multipart_temp_dir = prepared_input.multipart_temp_dir;
         let record_input = prepared_input.record_input;
-        let mut current = prepared_input.current;
-        let mut nodes: Vec<JsonValue> = Vec::new();
-        let mut record_status = prepared_input.record_status;
-        let mut record_error = prepared_input.record_error;
-        let mut last_error_message = prepared_input.last_error_message;
-        let skip_steps = prepared_input.skip_steps;
-
-        if !skip_steps {
-            for (step_index, step) in endpoint.steps.iter().enumerate() {
-                let step_input = current.clone();
-                let step_started = Instant::now();
-                if let Some(condition) = &step.when {
-                    let ctx = V2EvalContext::new();
-                    let keep = eval_v2_condition(
-                        condition,
-                        &current,
-                        Some(&base_context),
-                        &empty_object(),
-                        "steps.when",
-                        &ctx,
-                    )?;
-                    if !keep {
-                        let duration_us = step_started.elapsed().as_micros() as u64;
-                        nodes.push(self.build_step_trace(
-                            step_index,
-                            step,
-                            "skipped",
-                            step_input,
-                            Some(current.clone()),
-                            None,
-                            duration_us,
-                            None,
-                        ));
-                        continue;
-                    }
-                }
-                let step_context = self.step_context(&base_context, step.with.as_ref(), None);
-                let step_result = self
-                    .execute_rule(
-                        &step.rule,
-                        &current,
-                        Some(&step_context),
-                        &self.endpoint_rule.base_dir,
-                        Some(&request_context),
-                    )
-                    .await;
-                match step_result {
-                    Ok(execution) => {
-                        current = execution.output.clone();
-                        let duration_us = step_started.elapsed().as_micros() as u64;
-                        nodes.push(self.build_step_trace(
-                            step_index,
-                            step,
-                            "ok",
-                            step_input,
-                            Some(execution.output),
-                            None,
-                            duration_us,
-                            execution.child_trace,
-                        ));
-                    }
-                    Err(err) => {
-                        if let Some(catch) = &step.catch {
-                            if let Some(next) = self
-                                .run_catch(
-                                    catch,
-                                    &err.error,
-                                    &current,
-                                    step.with.as_ref(),
-                                    &self.endpoint_rule.base_dir,
-                                    &base_context,
-                                )
-                                .map_err(|err| anyhow!(err.to_string()))?
-                            {
-                                current = next.clone();
-                                let duration_us = step_started.elapsed().as_micros() as u64;
-                                nodes.push(self.build_step_trace(
-                                    step_index,
-                                    step,
-                                    "ok",
-                                    step_input,
-                                    Some(next),
-                                    None,
-                                    duration_us,
-                                    None,
-                                ));
-                                continue;
-                            }
-                        }
-
-                        if let Some(catch) = &endpoint.catch {
-                            if let Some(next) = self
-                                .run_catch(
-                                    catch,
-                                    &err.error,
-                                    &current,
-                                    None,
-                                    &self.endpoint_rule.base_dir,
-                                    &base_context,
-                                )
-                                .map_err(|err| anyhow!(err.to_string()))?
-                            {
-                                current = next.clone();
-                                let duration_us = step_started.elapsed().as_micros() as u64;
-                                nodes.push(self.build_step_trace(
-                                    step_index,
-                                    step,
-                                    "ok",
-                                    step_input,
-                                    Some(next),
-                                    None,
-                                    duration_us,
-                                    None,
-                                ));
-                                break;
-                            }
-                        }
-
-                        record_status = "error".to_string();
-                        record_error = Some(self.endpoint_error_to_trace(&err.error));
-                        last_error_message = Some(err.error.message.clone());
-                        let duration_us = step_started.elapsed().as_micros() as u64;
-                        nodes.push(self.build_step_trace(
-                            step_index,
-                            step,
-                            "error",
-                            step_input,
-                            None,
-                            Some(err.error.clone()),
-                            duration_us,
-                            err.child_trace,
-                        ));
-                        break;
-                    }
-                }
-            }
-        }
+        let step_run = self
+            .run_endpoint_steps(
+                endpoint,
+                prepared_input.current,
+                prepared_input.record_status,
+                prepared_input.record_error,
+                prepared_input.last_error_message,
+                prepared_input.skip_steps,
+                &base_context,
+                &request_context,
+            )
+            .await?;
+        let mut current = step_run.current;
+        let nodes = step_run.nodes;
+        let mut record_status = step_run.record_status;
+        let mut record_error = step_run.record_error;
+        let last_error_message = step_run.last_error_message;
 
         let response_result = if record_status == "error" {
             Err(anyhow!(
