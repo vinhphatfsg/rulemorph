@@ -10,7 +10,6 @@ import { __resetTenantCachesForTest, getTenantId } from "./tenant";
 import {
   API_BASE,
   INTERNAL_BASE,
-  buildHeaders,
   fetchJson,
   loadFinalize,
   loadNodeChunks,
@@ -52,6 +51,7 @@ import {
   type DetailEntry
 } from "./trace_graph";
 import { TraceListPanel, ZipImportModal } from "./trace_list_panel";
+import { runZipImport } from "./zip_import";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -168,43 +168,14 @@ export default function App() {
   );
 
   const handleZipImport = useCallback(async () => {
-    if (!zipFile) {
-      setZipMessage("ZIPファイルを選択してください。");
-      return;
-    }
-    setZipUploading(true);
-    if (!internalKey) {
-      setZipMessage("internal_key が未設定です。認証が必要な場合は失敗します。");
-    } else {
-      setZipMessage(null);
-    }
-    try {
-      const formData = new FormData();
-      formData.append("bundle", zipFile);
-      const headers = { ...buildHeaders("internal"), "x-rulemorph-import": "zip" };
-      const res = await fetch(`${API_BASE}/import`, {
-        method: "POST",
-        headers,
-        body: formData
-      });
-      if (!res.ok) {
-        const payload = await res.json().catch(() => null);
-        const message = payload?.error ?? "ZIPインポートに失敗しました。";
-        setZipMessage(message);
-        return;
-      }
-      const payload = await res.json();
-      const imported = typeof payload?.imported === "number" ? payload.imported : 0;
-      const rulesImported = typeof payload?.rules_imported === "number" ? payload.rules_imported : 0;
-      setZipMessage(`imported ${imported} traces / ${rulesImported} rules`);
-      setZipFile(null);
-      await loadTraces(true);
-    } catch (err) {
-      console.error("zip import failed", err);
-      setZipMessage("ZIPインポートに失敗しました。");
-    } finally {
-      setZipUploading(false);
-    }
+    await runZipImport({
+      zipFile,
+      internalKey,
+      setZipMessage,
+      setZipUploading,
+      setZipFile,
+      loadTraces
+    });
   }, [zipFile, internalKey, loadTraces]);
 
   useEffect(() => {
