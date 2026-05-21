@@ -40,3 +40,17 @@ impl TenantResolver for RejectTenantResolver {
         Ok(None)
     }
 }
+
+struct MapTenantResolver {
+    map: HashMap<String, String>,
+}
+
+#[async_trait]
+impl TenantResolver for MapTenantResolver {
+    async fn resolve(&self, api_key: &str) -> Result<Option<TenantContext>> {
+        Ok(self
+            .map
+            .get(api_key)
+            .map(|tenant_id| TenantContext::new(tenant_id.clone())))
+    }
+}

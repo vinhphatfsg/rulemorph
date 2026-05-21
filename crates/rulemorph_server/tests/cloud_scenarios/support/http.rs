@@ -130,3 +130,28 @@ async fn wait_for_trace_id(app: &Router) -> String {
     }
     panic!("trace not found after waiting");
 }
+
+async fn wait_for_tenant_trace_list(app: &Router, tenant_id: &str) -> Value {
+    for _ in 0..40 {
+        let (status, list) = request_json_with_headers(
+            app,
+            "/internal/traces".to_string(),
+            &[
+                ("authorization", "Bearer internal-key"),
+                ("x-tenant-id", tenant_id),
+            ],
+        )
+        .await;
+        if status == StatusCode::OK {
+            if list
+                .get("traces")
+                .and_then(|value| value.as_array())
+                .is_some_and(|values| !values.is_empty())
+            {
+                return list;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("tenant trace not found after waiting: {tenant_id}");
+}
