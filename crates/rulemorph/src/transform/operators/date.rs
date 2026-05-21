@@ -1,10 +1,12 @@
 use super::*;
 
 mod parsing;
+mod timezone;
 
 use chrono::FixedOffset;
 
-use self::parsing::{looks_like_timezone, parse_datetime, parse_format_list, parse_timezone};
+use self::parsing::{parse_datetime, parse_format_list};
+use self::timezone::{looks_like_timezone, parse_timezone};
 
 pub(super) fn eval_date_format(
     args: &[Expr],
