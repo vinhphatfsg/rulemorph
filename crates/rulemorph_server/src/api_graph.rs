@@ -120,6 +120,50 @@ finalize:
     }
 
     #[test]
+    fn normal_ops_include_mapping_metadata() {
+        let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: name
+    source: "input.name"
+  - target: kind
+    value: "static"
+  - target: normalized
+    expr:
+      chain:
+        - ref: "@input.name"
+        - op: trim
+        - op: uppercase
+"#;
+        let rule = parse_rule_file(yaml).expect("parse rule");
+        let data_dir = Path::new("/tmp/rules");
+        let rule_path = Path::new("/tmp/rules/api_rules/rule.yaml");
+        let ops = normal_ops(&rule, data_dir, rule_path);
+
+        let source = ops
+            .iter()
+            .find(|op| op.label == "name · source")
+            .expect("source op");
+        assert_eq!(source.detail.as_deref(), Some("input.name"));
+
+        let value = ops
+            .iter()
+            .find(|op| op.label == "kind · value")
+            .expect("value op");
+        assert_eq!(value.detail.as_deref(), Some(r#""static""#));
+
+        assert!(
+            ops.iter()
+                .any(|op| op.label == "normalized · ref @input.name")
+        );
+        assert!(ops.iter().any(|op| op.label == "normalized · trim"));
+        assert!(ops.iter().any(|op| op.label == "normalized · uppercase"));
+    }
+
+    #[test]
     fn graph_loads_json_rule_files() {
         let dir = tempfile::tempdir().expect("tempdir");
         let rules_dir = dir.path().join("api_rules");
