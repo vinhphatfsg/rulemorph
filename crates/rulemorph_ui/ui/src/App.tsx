@@ -10,10 +10,7 @@ import { __resetTenantCachesForTest, getTenantId } from "./tenant";
 import {
   API_BASE,
   INTERNAL_BASE,
-  fetchJson,
-  loadFinalize,
-  loadNodeChunks,
-  loadRecordChunks
+  fetchJson
 } from "./api_client";
 import {
   applyTraceFilters,
@@ -37,13 +34,12 @@ import {
   resolveRecordLabel
 } from "./app_derived_state";
 import {
-  mergeNodesIntoRecords,
-  normalizeTracePayload,
   type TraceManifest,
   type TraceNode,
   type TracePayload,
   type TraceRecord
 } from "./trace_payload";
+import { loadSelectedTraceDetail } from "./app_trace_detail_loader";
 import { InspectorDrawer } from "./inspector_drawer";
 import { RecordPanel } from "./record_panel";
 import { Topbar } from "./topbar";
@@ -249,70 +245,14 @@ export default function App() {
     setInspectorOpen(false);
     setPinnedPositions({});
     (async () => {
-      const manifestResult = await fetchJson<{ manifest: TraceManifest }>(
-        `${API_BASE}/traces/${selectedId}/manifest`
-      );
-      if (!mounted) return;
-      if (!manifestResult?.manifest) {
-        const result = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
-        if (!mounted) return;
-        setTrace(normalizeTracePayload(result?.trace ?? null));
-        return;
-      }
-      const manifest = manifestResult.manifest;
-      setTraceManifest(manifest);
-      const baseTrace: TracePayload = {
-        trace_id: manifest.trace_id,
-        timestamp: manifest.timestamp,
-        status: manifest.status,
-        rule: manifest.rule,
-        rule_source: manifest.rule_source,
-        records: [],
-        finalize: undefined,
-        summary: manifest.summary,
-        input_format: manifest.input_format
-      };
-      setTrace(baseTrace);
-      const detail = manifest.detail;
-      if (!detail || detail.status !== "full") {
-        return;
-      }
-      setDetailLoading(true);
-      try {
-        const records = await loadRecordChunks(selectedId, detail);
-        if (!mounted) return;
-        let nextTrace: TracePayload = { ...baseTrace, records };
-        setTrace(nextTrace);
-        if (detail.layout === "records_nodes_split" && (detail.nodes?.length ?? 0) > 0) {
-          const nodesByRecord = await loadNodeChunks(selectedId, detail);
-          if (!mounted) return;
-          const mergedRecords = mergeNodesIntoRecords(records, nodesByRecord);
-          nextTrace = { ...nextTrace, records: mergedRecords };
-          setTrace(nextTrace);
-        }
-        if (detail.finalize) {
-          const finalize = await loadFinalize(selectedId);
-          if (!mounted) return;
-          if (finalize) {
-            setTrace((prev) => (prev ? { ...prev, finalize } : { ...nextTrace, finalize }));
-          }
-        }
-      } catch (err) {
-        if (!mounted) return;
-        const fallback = await fetchJson<{ trace: TracePayload }>(`${API_BASE}/traces/${selectedId}`);
-        if (!mounted) return;
-        if (fallback?.trace) {
-          setTraceManifest(null);
-          setTrace(normalizeTracePayload(fallback.trace));
-          setDetailError(null);
-          return;
-        }
-        setDetailError("trace detail load failed");
-      } finally {
-        if (mounted) {
-          setDetailLoading(false);
-        }
-      }
+      await loadSelectedTraceDetail({
+        selectedId,
+        isMounted: () => mounted,
+        setTrace,
+        setTraceManifest,
+        setDetailLoading,
+        setDetailError
+      });
     })();
     return () => {
       mounted = false;
