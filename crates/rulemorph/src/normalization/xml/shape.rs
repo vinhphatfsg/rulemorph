@@ -22,27 +22,6 @@ pub(super) struct XmlAttribute {
     pub(super) value: String,
 }
 
-pub(super) fn select_xml_records<'a>(
-    node: &'a XmlNode,
-    path: &[&str],
-    selected: &mut Vec<&'a XmlNode>,
-) {
-    if path.is_empty() {
-        selected.push(node);
-        return;
-    }
-    if node.name != path[0] {
-        return;
-    }
-    if path.len() == 1 {
-        selected.push(node);
-        return;
-    }
-    for child in &node.children {
-        select_xml_records(child, &path[1..], selected);
-    }
-}
-
 pub(super) fn xml_node_to_json(
     node: &XmlNode,
     xml: &XmlInput,
