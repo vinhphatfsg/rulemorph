@@ -1,237 +1,105 @@
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ErrorCode {
-    InvalidVersion,
-    MissingInputFormat,
-    InvalidInputFormat,
-    MissingCsvSection,
-    MissingJsonSection,
-    MissingYamlSection,
-    MissingTomlSection,
-    MissingXmlSection,
-    MissingHtmlSection,
-    MissingExcelSection,
-    InvalidDelimiterLength,
-    MissingCsvColumns,
-    MissingExcelColumns,
-    InvalidInputOption,
-    DuplicateInputField,
+mod code;
+mod rule;
+mod transform;
 
-    MissingTarget,
-    DuplicateTarget,
-    SourceValueExprExclusive,
-    MissingMappingValue,
-    InvalidWhenType,
+pub use code::ErrorCode;
+pub use rule::{RuleError, ValidationResult, YamlLocation};
+pub use transform::{TransformError, TransformErrorKind, TransformWarning};
 
-    InvalidRefNamespace,
-    ForwardOutReference,
-    UnknownOp,
-    InvalidArgs,
-    InvalidExprShape,
-    InvalidPath,
+#[cfg(test)]
+mod tests {
+    use super::{ErrorCode, TransformError, TransformErrorKind, TransformWarning};
 
-    InvalidTypeName,
+    #[test]
+    fn error_code_strings_are_stable() {
+        let cases = [
+            (ErrorCode::InvalidVersion, "InvalidVersion"),
+            (ErrorCode::MissingInputFormat, "MissingInputFormat"),
+            (ErrorCode::InvalidInputFormat, "InvalidInputFormat"),
+            (ErrorCode::MissingCsvSection, "MissingCsvSection"),
+            (ErrorCode::MissingJsonSection, "MissingJsonSection"),
+            (ErrorCode::MissingYamlSection, "MissingYamlSection"),
+            (ErrorCode::MissingTomlSection, "MissingTomlSection"),
+            (ErrorCode::MissingXmlSection, "MissingXmlSection"),
+            (ErrorCode::MissingHtmlSection, "MissingHtmlSection"),
+            (ErrorCode::MissingExcelSection, "MissingExcelSection"),
+            (ErrorCode::InvalidDelimiterLength, "InvalidDelimiterLength"),
+            (ErrorCode::MissingCsvColumns, "MissingCsvColumns"),
+            (ErrorCode::MissingExcelColumns, "MissingExcelColumns"),
+            (ErrorCode::InvalidInputOption, "InvalidInputOption"),
+            (ErrorCode::DuplicateInputField, "DuplicateInputField"),
+            (ErrorCode::MissingTarget, "MissingTarget"),
+            (ErrorCode::DuplicateTarget, "DuplicateTarget"),
+            (
+                ErrorCode::SourceValueExprExclusive,
+                "SourceValueExprExclusive",
+            ),
+            (ErrorCode::MissingMappingValue, "MissingMappingValue"),
+            (ErrorCode::InvalidWhenType, "InvalidWhenType"),
+            (ErrorCode::InvalidRefNamespace, "InvalidRefNamespace"),
+            (ErrorCode::ForwardOutReference, "ForwardOutReference"),
+            (ErrorCode::UnknownOp, "UnknownOp"),
+            (ErrorCode::InvalidArgs, "InvalidArgs"),
+            (ErrorCode::InvalidExprShape, "InvalidExprShape"),
+            (ErrorCode::InvalidPath, "InvalidPath"),
+            (ErrorCode::InvalidTypeName, "InvalidTypeName"),
+            (ErrorCode::UndefinedVariable, "UndefinedVariable"),
+            (ErrorCode::InvalidItemRef, "InvalidItemRef"),
+            (ErrorCode::InvalidAccRef, "InvalidAccRef"),
+            (ErrorCode::CyclicDependency, "CyclicDependency"),
+            (ErrorCode::EmptyPipe, "EmptyPipe"),
+            (ErrorCode::InvalidPipeStep, "InvalidPipeStep"),
+            (ErrorCode::MissingMappings, "MissingMappings"),
+            (ErrorCode::StepsMappingExclusive, "StepsMappingExclusive"),
+            (ErrorCode::InvalidStep, "InvalidStep"),
+            (ErrorCode::InvalidFinalize, "InvalidFinalize"),
+        ];
 
-    // v2 validation errors
-    UndefinedVariable,
-    InvalidItemRef,
-    InvalidAccRef,
-    CyclicDependency,
-    EmptyPipe,
-    InvalidPipeStep,
-
-    // v2 rule structure errors
-    MissingMappings,
-    StepsMappingExclusive,
-    InvalidStep,
-    InvalidFinalize,
-}
-
-impl ErrorCode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            ErrorCode::InvalidVersion => "InvalidVersion",
-            ErrorCode::MissingInputFormat => "MissingInputFormat",
-            ErrorCode::InvalidInputFormat => "InvalidInputFormat",
-            ErrorCode::MissingCsvSection => "MissingCsvSection",
-            ErrorCode::MissingJsonSection => "MissingJsonSection",
-            ErrorCode::MissingYamlSection => "MissingYamlSection",
-            ErrorCode::MissingTomlSection => "MissingTomlSection",
-            ErrorCode::MissingXmlSection => "MissingXmlSection",
-            ErrorCode::MissingHtmlSection => "MissingHtmlSection",
-            ErrorCode::MissingExcelSection => "MissingExcelSection",
-            ErrorCode::InvalidDelimiterLength => "InvalidDelimiterLength",
-            ErrorCode::MissingCsvColumns => "MissingCsvColumns",
-            ErrorCode::MissingExcelColumns => "MissingExcelColumns",
-            ErrorCode::InvalidInputOption => "InvalidInputOption",
-            ErrorCode::DuplicateInputField => "DuplicateInputField",
-            ErrorCode::MissingTarget => "MissingTarget",
-            ErrorCode::DuplicateTarget => "DuplicateTarget",
-            ErrorCode::SourceValueExprExclusive => "SourceValueExprExclusive",
-            ErrorCode::MissingMappingValue => "MissingMappingValue",
-            ErrorCode::InvalidWhenType => "InvalidWhenType",
-            ErrorCode::InvalidRefNamespace => "InvalidRefNamespace",
-            ErrorCode::ForwardOutReference => "ForwardOutReference",
-            ErrorCode::UnknownOp => "UnknownOp",
-            ErrorCode::InvalidArgs => "InvalidArgs",
-            ErrorCode::InvalidExprShape => "InvalidExprShape",
-            ErrorCode::InvalidPath => "InvalidPath",
-            ErrorCode::InvalidTypeName => "InvalidTypeName",
-            ErrorCode::UndefinedVariable => "UndefinedVariable",
-            ErrorCode::InvalidItemRef => "InvalidItemRef",
-            ErrorCode::InvalidAccRef => "InvalidAccRef",
-            ErrorCode::CyclicDependency => "CyclicDependency",
-            ErrorCode::EmptyPipe => "EmptyPipe",
-            ErrorCode::InvalidPipeStep => "InvalidPipeStep",
-            ErrorCode::MissingMappings => "MissingMappings",
-            ErrorCode::StepsMappingExclusive => "StepsMappingExclusive",
-            ErrorCode::InvalidStep => "InvalidStep",
-            ErrorCode::InvalidFinalize => "InvalidFinalize",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct YamlLocation {
-    pub line: usize,
-    pub column: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuleError {
-    pub code: ErrorCode,
-    pub message: String,
-    pub location: Option<YamlLocation>,
-    pub path: Option<String>,
-}
-
-impl RuleError {
-    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
-            location: None,
-            path: None,
+        for (code, expected) in cases {
+            assert_eq!(code.as_str(), expected);
         }
     }
 
-    pub fn with_path(mut self, path: impl Into<String>) -> Self {
-        self.path = Some(path.into());
-        self
-    }
+    #[test]
+    fn transform_error_kind_names_are_stable() {
+        let cases = [
+            (TransformErrorKind::InvalidInput, "invalid_input"),
+            (
+                TransformErrorKind::InvalidRecordsPath,
+                "invalid_records_path",
+            ),
+            (TransformErrorKind::InvalidRef, "invalid_ref"),
+            (TransformErrorKind::InvalidTarget, "invalid_target"),
+            (TransformErrorKind::MissingRequired, "missing_required"),
+            (TransformErrorKind::TypeCastFailed, "type_cast_failed"),
+            (TransformErrorKind::ExprError, "expr_error"),
+            (TransformErrorKind::AssertionFailed, "assertion_failed"),
+        ];
 
-    pub fn with_location(mut self, line: usize, column: usize) -> Self {
-        self.location = Some(YamlLocation { line, column });
-        self
-    }
-}
-
-pub type ValidationResult = Result<(), Vec<RuleError>>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TransformErrorKind {
-    InvalidInput,
-    InvalidRecordsPath,
-    InvalidRef,
-    InvalidTarget,
-    MissingRequired,
-    TypeCastFailed,
-    ExprError,
-    AssertionFailed,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransformWarning {
-    pub kind: TransformErrorKind,
-    pub message: String,
-    pub path: Option<String>,
-}
-
-impl TransformWarning {
-    pub fn new(kind: TransformErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            path: None,
+        for (kind, expected) in cases {
+            let err = TransformError::new(kind, "fixed message");
+            assert_eq!(err.kind_name(), expected);
         }
     }
 
-    pub fn with_path(mut self, path: impl Into<String>) -> Self {
-        self.path = Some(path.into());
-        self
-    }
-}
+    #[test]
+    fn transform_error_display_keeps_path_suffix() {
+        let err = TransformError::new(TransformErrorKind::ExprError, "bad value");
+        assert_eq!(err.to_string(), "bad value");
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TransformError {
-    pub kind: TransformErrorKind,
-    pub message: String,
-    pub path: Option<String>,
-}
-
-impl TransformError {
-    pub fn new(kind: TransformErrorKind, message: impl Into<String>) -> Self {
-        Self {
-            kind,
-            message: message.into(),
-            path: None,
-        }
+        let err = err.with_path("$.items[0]");
+        assert_eq!(err.to_string(), "bad value (path: $.items[0])");
     }
 
-    pub fn with_path(mut self, path: impl Into<String>) -> Self {
-        self.path = Some(path.into());
-        self
-    }
+    #[test]
+    fn transform_warning_from_error_preserves_fields() {
+        let err = TransformError::new(TransformErrorKind::InvalidTarget, "target failed")
+            .with_path("$.out");
 
-    pub fn kind_name(&self) -> &'static str {
-        match &self.kind {
-            TransformErrorKind::InvalidInput => "invalid_input",
-            TransformErrorKind::InvalidRecordsPath => "invalid_records_path",
-            TransformErrorKind::InvalidRef => "invalid_ref",
-            TransformErrorKind::InvalidTarget => "invalid_target",
-            TransformErrorKind::MissingRequired => "missing_required",
-            TransformErrorKind::TypeCastFailed => "type_cast_failed",
-            TransformErrorKind::ExprError => "expr_error",
-            TransformErrorKind::AssertionFailed => "assertion_failed",
-        }
-    }
-}
+        let warning = TransformWarning::from(err);
 
-impl std::fmt::Display for TransformError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(path) = &self.path {
-            write!(f, "{} (path: {})", self.message, path)
-        } else {
-            write!(f, "{}", self.message)
-        }
-    }
-}
-
-impl std::error::Error for TransformError {}
-
-impl From<TransformError> for TransformWarning {
-    fn from(err: TransformError) -> Self {
-        let mut warning = TransformWarning::new(err.kind, err.message);
-        if let Some(path) = err.path {
-            warning = warning.with_path(path);
-        }
-        warning
-    }
-}
-
-impl From<csv::Error> for TransformError {
-    fn from(err: csv::Error) -> Self {
-        TransformError::new(
-            TransformErrorKind::InvalidInput,
-            format!("csv error: {}", err),
-        )
-    }
-}
-
-impl From<serde_json::Error> for TransformError {
-    fn from(err: serde_json::Error) -> Self {
-        TransformError::new(
-            TransformErrorKind::InvalidInput,
-            format!("json error: {}", err),
-        )
+        assert_eq!(warning.kind, TransformErrorKind::InvalidTarget);
+        assert_eq!(warning.message, "target failed");
+        assert_eq!(warning.path.as_deref(), Some("$.out"));
     }
 }

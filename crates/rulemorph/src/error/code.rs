@@ -1,0 +1,91 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ErrorCode {
+    InvalidVersion,
+    MissingInputFormat,
+    InvalidInputFormat,
+    MissingCsvSection,
+    MissingJsonSection,
+    MissingYamlSection,
+    MissingTomlSection,
+    MissingXmlSection,
+    MissingHtmlSection,
+    MissingExcelSection,
+    InvalidDelimiterLength,
+    MissingCsvColumns,
+    MissingExcelColumns,
+    InvalidInputOption,
+    DuplicateInputField,
+
+    MissingTarget,
+    DuplicateTarget,
+    SourceValueExprExclusive,
+    MissingMappingValue,
+    InvalidWhenType,
+
+    InvalidRefNamespace,
+    ForwardOutReference,
+    UnknownOp,
+    InvalidArgs,
+    InvalidExprShape,
+    InvalidPath,
+
+    InvalidTypeName,
+
+    // v2 validation errors
+    UndefinedVariable,
+    InvalidItemRef,
+    InvalidAccRef,
+    CyclicDependency,
+    EmptyPipe,
+    InvalidPipeStep,
+
+    // v2 rule structure errors
+    MissingMappings,
+    StepsMappingExclusive,
+    InvalidStep,
+    InvalidFinalize,
+}
+
+impl ErrorCode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ErrorCode::InvalidVersion => "InvalidVersion",
+            ErrorCode::MissingInputFormat => "MissingInputFormat",
+            ErrorCode::InvalidInputFormat => "InvalidInputFormat",
+            ErrorCode::MissingCsvSection => "MissingCsvSection",
+            ErrorCode::MissingJsonSection => "MissingJsonSection",
+            ErrorCode::MissingYamlSection => "MissingYamlSection",
+            ErrorCode::MissingTomlSection => "MissingTomlSection",
+            ErrorCode::MissingXmlSection => "MissingXmlSection",
+            ErrorCode::MissingHtmlSection => "MissingHtmlSection",
+            ErrorCode::MissingExcelSection => "MissingExcelSection",
+            ErrorCode::InvalidDelimiterLength => "InvalidDelimiterLength",
+            ErrorCode::MissingCsvColumns => "MissingCsvColumns",
+            ErrorCode::MissingExcelColumns => "MissingExcelColumns",
+            ErrorCode::InvalidInputOption => "InvalidInputOption",
+            ErrorCode::DuplicateInputField => "DuplicateInputField",
+            ErrorCode::MissingTarget => "MissingTarget",
+            ErrorCode::DuplicateTarget => "DuplicateTarget",
+            ErrorCode::SourceValueExprExclusive => "SourceValueExprExclusive",
+            ErrorCode::MissingMappingValue => "MissingMappingValue",
+            ErrorCode::InvalidWhenType => "InvalidWhenType",
+            ErrorCode::InvalidRefNamespace => "InvalidRefNamespace",
+            ErrorCode::ForwardOutReference => "ForwardOutReference",
+            ErrorCode::UnknownOp => "UnknownOp",
+            ErrorCode::InvalidArgs => "InvalidArgs",
+            ErrorCode::InvalidExprShape => "InvalidExprShape",
+            ErrorCode::InvalidPath => "InvalidPath",
+            ErrorCode::InvalidTypeName => "InvalidTypeName",
+            ErrorCode::UndefinedVariable => "UndefinedVariable",
+            ErrorCode::InvalidItemRef => "InvalidItemRef",
+            ErrorCode::InvalidAccRef => "InvalidAccRef",
+            ErrorCode::CyclicDependency => "CyclicDependency",
+            ErrorCode::EmptyPipe => "EmptyPipe",
+            ErrorCode::InvalidPipeStep => "InvalidPipeStep",
+            ErrorCode::MissingMappings => "MissingMappings",
+            ErrorCode::StepsMappingExclusive => "StepsMappingExclusive",
+            ErrorCode::InvalidStep => "InvalidStep",
+            ErrorCode::InvalidFinalize => "InvalidFinalize",
+        }
+    }
+}
