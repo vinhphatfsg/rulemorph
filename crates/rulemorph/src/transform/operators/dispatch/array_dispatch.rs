@@ -1,15 +1,16 @@
 use super::super::array::{
-    eval_array_avg, eval_array_chunk, eval_array_contains, eval_array_distinct_by, eval_array_drop,
+    eval_array_chunk, eval_array_contains, eval_array_distinct_by, eval_array_drop,
     eval_array_filter, eval_array_find, eval_array_find_index, eval_array_flat_map,
-    eval_array_flatten, eval_array_fold, eval_array_group_by, eval_array_index_of,
-    eval_array_key_by, eval_array_map, eval_array_max, eval_array_min, eval_array_partition,
-    eval_array_reduce, eval_array_slice, eval_array_sort_by, eval_array_sum, eval_array_take,
+    eval_array_flatten, eval_array_group_by, eval_array_index_of, eval_array_key_by,
+    eval_array_map, eval_array_partition, eval_array_slice, eval_array_sort_by, eval_array_take,
     eval_array_unique, eval_array_unzip, eval_array_zip, eval_array_zip_with,
 };
 use super::super::*;
 
+mod aggregate;
 mod inventory;
 
+use aggregate::{eval_array_aggregate_dispatch, is_array_aggregate_operator};
 pub(super) use inventory::is_array_operator;
 
 pub(super) fn eval_array_dispatch(
@@ -211,59 +212,8 @@ pub(super) fn eval_array_dispatch(
             base_path,
             locals,
         ),
-        "sum" => eval_array_sum(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "avg" => eval_array_avg(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "min" => eval_array_min(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "max" => eval_array_max(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "reduce" => eval_array_reduce(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
-        ),
-        "fold" => eval_array_fold(
-            &expr_op.args,
-            injected,
-            record,
-            context,
-            out,
-            base_path,
-            locals,
+        op if is_array_aggregate_operator(op) => eval_array_aggregate_dispatch(
+            expr_op, record, context, out, base_path, injected, locals,
         ),
         _ => unreachable!("array dispatch called for non-array operator"),
     }
