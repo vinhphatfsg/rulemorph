@@ -7,13 +7,11 @@ import {
 } from "./trace_graph_detail";
 import {
   type ApiDetailBundle,
-  type ApiGraphNode,
-  type ApiGraphResponse,
   type DetailBundle,
   type OverviewGraph
 } from "./trace_graph_types";
 import { buildEdgeLabel, formatEdgeDurationMs } from "./trace_graph_edges";
-import { graphDefaults, layoutGraph, layoutGraphWithSizes } from "./trace_graph_layout";
+import { layoutGraphWithSizes } from "./trace_graph_layout";
 
 export {
   DetailNode,
@@ -32,42 +30,7 @@ export type {
 } from "./trace_graph_types";
 export { getNodesBounds } from "./trace_graph_layout";
 export { buildOverviewGraph } from "./trace_graph_overview";
-
-export function buildApiGraph(
-  graph: ApiGraphResponse
-): { nodes: Node[]; edges: Edge[]; nodeMap: Map<string, ApiGraphNode>; edgeLabelMap: Map<string, string> } {
-  const nodeMap = new Map<string, ApiGraphNode>();
-  const edgeLabelMap = new Map<string, string>();
-  const nodes: Node[] = graph.nodes.map((node) => {
-    nodeMap.set(node.id, node);
-    return {
-      id: node.id,
-      position: { x: 0, y: 0 },
-      data: { label: node.label },
-      type: "default",
-      className: "trace-node trace-node--overview",
-      style: { width: 240, height: 80 }
-    };
-  });
-  const edges: Edge[] = graph.edges.map((edge, index) => {
-    if (edge.label) {
-      edgeLabelMap.set(`${edge.source}::${edge.target}`, edge.label);
-    }
-    return {
-      id: `${edge.source}->${edge.target}-${index}`,
-      source: edge.source,
-      target: edge.target,
-      label: edge.label,
-      labelBgPadding: edge.label ? [6, 4] : undefined,
-      labelBgBorderRadius: edge.label ? 8 : undefined,
-      className: edge.label ? "edge--endpoint" : edge.kind === "ref" ? "edge--ref" : undefined,
-      type: "smoothstep",
-      style: { strokeWidth: 1.4 }
-    };
-  });
-  const layouted = layoutGraph(nodes, edges, graphDefaults.rankdir as "LR" | "TB");
-  return { nodes: layouted.nodes, edges: layouted.edges, nodeMap, edgeLabelMap };
-}
+export { buildApiGraph } from "./trace_graph_api";
 
 export function buildMergedGraph(
   overview: OverviewGraph,
