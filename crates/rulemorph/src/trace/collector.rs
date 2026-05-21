@@ -7,6 +7,11 @@ use super::schema::{
 };
 use super::snapshot::value_size_bytes;
 
+mod span;
+
+pub(super) use span::SpanAction;
+use span::SpanStack;
+
 pub(crate) struct TraceCollector {
     options: TransformTraceOptions,
     next_id: u64,
@@ -16,17 +21,11 @@ pub(crate) struct TraceCollector {
     emitted_bytes: usize,
     frozen: bool,
     structural_truncated: bool,
-    span_stack: Vec<u64>,
+    span_stack: SpanStack,
     records: Vec<RecordTrace>,
     current_record: Option<RecordTrace>,
     finalize_events: Vec<TraceEvent>,
     scope: TraceScope,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SpanAction {
-    Push(u64),
-    Pop(Option<u64>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +45,7 @@ impl TraceCollector {
             emitted_bytes: 0,
             frozen: false,
             structural_truncated: false,
-            span_stack: Vec::new(),
+            span_stack: SpanStack::new(),
             records: Vec::new(),
             current_record: None,
             finalize_events: Vec::new(),
@@ -94,7 +93,7 @@ impl TraceCollector {
     pub(crate) fn emit(&mut self, kind: TraceEventKind, phase: TracePhase) -> TraceEventBuilder {
         let id = self.next_id;
         self.next_id += 1;
-        TraceEventBuilder::new(id, self.span_stack.last().copied(), kind, phase)
+        TraceEventBuilder::new(id, self.span_stack.current_parent(), kind, phase)
     }
 
     pub(crate) fn start_span(
@@ -104,7 +103,7 @@ impl TraceCollector {
     ) -> TraceEventBuilder {
         let id = self.next_id;
         self.next_id += 1;
-        let parent_id = self.span_stack.last().copied();
+        let parent_id = self.span_stack.current_parent();
         TraceEventBuilder::new(id, parent_id, kind, phase).span_action(SpanAction::Push(id))
     }
 
@@ -113,7 +112,7 @@ impl TraceCollector {
         kind: TraceEventKind,
         phase: TracePhase,
     ) -> TraceEventBuilder {
-        let span_id = self.span_stack.last().copied();
+        let span_id = self.span_stack.current_parent();
         let id = self.next_id;
         self.next_id += 1;
         TraceEventBuilder::new(id, span_id, kind, phase).span_action(SpanAction::Pop(span_id))
@@ -125,7 +124,7 @@ impl TraceCollector {
         code: &'static str,
         message: &'static str,
     ) -> TraceEventBuilder {
-        let span_id = self.span_stack.last().copied();
+        let span_id = self.span_stack.current_parent();
         let id = self.next_id;
         self.next_id += 1;
         TraceEventBuilder::new(id, span_id, kind, TracePhase::Error)
@@ -204,15 +203,7 @@ impl TraceCollector {
     }
 
     pub(super) fn apply_span_action(&mut self, action: Option<SpanAction>) {
-        match action {
-            Some(SpanAction::Push(id)) => self.span_stack.push(id),
-            Some(SpanAction::Pop(Some(expected))) => {
-                if self.span_stack.last().copied() == Some(expected) {
-                    self.span_stack.pop();
-                }
-            }
-            Some(SpanAction::Pop(None)) | None => {}
-        }
+        self.span_stack.apply(action);
     }
 
     fn emitted_events(&self) -> usize {
