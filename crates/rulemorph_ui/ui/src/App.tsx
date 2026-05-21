@@ -49,6 +49,7 @@ import {
   type TraceRecord
 } from "./trace_payload";
 import { shouldResetInitialCenter } from "./view_mode";
+import { RecordPanel } from "./record_panel";
 import {
   DetailNode,
   buildApiDetailBundle,
@@ -801,70 +802,17 @@ export default function App() {
         )}
 
         {hasDetail && viewMode === "trace" && (
-          <>
-            <aside className="floating-panel record-panel">
-              <div className="panel__header">
-                <h2>Records</h2>
-                <p>{currentTrace?.records?.length ?? 0} total</p>
-              </div>
-              <div className="record-list">
-                {(currentTrace?.records ?? []).map((record, idx) => (
-                  <button
-                    key={record.index}
-                    className={clsx("record-card", recordIndex === idx && "is-active")}
-                    onClick={() => {
-                      setRecordIndex(idx);
-                      setSelectedNode(null);
-                      setSelectedOp(null);
-                      setInspectorOpen(false);
-                    }}
-                  >
-                    <span>#{record.index}</span>
-                    <span
-                      className={clsx(
-                        "record-status",
-                        isErrorStatus(record.status) && "record-status--error"
-                      )}
-                    >
-                      {record.status ?? "ok"}
-                    </span>
-                    <span>
-                      {formatDuration(resolveDurationUs(record.duration_us, record.duration_ms), durationUnit)}
-                    </span>
-                  </button>
-                ))}
-                {finalizePayload && (
-                  <button
-                    key="finalize"
-                    data-testid="record-finalize"
-                    className={clsx("record-card record-card--finalize", isFinalizeSelected && "is-active")}
-                    onClick={() => {
-                      setRecordIndex(-1);
-                      setSelectedNode(null);
-                      setSelectedOp(null);
-                      setInspectorOpen(true);
-                    }}
-                  >
-                    <span>Finalize</span>
-                    <span
-                      className={clsx(
-                        "record-status",
-                        isErrorStatus(finalizePayload.status) && "record-status--error"
-                      )}
-                    >
-                      {finalizePayload.status ?? "ok"}
-                    </span>
-                    <span>
-                      {formatDuration(
-                        resolveDurationUs(finalizePayload.duration_us, finalizePayload.duration_ms),
-                        durationUnit
-                      )}
-                    </span>
-                  </button>
-                )}
-              </div>
-            </aside>
-          </>
+          <RecordPanel
+            currentTrace={currentTrace}
+            recordIndex={recordIndex}
+            setRecordIndex={setRecordIndex}
+            setSelectedNode={setSelectedNode}
+            setSelectedOp={setSelectedOp}
+            setInspectorOpen={setInspectorOpen}
+            finalizePayload={finalizePayload}
+            isFinalizeSelected={isFinalizeSelected}
+            durationUnit={durationUnit}
+          />
         )}
 
         <button
