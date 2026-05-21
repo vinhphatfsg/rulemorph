@@ -7,7 +7,6 @@ import {
   getInternalKey
 } from "./auth";
 import { __resetTenantCachesForTest, getTenantId } from "./tenant";
-import { API_BASE, fetchJson } from "./api_client";
 import {
   applyTraceFilters,
   type DurationUnit,
@@ -56,6 +55,7 @@ import {
   reconcileFilteredTraceSelection,
   subscribeTraceListRefresh
 } from "./app_trace_list_refresh";
+import { loadApiGraph, resetApiGraphSelection } from "./app_api_graph_state";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -184,20 +184,18 @@ export default function App() {
 
   useEffect(() => {
     if (viewMode !== "api") return;
-    fetchJson<ApiGraphResponse>(`${API_BASE}/api-graph`).then((data) => {
-      if (data) {
-        setApiGraph(data);
-      }
-    });
+    void loadApiGraph({ setApiGraph });
   }, [viewMode]);
 
   useEffect(() => {
     if (viewMode !== "api") return;
-    setSelectedApiNode(null);
-    setSelectedApiOp(null);
-    setApiExpandedRuleIds([]);
-    setApiFocusedRuleId(null);
-    setInspectorOpen(false);
+    resetApiGraphSelection({
+      setSelectedApiNode,
+      setSelectedApiOp,
+      setApiExpandedRuleIds,
+      setApiFocusedRuleId,
+      setInspectorOpen
+    });
   }, [viewMode]);
 
   useEffect(() => {
