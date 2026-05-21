@@ -1,0 +1,46 @@
+@media (max-width: 960px) {
+  .inspector-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 1200px) {
+  .stage {
+    height: calc(100vh - 90px);
+  }
+  .trace-panel {
+    width: min(300px, 85vw);
+  }
+}
+
+@media (max-width: 720px) {
+  .app {
+    padding: 20px;
+  }
+  .topbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .trace-panel {
+    position: static;
+    width: auto;
+    max-height: 40vh;
+    margin-bottom: 12px;
+  }
+  .record-panel {
+    position: static;
+    width: auto;
+    margin-top: 12px;
+  }
+  .stage {
+    height: auto;
+    min-height: 72vh;
+  }
+  .trace-canvas {
+    position: relative;
+    height: 60vh;
+  }
+  .inspector-drawer {
+    width: 92vw;
+  }
+}
