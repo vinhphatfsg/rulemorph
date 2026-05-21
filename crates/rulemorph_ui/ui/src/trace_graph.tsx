@@ -1,53 +1,41 @@
 import { type ReactNode } from "react";
-import { Edge, Handle, Node, Position } from "reactflow";
+import { Edge, Node, Position } from "reactflow";
 import dagre from "dagre";
 import {
   isErrorStatus,
   resolveDurationUs,
   resolveTraceDurationUs
 } from "./trace_list_helpers";
-import { type EndpointRule, type TraceNode, type TracePayload, type TraceRecord } from "./trace_payload";
+import { type EndpointRule, type TraceNode, type TracePayload } from "./trace_payload";
+import {
+  DetailNode,
+  buildApiDetailBundle,
+  buildDetailBundle
+} from "./trace_graph_detail";
+import { extractRuleRefs } from "./trace_graph_refs";
+import {
+  type ApiDetailBundle,
+  type ApiGraphNode,
+  type ApiGraphResponse,
+  type DetailBundle,
+  type OverviewGraph
+} from "./trace_graph_types";
 
-type TraceNodeData = {
-  label: string;
-};
-
-export function DetailNode({ data }: { data: TraceNodeData }) {
-  return (
-    <div className="trace-node__body">
-      <Handle type="target" position={Position.Top} id="top" />
-      <Handle type="source" position={Position.Bottom} id="bottom" />
-      <Handle type="source" position={Position.Right} id="right" />
-      <span>{data.label}</span>
-    </div>
-  );
-}
-
-export type ApiGraphOp = {
-  label: string;
-  detail?: string;
-  refs?: string[];
-};
-
-export type ApiGraphNode = {
-  id: string;
-  label: string;
-  kind: string;
-  path: string;
-  ops: ApiGraphOp[];
-};
-
-type ApiGraphEdge = {
-  source: string;
-  target: string;
-  label?: string;
-  kind: string;
-};
-
-export type ApiGraphResponse = {
-  nodes: ApiGraphNode[];
-  edges: ApiGraphEdge[];
-};
+export {
+  DetailNode,
+  buildApiDetailBundle,
+  buildDetailBundle
+} from "./trace_graph_detail";
+export type {
+  ApiDetailBundle,
+  ApiDetailEntry,
+  ApiGraphNode,
+  ApiGraphOp,
+  ApiGraphResponse,
+  DetailBundle,
+  DetailEntry,
+  OverviewGraph
+} from "./trace_graph_types";
 
 const graphDefaults = {
   rankdir: "LR",
@@ -73,75 +61,6 @@ function buildEdgeLabel(label: string, duration: string): ReactNode {
       </tspan>
     </>
   );
-}
-
-export type OverviewGraph = {
-  nodes: Node[];
-  edges: Edge[];
-  traceMap: Map<string, TracePayload>;
-  endpointEdgeLabels: Map<string, string>;
-  edgeDurationMap: Map<string, number>;
-  errorRuleIds: Set<string>;
-  ruleTypeById: Map<string, string>;
-};
-
-export type DetailEntry = {
-  kind: "step" | "op";
-  node: TraceNode;
-  parent?: TraceNode;
-  ruleId: string;
-};
-
-export type DetailBundle = {
-  nodes: Node[];
-  edges: Edge[];
-  map: Map<string, DetailEntry>;
-  firstId?: string;
-  lastId?: string;
-  bounds: { minX: number; maxX: number; minY: number; maxY: number };
-  refs: { fromId: string; toRule: string; label?: string }[];
-  errorNodeIds: Set<string>;
-};
-
-export type ApiDetailEntry = {
-  kind: "op";
-  node: ApiGraphOp;
-  ruleId: string;
-};
-
-export type ApiDetailBundle = {
-  nodes: Node[];
-  edges: Edge[];
-  map: Map<string, ApiDetailEntry>;
-  bounds: { minX: number; maxX: number; minY: number; maxY: number };
-  refs: { fromId: string; toRule: string }[];
-};
-
-type RuleRefEntry = { ref: string; label?: string };
-
-function extractRuleRefs(meta?: Record<string, unknown>): RuleRefEntry[] {
-  if (!meta) return [];
-  const entries: RuleRefEntry[] = [];
-  const push = (ref: unknown, label?: unknown) => {
-    if (typeof ref !== "string" || ref.length === 0) return;
-    entries.push({
-      ref,
-      label: typeof label === "string" ? label : undefined
-    });
-  };
-  push(meta["rule_ref"], meta["rule_ref_label"]);
-  const refs = Array.isArray(meta["rule_refs"]) ? meta["rule_refs"] : [];
-  const labels = Array.isArray(meta["rule_ref_labels"]) ? meta["rule_ref_labels"] : [];
-  refs.forEach((ref, index) => push(ref, labels[index]));
-  const deduped: RuleRefEntry[] = [];
-  const seen = new Set<string>();
-  entries.forEach((entry) => {
-    const key = `${entry.ref}::${entry.label ?? ""}`;
-    if (seen.has(key)) return;
-    seen.add(key);
-    deduped.push(entry);
-  });
-  return deduped;
 }
 
 function traceNodeHasError(node: TraceNode) {
@@ -398,151 +317,6 @@ export function buildApiGraph(
   });
   const layouted = layoutGraph(nodes, edges, graphDefaults.rankdir as "LR" | "TB");
   return { nodes: layouted.nodes, edges: layouted.edges, nodeMap, edgeLabelMap };
-}
-
-export function buildApiDetailBundle(rule: ApiGraphNode): ApiDetailBundle {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  const map = new Map<string, ApiDetailEntry>();
-  const refs: { fromId: string; toRule: string }[] = [];
-  const spacing = 74;
-  const opWidth = 200;
-  let cursorY = 0;
-  let previousId: string | null = null;
-
-  rule.ops.forEach((op, index) => {
-    const opId = `detail-${rule.id}::op-${index}`;
-    const node: Node = {
-      id: opId,
-      position: { x: 0, y: cursorY },
-      data: { label: op.label },
-      type: "detail",
-      className: "trace-node trace-node--op",
-      sourcePosition: Position.Bottom,
-      targetPosition: Position.Top,
-      style: { width: opWidth, height: 48 }
-    };
-    nodes.push(node);
-    map.set(opId, { kind: "op", node: op, ruleId: rule.id });
-    (op.refs ?? []).forEach((target) => {
-      refs.push({ fromId: opId, toRule: target });
-    });
-    if (previousId) {
-      edges.push({ id: `${previousId}->${opId}`, source: previousId, target: opId });
-    }
-    previousId = opId;
-    cursorY += spacing;
-  });
-
-  const bounds = nodes.reduce(
-    (acc, node) => {
-      const width = typeof node.style?.width === "number" ? node.style.width : 0;
-      const height = typeof node.style?.height === "number" ? node.style.height : 0;
-      acc.minX = Math.min(acc.minX, node.position.x);
-      acc.maxX = Math.max(acc.maxX, node.position.x + width);
-      acc.minY = Math.min(acc.minY, node.position.y);
-      acc.maxY = Math.max(acc.maxY, node.position.y + height);
-      return acc;
-    },
-    { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
-  );
-
-  return { nodes, edges, map, bounds, refs };
-}
-
-export function buildDetailBundle(record: TraceRecord | undefined, ruleId: string): DetailBundle {
-  const nodes: Node[] = [];
-  const edges: Edge[] = [];
-  const map = new Map<string, DetailEntry>();
-  const refs: { fromId: string; toRule: string; label?: string }[] = [];
-  const recordNodes = record?.nodes ?? [];
-  const spacing = 90;
-  const stepWidth = 200;
-  const opWidth = 160;
-  let cursorY = 0;
-  let previousId: string | null = null;
-  const errorNodeIds = new Set<string>();
-  let errorMarked = false;
-
-  recordNodes.forEach((node, index) => {
-    const stepId = `${ruleId}::step-${index}`;
-    const stepNodeId = `detail-${stepId}`;
-    nodes.push({
-      id: stepNodeId,
-      position: { x: 0, y: cursorY },
-      data: { label: `${node.kind} · ${node.label}` },
-      type: "detail",
-      className: "trace-node trace-node--detail",
-      sourcePosition: Position.Bottom,
-      targetPosition: Position.Top,
-      style: { width: stepWidth, height: 64 }
-    });
-    map.set(stepNodeId, { kind: "step", node, ruleId });
-    if (!errorMarked && (isErrorStatus(node.status) || node.error)) {
-      errorNodeIds.add(stepNodeId);
-      errorMarked = true;
-    }
-    extractRuleRefs(node.meta).forEach((entry) => {
-      refs.push({ fromId: stepNodeId, toRule: entry.ref, label: entry.label });
-    });
-
-    if (previousId) {
-      edges.push({ id: `${previousId}->${stepNodeId}`, source: previousId, target: stepNodeId });
-    }
-
-    let lastId = stepNodeId;
-    const ops = (node.children ?? []).filter((child) => child.kind === "op");
-    ops.forEach((child, opIndex) => {
-      cursorY += spacing;
-      const opId = `detail-${stepId}::op-${opIndex}`;
-      nodes.push({
-        id: opId,
-        position: { x: (stepWidth - opWidth) / 2, y: cursorY },
-        data: { label: child.label },
-        type: "detail",
-        className: "trace-node trace-node--op",
-        sourcePosition: Position.Bottom,
-        targetPosition: Position.Top,
-        style: { width: opWidth, height: 48 }
-      });
-      edges.push({ id: `${lastId}->${opId}`, source: lastId, target: opId });
-      map.set(opId, { kind: "op", node: child, parent: node, ruleId });
-      if (!errorMarked && (isErrorStatus(child.status) || child.error)) {
-        errorNodeIds.add(opId);
-        errorMarked = true;
-      }
-      extractRuleRefs(child.meta).forEach((entry) => {
-        refs.push({ fromId: opId, toRule: entry.ref, label: entry.label });
-      });
-      lastId = opId;
-    });
-
-    previousId = lastId;
-    cursorY += spacing;
-  });
-
-  const bounds = nodes.reduce(
-    (acc, node) => {
-      const width = typeof node.style?.width === "number" ? node.style.width : 0;
-      const height = typeof node.style?.height === "number" ? node.style.height : 0;
-      acc.minX = Math.min(acc.minX, node.position.x);
-      acc.maxX = Math.max(acc.maxX, node.position.x + width);
-      acc.minY = Math.min(acc.minY, node.position.y);
-      acc.maxY = Math.max(acc.maxY, node.position.y + height);
-      return acc;
-    },
-    { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity }
-  );
-  return {
-    nodes,
-    edges,
-    map,
-    firstId: nodes[0]?.id,
-    lastId: nodes[nodes.length - 1]?.id,
-    bounds,
-    refs,
-    errorNodeIds
-  };
 }
 
 export function buildMergedGraph(
