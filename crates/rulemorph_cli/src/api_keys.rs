@@ -1,7 +1,11 @@
 use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
-use rulemorph_server::{ApiKeyInfo, ApiKeyIssueResult, ApiKeyStore, ServerConfig, TenantLayout};
+use rulemorph_server::{ApiKeyStore, ServerConfig, TenantLayout};
+
+mod output;
+
+use self::output::{emit_api_key_issue, emit_api_key_list};
 
 #[derive(Args)]
 pub(super) struct ApiKeysArgs {
@@ -194,47 +198,4 @@ fn resolve_tenant_layout(
 ) -> Result<TenantLayout, String> {
     let base_dir = data_dir.unwrap_or_else(ServerConfig::default_data_dir);
     TenantLayout::new(base_dir, tenant_id).map_err(|err| err.to_string())
-}
-
-fn emit_api_key_issue(issued: &ApiKeyIssueResult, json: bool) {
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(issued).unwrap_or_default()
-        );
-        return;
-    }
-    println!("id: {}", issued.id);
-    println!("prefix: {}", issued.prefix);
-    println!("key: {}", issued.key);
-    if let Some(label) = issued.label.as_ref() {
-        println!("label: {}", label);
-    }
-    println!("created_at: {}", issued.created_at);
-}
-
-fn emit_api_key_list(keys: &[ApiKeyInfo], json: bool) {
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(keys).unwrap_or_else(|_| "[]".to_string())
-        );
-        return;
-    }
-    if keys.is_empty() {
-        println!("no api keys");
-        return;
-    }
-    for key in keys {
-        println!("id: {}", key.id);
-        println!("prefix: {}", key.prefix);
-        println!("created_at: {}", key.created_at);
-        if let Some(revoked) = key.revoked_at.as_ref() {
-            println!("revoked_at: {}", revoked);
-        }
-        if let Some(label) = key.label.as_ref() {
-            println!("label: {}", label);
-        }
-        println!("---");
-    }
 }
