@@ -4,17 +4,28 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 
-use super::{externalize_trace_payloads_inner, maybe_externalize_payload};
+use super::maybe_externalize_payload;
 use crate::trace_writer::TraceWriteOptions;
 
-pub(super) fn externalize_node_payloads(
+pub(super) fn externalize_node_payloads<F>(
     node: &mut JsonValue,
     trace_dir: &Path,
     options: &TraceWriteOptions,
     seen: &mut HashSet<String>,
     budget_remaining: &mut u64,
     blob_files: &mut Vec<PathBuf>,
-) -> Result<bool> {
+    externalize_child_trace: &mut F,
+) -> Result<bool>
+where
+    F: FnMut(
+        &mut JsonValue,
+        &Path,
+        &TraceWriteOptions,
+        &mut HashSet<String>,
+        &mut u64,
+        &mut Vec<PathBuf>,
+    ) -> Result<bool>,
+{
     let Some(obj) = node.as_object_mut() else {
         return Ok(false);
     };
@@ -105,13 +116,14 @@ pub(super) fn externalize_node_payloads(
                 seen,
                 budget_remaining,
                 blob_files,
+                externalize_child_trace,
             )? {
                 return Ok(true);
             }
         }
     }
     if let Some(child_trace) = obj.get_mut("child_trace") {
-        if externalize_trace_payloads_inner(
+        if externalize_child_trace(
             child_trace,
             trace_dir,
             options,
