@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
@@ -11,6 +10,11 @@ use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
 use super::{catch::CatchSpec, resolve_rule_path, rule_loader::LoadedRule, rule_ref_from_path};
+
+mod retry;
+
+use retry::NetworkRetry;
+pub(super) use retry::{RetryConfig, compile_retry, parse_duration};
 
 #[derive(Debug)]
 pub(super) struct CompiledNetworkRule {
@@ -57,30 +61,6 @@ pub(super) struct NetworkRequest {
     pub(super) url: JsonValue,
     #[serde(default)]
     pub(super) headers: Option<HashMap<String, JsonValue>>,
-}
-
-#[derive(Debug, Deserialize)]
-pub(super) struct NetworkRetry {
-    #[serde(default)]
-    max: Option<u32>,
-    #[serde(default)]
-    backoff: Option<String>,
-    #[serde(default)]
-    initial_delay: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct RetryConfig {
-    pub(super) max: u32,
-    pub(super) backoff: RetryBackoff,
-    pub(super) initial_delay: Duration,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(super) enum RetryBackoff {
-    Fixed,
-    Linear,
-    Exponential,
 }
 
 #[derive(Debug)]
@@ -181,59 +161,4 @@ pub(super) fn compile_network_rule(
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf(),
     })
-}
-
-pub(super) fn parse_duration(value: &str) -> Result<Duration> {
-    let trimmed = value.trim();
-    if let Some(ms) = trimmed.strip_suffix("ms") {
-        let amount = u64::from_str(ms.trim()).context("invalid ms")?;
-        return Ok(Duration::from_millis(amount));
-    }
-    if let Some(sec) = trimmed.strip_suffix('s') {
-        let amount = u64::from_str(sec.trim()).context("invalid s")?;
-        return Ok(Duration::from_secs(amount));
-    }
-    Err(anyhow!("invalid duration: {}", value))
-}
-
-pub(super) fn compile_retry(raw: Option<&NetworkRetry>) -> Result<Option<RetryConfig>> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
-    let max = raw.max.unwrap_or(0);
-    if max == 0 {
-        return Ok(None);
-    }
-    let backoff = match raw.backoff.as_deref().unwrap_or("fixed") {
-        "fixed" => RetryBackoff::Fixed,
-        "linear" => RetryBackoff::Linear,
-        "exponential" => RetryBackoff::Exponential,
-        other => return Err(anyhow!("invalid retry backoff: {}", other)),
-    };
-    let initial_delay = match raw.initial_delay.as_deref() {
-        Some(value) => parse_duration(value)?,
-        None => Duration::from_millis(100),
-    };
-    Ok(Some(RetryConfig {
-        max,
-        backoff,
-        initial_delay,
-    }))
-}
-
-impl RetryConfig {
-    pub(super) fn delay_for(&self, attempt: u32) -> Duration {
-        let factor = attempt.saturating_add(1);
-        match self.backoff {
-            RetryBackoff::Fixed => self.initial_delay,
-            RetryBackoff::Linear => self
-                .initial_delay
-                .checked_mul(factor)
-                .unwrap_or(Duration::MAX),
-            RetryBackoff::Exponential => {
-                let exp = 2u32.saturating_pow(attempt);
-                self.initial_delay.checked_mul(exp).unwrap_or(Duration::MAX)
-            }
-        }
-    }
 }
