@@ -8,10 +8,9 @@ use serde_json::Value as JsonValue;
 use tracing::warn;
 
 use super::error::EndpointError;
-use super::expr::apply_mappings_via_rule;
-use super::request_body::read_request_body;
-use super::request_input::{build_input, build_input_from_parts, parse_query};
 use super::{EndpointEngine, empty_object};
+
+mod input;
 
 impl EndpointEngine {
     pub async fn handle_request(&self, request: Request<axum::body::Body>) -> Result<Response> {
@@ -29,88 +28,26 @@ impl EndpointEngine {
             .endpoint_rule
             .match_endpoint(&method, &path)
             .ok_or_else(|| anyhow!("no endpoint matched"))?;
-        let mut _multipart_temp_dir: Option<tempfile::TempDir> = None;
-        let body_value = match read_request_body(
-            &method,
-            &path,
-            &parts.headers,
-            body,
-            self.config.max_body_bytes,
-        )
-        .await
-        {
-            Ok(body) => {
-                _multipart_temp_dir = body.multipart_temp_dir;
-                Ok(body.value)
-            }
-            Err(err) => Err(err),
-        };
 
         let endpoint = endpoint_match.endpoint;
+        let prepared_input = input::prepare_request_input(
+            self,
+            &method,
+            &path,
+            &parts,
+            body,
+            &endpoint_match,
+            &base_context,
+        )
+        .await?;
+        let mut _multipart_temp_dir = prepared_input.multipart_temp_dir;
+        let record_input = prepared_input.record_input;
+        let mut current = prepared_input.current;
         let mut nodes: Vec<JsonValue> = Vec::new();
-        let mut record_status = "ok".to_string();
-        let mut record_error: Option<JsonValue> = None;
-        let mut last_error_message: Option<String> = None;
-        let mut skip_steps = false;
-
-        let mut handle_input_error = |err: EndpointError,
-                                      fallback_input: Option<JsonValue>,
-                                      body_value: Option<JsonValue>|
-         -> Result<(JsonValue, JsonValue)> {
-            skip_steps = true;
-            let fallback_input = fallback_input.unwrap_or_else(|| {
-                let query = parse_query(parts.uri.query()).unwrap_or_else(|_| empty_object());
-                build_input_from_parts(&parts, &endpoint_match.params, body_value, query)
-            });
-            if let Some(catch) = &endpoint.catch {
-                if let Some(next) = self
-                    .run_catch(
-                        catch,
-                        &err,
-                        &fallback_input,
-                        None,
-                        &self.endpoint_rule.base_dir,
-                        &base_context,
-                    )
-                    .map_err(|err| anyhow!(err.to_string()))?
-                {
-                    Ok((fallback_input, next))
-                } else {
-                    record_status = "error".to_string();
-                    record_error = Some(self.endpoint_error_to_trace(&err));
-                    last_error_message = Some(err.message.clone());
-                    Ok((fallback_input.clone(), fallback_input))
-                }
-            } else {
-                record_status = "error".to_string();
-                record_error = Some(self.endpoint_error_to_trace(&err));
-                last_error_message = Some(err.message.clone());
-                Ok((fallback_input.clone(), fallback_input))
-            }
-        };
-
-        let (record_input, mut current) = match body_value {
-            Ok(body_value) => match build_input(&parts, &endpoint_match.params, body_value.clone())
-            {
-                Ok(input) => {
-                    let record_input = input.clone();
-                    let current_result: Result<JsonValue, EndpointError> =
-                        if let Some(mappings) = &endpoint.input {
-                            apply_mappings_via_rule(mappings, &input, Some(&base_context))
-                                .map_err(EndpointError::from_transform)
-                                .map(|value| value.unwrap_or_else(empty_object))
-                        } else {
-                            Ok(input.clone())
-                        };
-                    match current_result {
-                        Ok(current) => Ok((record_input, current)),
-                        Err(err) => handle_input_error(err, Some(input), body_value),
-                    }
-                }
-                Err(err) => handle_input_error(err, None, body_value),
-            },
-            Err(err) => handle_input_error(err, None, None),
-        }?;
+        let mut record_status = prepared_input.record_status;
+        let mut record_error = prepared_input.record_error;
+        let mut last_error_message = prepared_input.last_error_message;
+        let skip_steps = prepared_input.skip_steps;
 
         if !skip_steps {
             for (step_index, step) in endpoint.steps.iter().enumerate() {
