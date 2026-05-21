@@ -2,14 +2,15 @@ use serde_json::Value as JsonValue;
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::RuleFile;
-use crate::xml_name::is_xml_name;
 
 use super::{NormalizationOptions, enforce_json_limits, enforce_records_limit};
 use parser::parse_xml_tree;
-use shape::{select_xml_records, xml_node_to_json};
+use records_path::{parse_xml_records_path, select_xml_records};
+use shape::xml_node_to_json;
 
 mod names;
 mod parser;
+mod records_path;
 mod shape;
 
 pub fn normalize_xml_records(
@@ -43,21 +44,6 @@ pub fn normalize_xml_records(
         enforce_json_limits(record, options)?;
     }
     Ok(records)
-}
-
-fn parse_xml_records_path(path: &str) -> Result<Vec<&str>, TransformError> {
-    if path.is_empty()
-        || path.contains('[')
-        || path.contains(']')
-        || !path.split('.').all(is_xml_name)
-    {
-        return Err(TransformError::new(
-            TransformErrorKind::InvalidRecordsPath,
-            "xml.records_path must be a dot-separated element path",
-        )
-        .with_path("input.xml.records_path"));
-    }
-    Ok(path.split('.').collect())
 }
 
 fn invalid(message: impl Into<String>) -> TransformError {
