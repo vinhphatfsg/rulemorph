@@ -4,4 +4,6 @@
 @import "./styles/trace-panels.css";
 @import "./styles/overlays.css";
 @import "./styles/inspector.css";
+@import "./styles/inspector-pipe.css";
+@import "./styles/inspector-details.css";
 @import "./styles/responsive.css";
