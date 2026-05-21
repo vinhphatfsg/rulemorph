@@ -7,16 +7,16 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::sync::RwLock;
-use tracing::warn;
 
 use crate::trace_backend::TraceBackend;
 use crate::trace_schema::TraceManifest;
+
+mod import;
 
 use super::chunk_access::{
     get_finalize_chunk as get_manifest_finalize_chunk, get_nodes_chunk as get_manifest_nodes_chunk,
     get_records_chunk as get_manifest_records_chunk,
 };
-use super::import_bundle::{IMPORT_MAX_TOTAL_BYTES, import_bundle_files};
 use super::index::build_trace_index;
 use super::legacy::{apply_legacy_limits, looks_like_legacy_trace};
 use super::manifest_budget::{apply_manifest_budget, apply_record_total_budget_for_get};
@@ -160,64 +160,6 @@ impl FileTraceBackend {
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
         Ok(Some((manifest, base_dir)))
-    }
-
-    pub async fn import_bundle(&self, bundle_path: &Path) -> Result<ImportResult> {
-        self.import_bundle_inner(bundle_path, IMPORT_MAX_TOTAL_BYTES)
-            .await
-    }
-
-    #[cfg(test)]
-    pub async fn import_bundle_with_limit(
-        &self,
-        bundle_path: &Path,
-        max_total_bytes: u64,
-    ) -> Result<ImportResult> {
-        self.import_bundle_inner(bundle_path, max_total_bytes).await
-    }
-
-    async fn import_bundle_inner(
-        &self,
-        bundle_path: &Path,
-        max_total_bytes: u64,
-    ) -> Result<ImportResult> {
-        let bundle_path = bundle_path
-            .canonicalize()
-            .with_context(|| format!("failed to resolve bundle path: {}", bundle_path.display()))?;
-        if !bundle_path.is_dir() {
-            return Err(anyhow::anyhow!(
-                "bundle path is not a directory: {}",
-                bundle_path.display()
-            ));
-        }
-
-        let data_dir = self.data_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            import_bundle_files(&data_dir, &bundle_path, max_total_bytes)
-        })
-        .await??;
-
-        self.refresh_index().await?;
-
-        let index = self.index.read().await;
-        let mut trace_ids = Vec::new();
-        for path in result.imported_paths {
-            let path_string = path.display().to_string();
-            if let Some(meta) = index.values().find(|meta| meta.path == path_string) {
-                trace_ids.push(meta.trace_id.clone());
-            } else {
-                warn!(
-                    "imported trace metadata not found in index: {}",
-                    path.display()
-                );
-            }
-        }
-
-        Ok(ImportResult {
-            imported: trace_ids.len(),
-            trace_ids,
-            rules_imported: result.rules_imported,
-        })
     }
 
     async fn refresh_index(&self) -> Result<()> {
