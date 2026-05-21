@@ -17,12 +17,25 @@ import {
 } from "./api_client";
 import {
   applyTraceFilters,
-  resolveRuleLabel,
-  resolveTraceStatus,
   type DurationUnit,
   type TimeRange,
   type TraceListItem
 } from "./trace_list_helpers";
+import {
+  buildApiDetailBundles,
+  buildTraceDetailBundles,
+  collectApiDetailNodeMap,
+  collectDetailNodeMap,
+  deriveRuleOptions,
+  deriveStatusOptions,
+  emptyOverviewGraph,
+  resolveCurrentTrace,
+  resolveDetailLabel,
+  resolveDetailReason,
+  resolveDetailStatus,
+  resolveEffectiveFocusedRuleId,
+  resolveRecordLabel
+} from "./app_derived_state";
 import {
   mergeNodesIntoRecords,
   normalizeTracePayload,
@@ -36,19 +49,13 @@ import { RecordPanel } from "./record_panel";
 import { Topbar } from "./topbar";
 import { TraceCanvas } from "./trace_canvas";
 import {
-  buildApiDetailBundle,
   buildApiGraph,
-  buildDetailBundle,
   buildMergedApiGraph,
   buildMergedGraph,
   buildOverviewGraph,
-  type ApiDetailBundle,
-  type ApiDetailEntry,
   type ApiGraphNode,
   type ApiGraphOp,
-  type ApiGraphResponse,
-  type DetailBundle,
-  type DetailEntry
+  type ApiGraphResponse
 } from "./trace_graph";
 import { TraceListPanel, ZipImportModal } from "./trace_list_panel";
 import { runZipImport } from "./zip_import";
@@ -122,24 +129,9 @@ export default function App() {
   const internalKey = getInternalKey();
   const tenantId = getTenantId();
 
-  const statusOptions = useMemo(() => {
-    const set = new Set<string>();
-    traces.forEach((item) => {
-      set.add(resolveTraceStatus(item));
-    });
-    return Array.from(set).sort();
-  }, [traces]);
+  const statusOptions = useMemo(() => deriveStatusOptions(traces), [traces]);
 
-  const ruleOptions = useMemo(() => {
-    const set = new Set<string>();
-    traces.forEach((item) => {
-      const label = resolveRuleLabel(item);
-      if (label) {
-        set.add(label);
-      }
-    });
-    return Array.from(set).sort();
-  }, [traces]);
+  const ruleOptions = useMemo(() => deriveRuleOptions(traces), [traces]);
 
   const filteredTraces = useMemo(
     () =>
@@ -328,55 +320,28 @@ export default function App() {
   }, [selectedId]);
 
   const overviewGraph = useMemo(
-    () =>
-      trace
-        ? buildOverviewGraph(trace)
-        : {
-            nodes: [],
-            edges: [],
-            traceMap: new Map(),
-            endpointEdgeLabels: new Map(),
-            edgeDurationMap: new Map(),
-            errorRuleIds: new Set(),
-            ruleTypeById: new Map()
-          },
+    () => (trace ? buildOverviewGraph(trace) : emptyOverviewGraph()),
     [trace]
   );
-  const effectiveFocusedRuleId =
-    focusedRuleId ?? expandedRuleIds[expandedRuleIds.length - 1] ?? null;
-  const currentTrace = effectiveFocusedRuleId
-    ? overviewGraph.traceMap.get(effectiveFocusedRuleId) ?? trace
-    : trace;
+  const effectiveFocusedRuleId = resolveEffectiveFocusedRuleId(focusedRuleId, expandedRuleIds);
+  const currentTrace = resolveCurrentTrace(effectiveFocusedRuleId, overviewGraph, trace);
   const isFinalizeSelected = recordIndex < 0;
   const currentRecord = recordIndex >= 0 ? currentTrace?.records?.[recordIndex] : undefined;
   const finalizePayload = currentTrace?.finalize ?? null;
-  const bundles = useMemo(() => {
-    const map = new Map<string, DetailBundle>();
-    expandedRuleIds.forEach((ruleId) => {
-      const ruleTrace = overviewGraph.traceMap.get(ruleId);
-      const record =
-        ruleId === effectiveFocusedRuleId
-          ? ruleTrace?.records?.[recordIndex]
-          : ruleTrace?.records?.[0];
-      map.set(ruleId, buildDetailBundle(record, ruleId));
-    });
-    return map;
-  }, [expandedRuleIds, overviewGraph, recordIndex, effectiveFocusedRuleId]);
+  const bundles = useMemo(
+    () => buildTraceDetailBundles(expandedRuleIds, overviewGraph, recordIndex, effectiveFocusedRuleId),
+    [expandedRuleIds, overviewGraph, recordIndex, effectiveFocusedRuleId]
+  );
   const apiGraphLayout = useMemo(() => {
     if (!apiGraph) {
       return { nodes: [], edges: [], nodeMap: new Map<string, ApiGraphNode>(), edgeLabelMap: new Map<string, string>() };
     }
     return buildApiGraph(apiGraph);
   }, [apiGraph]);
-  const apiBundles = useMemo(() => {
-    const map = new Map<string, ApiDetailBundle>();
-    apiExpandedRuleIds.forEach((ruleId) => {
-      const rule = apiGraphLayout.nodeMap.get(ruleId);
-      if (!rule) return;
-      map.set(ruleId, buildApiDetailBundle(rule));
-    });
-    return map;
-  }, [apiExpandedRuleIds, apiGraphLayout]);
+  const apiBundles = useMemo(
+    () => buildApiDetailBundles(apiExpandedRuleIds, apiGraphLayout),
+    [apiExpandedRuleIds, apiGraphLayout]
+  );
   const mergedGraph = useMemo(
     () =>
       buildMergedGraph(
@@ -405,47 +370,15 @@ export default function App() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("traceDurationUnit", durationUnit);
   }, [durationUnit]);
-  const detailNodeMap = useMemo(() => {
-    const map = new Map<string, DetailEntry>();
-    bundles.forEach((bundle) => {
-      bundle.map.forEach((entry, nodeId) => {
-        map.set(nodeId, entry);
-      });
-    });
-    return map;
-  }, [bundles]);
-  const apiDetailNodeMap = useMemo(() => {
-    const map = new Map<string, ApiDetailEntry>();
-    apiBundles.forEach((bundle) => {
-      bundle.map.forEach((entry, nodeId) => {
-        map.set(nodeId, entry);
-      });
-    });
-    return map;
-  }, [apiBundles]);
-  const detailStatus = traceManifest
-    ? traceManifest.detail?.status ?? "basic"
-    : trace?.detail?.status;
-  const detailReason = traceManifest
-    ? traceManifest.detail?.reason ?? []
-    : trace?.detail?.reason ?? [];
+  const detailNodeMap = useMemo(() => collectDetailNodeMap(bundles), [bundles]);
+  const apiDetailNodeMap = useMemo(() => collectApiDetailNodeMap(apiBundles), [apiBundles]);
+  const detailStatus = resolveDetailStatus(traceManifest, trace);
+  const detailReason = resolveDetailReason(traceManifest, trace);
   const detailAvailable = detailStatus ? detailStatus === "full" : true;
   const hasDetail = viewMode === "trace" && expandedRuleIds.length > 0 && detailAvailable;
   const apiHasDetail = viewMode === "api" && apiExpandedRuleIds.length > 0;
-  const recordLabel = isFinalizeSelected
-    ? "finalize"
-    : `record #${currentRecord?.index ?? 0}`;
-  const detailLabel = detailStatus
-    ? detailStatus === "full"
-      ? detailLoading
-        ? "loading"
-        : hasDetail
-          ? "detail"
-          : "overview"
-      : detailStatus
-      : hasDetail
-      ? "detail"
-      : "overview";
+  const recordLabel = resolveRecordLabel(isFinalizeSelected, currentRecord);
+  const detailLabel = resolveDetailLabel(detailStatus, detailLoading, hasDetail);
 
   return (
     <div className="app">
