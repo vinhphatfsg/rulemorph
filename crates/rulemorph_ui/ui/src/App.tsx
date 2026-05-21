@@ -11,7 +11,6 @@ import ReactFlow, {
   applyNodeChanges
 } from "reactflow";
 import "reactflow/dist/style.css";
-import clsx from "clsx";
 import {
   __resetAuthCachesForTest as resetAuthCachesForTest,
   captureAuthSecretsFromLocation,
@@ -47,6 +46,7 @@ import {
 import { shouldResetInitialCenter } from "./view_mode";
 import { InspectorDrawer } from "./inspector_drawer";
 import { RecordPanel } from "./record_panel";
+import { Topbar } from "./topbar";
 import {
   DetailNode,
   buildApiDetailBundle,
@@ -600,49 +600,18 @@ export default function App() {
   return (
     <div className="app">
       <div className="app__glow" />
-      <header className="topbar">
-        <div className="title-chip">
-          <span className="title-chip__dot" />
-          <span className="title-chip__label">
-            {viewMode === "trace" ? "Rulemorph Trace" : "Rulemorph 構成図"}
-          </span>
-          <span className="title-chip__id">
-            {viewMode === "trace"
-              ? currentTrace?.rule?.path ?? currentTrace?.trace_id ?? "no-trace"
-              : selectedApiNode?.path ?? "api-graph"}
-          </span>
-        </div>
-        <div className="topbar__meta">
-          <div className="meta-tabs">
-            <button
-              className={clsx("meta-tab", viewMode === "trace" && "is-active")}
-              onClick={() => setViewMode("trace")}
-            >
-              Trace
-            </button>
-            <button
-              className={clsx("meta-tab", viewMode === "api" && "is-active")}
-              onClick={() => setViewMode("api")}
-            >
-              構成図
-            </button>
-          </div>
-          {viewMode === "trace" ? (
-            <>
-              <span className="meta-pill">{detailLabel}</span>
-              <span className="meta-pill">
-                {filteredTraces.length} / {traces.length} traces
-              </span>
-              <span className="meta-pill">{recordLabel}</span>
-            </>
-          ) : (
-            <>
-              <span className="meta-pill">{apiGraph?.nodes.length ?? 0} rules</span>
-              <span className="meta-pill">{apiGraph?.edges.length ?? 0} edges</span>
-            </>
-          )}
-        </div>
-      </header>
+      <Topbar
+        viewMode={viewMode}
+        setViewMode={setViewMode}
+        traceTitleId={currentTrace?.rule?.path ?? currentTrace?.trace_id ?? "no-trace"}
+        apiTitleId={selectedApiNode?.path ?? "api-graph"}
+        detailLabel={detailLabel}
+        filteredTraceCount={filteredTraces.length}
+        traceCount={traces.length}
+        recordLabel={recordLabel}
+        apiRuleCount={apiGraph?.nodes.length ?? 0}
+        apiEdgeCount={apiGraph?.edges.length ?? 0}
+      />
 
       <main className="stage">
         <div className="trace-canvas">
