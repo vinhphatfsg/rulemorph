@@ -8,6 +8,7 @@ use super::{NormalizationOptions, enforce_json_limits, enforce_records_limit};
 use parser::parse_xml_tree;
 use shape::{select_xml_records, xml_node_to_json};
 
+mod names;
 mod parser;
 mod shape;
 
