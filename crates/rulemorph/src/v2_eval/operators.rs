@@ -1,16 +1,20 @@
 use serde_json::Value as JsonValue;
 
 mod number;
+mod projection;
+mod special;
 mod string;
 
 use self::number::eval_number_op;
+use self::projection::eval_projection_op;
+use self::special::{eval_coalesce_op, eval_first_last_op, eval_logical_op, eval_not_op};
 use self::string::eval_string_op;
 use super::{
     EvalValue, V2EvalContext, eval_collection_op, eval_comparison_op, eval_lookup_op,
-    eval_type_cast, eval_v2_expr, eval_v2_op_with_v1_fallback, eval_v2_ref, value_as_bool,
+    eval_type_cast, eval_v2_op_with_v1_fallback, eval_v2_ref,
 };
 use crate::error::{TransformError, TransformErrorKind};
-use crate::v2_model::{V2Expr, V2OpStep, V2Pipe, V2Start};
+use crate::v2_model::V2OpStep;
 
 /// Evaluate a v2 op step with a pipe value as implicit first argument
 pub fn eval_v2_op_step<'a>(
@@ -55,196 +59,18 @@ pub fn eval_v2_op_step<'a>(
         | "sort_by" | "find" | "find_index" | "reduce" | "fold" | "zip_with" => {
             eval_collection_op(op_step, pipe_value, record, context, out, path, &step_ctx)
         }
-        "first" => match &pipe_value {
-            EvalValue::Missing => Ok(EvalValue::Missing),
-            EvalValue::Value(JsonValue::Array(arr)) => {
-                if let Some(value) = arr.first() {
-                    Ok(EvalValue::Value(value.clone()))
-                } else {
-                    Ok(EvalValue::Missing)
-                }
-            }
-            EvalValue::Value(other) => Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                format!("first requires array, got {:?}", other),
-            )
-            .with_path(path)),
-        },
-        "last" => match &pipe_value {
-            EvalValue::Missing => Ok(EvalValue::Missing),
-            EvalValue::Value(JsonValue::Array(arr)) => {
-                if let Some(value) = arr.last() {
-                    Ok(EvalValue::Value(value.clone()))
-                } else {
-                    Ok(EvalValue::Missing)
-                }
-            }
-            EvalValue::Value(other) => Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                format!("last requires array, got {:?}", other),
-            )
-            .with_path(path)),
-        },
+        "first" | "last" => eval_first_last_op(op_step, pipe_value, path),
 
         // Coalesce
-        "coalesce" => {
-            // If pipe value is present and not null, use it
-            if let EvalValue::Value(v) = &pipe_value {
-                if !v.is_null() {
-                    return Ok(pipe_value);
-                }
-            }
-            // Otherwise, try args in order
-            for (i, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, i);
-                let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
-                if let EvalValue::Value(v) = &arg_value {
-                    if !v.is_null() {
-                        return Ok(arg_value);
-                    }
-                }
-            }
-            Ok(EvalValue::Missing)
-        }
-        "and" | "or" => {
-            let is_and = op_step.op == "and";
-            let total_len = op_step.args.len() + 1;
-            if total_len < 2 {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "expr.args must contain at least two items",
-                )
-                .with_path(format!("{}.args", path)));
-            }
-
-            let mut saw_missing = false;
-            match &pipe_value {
-                EvalValue::Missing => saw_missing = true,
-                EvalValue::Value(value) => {
-                    let flag = value_as_bool(value, path)?;
-                    if is_and {
-                        if !flag {
-                            return Ok(EvalValue::Value(JsonValue::Bool(false)));
-                        }
-                    } else if flag {
-                        return Ok(EvalValue::Value(JsonValue::Bool(true)));
-                    }
-                }
-            }
-
-            for (index, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, index);
-                let value = eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)?;
-                match value {
-                    EvalValue::Missing => {
-                        saw_missing = true;
-                        continue;
-                    }
-                    EvalValue::Value(value) => {
-                        let flag = value_as_bool(&value, &arg_path)?;
-                        if is_and {
-                            if !flag {
-                                return Ok(EvalValue::Value(JsonValue::Bool(false)));
-                            }
-                        } else if flag {
-                            return Ok(EvalValue::Value(JsonValue::Bool(true)));
-                        }
-                    }
-                }
-            }
-
-            if saw_missing {
-                Ok(EvalValue::Missing)
-            } else {
-                Ok(EvalValue::Value(JsonValue::Bool(is_and)))
-            }
-        }
-        "not" => {
-            if !op_step.args.is_empty() {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    "expr.args must contain exactly one item",
-                )
-                .with_path(format!("{}.args", path)));
-            }
-            match pipe_value {
-                EvalValue::Missing => Ok(EvalValue::Missing),
-                EvalValue::Value(value) => {
-                    let flag = value_as_bool(&value, path)?;
-                    Ok(EvalValue::Value(JsonValue::Bool(!flag)))
-                }
-            }
-        }
+        "coalesce" => eval_coalesce_op(op_step, pipe_value, record, context, out, path, &step_ctx),
+        "and" | "or" => eval_logical_op(op_step, pipe_value, record, context, out, path, &step_ctx),
+        "not" => eval_not_op(op_step, pipe_value, path),
         "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq" | "ne" | "lt" | "lte" | "gt"
         | "gte" | "match" => {
             eval_comparison_op(op_step, pipe_value, record, context, out, path, &step_ctx)
         }
         "pick" | "omit" => {
-            if op_step.args.is_empty() {
-                return Err(TransformError::new(
-                    TransformErrorKind::ExprError,
-                    format!("{} requires at least one argument", op_step.op),
-                )
-                .with_path(format!("{}.args", path)));
-            }
-
-            let mut path_values = Vec::new();
-            for (index, arg) in op_step.args.iter().enumerate() {
-                let arg_path = format!("{}.args[{}]", path, index);
-                let value = match eval_v2_expr(arg, record, context, out, &arg_path, &step_ctx)? {
-                    EvalValue::Missing => return Ok(EvalValue::Missing),
-                    EvalValue::Value(value) => value,
-                };
-                if value.is_null() {
-                    return Err(TransformError::new(
-                        TransformErrorKind::ExprError,
-                        "expr arg must not be null",
-                    )
-                    .with_path(arg_path));
-                }
-                match value {
-                    JsonValue::String(path_value) => {
-                        path_values.push(JsonValue::String(path_value));
-                    }
-                    JsonValue::Array(items) => {
-                        for (item_index, item) in items.iter().enumerate() {
-                            let item_path = format!("{}.args[{}][{}]", path, index, item_index);
-                            let path_value = item.as_str().ok_or_else(|| {
-                                TransformError::new(
-                                    TransformErrorKind::ExprError,
-                                    "paths must be a string or array of strings",
-                                )
-                                .with_path(item_path)
-                            })?;
-                            path_values.push(JsonValue::String(path_value.to_string()));
-                        }
-                    }
-                    _ => {
-                        return Err(TransformError::new(
-                            TransformErrorKind::ExprError,
-                            "paths must be a string or array of strings",
-                        )
-                        .with_path(arg_path));
-                    }
-                }
-            }
-
-            let normalized_op = V2OpStep {
-                op: op_step.op.clone(),
-                args: vec![V2Expr::Pipe(V2Pipe {
-                    start: V2Start::Literal(JsonValue::Array(path_values)),
-                    steps: vec![],
-                })],
-            };
-            eval_v2_op_with_v1_fallback(
-                &normalized_op,
-                pipe_value,
-                record,
-                context,
-                out,
-                path,
-                &step_ctx,
-            )
+            eval_projection_op(op_step, pipe_value, record, context, out, path, &step_ctx)
         }
 
         "lookup_first" | "lookup" => {
