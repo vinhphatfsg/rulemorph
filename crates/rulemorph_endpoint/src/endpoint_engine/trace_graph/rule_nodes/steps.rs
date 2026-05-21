@@ -1,13 +1,16 @@
 use std::path::Path;
 
 use rulemorph::{RuleFile, TransformError, TransformErrorKind};
-use serde_json::{Map as JsonMap, Value as JsonValue, json};
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use super::branch_trace::apply_branch_trace_meta;
+use self::conditions::{apply_asserts_meta, apply_branch_meta, apply_record_when_meta};
+use self::node::{build_step_node, step_kind, step_label};
 use super::step_outputs::collect_step_outputs;
 use super::transform_error_to_trace;
-use crate::endpoint_engine::trace_graph::condition::eval_trace_condition;
 use crate::endpoint_engine::trace_graph::mapping_ops::build_mapping_ops_with_values;
+
+mod conditions;
+mod node;
 
 pub(super) fn build_step_nodes(
     rule: &RuleFile,
@@ -25,27 +28,13 @@ pub(super) fn build_step_nodes(
     let mut halted = false;
     let mut prev_elapsed = 0u64;
     for (index, step) in steps.iter().enumerate() {
-        let label = step
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("step-{}", index + 1));
-        let kind = if step.branch.is_some() {
-            "branch"
-        } else if step.record_when.is_some() {
-            "record_when"
-        } else if step.asserts.is_some() {
-            "asserts"
-        } else if step.mappings.is_some() {
-            "mappings"
-        } else {
-            "step"
-        };
+        let label = step_label(rule, index);
+        let kind = step_kind(rule, index);
 
         let step_input = prev_output.clone();
         let mut status = "ok".to_string();
         let mut output_value: Option<JsonValue> = None;
         let mut error: Option<JsonValue> = None;
-        let mut child_trace: Option<JsonValue> = None;
         let mut meta = JsonMap::new();
 
         let step_active = !halted;
@@ -83,112 +72,43 @@ pub(super) fn build_step_nodes(
             }
         }
 
-        if step_active && status != "error" {
-            if let Some(expr) = step.record_when.as_ref() {
-                match eval_trace_condition(
-                    expr,
-                    record,
-                    context,
-                    &step_input,
-                    "record_when",
-                    rule.version,
-                ) {
-                    Ok(flag) => {
-                        meta.insert("record_when".to_string(), JsonValue::Bool(flag));
-                    }
-                    Err(err) => {
-                        status = "error".to_string();
-                        error = Some(transform_error_to_trace(&err));
-                        halted = true;
-                    }
-                }
-            }
-        }
-
-        if step_active && status != "error" {
-            if let Some(asserts) = step.asserts.as_ref() {
-                let mut asserts_ok = true;
-                for (assert_index, assert) in asserts.iter().enumerate() {
-                    let assert_path = format!("steps[{}].asserts[{}].when", index, assert_index);
-                    match eval_trace_condition(
-                        &assert.when,
-                        record,
-                        context,
-                        &step_input,
-                        &assert_path,
-                        rule.version,
-                    ) {
-                        Ok(true) => {}
-                        Ok(false) => {
-                            asserts_ok = false;
-                            let err = TransformError::new(
-                                TransformErrorKind::AssertionFailed,
-                                format!(
-                                    "assert failed: {}: {}",
-                                    assert.error.code, assert.error.message
-                                ),
-                            )
-                            .with_path(format!("steps[{}].asserts[{}]", index, assert_index));
-                            status = "error".to_string();
-                            error = Some(transform_error_to_trace(&err));
-                            halted = true;
-                            break;
-                        }
-                        Err(err) => {
-                            asserts_ok = false;
-                            status = "error".to_string();
-                            error = Some(transform_error_to_trace(&err));
-                            halted = true;
-                            break;
-                        }
-                    }
-                }
-                meta.insert("asserts_ok".to_string(), JsonValue::Bool(asserts_ok));
-            }
-        }
-        if step.asserts.is_some() && !meta.contains_key("asserts_ok") {
-            meta.insert("asserts_ok".to_string(), JsonValue::Bool(false));
-        }
-
-        if step_active && status != "error" {
-            if let Some(branch) = step.branch.as_ref() {
-                let branch_taken = match eval_trace_condition(
-                    &branch.when,
-                    record,
-                    context,
-                    &step_input,
-                    "branch.when",
-                    rule.version,
-                ) {
-                    Ok(true) => "then",
-                    Ok(false) => {
-                        if branch.r#else.is_some() {
-                            "else"
-                        } else {
-                            "none"
-                        }
-                    }
-                    Err(err) => {
-                        status = "error".to_string();
-                        error = Some(transform_error_to_trace(&err));
-                        halted = true;
-                        "none"
-                    }
-                };
-                if branch.return_ && branch_taken != "none" {
-                    halted = true;
-                }
-                child_trace = apply_branch_trace_meta(
-                    &branch.then,
-                    branch.r#else.as_deref(),
-                    branch_taken,
-                    base_dir,
-                    &step_input,
-                    context,
-                    &mut meta,
-                );
-            }
-        }
+        apply_record_when_meta(
+            rule,
+            index,
+            record,
+            context,
+            &step_input,
+            step_active,
+            &mut status,
+            &mut error,
+            &mut halted,
+            &mut meta,
+        );
+        apply_asserts_meta(
+            rule,
+            index,
+            record,
+            context,
+            &step_input,
+            step_active,
+            &mut status,
+            &mut error,
+            &mut halted,
+            &mut meta,
+        );
+        let child_trace = apply_branch_meta(
+            rule,
+            index,
+            record,
+            context,
+            base_dir,
+            &step_input,
+            step_active,
+            &mut status,
+            &mut error,
+            &mut halted,
+            &mut meta,
+        );
 
         let children = if status == "ok" {
             if let Some(mappings) = step.mappings.as_deref() {
@@ -208,36 +128,19 @@ pub(super) fn build_step_nodes(
             Vec::new()
         };
 
-        let mut node = json!({
-            "id": format!("step-{}", index),
-            "kind": kind,
-            "label": label,
-            "status": status,
-            "input": step_input,
-            "output": output_value,
-            "duration_us": step_duration_us,
-        });
-        if let Some(err) = error {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("error".to_string(), err);
-            }
-        }
-        if let Some(trace) = child_trace {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("child_trace".to_string(), trace);
-            }
-        }
-        if !meta.is_empty() {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("meta".to_string(), JsonValue::Object(meta));
-            }
-        }
-        if !children.is_empty() {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("children".to_string(), JsonValue::Array(children));
-            }
-        }
-        nodes.push(node);
+        nodes.push(build_step_node(
+            index,
+            kind,
+            label,
+            status,
+            step_input,
+            output_value,
+            step_duration_us,
+            error,
+            child_trace,
+            meta,
+            children,
+        ));
     }
     nodes
 }
