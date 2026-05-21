@@ -1,205 +1,187 @@
-use std::collections::HashSet;
+use serde_yaml::Value as YamlValue;
 
-use rulemorph::{Expr, InputFormat, RuleFile};
-use serde_json::{Value, json};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
+mod format;
+mod input;
+mod mappings;
+mod refs;
 
-use crate::diagnostics::parse_error_json;
-use crate::errors::CallError;
-
-pub(crate) fn build_input_yaml(format: &str, records_path: Option<&str>) -> YamlValue {
-    let mut input_map = YamlMapping::new();
-    input_map.insert(yaml_key("format"), YamlValue::String(format.to_string()));
-    if format.eq_ignore_ascii_case("json") {
-        let mut json_map = YamlMapping::new();
-        if let Some(records_path) = records_path {
-            json_map.insert(
-                yaml_key("records_path"),
-                YamlValue::String(records_path.to_string()),
-            );
-        }
-        input_map.insert(yaml_key("json"), YamlValue::Mapping(json_map));
-    } else {
-        input_map.insert(yaml_key("csv"), YamlValue::Mapping(YamlMapping::new()));
-    }
-    YamlValue::Mapping(input_map)
-}
-
-pub(crate) fn update_yaml_input_spec(
-    root: &mut YamlValue,
-    format: Option<&str>,
-    records_path: Option<&str>,
-) {
-    if format.is_none() && records_path.is_none() {
-        return;
-    }
-    let Some(root_map) = root.as_mapping_mut() else {
-        return;
-    };
-    let input_value = root_map
-        .entry(yaml_key("input"))
-        .or_insert_with(|| YamlValue::Mapping(YamlMapping::new()));
-    let Some(input_map) = input_value.as_mapping_mut() else {
-        return;
-    };
-
-    if let Some(format) = format {
-        input_map.insert(yaml_key("format"), YamlValue::String(format.to_string()));
-    }
-    if let Some(records_path) = records_path {
-        let json_value = input_map
-            .entry(yaml_key("json"))
-            .or_insert_with(|| YamlValue::Mapping(YamlMapping::new()));
-        if let Some(json_map) = json_value.as_mapping_mut() {
-            json_map.insert(
-                yaml_key("records_path"),
-                YamlValue::String(records_path.to_string()),
-            );
-        }
-    }
-}
-
-pub(crate) fn yaml_mappings_sequence_mut(
-    root: &mut YamlValue,
-) -> Result<&mut Vec<YamlValue>, CallError> {
-    let Some(root_map) = root.as_mapping_mut() else {
-        let message = "rules yaml must be a mapping".to_string();
-        return Err(CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![parse_error_json(&message, None)]),
-        });
-    };
-    let Some(mappings_value) = root_map.get_mut(&yaml_key("mappings")) else {
-        let message = "rules yaml is missing mappings".to_string();
-        return Err(CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![parse_error_json(&message, None)]),
-        });
-    };
-    mappings_value.as_sequence_mut().ok_or_else(|| {
-        let message = "rules yaml mappings must be a sequence".to_string();
-        CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![parse_error_json(&message, None)]),
-        }
-    })
-}
-
-pub(crate) fn update_yaml_mapping(
-    mappings: &mut Vec<YamlValue>,
-    index: usize,
-    source: Option<&str>,
-) -> Result<(), CallError> {
-    let Some(mapping_value) = mappings.get_mut(index) else {
-        let message = "mapping index out of range".to_string();
-        return Err(CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![parse_error_json(&message, None)]),
-        });
-    };
-    let Some(mapping_map) = mapping_value.as_mapping_mut() else {
-        let message = "mapping entry must be a mapping".to_string();
-        return Err(CallError::Tool {
-            message: message.clone(),
-            errors: Some(vec![parse_error_json(&message, None)]),
-        });
-    };
-
-    if let Some(source) = source {
-        mapping_map.insert(yaml_key("source"), YamlValue::String(source.to_string()));
-        mapping_map.remove(&yaml_key("value"));
-        mapping_map.remove(&yaml_key("expr"));
-    } else {
-        mapping_map.remove(&yaml_key("source"));
-        mapping_map.remove(&yaml_key("expr"));
-        mapping_map.insert(yaml_key("value"), YamlValue::Null);
-        mapping_map.insert(yaml_key("required"), YamlValue::Bool(false));
-    }
-    Ok(())
-}
+pub(crate) use self::format::apply_format_override;
+pub(crate) use self::input::{build_input_yaml, update_yaml_input_spec};
+pub(crate) use self::mappings::{update_yaml_mapping, yaml_mappings_sequence_mut};
+pub(crate) use self::refs::collect_missing_refs;
 
 pub(crate) fn yaml_key(key: &str) -> YamlValue {
     YamlValue::String(key.to_string())
 }
 
-pub(crate) fn collect_missing_refs(
-    target: &str,
-    expr: Option<&Expr>,
-    when: Option<&Expr>,
-    input_paths: &HashSet<String>,
-    out: &mut Vec<Value>,
-    seen: &mut HashSet<String>,
-) {
-    for expr in [expr, when] {
-        let Some(expr) = expr else { continue };
-        let mut refs = Vec::new();
-        collect_expr_refs(expr, &mut refs);
-        for reference in refs {
-            let Some(path) = input_ref_path(&reference) else {
-                continue;
-            };
-            if input_paths.contains(&path) {
-                continue;
-            }
-            let key = format!("{}|{}", target, reference);
-            if seen.insert(key) {
-                out.push(json!({
-                    "target": target,
-                    "ref": reference,
-                    "path": path
-                }));
-            }
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
 
-fn collect_expr_refs(expr: &Expr, out: &mut Vec<String>) {
-    match expr {
-        Expr::Ref(reference) => out.push(reference.ref_path.clone()),
-        Expr::Op(op) => {
-            for arg in &op.args {
-                collect_expr_refs(arg, out);
-            }
-        }
-        Expr::Chain(chain) => {
-            for item in &chain.chain {
-                collect_expr_refs(item, out);
-            }
-        }
-        Expr::Literal(_) => {}
-    }
-}
+    use rulemorph::{Expr, ExprRef, RuleFile};
+    use serde_json::json;
+    use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 
-fn input_ref_path(reference: &str) -> Option<String> {
-    let trimmed = reference.trim();
-    if let Some(rest) = trimmed.strip_prefix("input.") {
-        if rest.is_empty() {
-            None
-        } else {
-            Some(rest.to_string())
-        }
-    } else {
-        None
-    }
-}
+    use super::*;
 
-pub(crate) fn apply_format_override(
-    rule: &mut RuleFile,
-    format: Option<&str>,
-) -> Result<(), String> {
-    let Some(format) = format else {
-        return Ok(());
-    };
-    let normalized = format.to_lowercase();
-    rule.input.format = match normalized.as_str() {
-        "csv" => InputFormat::Csv,
-        "json" => InputFormat::Json,
-        "yaml" => InputFormat::Yaml,
-        "toml" => InputFormat::Toml,
-        "xml" => InputFormat::Xml,
-        "html" => InputFormat::Html,
-        "excel" => InputFormat::Excel,
-        _ => return Err(format!("unknown format: {}", format)),
-    };
-    Ok(())
+    fn yaml(value: &str) -> YamlValue {
+        serde_yaml::from_str(value).unwrap()
+    }
+
+    #[test]
+    fn build_input_yaml_keeps_json_records_path_and_csv_default() {
+        assert_eq!(
+            build_input_yaml("json", Some("items")),
+            yaml(
+                r#"
+format: json
+json:
+  records_path: items
+"#
+            )
+        );
+        assert_eq!(
+            build_input_yaml("csv", Some("ignored")),
+            yaml(
+                r#"
+format: csv
+csv: {}
+"#
+            )
+        );
+    }
+
+    #[test]
+    fn update_yaml_input_spec_preserves_non_mapping_boundaries() {
+        let mut root = yaml(
+            r#"
+input:
+  format: csv
+"#,
+        );
+
+        update_yaml_input_spec(&mut root, Some("json"), Some("users"));
+
+        assert_eq!(
+            root,
+            yaml(
+                r#"
+input:
+  format: json
+  json:
+    records_path: users
+"#
+            )
+        );
+
+        let mut scalar_root = YamlValue::String("not-a-map".to_string());
+        update_yaml_input_spec(&mut scalar_root, Some("json"), Some("users"));
+        assert_eq!(scalar_root, YamlValue::String("not-a-map".to_string()));
+    }
+
+    #[test]
+    fn update_yaml_mapping_switches_source_and_optional_value_shapes() {
+        let mut mappings = vec![yaml(
+            r#"
+target: name
+value: null
+expr:
+  op: trim
+  args: []
+"#,
+        )];
+
+        assert!(matches!(
+            update_yaml_mapping(&mut mappings, 0, Some("input.name")),
+            Ok(())
+        ));
+        assert_eq!(
+            mappings[0],
+            yaml(
+                r#"
+target: name
+source: input.name
+"#
+            )
+        );
+
+        assert!(matches!(
+            update_yaml_mapping(&mut mappings, 0, None),
+            Ok(())
+        ));
+        assert_eq!(
+            mappings[0],
+            yaml(
+                r#"
+target: name
+value: null
+required: false
+"#
+            )
+        );
+    }
+
+    #[test]
+    fn collect_missing_refs_deduplicates_by_target_and_reference() {
+        let expr = Expr::Ref(ExprRef {
+            ref_path: "input.missing".to_string(),
+        });
+        let when = Expr::Ref(ExprRef {
+            ref_path: "input.present".to_string(),
+        });
+        let input_paths = HashSet::from(["present".to_string()]);
+        let mut out = Vec::new();
+        let mut seen = HashSet::new();
+
+        collect_missing_refs(
+            "name",
+            Some(&expr),
+            Some(&when),
+            &input_paths,
+            &mut out,
+            &mut seen,
+        );
+        collect_missing_refs("name", Some(&expr), None, &input_paths, &mut out, &mut seen);
+
+        assert_eq!(
+            out,
+            vec![json!({
+                "target": "name",
+                "ref": "input.missing",
+                "path": "missing"
+            })]
+        );
+    }
+
+    #[test]
+    fn apply_format_override_accepts_known_formats_and_rejects_unknown() {
+        let mut rule: RuleFile = serde_yaml::from_str(
+            r#"
+version: 2
+input:
+  format: csv
+mappings: []
+"#,
+        )
+        .unwrap();
+
+        apply_format_override(&mut rule, Some("JSON")).unwrap();
+        assert!(matches!(rule.input.format, rulemorph::InputFormat::Json));
+        assert_eq!(
+            apply_format_override(&mut rule, Some("parquet")),
+            Err("unknown format: parquet".to_string())
+        );
+    }
+
+    #[test]
+    fn yaml_mappings_sequence_errors_keep_messages() {
+        let mut root = YamlValue::Mapping(YamlMapping::new());
+        let Err(crate::errors::CallError::Tool { message, errors }) =
+            yaml_mappings_sequence_mut(&mut root)
+        else {
+            panic!("expected tool error");
+        };
+        assert_eq!(message, "rules yaml is missing mappings");
+        assert!(errors.is_some());
+    }
 }
