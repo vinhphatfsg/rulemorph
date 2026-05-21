@@ -11,7 +11,9 @@ use super::chunk_read::{
 use super::manifest_budget::resolve_max_chunk_bytes;
 use crate::trace_schema::{TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX, TraceManifest};
 
+mod detail_state;
 mod nodes;
+use detail_state::{attach_empty_records, downgrade_chunk_error_detail, strip_non_full_detail};
 use nodes::attach_node_chunks;
 
 fn build_trace_from_manifest(manifest: &TraceManifest, base_dir: &Path) -> Result<Value> {
@@ -30,31 +32,18 @@ pub(super) fn build_trace_from_manifest_with_budget(
     let detail = match &manifest.detail {
         Some(detail) => detail,
         None => {
-            if let Some(obj) = trace.as_object_mut() {
-                obj.insert("records".to_string(), Value::Array(Vec::new()));
-            }
+            attach_empty_records(&mut trace);
             return Ok(trace);
         }
     };
 
     if detail.status != "full" {
-        if let Some(obj) = trace.as_object_mut() {
-            obj.insert("records".to_string(), Value::Array(Vec::new()));
-            obj.remove("finalize");
-            if let Some(detail_obj) = obj
-                .get_mut("detail")
-                .and_then(|value| value.as_object_mut())
-            {
-                detail_obj.insert("records".to_string(), Value::Array(Vec::new()));
-                detail_obj.insert("nodes".to_string(), Value::Array(Vec::new()));
-                detail_obj.remove("finalize");
-            }
-        }
+        strip_non_full_detail(&mut trace);
         return Ok(trace);
     }
 
-    let mut detail_status = detail.status.clone();
-    let mut detail_reason = detail.reason.clone();
+    let detail_status = detail.status.clone();
+    let detail_reason = detail.reason.clone();
     let mut chunk_error = false;
     let mut budget_exceeded = false;
     let mut size_exceeded = false;
@@ -181,41 +170,13 @@ pub(super) fn build_trace_from_manifest_with_budget(
             obj.insert("finalize".to_string(), finalize_value);
         }
         if chunk_error {
-            if detail_status == "full" {
-                detail_status = "basic".to_string();
-            }
-            if size_exceeded
-                && !detail_reason
-                    .iter()
-                    .any(|reason| reason == "chunk_too_large")
-            {
-                detail_reason.push("chunk_too_large".to_string());
-            }
-            if budget_exceeded
-                && !detail_reason
-                    .iter()
-                    .any(|reason| reason == "budget_exceeded")
-            {
-                detail_reason.push("budget_exceeded".to_string());
-            }
-            if !detail_reason.iter().any(|reason| reason == "chunk_error") {
-                detail_reason.push("chunk_error".to_string());
-            }
-            obj.insert("records".to_string(), Value::Array(Vec::new()));
-            obj.remove("finalize");
-            if let Some(detail_obj) = obj
-                .get_mut("detail")
-                .and_then(|value| value.as_object_mut())
-            {
-                detail_obj.insert("status".to_string(), Value::String(detail_status));
-                detail_obj.insert(
-                    "reason".to_string(),
-                    Value::Array(detail_reason.into_iter().map(Value::String).collect()),
-                );
-                detail_obj.insert("records".to_string(), Value::Array(Vec::new()));
-                detail_obj.insert("nodes".to_string(), Value::Array(Vec::new()));
-                detail_obj.remove("finalize");
-            }
+            downgrade_chunk_error_detail(
+                &mut trace,
+                detail_status,
+                detail_reason,
+                size_exceeded,
+                budget_exceeded,
+            );
         }
     }
 
