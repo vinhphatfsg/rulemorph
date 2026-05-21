@@ -3,30 +3,24 @@ use std::path::{Path, PathBuf};
 use anyhow::Result;
 use serde_json::Value as JsonValue;
 
-use super::chunk_write::{
-    max_ndjson_line_bytes, write_finalize_chunk, write_node_chunks, write_record_chunks,
-};
 use super::cleanup::TraceDirGuard;
 use super::detail::{detail_status_for_level, initial_detail_reasons, strip_trace_detail};
 use super::externalize::externalize_trace_payloads;
-use super::manifest::count_inline_nodes;
 use super::masking::{apply_masking, normalize_masking_rules};
 use super::options::{TraceDetailLevel, TraceWriteOptions, clamp_max_chunk_bytes_uncompressed};
-use super::record_nodes::{normalize_inline_records, split_records_and_nodes};
 use super::sampling::should_keep_full_detail;
 use super::trace_dir::{
     ensure_unique_trace_dir, resolve_trace_timestamp, trace_dir_base_for_timestamp,
 };
 use super::trace_identity::resolve_trace_id;
-use crate::trace_schema::{
-    TRACE_CHUNK_COUNT_HARD_MAX, TRACE_NODE_COUNT_HARD_MAX, TRACE_RECORD_COUNT_HARD_MAX,
-    TraceMasking,
-};
+use crate::trace_schema::{TRACE_CHUNK_COUNT_HARD_MAX, TraceMasking};
 
+mod detail_chunks;
 mod detail_cleanup;
 mod detail_files;
 mod manifest_build;
 mod manifest_payload;
+use self::detail_chunks::write_full_detail_chunks;
 use self::detail_cleanup::{add_detail_reason, reset_detail_to_basic, total_detail_bytes};
 use self::detail_files::ensure_detail_files_exist;
 use self::manifest_build::build_trace_manifest;
@@ -137,80 +131,26 @@ pub(crate) fn write_trace_bundle_sync(
                     .and_then(|value| value.as_array())
                     .cloned()
                     .unwrap_or_default();
-                let (records_for_chunks, nodes_for_chunks) = if options.split_nodes {
-                    detail_layout = "records_nodes_split".to_string();
-                    split_records_and_nodes(&records)
-                } else {
-                    (normalize_inline_records(&records), Vec::new())
-                };
-
-                let total_records = records_for_chunks.len();
-                let total_nodes = if options.split_nodes {
-                    nodes_for_chunks.len()
-                } else {
-                    count_inline_nodes(&records_for_chunks, TRACE_NODE_COUNT_HARD_MAX)
-                };
-                if total_records > TRACE_RECORD_COUNT_HARD_MAX
-                    || total_nodes > TRACE_NODE_COUNT_HARD_MAX
-                {
-                    budget_exceeded = true;
-                }
-
-                if !budget_exceeded {
-                    let max_record_line = max_ndjson_line_bytes(&records_for_chunks, "record")?;
-                    let max_node_line = max_ndjson_line_bytes(&nodes_for_chunks, "node")?;
-                    let max_line = max_record_line.max(max_node_line);
-                    if max_line > options.max_chunk_bytes_uncompressed {
-                        detail_status = "basic".to_string();
-                        detail_layout = "records_inline".to_string();
-                        if !detail_reason
-                            .iter()
-                            .any(|reason| reason == "chunk_too_large")
-                        {
-                            detail_reason.push("chunk_too_large".to_string());
-                        }
-                        chunk_too_large = true;
-                    } else {
-                        let record_result = write_record_chunks(
-                            &trace_dir,
-                            &records_for_chunks,
-                            &options,
-                            &mut budget_remaining,
-                            &mut chunk_budget_remaining,
-                        )?;
-                        record_chunks = record_result.chunks;
-                        record_files = record_result.files;
-                        budget_exceeded = record_result.budget_exceeded;
-
-                        if !budget_exceeded && options.split_nodes {
-                            let node_result = write_node_chunks(
-                                &trace_dir,
-                                &nodes_for_chunks,
-                                &options,
-                                &mut budget_remaining,
-                                &mut chunk_budget_remaining,
-                            )?;
-                            node_chunks = node_result.chunks;
-                            node_files = node_result.files;
-                            budget_exceeded = node_result.budget_exceeded;
-                        }
-
-                        if !budget_exceeded {
-                            let finalize_result = write_finalize_chunk(
-                                &trace_dir,
-                                &trace,
-                                &options,
-                                &mut budget_remaining,
-                                &mut chunk_budget_remaining,
-                            )?;
-                            finalize_chunk = finalize_result.chunk;
-                            finalize_file = finalize_result.file;
-                            budget_exceeded = finalize_result.budget_exceeded;
-                            if finalize_result.size_exceeded {
-                                chunk_too_large = true;
-                            }
-                        }
-                    }
+                let detail_result = write_full_detail_chunks(
+                    &trace_dir,
+                    &trace,
+                    &records,
+                    &options,
+                    &mut budget_remaining,
+                    &mut chunk_budget_remaining,
+                )?;
+                record_chunks = detail_result.record_chunks;
+                record_files = detail_result.record_files;
+                node_chunks = detail_result.node_chunks;
+                node_files = detail_result.node_files;
+                finalize_chunk = detail_result.finalize_chunk;
+                finalize_file = detail_result.finalize_file;
+                detail_layout = detail_result.detail_layout;
+                budget_exceeded = detail_result.budget_exceeded;
+                chunk_too_large = detail_result.chunk_too_large;
+                if chunk_too_large {
+                    detail_status = "basic".to_string();
+                    add_detail_reason(&mut detail_reason, "chunk_too_large");
                 }
             }
         }
