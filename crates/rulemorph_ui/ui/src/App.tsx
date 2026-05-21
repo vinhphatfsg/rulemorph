@@ -34,7 +34,6 @@ import {
   type TracePayload,
   type TraceRecord
 } from "./trace_payload";
-import { loadSelectedTraceDetail } from "./app_trace_detail_loader";
 import { InspectorDrawer } from "./inspector_drawer";
 import { RecordPanel } from "./record_panel";
 import { Topbar } from "./topbar";
@@ -56,6 +55,7 @@ import {
   subscribeTraceListRefresh
 } from "./app_trace_list_refresh";
 import { loadApiGraph, resetApiGraphSelection } from "./app_api_graph_state";
+import { loadTraceDetailForSelection } from "./app_trace_detail_state";
 
 export { getApiKey, getInternalKey } from "./auth";
 export { __getTenantIdFromQueryOrStorageForTest, resolveTenantId } from "./tenant";
@@ -199,38 +199,20 @@ export default function App() {
   }, [viewMode]);
 
   useEffect(() => {
-    if (!selectedId) {
-      setTrace(null);
-      setTraceManifest(null);
-      setDetailLoading(false);
-      setDetailError(null);
-      return;
-    }
-    let mounted = true;
-    setTrace(null);
-    setTraceManifest(null);
-    setDetailLoading(false);
-    setDetailError(null);
-    setRecordIndex(0);
-    setSelectedNode(null);
-    setSelectedOp(null);
-    setExpandedRuleIds([]);
-    setFocusedRuleId(null);
-    setInspectorOpen(false);
-    setPinnedPositions({});
-    (async () => {
-      await loadSelectedTraceDetail({
-        selectedId,
-        isMounted: () => mounted,
-        setTrace,
-        setTraceManifest,
-        setDetailLoading,
-        setDetailError
-      });
-    })();
-    return () => {
-      mounted = false;
-    };
+    return loadTraceDetailForSelection({
+      selectedId,
+      setTrace,
+      setTraceManifest,
+      setDetailLoading,
+      setDetailError,
+      setRecordIndex,
+      setSelectedNode,
+      setSelectedOp,
+      setExpandedRuleIds,
+      setFocusedRuleId,
+      setInspectorOpen,
+      setPinnedPositions
+    });
   }, [selectedId]);
 
   const overviewGraph = useMemo(
