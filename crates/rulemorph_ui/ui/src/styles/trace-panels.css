@@ -1,0 +1,56 @@
+.panel {
+  background: var(--glass);
+  border: none;
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: none;
+  backdrop-filter: blur(16px);
+  position: relative;
+}
+
+.panel::after {
+  content: none;
+}
+
+.panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 16px;
+}
+
+.panel__header h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-family: "Fraunces", serif;
+  color: var(--paper);
+}
+
+.panel__header p {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  color: var(--fog);
+}
+
+.panel__header--split {
+  align-items: center;
+}
+
+.floating-panel {
+  position: absolute;
+  z-index: 3;
+  background: rgba(12, 16, 22, 0.7);
+  border: none;
+  border-radius: 18px;
+  padding: 14px;
+  box-shadow: none;
+  backdrop-filter: blur(14px);
+}
+
+.trace-panel {
+  top: 16px;
+  left: 16px;
+  width: min(340px, 82vw);
+  max-height: calc(100% - 32px);
+  overflow: hidden;
+}

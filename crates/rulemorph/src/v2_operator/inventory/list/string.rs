@@ -1,0 +1,77 @@
+use super::super::definitions::{NO_SCOPE, op, range};
+use crate::v2_operator::types::{V2OperatorMetadata, V2OperatorTrace};
+
+pub(super) const STRING_OPERATORS: &[V2OperatorMetadata] = &[
+    op(
+        "concat",
+        range(1, None),
+        V2OperatorTrace::EagerArgs,
+        true,
+        true,
+        NO_SCOPE,
+    ),
+    op(
+        "to_string",
+        range(0, Some(0)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        false,
+        NO_SCOPE,
+    ),
+    op(
+        "trim",
+        range(0, Some(0)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        false,
+        NO_SCOPE,
+    ),
+    op(
+        "lowercase",
+        range(0, Some(0)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        false,
+        NO_SCOPE,
+    ),
+    op(
+        "uppercase",
+        range(0, Some(0)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        false,
+        NO_SCOPE,
+    ),
+    op(
+        "replace",
+        range(2, Some(3)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        true,
+        NO_SCOPE,
+    ),
+    op(
+        "split",
+        range(1, Some(1)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        true,
+        NO_SCOPE,
+    ),
+    op(
+        "pad_start",
+        range(1, Some(2)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        true,
+        NO_SCOPE,
+    ),
+    op(
+        "pad_end",
+        range(1, Some(2)),
+        V2OperatorTrace::EagerArgs,
+        true,
+        true,
+        NO_SCOPE,
+    ),
+];

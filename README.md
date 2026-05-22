@@ -171,7 +171,7 @@ Supported languages: `rust`, `typescript`, `python`, `go`, `java`, `kotlin`, `sw
 
 ```toml
 [dependencies]
-rulemorph = "0.3.0"
+rulemorph = "0.3.1"
 ```
 
 ```rust

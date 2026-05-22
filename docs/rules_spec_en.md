@@ -39,6 +39,38 @@ For a first rule, read the sections in this order:
 
 Use `mappings` for straightforward transformations. Use `steps` when the rule needs validation, branching, or multiple ordered phases.
 
+## Semantic Trace API
+
+The core library provides opt-in semantic trace APIs:
+
+- `transform_input_with_trace(...)`
+- `transform_input_with_trace_with_base_dir_and_options(...)`
+- `transform_record_with_trace(...)`
+
+A trace observes normalized records as they pass through `record_when`, `mappings` / `steps`, `expr`, operators, branches, and `finalize`, then returns the events as `TransformTrace`. Enabling trace must not change the output or warnings of the normal `transform` / `transform_input` / `transform_record` APIs.
+
+`TransformTraceOptions::default()` uses `Raw` mode. Because the trace API is explicitly requested to inspect values, raw input / output / context values are included in value snapshots by default. The core does not automatically persist, log, send over the network, postMessage, or share raw traces.
+
+Value handling is controlled by `TraceValueMode`.
+
+| mode | Behavior | Typical use |
+| --- | --- | --- |
+| `Raw` | Include raw values in snapshots | Local transparency UI and debugging |
+| `Redacted` | Drop values for secret-like paths or oversized snapshots | Safer human review |
+| `MetadataOnly` | Return only state/type/bytes metadata without values | Default for export / share / network / postMessage adapters |
+
+For `Redacted`, `redaction_reason` uses `"secret_like_path"` for secret-like paths. Composite object / array snapshots are metadata-only in the initial implementation.
+
+Each value snapshot has enum `state` and `type` fields, so `missing`, `null`, and empty string stay distinct. `default` applies only when the value is `missing`. Use `coalesce` rather than `default` when a rule should fall back for `null`.
+
+Trace `input_path` / `output_path` values use canonical forms. Input-side paths are `@input.*`, `@item.*`, `@acc.*`, `@context.*`, or `@out.*`; output-side paths are `$.*`. Bracket notation is preserved, for example `@input["@id"]`, `@input[0].name`, `@item[0].name`, and `$.items[0].name`.
+
+Traces can be bounded with `max_events`, `max_trace_bytes`, and `max_snapshot_bytes`. If the event stream is truncated, `complete=false` and `truncation.reason` are set. `max_snapshot_bytes` drops only snapshot values and does not relax event parent/child structure.
+
+Trace errors are returned as `TransformTraceError` with a partial trace. Its `Debug` / `Display` / `std::error::Error` output does not include the raw trace body or the underlying `TransformError` full message. External adapters should default to `MetadataOnly` and verify `contains_raw_values == false` before crossing export, share, network, or `postMessage` boundaries.
+
+The planned WASM binding shape is `wasm_transform_trace({ rule, input, inputFormat?, traceMode? })`. `traceMode` is `"raw" | "redacted" | "metadata_only"`; local animation may use `raw`, while export / share / `postMessage` defaults to `metadata_only`.
+
 ## Rule File Structure
 
 ```yaml

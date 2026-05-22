@@ -1,0 +1,103 @@
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+use anyhow::{Result, bail};
+use serde_json::{Value, json};
+
+pub fn create_trace_dir(data_dir: &Path, relative_trace_dir: impl AsRef<Path>) -> Result<PathBuf> {
+    let relative_trace_dir = relative_trace_dir.as_ref();
+    if relative_trace_dir.is_absolute()
+        || relative_trace_dir
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        bail!("trace fixture path must be relative to the data dir");
+    }
+
+    let trace_dir = data_dir.join(relative_trace_dir);
+    fs::create_dir_all(&trace_dir)?;
+    Ok(trace_dir)
+}
+
+pub fn write_trace_json(trace_dir: &Path, payload: &Value) -> Result<()> {
+    fs::write(trace_dir.join("trace.json"), serde_json::to_vec(payload)?)?;
+    Ok(())
+}
+
+pub fn write_records_inline_trace_json(
+    trace_dir: &Path,
+    trace_id: &str,
+    record_path: &str,
+    format: &str,
+    compression: &str,
+    max_chunk_bytes_uncompressed: Option<usize>,
+) -> Result<()> {
+    let mut payload = json!({
+        "trace_schema_version": 1,
+        "trace_id": trace_id,
+        "status": "ok",
+        "detail": {
+            "layout": "records_inline",
+            "status": "full",
+            "records": [
+                {
+                    "path": record_path,
+                    "format": format,
+                    "compression": compression
+                }
+            ],
+            "nodes": []
+        }
+    });
+    if let Some(max_chunk_bytes_uncompressed) = max_chunk_bytes_uncompressed {
+        payload["max_chunk_bytes_uncompressed"] = json!(max_chunk_bytes_uncompressed);
+    }
+    write_trace_json(trace_dir, &payload)
+}
+
+pub fn detail_object(trace: &Value) -> &serde_json::Map<String, Value> {
+    trace
+        .get("detail")
+        .and_then(|value| value.as_object())
+        .expect("detail object")
+}
+
+pub fn assert_detail_status(trace: &Value, expected: &str) {
+    assert_eq!(
+        detail_object(trace)
+            .get("status")
+            .and_then(|value| value.as_str()),
+        Some(expected)
+    );
+}
+
+pub fn assert_detail_reason(trace: &Value, expected: &str) {
+    let reasons = detail_object(trace)
+        .get("reason")
+        .and_then(|value| value.as_array());
+    assert!(
+        reasons.is_some_and(|reasons| reasons.iter().any(|value| value.as_str() == Some(expected))),
+        "expected detail reason {expected:?}, got {reasons:?}"
+    );
+}
+
+pub fn assert_detail_array_empty(trace: &Value, key: &str) {
+    let is_empty = detail_object(trace)
+        .get(key)
+        .and_then(|value| value.as_array())
+        .map_or(true, |items| items.is_empty());
+    assert!(is_empty, "detail.{key} should be empty");
+}
+
+pub fn assert_top_level_array_empty(trace: &Value, key: &str) {
+    let is_empty = trace
+        .get(key)
+        .and_then(|value| value.as_array())
+        .map_or(true, |items| items.is_empty());
+    assert!(is_empty, "{key} should be empty");
+}
+
+pub fn assert_finalize_absent(trace: &Value) {
+    assert!(detail_object(trace).get("finalize").is_none());
+    assert!(trace.get("finalize").is_none());
+}
