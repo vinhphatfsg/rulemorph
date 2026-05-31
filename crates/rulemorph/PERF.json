@@ -1,0 +1,187 @@
+{
+  "benchmarks": {
+    "normalize/csv/records_10k": {
+      "delta_percent": 0.0,
+      "mb_sec": 71.48926889349968,
+      "mean_ns": 2625252.5215000003,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "normalize/json/records_10k": {
+      "delta_percent": 0.0,
+      "mb_sec": 86.90880025368726,
+      "mean_ns": 4792918.788181816,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "parse/rule_file_cached/extended": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 2445.4711432261383,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "parse/rule_file_cached/lookup": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 677.9650418977571,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "parse/rule_file_cached/simple": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 386.25969238006587,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "parse/rule_file_cold_like/extended": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 83194.38998498136,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "parse/rule_file_cold_like/lookup": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 19831.494998336733,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "parse/rule_file_cold_like/simple": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 10143.290312305826,
+      "records_sec": null,
+      "status": "ok"
+    },
+    "trace/simple/trace_metadata_only": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 20618281.376666665,
+      "records_sec": 48500.647640383926,
+      "status": "ok"
+    },
+    "trace/simple/trace_off": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 1819784.7286464304,
+      "records_sec": 549515.5466788687,
+      "status": "ok"
+    },
+    "trace/simple/trace_raw": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 21506644.323333334,
+      "records_sec": 46497.258473515736,
+      "status": "ok"
+    },
+    "transform/batch/extended/cold_parse_records_5k": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 126790549.1,
+      "records_sec": 39435.1159095974,
+      "status": "ok"
+    },
+    "transform/batch/extended/hot_records_5k": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 129421364.22,
+      "records_sec": 38633.497878299524,
+      "status": "ok"
+    },
+    "transform/batch/lookup/records_5k_context_100": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 145282092.97,
+      "records_sec": 34415.80374969181,
+      "status": "ok"
+    },
+    "transform/batch/lookup_scale/context_size/10": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 1437106.7351167065,
+      "records_sec": 173960.63485827146,
+      "status": "ok"
+    },
+    "transform/batch/lookup_scale/context_size/100": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 7041686.715,
+      "records_sec": 35502.85749967506,
+      "status": "ok"
+    },
+    "transform/batch/lookup_scale/context_size/1000": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 62139345.44,
+      "records_sec": 4023.215858322694,
+      "status": "ok"
+    },
+    "transform/batch/simple/records_5k": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 10072815.955000002,
+      "records_sec": 496385.52142095595,
+      "status": "ok"
+    },
+    "transform/end_to_end/json/batch_transform": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 19096434.279999997,
+      "records_sec": 523657.96951282996,
+      "status": "ok"
+    },
+    "transform/end_to_end/json/stream_drain": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 18634889.71,
+      "records_sec": 536627.8070663182,
+      "status": "ok"
+    },
+    "transform/evaluator/json/record_loop": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 13709660.85,
+      "records_sec": 729412.6462654254,
+      "status": "ok"
+    },
+    "transform/stream/csv/records_10k": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 10914280.923999997,
+      "records_sec": 916230.768626311,
+      "status": "ok"
+    },
+    "transform/v2/collection/items_per_record/16": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 25542453.11,
+      "records_sec": 19575.253709842284,
+      "status": "ok"
+    },
+    "transform/v2/collection/items_per_record/4": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 5306636.583000001,
+      "records_sec": 94221.63967319108,
+      "status": "ok"
+    },
+    "transform/v2/collection/items_per_record/64": {
+      "delta_percent": 0.0,
+      "mb_sec": null,
+      "mean_ns": 236207631.23,
+      "records_sec": 2116.7817373061084,
+      "status": "ok"
+    }
+  },
+  "generated_at": "2026-05-31T12:11:20.760735Z",
+  "missing_from_current": [],
+  "schema_version": 1,
+  "thresholds": {
+    "improvement_percent": -5.0,
+    "regression_percent": 20.0,
+    "warn_percent": 10.0
+  }
+}

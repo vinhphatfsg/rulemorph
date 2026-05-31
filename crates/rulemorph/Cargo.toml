@@ -28,3 +28,23 @@ criterion = "0.5"
 [[bench]]
 name = "transform_bench"
 harness = false
+
+[[bench]]
+name = "parse_bench"
+harness = false
+
+[[bench]]
+name = "normalize_bench"
+harness = false
+
+[[bench]]
+name = "exec_mode_bench"
+harness = false
+
+[[bench]]
+name = "trace_bench"
+harness = false
+
+[[bench]]
+name = "v2_bench"
+harness = false
