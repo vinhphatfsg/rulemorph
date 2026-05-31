@@ -1,16 +1,20 @@
 use std::fs;
 
+#[cfg(feature = "excel")]
+use rulemorph::preflight_validate_input;
 use rulemorph::{
     InputData, NormalizationOptions, RuleFormat, TransformErrorKind,
-    normalize_records_with_options, parse_rule_file, preflight_validate_input, transform,
-    transform_input,
+    normalize_records_with_options, parse_rule_file, transform, transform_input,
 };
 mod common;
 
+#[cfg(feature = "excel")]
+use common::golden::assert_xlsx_fixture;
 use common::golden::{
-    assert_json_fixture, assert_text_fixture, assert_transform_error_fixture, assert_xlsx_fixture,
-    fixtures_dir, load_json, load_optional_json, load_rule, load_rule_with_format,
+    assert_json_fixture, assert_text_fixture, assert_transform_error_fixture, fixtures_dir,
+    load_json, load_optional_json, load_rule, load_rule_with_format,
 };
+#[cfg(feature = "excel")]
 use common::xlsx::{
     XlsxFixtureOptions, build_dynamodb_users_xlsx, build_string_table_xlsx, build_test_xlsx,
 };
@@ -29,9 +33,11 @@ include!("transform_golden/input_limits.rs");
 
 include!("transform_golden/input_formats.rs");
 
+#[cfg(feature = "excel")]
 include!("transform_golden/excel.rs");
 
 include!("transform_golden/xml.rs");
+#[cfg(feature = "html")]
 include!("transform_golden/html.rs");
 
 include!("transform_golden/structured_inputs.rs");

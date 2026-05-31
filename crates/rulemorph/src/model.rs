@@ -3,6 +3,10 @@ use serde_json::Value as JsonValue;
 
 mod input;
 
+#[cfg_attr(
+    any(not(feature = "html"), not(feature = "excel")),
+    allow(unused_imports)
+)]
 pub use self::input::{
     Column, ExcelCellErrorPolicy, ExcelColumn, ExcelDatePolicy, ExcelEmptyCellPolicy,
     ExcelFormulaPolicy, ExcelInput, ExcelSheetRef, HtmlInput, HtmlValueKind, InputFormat,

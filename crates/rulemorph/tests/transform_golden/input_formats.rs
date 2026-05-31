@@ -24,21 +24,25 @@ fn t33_xml_input_transform_golden() {
 }
 
 #[test]
+#[cfg(feature = "html")]
 fn t35_html_input_transform_golden() {
     assert_text_fixture("t35_html_input", "input.html");
 }
 
 #[test]
+#[cfg(feature = "excel")]
 fn t36_spreadsheets_plugin_products() {
     assert_xlsx_fixture("t36_spreadsheets_plugin_products");
 }
 
 #[test]
+#[cfg(feature = "excel")]
 fn t37_spreadsheets_plugin_orders() {
     assert_xlsx_fixture("t37_spreadsheets_plugin_orders");
 }
 
 #[test]
+#[cfg(feature = "excel")]
 fn t38_spreadsheets_plugin_survey() {
     assert_xlsx_fixture("t38_spreadsheets_plugin_survey");
 }

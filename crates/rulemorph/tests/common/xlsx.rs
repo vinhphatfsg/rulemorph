@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_imports)]
+
 use std::io::{Cursor, Write};
 
 use zip::{CompressionMethod, ZipWriter, write::FileOptions};

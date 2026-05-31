@@ -1,5 +1,7 @@
 mod csv;
+#[cfg(feature = "excel")]
 mod excel;
+#[cfg(feature = "html")]
 mod html;
 mod input;
 mod json;
@@ -15,6 +17,8 @@ pub use options::NormalizationOptions;
 pub use records::NormalizedRecords;
 
 use crate::error::TransformError;
+#[cfg(any(not(feature = "html"), not(feature = "excel")))]
+use crate::error::TransformErrorKind;
 use crate::model::{InputFormat, RuleFile};
 
 use input::text_input;
@@ -50,10 +54,24 @@ pub fn normalize_records_with_options<'a>(
             toml::normalize_toml_records(rule, text_input(input, options)?, options)?
         }
         InputFormat::Xml => xml::normalize_xml_records(rule, text_input(input, options)?, options)?,
+        #[cfg(feature = "html")]
         InputFormat::Html => {
             html::normalize_html_records(rule, text_input(input, options)?, options)?
         }
+        #[cfg(not(feature = "html"))]
+        InputFormat::Html => return Err(unsupported_input_format("html")),
+        #[cfg(feature = "excel")]
         InputFormat::Excel => excel::normalize_excel_records(rule, input, options)?,
+        #[cfg(not(feature = "excel"))]
+        InputFormat::Excel => return Err(unsupported_input_format("excel")),
     };
     Ok(NormalizedRecords::Materialized(records.into_iter()))
+}
+
+#[cfg(any(not(feature = "html"), not(feature = "excel")))]
+fn unsupported_input_format(format: &str) -> TransformError {
+    TransformError::new(
+        TransformErrorKind::InvalidInput,
+        format!("input format {} is not enabled in this build", format),
+    )
 }
