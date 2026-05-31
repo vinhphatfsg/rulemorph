@@ -174,6 +174,17 @@ Supported languages: `rust`, `typescript`, `python`, `go`, `java`, `kotlin`, `sw
 rulemorph = "0.3.1"
 ```
 
+The `html` and `excel` input parsers are enabled by default. Library users that only need
+CSV, JSON, YAML, TOML, and XML can disable them to reduce optional parser dependencies:
+
+```toml
+[dependencies]
+rulemorph = { version = "0.3.1", default-features = false }
+```
+
+Re-enable one parser explicitly with `features = ["html"]` or `features = ["excel"]`.
+If a disabled parser is selected by a rule, transformation fails with `invalid_input`.
+
 ```rust
 use rulemorph::{parse_rule_file, transform};
 
