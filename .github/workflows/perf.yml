@@ -1,0 +1,120 @@
+name: Core Performance
+
+on:
+  pull_request:
+    paths:
+      - "crates/rulemorph/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain*"
+      - ".cargo/**"
+      - ".github/workflows/perf.yml"
+      - "scripts/perf_report.py"
+      - "docs/perf.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  perf:
+    name: rulemorph core perf
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout@v6.0.2 pinned 2026-05-31. Uses Node.js 24 runtime.
+      - name: Checkout PR code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: pr
+          persist-credentials: false
+
+      # actions/checkout@v6.0.2 pinned 2026-05-31. Uses Node.js 24 runtime.
+      - name: Checkout trusted base for reporting
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          repository: ${{ github.event.pull_request.base.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted
+          persist-credentials: false
+
+      # dtolnay/rust-toolchain pinned 2026-05-09, matching release-cli.yml.
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: 1.88.0
+
+      # Swatinem/rust-cache@v2 pinned 2026-05-31.
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          workspaces: |
+            pr -> pr/target
+
+      - name: Run rulemorph tests
+        working-directory: pr
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: cargo test -p rulemorph
+
+      - name: Run allocation canaries
+        working-directory: pr
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: cargo test -p rulemorph --test perf_allocation -- --test-threads=1
+
+      - name: Compile all core benches
+        working-directory: pr
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: |
+          cargo bench -p rulemorph --bench transform_bench --no-run
+          cargo bench -p rulemorph --bench parse_bench --no-run
+          cargo bench -p rulemorph --bench normalize_bench --no-run
+          cargo bench -p rulemorph --bench exec_mode_bench --no-run
+          cargo bench -p rulemorph --bench trace_bench --no-run
+          cargo bench -p rulemorph --bench v2_bench --no-run
+
+      - name: Run short Criterion canaries
+        working-directory: pr
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: |
+          cargo bench -p rulemorph --bench transform_bench -- transform/batch/simple/records_5k --warm-up-time 1 --measurement-time 2
+          cargo bench -p rulemorph --bench trace_bench -- trace_off --warm-up-time 1 --measurement-time 2
+
+      - name: Build performance report
+        if: hashFiles('trusted/scripts/perf_report.py') != ''
+        run: python3 trusted/scripts/perf_report.py --criterion-dir pr/target/criterion --baseline-json trusted/crates/rulemorph/PERF.json --json-output perf-report.json > perf-report.md
+
+      - name: Record missing trusted report renderer
+        if: hashFiles('trusted/scripts/perf_report.py') == ''
+        run: |
+          cat > perf-report.md <<'EOF'
+          # Rulemorph Core Performance Snapshot
+
+          Trusted perf_report.py is not available on the base ref yet. Criterion JSON artifacts were still uploaded; Markdown rendering will start after the reporting script exists on the base branch.
+          EOF
+          cat > perf-report.json <<'EOF'
+          {
+            "schema_version": 1,
+            "benchmarks": {},
+            "missing_from_current": [],
+            "status": "trusted_renderer_missing"
+          }
+          EOF
+
+      - name: Publish performance summary
+        run: cat perf-report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload performance artifacts
+        # actions/upload-artifact@v4 pinned 2026-05-31.
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rulemorph-core-performance
+          retention-days: 7
+          path: |
+            perf-report.md
+            perf-report.json
+            pr/target/criterion/**/new/*.json

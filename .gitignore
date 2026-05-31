@@ -1,11 +1,38 @@
-/target
-**/*.rs.bk
-**/*.swp
-.DS_Store
-/docs/plans
-/docs/roadmap
-CLAUDE.md
-**/node_modules/
-.rulemorph/
+# Build outputs
+/target/
 **/dist/
 **/test-results/
+
+# Dependency caches
+**/node_modules/
+
+# Local runtime state
+.rulemorph/
+
+# Local agent/editor files
+.claude/
+CLAUDE.md
+.DS_Store
+Thumbs.db
+**/*.swp
+**/*.swo
+*~
+
+# Temporary and generated diagnostics
+*.log
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.profraw
+*.profdata
+**/*.rs.bk
+/perf-report.md
+/perf-report.json
+
+# Local planning and preview artifacts
+/docs/plans/
+/docs/roadmap/
+/docs/superpowers/
+/docs/design/

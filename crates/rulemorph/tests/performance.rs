@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use rulemorph::{parse_rule_file, transform};
 use serde_json::json;
 
@@ -10,7 +8,7 @@ input:
   json: {}
 mappings:
   - target: "id"
-    source: "id"
+    source: "input.id"
   - target: "user_name"
     expr:
       op: "lookup_first"
@@ -30,33 +28,23 @@ mappings:
 "#;
 
 #[test]
-#[ignore]
-fn perf_lookup_transform() {
-    let record_count = env_usize("PERF_RECORDS", 10_000);
-    let iterations = env_usize("PERF_ITERS", 5);
-    let user_count = env_usize("PERF_USERS", 100);
-    let tag_count = env_usize("PERF_TAGS", 100);
+fn performance_workload_smoke_still_transforms_lookup_records() {
+    let record_count = 1_000usize;
+    let user_count = 100usize;
+    let tag_count = 100usize;
 
     let rule = parse_rule_file(PERF_RULES).expect("failed to parse perf rules");
     let input = build_input(record_count, user_count, tag_count);
     let context = build_context(user_count, tag_count);
 
-    let start = Instant::now();
-    let mut last_len = 0;
-    for _ in 0..iterations {
-        let output = transform(&rule, &input, Some(&context)).expect("transform failed");
-        last_len = output.as_array().map(|items| items.len()).unwrap_or(0);
-        std::hint::black_box(output);
-    }
-    let elapsed = start.elapsed();
+    let output = transform(&rule, &input, Some(&context)).expect("transform failed");
+    let records = output.as_array().expect("output should be an array");
 
-    assert_eq!(last_len, record_count);
-    eprintln!(
-        "perf_lookup_transform records={} iters={} elapsed_ms={}",
-        record_count,
-        iterations,
-        elapsed.as_millis()
-    );
+    assert_eq!(records.len(), record_count);
+    assert_eq!(records[0]["user_name"], "user-0");
+    assert_eq!(records[0]["tags"], json!(["tag-0"]));
+    assert_eq!(records[999]["user_name"], "user-99");
+    assert_eq!(records[999]["tags"], json!(["tag-99"]));
 }
 
 fn build_context(user_count: usize, tag_count: usize) -> serde_json::Value {
@@ -94,11 +82,4 @@ fn build_input(record_count: usize, user_count: usize, tag_count: usize) -> Stri
     }
 
     serde_json::to_string(&records).expect("failed to serialize input")
-}
-
-fn env_usize(name: &str, default: usize) -> usize {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(default)
 }
