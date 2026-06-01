@@ -87,8 +87,8 @@ pub(super) fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
         let optional = conditional
             || !(mapping.required || mapping.value.is_some() || mapping.default.is_some());
 
-        insert_field(&mut root, &keys, field_type.clone(), optional)?;
-        remember_mapping_type(&mut inference, &keys, &field_type);
+        insert_field(&mut root, &keys, field_type, optional)?;
+        remember_output_prefixes(&mut inference, &root, &keys);
     }
 
     Ok(root)
@@ -138,6 +138,27 @@ fn insert_field(
     Ok(())
 }
 
+fn remember_output_prefixes(inference: &mut InferenceState, root: &SchemaNode, keys: &[String]) {
+    for prefix_len in 1..=keys.len() {
+        let prefix = &keys[..prefix_len];
+        if let Some(field_type) = field_type_at_keys(root, prefix) {
+            remember_mapping_type(inference, prefix, field_type);
+        }
+    }
+}
+
+fn field_type_at_keys<'a>(node: &'a SchemaNode, keys: &[String]) -> Option<&'a FieldType> {
+    let key = keys.first()?;
+    let field = node.fields.iter().find(|field| field.key == *key)?;
+    if keys.len() == 1 {
+        return Some(&field.field_type);
+    }
+    match &field.field_type {
+        FieldType::Object(child) => field_type_at_keys(child, &keys[1..]),
+        _ => None,
+    }
+}
+
 pub(super) fn field_is_optional(field: &Field) -> bool {
     match &field.field_type {
         FieldType::Object(child) if field.synthetic => field.optional || !node_has_required(child),
@@ -177,15 +198,5 @@ pub(super) fn field_type_uses_json(field_type: &FieldType) -> bool {
         }
         FieldType::Object(child) => node_uses_json(child),
         FieldType::Primitive(_) => false,
-    }
-}
-
-pub(super) fn field_type_has_required_object(field_type: &FieldType) -> bool {
-    match field_type {
-        FieldType::Object(child) => node_has_required(child),
-        FieldType::Array(inner) | FieldType::Map(inner) | FieldType::Nullable(inner) => {
-            field_type_has_required_object(inner)
-        }
-        FieldType::Primitive(_) | FieldType::JsonValue => true,
     }
 }

@@ -46,6 +46,31 @@ mappings:
 }
 
 #[test]
+fn dto_infers_nullable_array_aggregates_and_fold_result() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: total
+    expr: ["@input.items", "sum"]
+    required: true
+  - target: folded
+    expr: ["@input.items", { fold: [0, ["@acc", "to_string"]] }]
+    required: true
+"#;
+
+    let rust = render(yaml, DtoLanguage::Rust);
+    assert!(rust.contains("pub total: Option<f64>,"));
+    assert!(rust.contains("pub folded: Value,"));
+
+    let typescript = render(yaml, DtoLanguage::TypeScript);
+    assert!(typescript.contains("total: number | null;"));
+    assert!(typescript.contains("folded: unknown;"));
+}
+
+#[test]
 fn dto_infers_literal_object_arrays_and_maps() {
     let yaml = r#"
 version: 2
@@ -81,6 +106,75 @@ mappings:
     assert!(typescript.contains("parts: string[];"));
     assert!(typescript.contains("grouped: { [key: string]: unknown[] };"));
     assert!(!typescript.contains("Record<string,"));
+}
+
+#[test]
+fn dto_reuses_synthetic_parent_out_shapes() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: base.id
+    value: "u1"
+    required: true
+  - target: base.active
+    value: true
+    required: true
+  - target: copy
+    expr: ["@out.base"]
+    required: true
+"#;
+
+    let typescript = render(yaml, DtoLanguage::TypeScript);
+    assert!(typescript.contains("base: RecordBase;"));
+    assert!(typescript.contains("copy: RecordCopy;"));
+    assert!(typescript.contains("interface RecordCopy"));
+    assert!(typescript.contains("id: string;"));
+    assert!(typescript.contains("active: boolean;"));
+}
+
+#[test]
+fn dto_python_container_annotations_are_future_safe() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: parts
+    expr: ["@input.csv", { split: [","] }]
+    required: true
+  - target: grouped
+    expr: ["@input.items", { group_by: ["@item.category"] }]
+    required: true
+"#;
+
+    let python = render(yaml, DtoLanguage::Python);
+    assert!(python.starts_with("from __future__ import annotations\n"));
+    assert!(python.contains("parts: list[str]"));
+    assert!(python.contains("grouped: dict[str, list[Any]]"));
+}
+
+#[test]
+fn dto_required_empty_object_does_not_emit_optional_imports() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: empty
+    value: {}
+    required: true
+"#;
+
+    let java = render(yaml, DtoLanguage::Java);
+    assert!(!java.contains("import java.util.Optional;"));
+
+    let python = render(yaml, DtoLanguage::Python);
+    assert!(!python.contains("Optional"));
 }
 
 #[test]
@@ -407,6 +501,8 @@ mappings:
 
     let kotlin = render(yaml, DtoLanguage::Kotlin);
     assert!(kotlin.contains("import com.fasterxml.jackson.databind.JsonNode"));
+    assert!(kotlin.contains("import kotlin.collections.List"));
+    assert!(kotlin.contains("import kotlin.collections.Map"));
     assert!(kotlin.contains("val items: List<JsonNode>"));
     assert!(kotlin.contains("val flat: Map<String, JsonNode>"));
     assert!(kotlin.contains("val maybe: JsonNode?"));

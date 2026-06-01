@@ -8,7 +8,7 @@ mod swift;
 mod typescript;
 
 use super::DtoLanguage;
-use super::schema::{FieldType, SchemaNode, field_is_optional, field_type_has_required_object};
+use super::schema::{FieldType, SchemaNode, field_is_optional};
 use super::support::field_identifier;
 
 pub(super) use self::go::render_go;
@@ -30,9 +30,7 @@ fn schema_has_optional(node: &SchemaNode) -> bool {
 fn field_type_has_optional(field_type: &FieldType) -> bool {
     match field_type {
         FieldType::Nullable(_) => true,
-        FieldType::Object(child) => {
-            !field_type_has_required_object(field_type) || schema_has_optional(child)
-        }
+        FieldType::Object(child) => schema_has_optional(child),
         FieldType::Array(inner) | FieldType::Map(inner) => field_type_has_optional(inner),
         FieldType::Primitive(_) | FieldType::JsonValue => false,
     }

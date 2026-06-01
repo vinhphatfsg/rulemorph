@@ -326,8 +326,12 @@ fn infer_op(
         "int" | "len" | "to_unixtime" | "find_index" | "index_of" => {
             FieldType::Primitive(PrimitiveType::Int)
         }
-        "float" | "+" | "add" | "-" | "subtract" | "*" | "multiply" | "/" | "divide" | "round"
-        | "sum" | "avg" | "min" | "max" => FieldType::Primitive(PrimitiveType::Float),
+        "float" | "+" | "add" | "-" | "subtract" | "*" | "multiply" | "/" | "divide" | "round" => {
+            FieldType::Primitive(PrimitiveType::Float)
+        }
+        "sum" | "avg" | "min" | "max" => {
+            FieldType::Nullable(Box::new(FieldType::Primitive(PrimitiveType::Float)))
+        }
         "bool" | "and" | "or" | "not" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" | "eq"
         | "ne" | "lt" | "lte" | "gt" | "gte" | "match" | "contains" => {
             FieldType::Primitive(PrimitiveType::Bool)
@@ -443,19 +447,7 @@ fn infer_op(
             merged
         }
         "reduce" => FieldType::JsonValue,
-        "fold" => op_step
-            .args
-            .first()
-            .map(|arg| {
-                infer_arg_expr(
-                    arg,
-                    rule,
-                    state,
-                    scope.clone().with_pipe(input_type.clone()),
-                    depth + 1,
-                )
-            })
-            .unwrap_or(FieldType::JsonValue),
+        "fold" => infer_fold(&input_type, &op_step.args, rule, state, scope, depth),
         _ => FieldType::JsonValue,
     }
 }
@@ -793,6 +785,34 @@ fn infer_merge(
     merged
 }
 
+fn infer_fold(
+    input_type: &FieldType,
+    args: &[V2Expr],
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    scope: &Scope,
+    depth: usize,
+) -> FieldType {
+    let [initial_arg, fold_arg] = args else {
+        return FieldType::JsonValue;
+    };
+    let element = array_element_type(input_type);
+    let initial_type = infer_arg_expr(
+        initial_arg,
+        rule,
+        state,
+        scope.clone().with_pipe(input_type.clone()),
+        depth + 1,
+    );
+    let fold_scope = scope
+        .clone()
+        .with_pipe(element.clone())
+        .with_item(Some(element))
+        .with_acc(Some(initial_type.clone()));
+    let fold_type = infer_arg_expr(fold_arg, rule, state, fold_scope, depth + 1);
+    merge_types(initial_type, fold_type)
+}
+
 fn literal_path_args(args: &[V2Expr]) -> Vec<String> {
     args.iter().filter_map(literal_string_arg).collect()
 }
@@ -944,11 +964,17 @@ fn merge_object_nodes_for_operation(left: SchemaNode, right: SchemaNode) -> Opti
 
 trait ScopeExt {
     fn with_item(self, item: Option<FieldType>) -> Self;
+    fn with_acc(self, acc: Option<FieldType>) -> Self;
 }
 
 impl ScopeExt for Scope {
     fn with_item(mut self, item: Option<FieldType>) -> Self {
         self.item = item;
+        self
+    }
+
+    fn with_acc(mut self, acc: Option<FieldType>) -> Self {
+        self.acc = acc;
         self
     }
 }

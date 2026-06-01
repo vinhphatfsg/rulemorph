@@ -18,8 +18,12 @@ pub(in crate::dto) fn render_python(schema: &SchemaNode, name: &str) -> Result<S
     let uses_json = node_uses_json(schema);
     let uses_optional = schema_has_optional(schema);
     let uses_rename = schema_has_rename(schema, DtoLanguage::Python);
+    let uses_builtin_generics = schema_uses_builtin_generics(schema);
 
     let mut out = String::new();
+    if uses_builtin_generics {
+        out.push_str("from __future__ import annotations\n");
+    }
     out.push_str("from dataclasses import dataclass");
     if uses_rename {
         out.push_str(", field");
@@ -157,5 +161,20 @@ fn python_type_for_type(
             .get(path)
             .cloned()
             .unwrap_or_else(|| "Record".to_string()),
+    }
+}
+
+fn schema_uses_builtin_generics(node: &SchemaNode) -> bool {
+    node.fields
+        .iter()
+        .any(|field| field_type_uses_builtin_generics(&field.field_type))
+}
+
+fn field_type_uses_builtin_generics(field_type: &FieldType) -> bool {
+    match field_type {
+        FieldType::Array(_) | FieldType::Map(_) => true,
+        FieldType::Nullable(inner) => field_type_uses_builtin_generics(inner),
+        FieldType::Object(child) => schema_uses_builtin_generics(child),
+        FieldType::Primitive(_) | FieldType::JsonValue => false,
     }
 }

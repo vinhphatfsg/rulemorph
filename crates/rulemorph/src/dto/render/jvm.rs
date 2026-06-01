@@ -113,6 +113,8 @@ pub(in crate::dto) fn render_kotlin(schema: &SchemaNode, name: &str) -> Result<S
 
     let uses_json = node_uses_json(schema);
     let uses_rename = schema_has_rename(schema, DtoLanguage::Kotlin);
+    let uses_list = schema_uses_array(schema);
+    let uses_map = schema_uses_map(schema);
 
     let mut out = String::new();
     if uses_rename {
@@ -121,7 +123,13 @@ pub(in crate::dto) fn render_kotlin(schema: &SchemaNode, name: &str) -> Result<S
     if uses_json {
         out.push_str("import com.fasterxml.jackson.databind.JsonNode\n");
     }
-    if uses_rename || uses_json {
+    if uses_list {
+        out.push_str("import kotlin.collections.List\n");
+    }
+    if uses_map {
+        out.push_str("import kotlin.collections.Map\n");
+    }
+    if uses_rename || uses_json || uses_list || uses_map {
         out.push('\n');
     }
 
