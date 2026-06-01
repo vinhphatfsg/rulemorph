@@ -1,0 +1,49 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: abs_value
+    expr: [-7.5, "abs"]
+  - target: floor_value
+    expr: [3.9, "floor"]
+  - target: ceil_value
+    expr: [3.1, "ceil"]
+  - target: trunc_value
+    expr: [-3.9, "trunc"]
+  - target: sqrt_value
+    expr: [81, "sqrt"]
+  - target: pow_value
+    expr: [2, { pow: 8 }]
+  - target: mod_value
+    expr: [-5, { mod: 3 }]
+  - target: clamped_score
+    expr: ["@input.score", { clamp: [0, 100] }]
+  - target: sign_value
+    expr: [-7.5, "sign"]
+  - target: range_value
+    expr:
+      - range: [2, 8]
+  - target: descending_range
+    expr:
+      - range: [8, 2]
+  - target: prime_29
+    expr:
+      - "@input.prime"
+      - sqrt
+      - floor
+      - { "+": 1 }
+      - range: [2, "$"]
+      - find_index:
+        - ["@input.prime", { mod: "@item" }, { "==": 0 }]
+      - { "==": -1 }
+  - target: prime_30
+    expr:
+      - "@input.composite"
+      - sqrt
+      - floor
+      - { "+": 1 }
+      - range: [2, "$"]
+      - find_index:
+        - ["@input.composite", { mod: "@item" }, { "==": 0 }]
+      - { "==": -1 }

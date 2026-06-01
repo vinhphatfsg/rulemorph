@@ -245,9 +245,13 @@ The CLI can relax finite resource limits for large local inputs:
 
 ```sh
 rulemorph transform -r rules.yaml -i huge.csv --limit records=500000 --limit input-bytes=536870912
+rulemorph transform -r rules.yaml -i trusted.json --limit range-items=50000
+rulemorph transform -r rules.yaml -i trusted.json --limit range-items=unlimited
 rulemorph transform -r rules.yaml -i huge.csv --limits-profile large
 rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 ```
+
+`range` emits at most 10,000 items by default. Use `range-items=<integer>` to change that cap. `range-items=unlimited` removes the per-range cap for trusted local input/rules. In `--limits-file`, write it as a string, for example `range-items = "unlimited"`. Even with `range-items=unlimited`, generated arrays from `range`, `map`, `flat_map`, `flatten`, and similar operators are still bounded by `array-len`.
 
 These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, and MCP pathless branch guard are not configurable.
 
@@ -523,7 +527,7 @@ Support status:
 - String ops: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
-- Numeric ops: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
+- Numeric ops: `+`, `-`, `*`, `/`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
 - Logical ops: `and`, `or`, `not`
 - Comparison ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=` (aliases: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`)
@@ -556,6 +560,16 @@ Support status:
 | `*` | `>=1` | Numeric multiplication (alias: `multiply`). | `runtime` |
 | `/` | `>=1` | Numeric division. | `runtime` |
 | `round` | `0-1` | Round a number (`scale` as arg). | `runtime` |
+| `abs` | `0` | Return the absolute value. | `runtime` |
+| `floor` | `0` | Round down toward negative infinity. | `runtime` |
+| `ceil` | `0` | Round up toward positive infinity. | `runtime` |
+| `trunc` | `0` | Truncate toward zero. | `runtime` |
+| `sqrt` | `0` | Return the square root. Negative input is an error. | `runtime` |
+| `sign` | `0` | Return `-1`, `0`, or `1`. | `runtime` |
+| `mod` | `1` | Return the Euclidean remainder. Division by zero is an error. | `runtime` |
+| `pow` | `1` | Return exponentiation. Non-finite results are errors. | `runtime` |
+| `clamp` | `2` | Clamp a value into `min..max`. `min > max` is an error. | `runtime` |
+| `range` | `2-3` | Generate an integer sequence (`start`, `end`, `step?`; exclusive `end`). | `runtime` |
 | `to_base` | `1` | Convert integer to base-N string (2-36). | `runtime` |
 | `date_format` | `1-3` | Reformat date strings. | `runtime` |
 | `to_unixtime` | `0-2` | Convert date strings to unix time. | `runtime` |
@@ -569,6 +583,19 @@ Support status:
 | `>` | `1` | Numeric comparison. Prefer `gt` conditions. | `runtime` |
 | `>=` | `1` | Numeric comparison. Prefer `gte` conditions. | `runtime` |
 | `~=` | `1` | Regex match. Prefer `match` conditions. | `runtime` |
+
+Use `range` in explicit form, not as pipe-first shorthand. If the current pipe value is a boundary, pass `$` explicitly.
+
+```yaml
+expr:
+  - "@input.n"
+  - sqrt
+  - floor
+  - { "+": 1 }
+  - range: [2, "$"]
+```
+
+`range: [start, end, step?]` excludes `end`. When `step` is omitted, it defaults to `1` for ascending ranges and `-1` for descending ranges. If direction and `step` do not match, the result is `[]`. `step: 0` is an error. The default cap is 10,000 emitted items; the CLI can change it with `--limit range-items=...`. Even with `range-items=unlimited`, generated arrays are still bounded by `array-len`.
 
 ### JSON operations
 

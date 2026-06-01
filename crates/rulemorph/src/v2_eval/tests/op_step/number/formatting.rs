@@ -38,3 +38,21 @@ fn test_eval_op_round_and_to_base() {
     );
     assert!(matches!(base, Ok(EvalValue::Value(v)) if v == json!("1010")));
 }
+
+#[test]
+fn test_eval_to_base_validates_arg_count_before_missing_pipe() {
+    let to_base = V2OpStep {
+        op: "to_base".to_string(),
+        args: vec![],
+    };
+    let result = eval_v2_op_step(
+        &to_base,
+        EvalValue::Missing,
+        &json!({}),
+        None,
+        &json!({}),
+        "test",
+        &V2EvalContext::new(),
+    );
+    assert!(result.is_err());
+}

@@ -1,0 +1,27 @@
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: abs_value
+    expr: { op: "abs", args: [{ ref: "input.negative" }] }
+  - target: floor_value
+    expr: { op: "floor", args: [3.9] }
+  - target: ceil_value
+    expr: { op: "ceil", args: [3.1] }
+  - target: trunc_value
+    expr: { op: "trunc", args: [-3.9] }
+  - target: sqrt_value
+    expr: { op: "sqrt", args: [81] }
+  - target: pow_value
+    expr: { op: "pow", args: [{ ref: "input.base" }, { ref: "input.exp" }] }
+  - target: mod_value
+    expr: { op: "mod", args: [-5, 3] }
+  - target: clamped_score
+    expr: { op: "clamp", args: [{ ref: "input.score" }, 0, 100] }
+  - target: sign_value
+    expr: { op: "sign", args: [{ ref: "input.negative" }] }
+  - target: range_value
+    expr: { op: "range", args: [2, 8] }
+  - target: descending_range
+    expr: { op: "range", args: [8, 2] }

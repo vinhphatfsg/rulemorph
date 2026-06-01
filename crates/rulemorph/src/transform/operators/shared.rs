@@ -10,6 +10,7 @@ pub(in crate::transform) fn locals_with_item<'a>(
         pipe: locals.and_then(|locals| locals.pipe),
         locals: locals.and_then(|locals| locals.locals),
         precomputed_op_args: locals.and_then(|locals| locals.precomputed_op_args),
+        limits: locals.map(|locals| locals.limits).unwrap_or_default(),
     }
 }
 
@@ -24,6 +25,7 @@ pub(in crate::transform) fn locals_with_precomputed_args<'a>(
         pipe: locals.and_then(|locals| locals.pipe),
         locals: locals.and_then(|locals| locals.locals),
         precomputed_op_args: Some((base_path, arg_values)),
+        limits: locals.map(|locals| locals.limits).unwrap_or_default(),
     }
 }
 

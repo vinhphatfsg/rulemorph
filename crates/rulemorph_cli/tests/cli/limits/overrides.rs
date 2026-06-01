@@ -16,6 +16,40 @@ fn cli_limit_override_allows_more_records() {
 }
 
 #[test]
+fn cli_limit_override_accepts_range_items_cap() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("range-items=50000")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_limit_override_accepts_unlimited_range_items() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("range-items=unlimited")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
 fn cli_rejects_unknown_limit_override() {
     let base = fixtures_dir().join("t01_csv_basic");
     let mut cmd = cargo_bin_cmd!("rulemorph");
@@ -27,6 +61,40 @@ fn cli_rejects_unknown_limit_override() {
         .arg(base.join("input.csv"))
         .arg("--limit")
         .arg("formula-eval=1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn cli_rejects_zero_range_items_override() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("range-items=0")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
+fn cli_rejects_non_integer_range_items_override() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("range-items=off")
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(2));

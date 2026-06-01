@@ -164,6 +164,7 @@ pub(super) fn transform_with_warnings_inner(
 ) -> Result<(JsonValue, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let mut output_records = Vec::new();
+    let limits = EvalLimits::from(options);
     if rule.finalize.is_some() {
         let mut records = input_records_iter_with_options(rule, input, options)?;
         while let Some(record) = records.next() {
@@ -177,6 +178,7 @@ pub(super) fn transform_with_warnings_inner(
                 &mut record_warnings,
                 base_dir,
                 &mut branch_context,
+                limits,
             )? {
                 output_records.push(output);
             }
@@ -200,7 +202,7 @@ pub(super) fn transform_with_warnings_inner(
 
     let mut output = JsonValue::Array(output_records);
     if let Some(finalize) = &rule.finalize {
-        output = apply_finalize(finalize, output, context)?;
+        output = apply_finalize(finalize, output, context, limits)?;
     }
 
     Ok((output, warnings))

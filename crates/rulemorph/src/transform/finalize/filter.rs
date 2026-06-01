@@ -4,6 +4,7 @@ pub(super) fn apply_filter(
     records: &mut Vec<JsonValue>,
     filter: &Expr,
     context: Option<&JsonValue>,
+    limits: EvalLimits,
 ) -> Result<(), TransformError> {
     let raw = expr_to_json_for_v2_condition(filter).ok_or_else(|| {
         TransformError::new(
@@ -22,7 +23,9 @@ pub(super) fn apply_filter(
     let base_out = JsonValue::Array(records.clone());
     let mut filtered = Vec::new();
     for (index, item) in records.iter().enumerate() {
-        let ctx = V2EvalContext::new().with_item(V2EvalItem { value: item, index });
+        let ctx = V2EvalContext::new()
+            .with_limits(limits)
+            .with_item(V2EvalItem { value: item, index });
         let keep = eval_v2_condition(&cond, item, context, &base_out, "finalize.filter", &ctx)?;
         if keep {
             filtered.push(item.clone());
@@ -36,6 +39,7 @@ pub(super) fn apply_filter_traced(
     records: &mut Vec<JsonValue>,
     filter: &Expr,
     context: Option<&JsonValue>,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<(), TransformError> {
     let raw = expr_to_json_for_v2_condition(filter).ok_or_else(|| {
@@ -56,7 +60,9 @@ pub(super) fn apply_filter_traced(
     let before_count = records.len();
     let mut filtered = Vec::new();
     for (index, item) in records.iter().enumerate() {
-        let ctx = V2EvalContext::new().with_item(V2EvalItem { value: item, index });
+        let ctx = V2EvalContext::new()
+            .with_limits(limits)
+            .with_item(V2EvalItem { value: item, index });
         let item_path = format!("finalize.filter[{}]", index);
         let keep =
             eval_v2_condition_traced(&cond, item, context, &base_out, &item_path, &ctx, collector)?;

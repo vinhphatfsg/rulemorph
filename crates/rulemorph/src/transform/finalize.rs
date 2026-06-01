@@ -15,6 +15,7 @@ pub(super) fn apply_finalize(
     finalize: &FinalizeSpec,
     output: JsonValue,
     context: Option<&JsonValue>,
+    limits: EvalLimits,
 ) -> Result<JsonValue, TransformError> {
     let mut records = match output {
         JsonValue::Array(records) => records,
@@ -28,7 +29,7 @@ pub(super) fn apply_finalize(
     };
 
     if let Some(filter) = &finalize.filter {
-        apply_filter(&mut records, filter, context)?;
+        apply_filter(&mut records, filter, context, limits)?;
     }
 
     if let Some(sort) = &finalize.sort {
@@ -45,7 +46,7 @@ pub(super) fn apply_finalize(
 
     let output = JsonValue::Array(records);
     if let Some(wrap) = &finalize.wrap {
-        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap")?;
+        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", limits)?;
         return Ok(wrapped);
     }
 
@@ -56,6 +57,7 @@ pub(super) fn apply_finalize_traced(
     finalize: &FinalizeSpec,
     output: JsonValue,
     context: Option<&JsonValue>,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<JsonValue, TransformError> {
     let mut records = match output {
@@ -70,7 +72,7 @@ pub(super) fn apply_finalize_traced(
     };
 
     if let Some(filter) = &finalize.filter {
-        apply_filter_traced(&mut records, filter, context, collector)?;
+        apply_filter_traced(&mut records, filter, context, limits, collector)?;
     }
 
     if let Some(sort) = &finalize.sort {
@@ -87,7 +89,7 @@ pub(super) fn apply_finalize_traced(
 
     let output = JsonValue::Array(records);
     if let Some(wrap) = &finalize.wrap {
-        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap")?;
+        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", limits)?;
         collector
             .emit(TraceEventKind::FinalizeWrap, TracePhase::Instant)
             .rule_path("finalize.wrap")

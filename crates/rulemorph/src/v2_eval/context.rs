@@ -1,6 +1,8 @@
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 
+use crate::transform::EvalLimits;
+
 /// Evaluation result - either a value or missing
 #[derive(Debug, Clone, PartialEq)]
 pub enum EvalValue {
@@ -48,6 +50,7 @@ pub struct V2EvalContext<'a> {
     acc: Option<&'a JsonValue>,
     /// Trace-mode precomputed operator args, keyed by the operator rule path.
     precomputed_op_args: Option<(String, Vec<EvalValue>)>,
+    limits: EvalLimits,
 }
 
 impl<'a> V2EvalContext<'a> {
@@ -59,6 +62,7 @@ impl<'a> V2EvalContext<'a> {
             item: None,
             acc: None,
             precomputed_op_args: None,
+            limits: EvalLimits::default(),
         }
     }
 
@@ -101,6 +105,15 @@ impl<'a> V2EvalContext<'a> {
     ) -> Self {
         self.precomputed_op_args = Some((base_path.into(), values));
         self
+    }
+
+    pub(crate) fn with_limits(mut self, limits: EvalLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub(crate) fn limits(&self) -> EvalLimits {
+        self.limits
     }
 
     /// Get the current pipe value

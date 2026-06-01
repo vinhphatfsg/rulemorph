@@ -263,9 +263,13 @@ CLI は大きなローカル入力向けに有限の resource limit を緩和で
 
 ```sh
 rulemorph transform -r rules.yaml -i huge.csv --limit records=500000 --limit input-bytes=536870912
+rulemorph transform -r rules.yaml -i trusted.json --limit range-items=50000
+rulemorph transform -r rules.yaml -i trusted.json --limit range-items=unlimited
 rulemorph transform -r rules.yaml -i huge.csv --limits-profile large
 rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 ```
+
+`range` OP の生成数は既定で 10,000 要素までです。`range-items=<integer>` で上限を変更できます。`range-items=unlimited` は trusted なローカル入力/ルール向けに `range` 単体の上限制約を外します。`--limits-file` で指定する場合は `range-items = "unlimited"` のように文字列で書きます。`range-items=unlimited` の場合でも、`range`/`map`/`flat_map`/`flatten` などが生成する配列の総量は `array-len` で制限されます。
 
 これらは処理量の上限を広げるだけです。duplicate key rejection、XML DTD/entity rejection、HTML no-network/no-JS、Excel no-macro/no-formula-evaluation、MCP pathless branch guard などの安全性 invariant は変更できません。
 
@@ -602,7 +606,7 @@ when:
 - 文字列系: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
-- 数値系: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
+- 数値系: `+`, `-`, `*`, `/`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
 - 論理演算: `and`, `or`, `not`
 - 比較演算: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`（エイリアス: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`）
@@ -635,6 +639,16 @@ when:
 | `*` | `>=1` | 数値乗算（別名: `multiply`）。 | `runtime` |
 | `/` | `>=1` | 数値除算。 | `runtime` |
 | `round` | `0-1` | 数値を丸める（`scale`）。 | `runtime` |
+| `abs` | `0` | 絶対値を返す。 | `runtime` |
+| `floor` | `0` | 小数点以下を負の無限大方向へ丸める。 | `runtime` |
+| `ceil` | `0` | 小数点以下を正の無限大方向へ丸める。 | `runtime` |
+| `trunc` | `0` | 小数点以下を 0 方向へ切り捨てる。 | `runtime` |
+| `sqrt` | `0` | 平方根を返す。負数はエラー。 | `runtime` |
+| `sign` | `0` | 負数は `-1`、ゼロは `0`、正数は `1` を返す。 | `runtime` |
+| `mod` | `1` | Euclidean 剰余を返す。除数 `0` はエラー。 | `runtime` |
+| `pow` | `1` | べき乗を返す。結果が有限でない場合はエラー。 | `runtime` |
+| `clamp` | `2` | 値を `min..max` に収める。`min > max` はエラー。 | `runtime` |
+| `range` | `2-3` | 整数列を生成する（`start`, `end`, `step?`。`end` は排他）。 | `runtime` |
 | `to_base` | `1` | 整数を指定進数の文字列に変換（2-36）。 | `runtime` |
 | `date_format` | `1-3` | 日時文字列をフォーマット変換。 | `runtime` |
 | `to_unixtime` | `0-2` | 日時文字列を unix time へ。 | `runtime` |
@@ -648,6 +662,19 @@ when:
 | `>` | `1` | 数値比較。条件は `gt` を推奨。 | `runtime` |
 | `>=` | `1` | 数値比較。条件は `gte` を推奨。 | `runtime` |
 | `~=` | `1` | 正規表現マッチ。条件は `match` を推奨。 | `runtime` |
+
+`range` は pipe-first ではなく explicit form で使います。現在のパイプ値を境界値に使う場合は `$` を明示してください。
+
+```yaml
+expr:
+  - "@input.n"
+  - sqrt
+  - floor
+  - { "+": 1 }
+  - range: [2, "$"]
+```
+
+`range: [start, end, step?]` は `end` 排他です。`step` 省略時は `start < end` なら `1`、`start > end` なら `-1` です。向きと `step` が合わない場合は空配列を返します。`step: 0` はエラーです。既定では 10,000 要素まで生成し、CLI では `--limit range-items=...` で変更できます。`range-items=unlimited` でも、生成配列の総量は `array-len` に従います。
 
 ### JSON 操作
 

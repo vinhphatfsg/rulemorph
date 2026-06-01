@@ -323,12 +323,14 @@ fn infer_op(
         | "pad_start" | "pad_end" | "date_format" | "to_base" => {
             FieldType::Primitive(PrimitiveType::String)
         }
-        "int" | "len" | "to_unixtime" | "find_index" | "index_of" => {
+        "int" | "len" | "to_unixtime" | "find_index" | "index_of" | "sign" => {
             FieldType::Primitive(PrimitiveType::Int)
         }
-        "float" | "+" | "add" | "-" | "subtract" | "*" | "multiply" | "/" | "divide" | "round" => {
+        "float" | "+" | "add" | "-" | "subtract" | "*" | "multiply" | "/" | "divide" | "round"
+        | "abs" | "floor" | "ceil" | "trunc" | "sqrt" | "mod" | "pow" | "clamp" => {
             FieldType::Primitive(PrimitiveType::Float)
         }
+        "range" => FieldType::Array(Box::new(FieldType::Primitive(PrimitiveType::Int))),
         "sum" | "avg" | "min" | "max" => {
             FieldType::Nullable(Box::new(FieldType::Primitive(PrimitiveType::Float)))
         }

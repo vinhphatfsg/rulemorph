@@ -8,6 +8,7 @@ pub(in crate::transform) fn eval_when(
     mapping_path: &str,
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
+    limits: EvalLimits,
 ) -> bool {
     let expr = match &mapping.when {
         Some(expr) => expr,
@@ -15,7 +16,7 @@ pub(in crate::transform) fn eval_when(
     };
 
     let when_path = format!("{}.when", mapping_path);
-    match eval_when_expr(expr, record, context, out, &when_path, rule_version) {
+    match eval_when_expr(expr, record, context, out, &when_path, rule_version, limits) {
         Ok(flag) => flag,
         Err(err) => {
             warnings.push(err.into());
@@ -33,6 +34,7 @@ pub(in crate::transform) fn eval_when_traced(
     mapping_path: &str,
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> bool {
     let expr = match &mapping.when {
@@ -48,6 +50,7 @@ pub(in crate::transform) fn eval_when_traced(
         out,
         &when_path,
         rule_version,
+        limits,
         collector,
     ) {
         Ok(flag) => flag,
@@ -63,6 +66,7 @@ pub(in crate::transform) fn eval_record_when(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    limits: EvalLimits,
 ) -> bool {
     let expr = match &rule.record_when {
         Some(expr) => expr,
@@ -77,6 +81,7 @@ pub(in crate::transform) fn eval_record_when(
         &empty_out,
         "record_when",
         rule.version,
+        limits,
     ) {
         Ok(flag) => flag,
         Err(err) => {
@@ -91,6 +96,7 @@ pub(in crate::transform) fn eval_record_when_traced(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> bool {
     let expr = match &rule.record_when {
@@ -106,6 +112,7 @@ pub(in crate::transform) fn eval_record_when_traced(
         &empty_out,
         "record_when",
         rule.version,
+        limits,
         collector,
     ) {
         Ok(flag) => flag,
@@ -122,8 +129,10 @@ fn eval_bool_expr(
     context: Option<&JsonValue>,
     out: &JsonValue,
     path: &str,
+    limits: EvalLimits,
 ) -> Result<bool, TransformError> {
-    let value = eval_expr(expr, record, context, out, path, None)?;
+    let locals = root_eval_locals(limits);
+    let value = eval_expr(expr, record, context, out, path, Some(&locals))?;
     let value = match value {
         EvalValue::Missing => JsonValue::Null,
         EvalValue::Value(value) => value,
@@ -140,9 +149,11 @@ fn eval_bool_expr_traced(
     context: Option<&JsonValue>,
     out: &JsonValue,
     path: &str,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<bool, TransformError> {
-    let value = eval_expr_traced(expr, record, context, out, path, None, collector)?;
+    let locals = root_eval_locals(limits);
+    let value = eval_expr_traced(expr, record, context, out, path, Some(&locals), collector)?;
     let value = match value {
         EvalValue::Missing => JsonValue::Null,
         EvalValue::Value(value) => value,
@@ -160,6 +171,7 @@ pub(in crate::transform) fn eval_when_expr(
     out: &JsonValue,
     path: &str,
     rule_version: u8,
+    limits: EvalLimits,
 ) -> Result<bool, TransformError> {
     if rule_version >= 2 {
         if let Some(raw_value) = expr_to_json_for_v2_condition(expr) {
@@ -170,12 +182,12 @@ pub(in crate::transform) fn eval_when_expr(
                 )
                 .with_path(path)
             })?;
-            let ctx = V2EvalContext::new();
+            let ctx = V2EvalContext::new().with_limits(limits);
             return eval_v2_condition(&condition, record, context, out, path, &ctx);
         }
     }
 
-    eval_bool_expr(expr, record, context, out, path)
+    eval_bool_expr(expr, record, context, out, path, limits)
 }
 
 pub(in crate::transform) fn eval_when_expr_traced(
@@ -185,6 +197,7 @@ pub(in crate::transform) fn eval_when_expr_traced(
     out: &JsonValue,
     path: &str,
     rule_version: u8,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<bool, TransformError> {
     if rule_version >= 2 {
@@ -196,14 +209,25 @@ pub(in crate::transform) fn eval_when_expr_traced(
                 )
                 .with_path(path)
             })?;
-            let ctx = V2EvalContext::new();
+            let ctx = V2EvalContext::new().with_limits(limits);
             return eval_v2_condition_traced(
                 &condition, record, context, out, path, &ctx, collector,
             );
         }
     }
 
-    eval_bool_expr_traced(expr, record, context, out, path, collector)
+    eval_bool_expr_traced(expr, record, context, out, path, limits, collector)
+}
+
+fn root_eval_locals(limits: EvalLimits) -> EvalLocals<'static> {
+    EvalLocals {
+        item: None,
+        acc: None,
+        pipe: None,
+        locals: None,
+        precomputed_op_args: None,
+        limits,
+    }
 }
 
 fn when_type_error(path: &str) -> TransformError {

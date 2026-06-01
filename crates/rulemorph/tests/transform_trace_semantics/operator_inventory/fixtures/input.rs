@@ -7,6 +7,7 @@ const OPERATOR_INPUT: &str = r#"[{
     "pad":"7",
     "n":3,
     "float":1.2345,
+    "negative":-7.5,
     "base":255,
     "date":"2024-01-02 03:04:05",
     "unix":"1970-01-01T00:00:01Z",

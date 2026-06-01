@@ -41,6 +41,7 @@ pub(in crate::transform::operators) fn eval_array_reduce(
             pipe: locals.and_then(|locals| locals.pipe),
             locals: locals.and_then(|locals| locals.locals),
             precomputed_op_args: locals.and_then(|locals| locals.precomputed_op_args),
+            limits: locals.map(|locals| locals.limits).unwrap_or_default(),
         };
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         acc = value;
@@ -92,6 +93,7 @@ pub(in crate::transform::operators) fn eval_array_fold(
             pipe: locals.and_then(|locals| locals.pipe),
             locals: locals.and_then(|locals| locals.locals),
             precomputed_op_args: locals.and_then(|locals| locals.precomputed_op_args),
+            limits: locals.map(|locals| locals.limits).unwrap_or_default(),
         };
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         acc = value;

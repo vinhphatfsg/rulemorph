@@ -104,7 +104,9 @@ fn infer_op_result_type(op: &str) -> V2Type {
         "trim" | "lowercase" | "uppercase" | "concat" | "to_string" => V2Type::String,
 
         // Numeric operations
-        "+" | "-" | "*" | "/" | "add" | "subtract" | "multiply" | "divide" => V2Type::Number,
+        "+" | "-" | "*" | "/" | "add" | "subtract" | "multiply" | "divide" | "abs" | "floor"
+        | "ceil" | "trunc" | "sqrt" | "sign" | "mod" | "pow" | "clamp" => V2Type::Number,
+        "range" => V2Type::Array(Box::new(V2Type::Number)),
 
         // Lookup returns arrays of matches
         "lookup" => V2Type::Array(Box::new(V2Type::Unknown)),

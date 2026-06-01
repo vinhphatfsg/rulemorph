@@ -89,6 +89,18 @@ pub(super) fn validate_op_args(expr_op: &ExprOp, base_path: &str, ctx: &mut Vali
         "round" => {
             require(args_len, OneOrTwo, base_path, ctx);
         }
+        "abs" | "floor" | "ceil" | "trunc" | "sqrt" | "sign" => {
+            require(args_len, ExactlyOne, base_path, ctx);
+        }
+        "mod" | "pow" => {
+            require(args_len, ExactlyTwo, base_path, ctx);
+        }
+        "clamp" => {
+            require(args_len, ExactlyThree, base_path, ctx);
+        }
+        "range" => {
+            require(args_len, TwoOrThree, base_path, ctx);
+        }
         "date_format" => {
             require(args_len, TwoToFour, base_path, ctx);
         }

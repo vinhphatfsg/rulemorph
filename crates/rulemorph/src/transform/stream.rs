@@ -6,7 +6,7 @@ use crate::model::RuleFile;
 use crate::normalization::{InputData, NormalizationOptions};
 
 use super::records::{InputRecordsIter, input_records_iter_with_options};
-use super::{BranchContext, apply_rule_to_record};
+use super::{BranchContext, EvalLimits, apply_rule_to_record};
 
 #[derive(Debug)]
 pub struct TransformStreamItem {
@@ -24,6 +24,7 @@ pub struct TransformStream<'a> {
     context: Option<&'a JsonValue>,
     records: InputRecordsIter<'a>,
     base_dir: Option<&'a Path>,
+    limits: EvalLimits,
     done: bool,
 }
 
@@ -66,6 +67,7 @@ impl<'a> TransformStream<'a> {
             context,
             records,
             base_dir,
+            limits: EvalLimits::from(options),
             done: false,
         })
     }
@@ -101,6 +103,7 @@ impl<'a> Iterator for TransformStream<'a> {
                 &mut warnings,
                 self.base_dir,
                 &mut branch_context,
+                self.limits,
             ) {
                 Ok(output) => {
                     if output.is_none() && warnings.is_empty() {

@@ -5,6 +5,7 @@ pub(super) fn eval_wrap_value(
     out: &JsonValue,
     context: Option<&JsonValue>,
     path: &str,
+    limits: EvalLimits,
 ) -> Result<JsonValue, TransformError> {
     match value {
         JsonValue::Object(map) => {
@@ -13,7 +14,7 @@ pub(super) fn eval_wrap_value(
                 let child_path = format!("{}.{}", path, key);
                 out_map.insert(
                     key.clone(),
-                    eval_wrap_value(value, out, context, &child_path)?,
+                    eval_wrap_value(value, out, context, &child_path, limits)?,
                 );
             }
             Ok(JsonValue::Object(out_map))
@@ -26,7 +27,7 @@ pub(super) fn eval_wrap_value(
                 )
                 .with_path(path)
             })?;
-            let ctx = V2EvalContext::new();
+            let ctx = V2EvalContext::new().with_limits(limits);
             match eval_v2_expr(&expr, out, context, out, path, &ctx)? {
                 V2EvalValue::Missing => Ok(JsonValue::Null),
                 V2EvalValue::Value(value) => Ok(value),

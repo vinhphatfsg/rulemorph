@@ -5,6 +5,7 @@ fn apply_mappings(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    limits: EvalLimits,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
     apply_mappings_into(
@@ -15,6 +16,7 @@ fn apply_mappings(
         warnings,
         rule.version,
         "mappings",
+        limits,
     )?;
     Ok(out)
 }
@@ -27,6 +29,7 @@ fn apply_mappings_into(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     base_path: &str,
+    limits: EvalLimits,
 ) -> Result<(), TransformError> {
     for (index, mapping) in mappings.iter().enumerate() {
         let mapping_path = format!("{}[{}]", base_path, index);
@@ -38,10 +41,19 @@ fn apply_mappings_into(
             &mapping_path,
             warnings,
             rule_version,
+            limits,
         ) {
             continue;
         }
-        let value = eval_mapping(mapping, record, context, out, &mapping_path, rule_version)?;
+        let value = eval_mapping(
+            mapping,
+            record,
+            context,
+            out,
+            &mapping_path,
+            rule_version,
+            limits,
+        )?;
         if let Some(value) = value {
             set_path(out, &mapping.target, value, &mapping_path)?;
         }
@@ -56,6 +68,7 @@ pub(super) fn apply_rule_to_record(
     warnings: &mut Vec<TransformWarning>,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
 ) -> Result<Option<JsonValue>, TransformError> {
     if let Some(steps) = &rule.steps {
         return apply_steps(
@@ -66,14 +79,15 @@ pub(super) fn apply_rule_to_record(
             rule.version,
             base_dir,
             branch_context,
+            limits,
         );
     }
 
-    if !eval_record_when(rule, record, context, warnings) {
+    if !eval_record_when(rule, record, context, warnings, limits) {
         return Ok(None);
     }
 
-    let output = apply_mappings(rule, record, context, warnings)?;
+    let output = apply_mappings(rule, record, context, warnings, limits)?;
     Ok(Some(output))
 }
 
@@ -85,6 +99,7 @@ fn apply_steps(
     rule_version: u8,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
 ) -> Result<Option<JsonValue>, TransformError> {
     let mut out = JsonValue::Object(Map::new());
 
@@ -100,13 +115,22 @@ fn apply_steps(
                 warnings,
                 rule_version,
                 &format!("{}.mappings", base_path),
+                limits,
             )?;
             continue;
         }
 
         if let Some(expr) = &step.record_when {
             let when_path = format!("{}.record_when", base_path);
-            let keep = eval_when_expr(expr, record, context, &out, &when_path, rule_version)?;
+            let keep = eval_when_expr(
+                expr,
+                record,
+                context,
+                &out,
+                &when_path,
+                rule_version,
+                limits,
+            )?;
             if !keep {
                 return Ok(None);
             }
@@ -123,6 +147,7 @@ fn apply_steps(
                     &out,
                     &format!("{}.when", assert_path),
                     rule_version,
+                    limits,
                 )?;
                 if !ok {
                     return Err(TransformError::new(
@@ -147,6 +172,7 @@ fn apply_steps(
                 &out,
                 &format!("{}.when", branch_path),
                 rule_version,
+                limits,
             )?;
             let (target, target_field) = if take {
                 (Some(branch.then.as_str()), "then")
@@ -168,6 +194,7 @@ fn apply_steps(
                     context,
                     Some(&branch_base_dir),
                     branch_context,
+                    limits,
                 )?;
                 branch_context.exit(branch_path_guard);
                 warnings.extend(branch_warnings);
