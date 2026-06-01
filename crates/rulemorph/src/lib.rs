@@ -1,6 +1,7 @@
 mod cache;
 mod dto;
 mod error;
+mod expr_json;
 mod locator;
 mod model;
 pub mod normalization;

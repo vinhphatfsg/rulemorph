@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::dto::schema::{Field, FieldType, PrimitiveType, SchemaNode, node_has_required};
+use crate::dto::schema::{Field, FieldType, PrimitiveType, SchemaNode, field_is_optional};
 use crate::dto::support::{
     NameRegistry, collect_types, field_identifier, json_string_literal, safe_comment_text,
 };
@@ -21,10 +21,7 @@ pub(in crate::dto) fn render_typescript(
         for field in &def.node.fields {
             let ident = field_identifier(DtoLanguage::TypeScript, &field.key, &mut used);
             let rename = ident != field.key;
-            let optional = match &field.field_type {
-                FieldType::Object(child) => !node_has_required(child),
-                _ => field.optional,
-            };
+            let optional = field_is_optional(field);
             let field_type = typescript_type_for_field(field, &def.path, &registry);
             if rename {
                 out.push_str(&format!(
@@ -46,19 +43,47 @@ fn typescript_type_for_field(
     parent_path: &[String],
     registry: &NameRegistry,
 ) -> String {
-    match &field.field_type {
+    let mut path = parent_path.to_vec();
+    path.push(field.key.clone());
+    typescript_type_for_type(&field.field_type, &path, registry)
+}
+
+fn typescript_type_for_type(
+    field_type: &FieldType,
+    path: &[String],
+    registry: &NameRegistry,
+) -> String {
+    match field_type {
         FieldType::Primitive(PrimitiveType::String) => "string".to_string(),
         FieldType::Primitive(PrimitiveType::Int) => "number".to_string(),
         FieldType::Primitive(PrimitiveType::Float) => "number".to_string(),
         FieldType::Primitive(PrimitiveType::Bool) => "boolean".to_string(),
-        FieldType::JsonValue => "unknown".to_string(),
-        FieldType::Object(_) => {
-            let mut path = parent_path.to_vec();
-            path.push(field.key.clone());
-            registry
-                .get(&path)
-                .cloned()
-                .unwrap_or_else(|| "Record".to_string())
+        FieldType::Array(inner) => {
+            let inner_type = typescript_type_for_type(inner, path, registry);
+            if inner_type.contains(" | ") {
+                format!("({})[]", inner_type)
+            } else {
+                format!("{}[]", inner_type)
+            }
         }
+        FieldType::Map(inner) => {
+            format!(
+                "{{ [key: string]: {} }}",
+                typescript_type_for_type(inner, path, registry)
+            )
+        }
+        FieldType::Nullable(inner) => {
+            let inner_type = typescript_type_for_type(inner, path, registry);
+            if inner_type.ends_with(" | null") {
+                inner_type
+            } else {
+                format!("{} | null", inner_type)
+            }
+        }
+        FieldType::JsonValue => "unknown".to_string(),
+        FieldType::Object(_) => registry
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| "Record".to_string()),
     }
 }

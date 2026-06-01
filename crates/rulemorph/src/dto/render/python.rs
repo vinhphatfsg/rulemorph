@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::dto::schema::{
-    Field, FieldType, PrimitiveType, SchemaNode, node_has_required, node_uses_json,
+    Field, FieldType, PrimitiveType, SchemaNode, field_is_optional, node_uses_json,
 };
 use crate::dto::support::{
     NameRegistry, collect_types, field_identifier, json_string_literal, safe_comment_text,
@@ -59,10 +59,7 @@ pub(in crate::dto) fn render_python(schema: &SchemaNode, name: &str) -> Result<S
         for field in &def.node.fields {
             let ident = field_identifier(DtoLanguage::Python, &field.key, &mut used);
             let rename = ident != field.key;
-            let optional = match &field.field_type {
-                FieldType::Object(child) => !node_has_required(child),
-                _ => field.optional,
-            };
+            let optional = field_is_optional(field);
             let field_type = python_type_for_field(field, &def.path, &registry, optional);
             fields.push(RenderField {
                 key: field.key.clone(),
@@ -122,25 +119,43 @@ fn python_type_for_field(
     registry: &NameRegistry,
     optional: bool,
 ) -> String {
-    let base = match &field.field_type {
+    let mut path = parent_path.to_vec();
+    path.push(field.key.clone());
+    let base = python_type_for_type(&field.field_type, &path, registry);
+
+    if optional && !base.starts_with("Optional[") {
+        format!("Optional[{}]", base)
+    } else {
+        base
+    }
+}
+
+fn python_type_for_type(
+    field_type: &FieldType,
+    path: &[String],
+    registry: &NameRegistry,
+) -> String {
+    match field_type {
         FieldType::Primitive(PrimitiveType::String) => "str".to_string(),
         FieldType::Primitive(PrimitiveType::Int) => "int".to_string(),
         FieldType::Primitive(PrimitiveType::Float) => "float".to_string(),
         FieldType::Primitive(PrimitiveType::Bool) => "bool".to_string(),
-        FieldType::JsonValue => "Any".to_string(),
-        FieldType::Object(_) => {
-            let mut path = parent_path.to_vec();
-            path.push(field.key.clone());
-            registry
-                .get(&path)
-                .cloned()
-                .unwrap_or_else(|| "Record".to_string())
+        FieldType::Array(inner) => format!("list[{}]", python_type_for_type(inner, path, registry)),
+        FieldType::Map(inner) => {
+            format!("dict[str, {}]", python_type_for_type(inner, path, registry))
         }
-    };
-
-    if optional {
-        format!("Optional[{}]", base)
-    } else {
-        base
+        FieldType::Nullable(inner) => {
+            let inner_type = python_type_for_type(inner, path, registry);
+            if inner_type.starts_with("Optional[") {
+                inner_type
+            } else {
+                format!("Optional[{}]", inner_type)
+            }
+        }
+        FieldType::JsonValue => "Any".to_string(),
+        FieldType::Object(_) => registry
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| "Record".to_string()),
     }
 }

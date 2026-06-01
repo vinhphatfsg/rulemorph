@@ -1,29 +1,36 @@
 use serde_json::Value as JsonValue;
 
 use super::DtoError;
+use super::infer::{
+    InferenceState, infer_mapping_field_type, remember_mapping_type, type_from_mapping_type,
+};
 use crate::model::{Expr, RuleFile};
 use crate::path::{PathToken, parse_path};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct SchemaNode {
     pub(super) fields: Vec<Field>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Field {
     pub(super) key: String,
     pub(super) field_type: FieldType,
     pub(super) optional: bool,
+    pub(super) synthetic: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) enum FieldType {
     Primitive(PrimitiveType),
+    Array(Box<FieldType>),
+    Map(Box<FieldType>),
+    Nullable(Box<FieldType>),
     Object(Box<SchemaNode>),
     JsonValue,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) enum PrimitiveType {
     String,
     Int,
@@ -33,6 +40,7 @@ pub(super) enum PrimitiveType {
 
 pub(super) fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
     let mut root = SchemaNode { fields: Vec::new() };
+    let mut inference = InferenceState::default();
 
     let step_mappings = rule
         .steps
@@ -63,14 +71,14 @@ pub(super) fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
             return Err(DtoError::new("target path is invalid"));
         }
 
-        let field_type = match mapping.value_type.as_deref() {
-            Some("string") => FieldType::Primitive(PrimitiveType::String),
-            Some("int") => FieldType::Primitive(PrimitiveType::Int),
-            Some("float") => FieldType::Primitive(PrimitiveType::Float),
-            Some("bool") => FieldType::Primitive(PrimitiveType::Bool),
-            Some(_) => return Err(DtoError::new("unsupported type in mapping")),
-            None => FieldType::JsonValue,
-        };
+        if mapping
+            .value_type
+            .as_deref()
+            .is_some_and(|value_type| type_from_mapping_type(value_type).is_none())
+        {
+            return Err(DtoError::new("unsupported type in mapping"));
+        }
+        let field_type = infer_mapping_field_type(mapping, rule, &mut inference);
         let conditional = match &mapping.when {
             None => false,
             Some(Expr::Literal(JsonValue::Bool(true))) => false,
@@ -79,7 +87,8 @@ pub(super) fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
         let optional = conditional
             || !(mapping.required || mapping.value.is_some() || mapping.default.is_some());
 
-        insert_field(&mut root, &keys, field_type, optional)?;
+        insert_field(&mut root, &keys, field_type.clone(), optional)?;
+        remember_mapping_type(&mut inference, &keys, &field_type);
     }
 
     Ok(root)
@@ -104,6 +113,7 @@ fn insert_field(
             key: key.clone(),
             field_type,
             optional,
+            synthetic: false,
         });
         return Ok(());
     }
@@ -123,20 +133,28 @@ fn insert_field(
         key: key.clone(),
         field_type: FieldType::Object(Box::new(child)),
         optional: false,
+        synthetic: true,
     });
     Ok(())
+}
+
+pub(super) fn field_is_optional(field: &Field) -> bool {
+    match &field.field_type {
+        FieldType::Object(child) if field.synthetic => field.optional || !node_has_required(child),
+        _ => field.optional,
+    }
 }
 
 pub(super) fn node_has_required(node: &SchemaNode) -> bool {
     for field in &node.fields {
         match &field.field_type {
             FieldType::Object(child) => {
-                if node_has_required(child) {
+                if !field_is_optional(field) || node_has_required(child) {
                     return true;
                 }
             }
             _ => {
-                if !field.optional {
+                if !field_is_optional(field) {
                     return true;
                 }
             }
@@ -146,16 +164,28 @@ pub(super) fn node_has_required(node: &SchemaNode) -> bool {
 }
 
 pub(super) fn node_uses_json(node: &SchemaNode) -> bool {
-    for field in &node.fields {
-        match &field.field_type {
-            FieldType::JsonValue => return true,
-            FieldType::Object(child) => {
-                if node_uses_json(child) {
-                    return true;
-                }
-            }
-            _ => {}
+    node.fields
+        .iter()
+        .any(|field| field_type_uses_json(&field.field_type))
+}
+
+pub(super) fn field_type_uses_json(field_type: &FieldType) -> bool {
+    match field_type {
+        FieldType::JsonValue => true,
+        FieldType::Array(inner) | FieldType::Map(inner) | FieldType::Nullable(inner) => {
+            field_type_uses_json(inner)
         }
+        FieldType::Object(child) => node_uses_json(child),
+        FieldType::Primitive(_) => false,
     }
-    false
+}
+
+pub(super) fn field_type_has_required_object(field_type: &FieldType) -> bool {
+    match field_type {
+        FieldType::Object(child) => node_has_required(child),
+        FieldType::Array(inner) | FieldType::Map(inner) | FieldType::Nullable(inner) => {
+            field_type_has_required_object(inner)
+        }
+        FieldType::Primitive(_) | FieldType::JsonValue => true,
+    }
 }

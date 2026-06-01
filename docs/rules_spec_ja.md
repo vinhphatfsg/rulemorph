@@ -109,6 +109,21 @@ mappings:
 - `steps`（任意）: 段階実行（`mappings` / `record_when` と併用不可）
 - `finalize`（任意）: 出力配列の最終加工（`mappings` / `steps` どちらでも利用可）
 
+### DTO 型推論
+
+`generate_dto` は `mapping.type` がある場合、その明示型を最優先します。
+`mapping.type` がない場合は、literal value、v2 pipe の終端 op、object/array 操作から
+`string` / `int` / `float` / `bool` / array / map / nested object を静的に推測します。
+推測できない dynamic reference、v1 expr、互換性のない union は各言語の JSON fallback 型
+（Rust `serde_json::Value`、TypeScript `unknown` など）として出力します。
+
+推論は untrusted rule input に対して bounded に実行されます。過度に深い object、巨大な array、
+大量 field、または生成 type 数の上限を超える shape は、狭い型にせず JSON fallback 型へ戻します。
+巨大な path や dynamic path を含む `get` / `pick` / `omit` も JSON fallback 型へ戻します。
+`default` / `coalesce` は dynamic/unknown input を具体型へ狭める根拠には使いません。
+
+`optional` は field が省略される可能性、`nullable` は field 値が `null` になり得る可能性を表します。
+
 ## Input
 
 `input` は raw input を Rulemorph の共通データモデルである JSON record 配列へ変換します。

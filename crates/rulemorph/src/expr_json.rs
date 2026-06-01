@@ -3,7 +3,7 @@ use serde_json::{Map, Value as JsonValue};
 use crate::model::Expr;
 use crate::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref};
 
-pub(super) fn literal_string(expr: &Expr) -> Option<&str> {
+pub(crate) fn literal_string(expr: &Expr) -> Option<&str> {
     match expr {
         Expr::Literal(value) => value.as_str(),
         _ => None,
@@ -16,7 +16,7 @@ pub(super) fn literal_string(expr: &Expr) -> Option<&str> {
 /// - Ref where ref_path starts with @ -> single element array
 /// - Chain where first element starts with @ -> convert to array
 /// Returns None if it looks like v1 expression and should be handled by v1 eval.
-pub(super) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
+pub(crate) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
     match expr {
         Expr::Literal(JsonValue::Array(arr)) => {
             // Direct array - v2 pipe
@@ -45,7 +45,7 @@ pub(super) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
                     if r.ref_path.starts_with('@') {
                         // Convert chain to array
                         let arr: Vec<JsonValue> =
-                            chain.chain.iter().map(|e| expr_to_json_value(e)).collect();
+                            chain.chain.iter().map(expr_to_json_value).collect();
                         return Some(JsonValue::Array(arr));
                     }
                 }
@@ -58,7 +58,7 @@ pub(super) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
 
 /// Convert an Expr to JSON value for v2 condition parsing.
 /// Accepts literal values and v2-looking refs/chains while avoiding v1-only forms.
-pub(super) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
+pub(crate) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
     match expr {
         Expr::Literal(value) => Some(value.clone()),
         Expr::Ref(ref_expr)
@@ -82,7 +82,7 @@ pub(super) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
     }
 }
 
-/// Helper to convert Expr to JsonValue (for Chain conversion)
+/// Helper to convert Expr to JsonValue (for Chain conversion).
 fn expr_to_json_value(expr: &Expr) -> JsonValue {
     match expr {
         Expr::Ref(r) => JsonValue::String(r.ref_path.clone()),
