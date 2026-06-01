@@ -50,7 +50,6 @@ fn cached_regex(pattern: &str, path: &str) -> Result<Regex, TransformError> {
 
 mod api;
 mod branch;
-mod expr_json;
 mod finalize;
 mod mapping;
 mod operators;
@@ -66,7 +65,6 @@ mod v2_trace;
 
 use self::api::transform_record_with_warnings_inner;
 use self::branch::{BranchContext, load_rule_from_path, merge_branch_output};
-use self::expr_json::{expr_to_json_for_v2_condition, expr_to_json_for_v2_pipe, literal_string};
 use self::finalize::{apply_finalize, apply_finalize_traced, sort_key_from_value};
 use self::mapping::{eval_mapping, eval_mapping_traced};
 pub(crate) use self::operators::eval_op;
@@ -88,5 +86,6 @@ use self::v1_expr::{
 };
 use self::v1_trace::eval_expr_traced;
 use self::v2_trace::{eval_v2_condition_traced, eval_v2_pipe_traced, sort_key_to_json};
+use crate::expr_json::{expr_to_json_for_v2_condition, expr_to_json_for_v2_pipe, literal_string};
 pub use api::*;
 pub use stream::*;

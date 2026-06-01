@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::dto::schema::{
-    Field, FieldType, PrimitiveType, SchemaNode, node_has_required, node_uses_json,
+    Field, FieldType, PrimitiveType, SchemaNode, field_is_optional, node_uses_json,
 };
 use crate::dto::support::{NameRegistry, collect_types, field_identifier, rust_string_literal};
 use crate::dto::{DtoError, DtoLanguage};
@@ -13,6 +13,9 @@ pub(in crate::dto) fn render_rust(schema: &SchemaNode, name: &str) -> Result<Str
 
     let mut out = String::new();
     out.push_str("use serde::{Deserialize, Serialize};\n");
+    if schema_uses_map(schema) {
+        out.push_str("use std::collections::HashMap;\n");
+    }
     if node_uses_json(schema) {
         out.push_str("use serde_json::Value;\n");
     }
@@ -26,10 +29,7 @@ pub(in crate::dto) fn render_rust(schema: &SchemaNode, name: &str) -> Result<Str
         for field in &def.node.fields {
             let ident = field_identifier(DtoLanguage::Rust, &field.key, &mut used);
             let rename = ident != field.key;
-            let optional = match &field.field_type {
-                FieldType::Object(child) => !node_has_required(child),
-                _ => field.optional,
-            };
+            let optional = field_is_optional(field);
             let field_type = rust_type_for_field(field, &def.path, &registry);
 
             let mut attrs = Vec::new();
@@ -60,19 +60,46 @@ pub(in crate::dto) fn render_rust(schema: &SchemaNode, name: &str) -> Result<Str
 }
 
 fn rust_type_for_field(field: &Field, parent_path: &[String], registry: &NameRegistry) -> String {
-    match &field.field_type {
+    let mut path = parent_path.to_vec();
+    path.push(field.key.clone());
+    rust_type_for_type(&field.field_type, &path, registry)
+}
+
+fn rust_type_for_type(field_type: &FieldType, path: &[String], registry: &NameRegistry) -> String {
+    match field_type {
         FieldType::Primitive(PrimitiveType::String) => "String".to_string(),
         FieldType::Primitive(PrimitiveType::Int) => "i64".to_string(),
         FieldType::Primitive(PrimitiveType::Float) => "f64".to_string(),
         FieldType::Primitive(PrimitiveType::Bool) => "bool".to_string(),
-        FieldType::JsonValue => "Value".to_string(),
-        FieldType::Object(_) => {
-            let mut path = parent_path.to_vec();
-            path.push(field.key.clone());
-            registry
-                .get(&path)
-                .cloned()
-                .unwrap_or_else(|| "Record".to_string())
+        FieldType::Array(inner) => format!("Vec<{}>", rust_type_for_type(inner, path, registry)),
+        FieldType::Map(inner) => {
+            format!(
+                "HashMap<String, {}>",
+                rust_type_for_type(inner, path, registry)
+            )
         }
+        FieldType::Nullable(inner) => {
+            format!("Option<{}>", rust_type_for_type(inner, path, registry))
+        }
+        FieldType::JsonValue => "Value".to_string(),
+        FieldType::Object(_) => registry
+            .get(path)
+            .cloned()
+            .unwrap_or_else(|| "Record".to_string()),
+    }
+}
+
+fn schema_uses_map(node: &SchemaNode) -> bool {
+    node.fields
+        .iter()
+        .any(|field| field_type_uses_map(&field.field_type))
+}
+
+fn field_type_uses_map(field_type: &FieldType) -> bool {
+    match field_type {
+        FieldType::Map(_) => true,
+        FieldType::Array(inner) | FieldType::Nullable(inner) => field_type_uses_map(inner),
+        FieldType::Object(child) => schema_uses_map(child),
+        FieldType::Primitive(_) | FieldType::JsonValue => false,
     }
 }

@@ -1,3 +1,4 @@
+mod infer;
 mod render;
 mod schema;
 mod support;
