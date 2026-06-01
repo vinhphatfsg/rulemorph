@@ -5,6 +5,7 @@ use rulemorph::preflight_validate_input;
 use rulemorph::{
     InputData, NormalizationOptions, RuleFormat, TransformErrorKind,
     normalize_records_with_options, parse_rule_file, transform, transform_input,
+    transform_input_with_options,
 };
 mod common;
 
@@ -111,6 +112,11 @@ fn t11_when_logical_ops() {
 #[test]
 fn t13_expr_extended() {
     assert_json_fixture("t13_expr_extended");
+}
+
+#[test]
+fn t44_math_ops() {
+    assert_json_fixture("t44_math_ops");
 }
 
 #[test]

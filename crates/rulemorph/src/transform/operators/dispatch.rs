@@ -2,7 +2,10 @@ use super::args::args_len;
 use super::boolean::{eval_bool_and_or, eval_bool_not, eval_compare};
 use super::date::{eval_date_format, eval_to_unixtime};
 use super::lookup::eval_lookup;
-use super::number::{eval_numeric_op, eval_round, eval_to_base};
+use super::number::{
+    eval_abs, eval_ceil, eval_clamp, eval_floor, eval_mod, eval_numeric_op, eval_pow, eval_range,
+    eval_round, eval_sign, eval_sqrt, eval_to_base, eval_trunc,
+};
 use super::*;
 
 mod array_dispatch;
@@ -65,6 +68,96 @@ pub(crate) fn eval_op(
             eval_numeric_op(expr_op, injected, record, context, out, base_path, locals)
         }
         "round" => eval_round(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "abs" => eval_abs(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "floor" => eval_floor(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "ceil" => eval_ceil(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "trunc" => eval_trunc(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "sqrt" => eval_sqrt(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "sign" => eval_sign(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "mod" => eval_mod(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "pow" => eval_pow(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "clamp" => eval_clamp(
+            &expr_op.args,
+            injected,
+            record,
+            context,
+            out,
+            base_path,
+            locals,
+        ),
+        "range" => eval_range(
             &expr_op.args,
             injected,
             record,

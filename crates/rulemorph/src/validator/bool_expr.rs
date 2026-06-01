@@ -38,7 +38,8 @@ fn bool_expr_kind(expr: &Expr) -> BoolExprKind {
             | "take" | "drop" | "slice" | "chunk" | "zip" | "zip_with" | "unzip" | "group_by"
             | "key_by" | "partition" | "unique" | "distinct_by" | "sort_by" | "find_index"
             | "index_of" | "sum" | "avg" | "min" | "max" | "+" | "-" | "*" | "/" | "round"
-            | "to_base" | "date_format" | "to_unixtime" => BoolExprKind::NotBool,
+            | "abs" | "floor" | "ceil" | "trunc" | "sqrt" | "sign" | "mod" | "pow" | "clamp"
+            | "range" | "to_base" | "date_format" | "to_unixtime" => BoolExprKind::NotBool,
             "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
             "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,
             "coalesce" => {
@@ -86,7 +87,8 @@ fn bool_expr_kind_for_op_with_input(expr_op: &ExprOp, injected: BoolExprKind) ->
         | "object_flatten" | "object_unflatten" | "map" | "filter" | "flat_map" | "flatten"
         | "take" | "drop" | "slice" | "chunk" | "zip" | "zip_with" | "unzip" | "group_by"
         | "key_by" | "partition" | "unique" | "distinct_by" | "sort_by" | "find_index"
-        | "index_of" | "sum" | "avg" | "min" | "max" | "+" | "-" | "*" | "/" | "round"
+        | "index_of" | "sum" | "avg" | "min" | "max" | "+" | "-" | "*" | "/" | "round" | "abs"
+        | "floor" | "ceil" | "trunc" | "sqrt" | "sign" | "mod" | "pow" | "clamp" | "range"
         | "to_base" | "date_format" | "to_unixtime" => BoolExprKind::NotBool,
         "and" | "or" | "not" | "contains" => BoolExprKind::Bool,
         "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => BoolExprKind::Bool,

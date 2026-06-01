@@ -79,7 +79,10 @@ use self::path_ops::{
 use self::record::apply_rule_to_record;
 use self::record_trace::apply_rule_to_record_traced;
 use self::types::Namespace;
-pub(crate) use self::types::{EvalItem, EvalLocals, EvalValue};
+pub(crate) use self::types::{
+    EvalItem, EvalLimits, EvalLocals, EvalValue, extend_generated_array_items,
+    push_generated_array_item,
+};
 use self::v1_expr::{
     canonical_ref_path, eval_chain, eval_expr, eval_record_when, eval_record_when_traced, eval_ref,
     eval_when, eval_when_expr, eval_when_expr_traced, eval_when_traced, resolve_source,

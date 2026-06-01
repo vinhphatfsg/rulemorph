@@ -103,6 +103,7 @@ fn preflight_validate_input_with_warnings_inner(
     options: &NormalizationOptions,
 ) -> Result<Vec<TransformWarning>, TransformError> {
     let mut warnings = Vec::new();
+    let limits = EvalLimits::from(options);
     if rule.finalize.is_some() {
         let mut output_records = Vec::new();
         let mut records = input_records_iter_with_options(rule, input, options)?;
@@ -117,13 +118,14 @@ fn preflight_validate_input_with_warnings_inner(
                 &mut record_warnings,
                 base_dir,
                 &mut branch_context,
+                limits,
             )? {
                 output_records.push(output);
             }
             warnings.extend(record_warnings);
         }
         if let Some(finalize) = &rule.finalize {
-            let _ = apply_finalize(finalize, JsonValue::Array(output_records), context)?;
+            let _ = apply_finalize(finalize, JsonValue::Array(output_records), context, limits)?;
         }
     } else {
         let stream = match base_dir {

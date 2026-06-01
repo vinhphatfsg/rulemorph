@@ -30,6 +30,8 @@ pub(super) fn eval_map<'a>(
         }
     };
     let arg_path = format!("{}.args[0]", path);
+    let limits = ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::new();
     for (index, item) in array.iter().enumerate() {
         let item_ctx = ctx
@@ -38,7 +40,7 @@ pub(super) fn eval_map<'a>(
             .with_item(EvalItem { value: item, index });
         let value = eval_v2_expr(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
         if let EvalValue::Value(value) = value {
-            results.push(value);
+            push_generated_array_item(&mut results, value, limits, path, &mut generated_items)?;
         }
     }
     Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -62,6 +64,8 @@ pub(super) fn eval_flat_map<'a>(
     }
     let array = eval_v2_array_from_eval_value(pipe_value.clone(), path)?;
     let arg_path = format!("{}.args[0]", path);
+    let limits = ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::new();
     for (index, item) in array.iter().enumerate() {
         let item_ctx = ctx
@@ -71,8 +75,16 @@ pub(super) fn eval_flat_map<'a>(
         let value =
             eval_v2_expr_or_null(&op_step.args[0], record, context, out, &arg_path, &item_ctx)?;
         match value {
-            JsonValue::Array(items) => results.extend(items),
-            value => results.push(value),
+            JsonValue::Array(items) => extend_generated_array_items(
+                &mut results,
+                items,
+                limits,
+                path,
+                &mut generated_items,
+            )?,
+            value => {
+                push_generated_array_item(&mut results, value, limits, path, &mut generated_items)?
+            }
         }
     }
     Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -106,6 +118,8 @@ pub(super) fn eval_zip_with<'a>(
     let expr_index = op_step.args.len() - 1;
     let expr_path = format!("{}.args[{}]", path, expr_index);
     let expr = &op_step.args[expr_index];
+    let limits = ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(min_len);
     for row_index in 0..min_len {
         let mut row = Vec::with_capacity(arrays.len());
@@ -121,7 +135,7 @@ pub(super) fn eval_zip_with<'a>(
                 index: row_index,
             });
         let value = eval_v2_expr_or_null(expr, record, context, out, &expr_path, &item_ctx)?;
-        results.push(value);
+        push_generated_array_item(&mut results, value, limits, path, &mut generated_items)?;
     }
     Ok(EvalValue::Value(JsonValue::Array(results)))
 }

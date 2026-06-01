@@ -5,6 +5,7 @@ pub(super) fn apply_mappings_traced(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
@@ -16,6 +17,7 @@ pub(super) fn apply_mappings_traced(
         warnings,
         rule.version,
         "mappings",
+        limits,
         collector,
     )?;
     Ok(out)
@@ -30,6 +32,7 @@ pub(super) fn apply_mappings_into_traced(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     base_path: &str,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<(), TransformError> {
     for (index, mapping) in mappings.iter().enumerate() {
@@ -54,6 +57,7 @@ pub(super) fn apply_mappings_into_traced(
                 &mapping_path,
                 warnings,
                 rule_version,
+                limits,
                 collector,
             );
             collector
@@ -87,6 +91,7 @@ pub(super) fn apply_mappings_into_traced(
             out,
             &mapping_path,
             rule_version,
+            limits,
             collector,
         ) {
             Ok(value) => value,

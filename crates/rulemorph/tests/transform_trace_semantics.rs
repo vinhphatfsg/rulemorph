@@ -7,9 +7,10 @@ use common::trace::{
     iter_trace_events, parse_rule, transform_text_raw_trace, unique_temp_dir,
 };
 use rulemorph::{
-    InputData, TraceAttributeValue, TraceEventKind, TransformTraceOptions, parse_rule_file,
-    transform, transform_input_with_trace, transform_input_with_trace_with_base_dir_and_options,
-    transform_record, transform_record_with_trace, transform_with_base_dir,
+    InputData, NormalizationOptions, TraceAttributeValue, TraceEventKind, TransformErrorKind,
+    TransformTraceOptions, parse_rule_file, transform, transform_input_with_trace,
+    transform_input_with_trace_with_base_dir_and_options, transform_record,
+    transform_record_with_trace, transform_with_base_dir,
 };
 use serde_json::json;
 
@@ -43,6 +44,62 @@ mappings:
         "v2 eager operator args should be traced when actually evaluated"
     );
     assert_trace_shape(&traced.trace);
+}
+
+#[test]
+fn trace_v2_generated_arrays_respect_array_limit() {
+    let map_yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: nested
+    expr: [3, { range: [0, "$"] }, { op: "map", args: [[3, { range: [0, "$"] }]] }]
+"#;
+    let flat_map_yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: nested
+    expr: [3, { range: [0, "$"] }, { flat_map: [[3, { range: [0, "$"] }]] }]
+"#;
+    let map_step_yaml = r#"
+version: 2
+input:
+  format: json
+mappings:
+  - target: nested
+    expr:
+      - 4
+      - range: [1, "$"]
+      - map:
+        - range: [0, "$"]
+"#;
+    let options = NormalizationOptions {
+        max_array_len: 8,
+        ..NormalizationOptions::default()
+    };
+
+    for yaml in [map_yaml, flat_map_yaml, map_step_yaml] {
+        let rule = parse_rule(yaml);
+        let err = transform_input_with_trace_with_base_dir_and_options(
+            &rule,
+            InputData::Text("[{}]"),
+            None,
+            None,
+            &options,
+            &TransformTraceOptions::raw(),
+        )
+        .expect_err("trace should enforce generated array limit");
+        assert_eq!(err.error.kind, TransformErrorKind::ExprError);
+        assert!(
+            err.error
+                .message
+                .contains("generated array items exceed configured limit")
+        );
+        assert_trace_shape(&err.trace);
+    }
 }
 
 include!("transform_trace_semantics/short_circuit.rs");

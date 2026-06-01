@@ -6,19 +6,27 @@ pub(in crate::transform::operators) use self::slicing::{
     eval_array_chunk, eval_array_drop, eval_array_slice, eval_array_take,
 };
 
-fn flatten_value(value: &JsonValue, depth: usize, out: &mut Vec<JsonValue>) {
+fn flatten_value(
+    value: &JsonValue,
+    depth: usize,
+    out: &mut Vec<JsonValue>,
+    limits: EvalLimits,
+    path: &str,
+    generated_items: &mut usize,
+) -> Result<(), TransformError> {
     if depth == 0 {
-        out.push(value.clone());
-        return;
+        push_generated_array_item(out, value.clone(), limits, path, generated_items)?;
+        return Ok(());
     }
 
     if let JsonValue::Array(items) = value {
         for item in items {
-            flatten_value(item, depth - 1, out);
+            flatten_value(item, depth - 1, out, limits, path, generated_items)?;
         }
     } else {
-        out.push(value.clone());
+        push_generated_array_item(out, value.clone(), limits, path, generated_items)?;
     }
+    Ok(())
 }
 
 pub(in crate::transform::operators) fn eval_array_flatten(
@@ -74,9 +82,18 @@ pub(in crate::transform::operators) fn eval_array_flatten(
         1
     };
 
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
     let mut results = Vec::new();
     for item in &array {
-        flatten_value(item, depth, &mut results);
+        flatten_value(
+            item,
+            depth,
+            &mut results,
+            limits,
+            base_path,
+            &mut generated_items,
+        )?;
     }
 
     Ok(EvalValue::Value(JsonValue::Array(results)))

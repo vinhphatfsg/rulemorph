@@ -26,7 +26,14 @@ pub fn transform_record_with_warnings(
     context: Option<&JsonValue>,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut branch_context = BranchContext::default();
-    transform_record_with_warnings_inner(rule, record, context, None, &mut branch_context)
+    transform_record_with_warnings_inner(
+        rule,
+        record,
+        context,
+        None,
+        &mut branch_context,
+        EvalLimits::default(),
+    )
 }
 
 pub fn transform_record_with_warnings_with_base_dir(
@@ -36,7 +43,14 @@ pub fn transform_record_with_warnings_with_base_dir(
     base_dir: &Path,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut branch_context = BranchContext::default();
-    transform_record_with_warnings_inner(rule, record, context, Some(base_dir), &mut branch_context)
+    transform_record_with_warnings_inner(
+        rule,
+        record,
+        context,
+        Some(base_dir),
+        &mut branch_context,
+        EvalLimits::default(),
+    )
 }
 
 pub(in crate::transform) fn transform_record_with_warnings_inner(
@@ -45,6 +59,7 @@ pub(in crate::transform) fn transform_record_with_warnings_inner(
     context: Option<&JsonValue>,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
     let output = apply_rule_to_record(
@@ -54,6 +69,7 @@ pub(in crate::transform) fn transform_record_with_warnings_inner(
         &mut warnings,
         base_dir,
         branch_context,
+        limits,
     )?;
     if output.is_none() {
         return Ok((None, warnings));
@@ -63,7 +79,7 @@ pub(in crate::transform) fn transform_record_with_warnings_inner(
         if let Some(value) = output {
             records.push(value);
         }
-        let finalized = apply_finalize(finalize, JsonValue::Array(records), context)?;
+        let finalized = apply_finalize(finalize, JsonValue::Array(records), context, limits)?;
         return Ok((Some(finalized), warnings));
     }
     Ok((output, warnings))

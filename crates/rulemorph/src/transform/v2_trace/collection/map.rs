@@ -21,6 +21,8 @@ pub(super) fn eval_v2_map_traced<'a>(
     }
     let array = v2_eval_array_from_value(pipe_value, path)?;
     let arg_path = format!("{}.args[0]", path);
+    let limits = step_ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::new();
     for (index, item) in array.iter().enumerate() {
         let item_path = format!("{}[{}]", path, index);
@@ -41,7 +43,7 @@ pub(super) fn eval_v2_map_traced<'a>(
         emit_v2_arg_eval(collector, &arg_path, 0, operator, &value);
         finish_v2_collection_item(collector, &item_path, operator, index, &value, None);
         if let V2EvalValue::Value(value) = value {
-            results.push(value);
+            push_generated_array_item(&mut results, value, limits, path, &mut generated_items)?;
         }
     }
     Ok(V2EvalValue::Value(JsonValue::Array(results)))
@@ -68,6 +70,8 @@ pub(super) fn eval_v2_flat_map_traced<'a>(
     }
     let array = v2_eval_array_from_value(pipe_value, path)?;
     let arg_path = format!("{}.args[0]", path);
+    let limits = step_ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::new();
     for (index, item) in array.iter().enumerate() {
         let item_path = format!("{}[{}]", path, index);
@@ -89,8 +93,16 @@ pub(super) fn eval_v2_flat_map_traced<'a>(
         emit_v2_arg_eval(collector, &arg_path, 0, operator, &output);
         finish_v2_collection_item(collector, &item_path, operator, index, &output, None);
         match value {
-            JsonValue::Array(items) => results.extend(items),
-            value => results.push(value),
+            JsonValue::Array(items) => extend_generated_array_items(
+                &mut results,
+                items,
+                limits,
+                path,
+                &mut generated_items,
+            )?,
+            value => {
+                push_generated_array_item(&mut results, value, limits, path, &mut generated_items)?
+            }
         }
     }
     Ok(V2EvalValue::Value(JsonValue::Array(results)))

@@ -11,6 +11,7 @@ pub(super) fn apply_branch_step_traced(
     rule_version: u8,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
     base_path: &str,
 ) -> Result<TracedStepOutcome, TransformError> {
@@ -22,6 +23,7 @@ pub(super) fn apply_branch_step_traced(
         out,
         &format!("{}.when", branch_path),
         rule_version,
+        limits,
     )?;
     collector
         .emit(TraceEventKind::BranchEval, TracePhase::Instant)
@@ -59,6 +61,7 @@ pub(super) fn apply_branch_step_traced(
                 context,
                 Some(&branch_base_dir),
                 branch_context,
+                limits,
                 collector,
             )
         })();

@@ -17,6 +17,7 @@ pub(super) fn apply_steps_traced(
     rule_version: u8,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<Option<JsonValue>, TransformError> {
     let mut out = JsonValue::Object(Map::new());
@@ -39,6 +40,7 @@ pub(super) fn apply_steps_traced(
                     warnings,
                     rule_version,
                     &format!("{}.mappings", base_path),
+                    limits,
                     collector,
                 )?;
                 return Ok(TracedStepOutcome::Continue);
@@ -57,6 +59,7 @@ pub(super) fn apply_steps_traced(
                     &out,
                     &when_path,
                     rule_version,
+                    limits,
                     collector,
                 ) {
                     Ok(keep) => keep,
@@ -97,6 +100,7 @@ pub(super) fn apply_steps_traced(
                         &out,
                         &format!("{}.when", assert_path),
                         rule_version,
+                        limits,
                     )?;
                     collector
                         .emit(TraceEventKind::AssertEval, TracePhase::Instant)
@@ -127,6 +131,7 @@ pub(super) fn apply_steps_traced(
                     rule_version,
                     base_dir,
                     branch_context,
+                    limits,
                     collector,
                     &base_path,
                 );

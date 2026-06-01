@@ -26,13 +26,21 @@ pub(in crate::transform::operators) fn eval_array_zip(
     }
 
     let min_len = arrays.iter().map(|items| items.len()).min().unwrap_or(0);
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(min_len);
     for idx in 0..min_len {
         let mut row = Vec::with_capacity(arrays.len());
         for array in &arrays {
             row.push(array[idx].clone());
         }
-        results.push(JsonValue::Array(row));
+        push_generated_array_item(
+            &mut results,
+            JsonValue::Array(row),
+            limits,
+            base_path,
+            &mut generated_items,
+        )?;
     }
 
     Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -79,6 +87,8 @@ pub(in crate::transform::operators) fn eval_array_zip_with(
     }
 
     let min_len = arrays.iter().map(|items| items.len()).min().unwrap_or(0);
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(min_len);
     for idx in 0..min_len {
         let mut row = Vec::with_capacity(arrays.len());
@@ -94,7 +104,7 @@ pub(in crate::transform::operators) fn eval_array_zip_with(
             },
         );
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
-        results.push(value);
+        push_generated_array_item(&mut results, value, limits, base_path, &mut generated_items)?;
     }
 
     Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -155,9 +165,17 @@ pub(in crate::transform::operators) fn eval_array_unzip(
         }
     }
 
-    let output = columns
-        .into_iter()
-        .map(JsonValue::Array)
-        .collect::<Vec<_>>();
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
+    let mut output = Vec::with_capacity(columns.len());
+    for column in columns {
+        push_generated_array_item(
+            &mut output,
+            JsonValue::Array(column),
+            limits,
+            base_path,
+            &mut generated_items,
+        )?;
+    }
     Ok(EvalValue::Value(JsonValue::Array(output)))
 }

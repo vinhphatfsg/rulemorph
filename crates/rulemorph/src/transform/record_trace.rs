@@ -14,6 +14,7 @@ pub(super) fn apply_rule_to_record_traced(
     warnings: &mut Vec<TransformWarning>,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<Option<JsonValue>, TransformError> {
     if let Some(steps) = &rule.steps {
@@ -25,6 +26,7 @@ pub(super) fn apply_rule_to_record_traced(
             rule.version,
             base_dir,
             branch_context,
+            limits,
             collector,
         );
     }
@@ -35,7 +37,7 @@ pub(super) fn apply_rule_to_record_traced(
             .rule_path("record_when")
             .finish(collector);
     }
-    let keep = eval_record_when_traced(rule, record, context, warnings, collector);
+    let keep = eval_record_when_traced(rule, record, context, warnings, limits, collector);
     if rule.record_when.is_some() {
         collector
             .end_span(TraceEventKind::RecordWhenEnd, TracePhase::End)
@@ -50,7 +52,7 @@ pub(super) fn apply_rule_to_record_traced(
         return Ok(None);
     }
 
-    let output = apply_mappings_traced(rule, record, context, warnings, collector)?;
+    let output = apply_mappings_traced(rule, record, context, warnings, limits, collector)?;
     Ok(Some(output))
 }
 
@@ -61,6 +63,7 @@ fn transform_record_with_warnings_inner_traced(
     context: Option<&JsonValue>,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
@@ -71,6 +74,7 @@ fn transform_record_with_warnings_inner_traced(
         &mut warnings,
         base_dir,
         branch_context,
+        limits,
         collector,
     )?;
     let Some(output) = output else {
@@ -83,7 +87,7 @@ fn transform_record_with_warnings_inner_traced(
             .start_span(TraceEventKind::FinalizeStart, TracePhase::Start)
             .rule_path("finalize")
             .finish_with_output(collector, &array, None);
-        match apply_finalize_traced(finalize, array, context, collector) {
+        match apply_finalize_traced(finalize, array, context, limits, collector) {
             Ok(finalized) => {
                 collector
                     .end_span(TraceEventKind::FinalizeEnd, TracePhase::End)

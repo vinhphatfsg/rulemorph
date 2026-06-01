@@ -40,6 +40,8 @@ pub(super) fn eval_v2_map_step_traced<'a>(
             .with_path(step_path));
         }
     };
+    let limits = ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(arr.len());
     for (index, item_value) in arr.iter().enumerate() {
         let item_path = format!("{}[{}]", step_path, index);
@@ -98,7 +100,21 @@ pub(super) fn eval_v2_map_step_traced<'a>(
             .rule_path(&item_path)
             .finish_with_v2_eval_output(collector, &current, Some("@item"));
         if let V2EvalValue::Value(value) = current {
-            results.push(value);
+            if let Err(error) = push_generated_array_item(
+                &mut results,
+                value,
+                limits,
+                step_path,
+                &mut generated_items,
+            ) {
+                collector
+                    .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+                    .rule_path(step_path)
+                    .operator("map")
+                    .input_v2_eval_value(&pipe_value, collector.options(), None)
+                    .finish(collector);
+                return Err(error);
+            }
         }
     }
     collector
