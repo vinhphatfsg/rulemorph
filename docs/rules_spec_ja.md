@@ -37,6 +37,7 @@ raw input
 | レコード単位の除外 | record を処理するか決める | `record_when` |
 | 出力生成 | 1 record から 1 output object を作る | `mappings` |
 | 段階実行 | mapping、filter、assert、branch を順序付きで実行する | `steps` |
+| 再利用可能な式 | v2 pipe / mappings に名前を付けて再利用する | `defs` |
 | 配列全体の後処理 | filter/sort/limit/wrap を出力配列へ適用する | `finalize` |
 | 参照と式 | 入力、context、途中出力を参照し、値を加工する | `@input`, `@context`, `@out`, `expr` |
 
@@ -104,6 +105,7 @@ mappings:
 - `version`（必須）: `2` 固定
 - `input`（必須）: 入力形式とオプション
 - `mappings`（必須）: 変換ルール（上から順に評価）
+- `defs`（任意）: v2 pipe / mappings を名前付き関数OPとして定義
 - `output`（任意）: メタデータ（DTO 名など）
 - `record_when`（任意）: レコードの採用/除外条件
 - `steps`（任意）: 段階実行（`mappings` / `record_when` と併用不可）
@@ -123,6 +125,135 @@ mappings:
 `default` / `coalesce` は dynamic/unknown input を具体型へ狭める根拠には使いません。
 
 `optional` は field が省略される可能性、`nullable` は field 値が `null` になり得る可能性を表します。
+
+`defs` の `returns` は DTO 推論にも使われます。`returns` が object の場合は nested DTO shape として伝播します。`mappings` body の関数OPで `returns` を省略した場合は、body の `target` から object shape を合成します。推論できない field は JSON fallback 型になります。
+
+## defs（関数OP）
+
+`defs` は rule file 内だけで使える名前付きOPです。外部コード、IO、network、time/random などの side effect は実行せず、既存の v2 pipe / mappings に型付きの名前を付ける機能です。
+
+```yaml
+defs:
+  slug:
+    input: string
+    returns: string
+    expr:
+      - "$"
+      - trim
+      - lowercase
+
+mappings:
+  - target: slug
+    expr:
+      - "@input.title"
+      - slug
+```
+
+各定義は `input` を必須にし、`expr` または `mappings` のどちらか一方を持ちます。`expr` body では `returns` が必須です。`mappings` body では `returns` を省略でき、その場合は `target` から object return contract を合成します。
+
+### 型
+
+`defs.*.input` と `defs.*.returns` では次の型を使えます。
+
+| 型 | 説明 |
+| --- | --- |
+| `string` | JSON string |
+| `int` | JSON integer |
+| `float` | finite JSON number。integer も受け入れる |
+| `number` | integer / float を区別しない finite JSON number |
+| `bool` | JSON boolean |
+| `json` | 任意 JSON。内側の shape check はしない |
+| `[T]` | homogeneous array |
+| `{ field: T }` | object field map |
+
+object field は `?` で optional と nullable を区別します。
+
+```yaml
+input:
+  {
+    name: string,
+    nickname?: string,
+    note: string?,
+    memo?: string?
+  }
+```
+
+canonical form も使えます。
+
+```yaml
+input:
+  {
+    nickname: { type: string, optional: true },
+    note: { type: string, nullable: true },
+    memo: { type: string, optional: true, nullable: true }
+  }
+```
+
+`{ type: string }` だけの object は canonical form ではなく、`type` という field を持つ object 型として扱われます。canonical form として解釈されるのは `optional` または `nullable` を含む場合です。
+
+object input の direct call は required field が揃っていれば extra field を許可します。`with` adapter と object output contract は exact match です。`json` field の内側だけは shape check しません。数値型は文字列を暗黙 parse しないため、`"2"` は `int` / `float` / `number` としては通りません。
+
+### 呼び出し
+
+引数なしの custom OP は current pipe value `$` をそのまま受け取ります。
+
+```yaml
+expr:
+  - "@input.title"
+  - slug
+```
+
+入力元の field 名が `input` shape と違う場合は、公式推奨形として `with` adapter を使います。
+
+```yaml
+expr:
+  - "@input.line"
+  - line_total:
+      - with: { qty: "$.quantity", unit_price: "$.price" }
+```
+
+custom OP body で input object の field を読む場合は、公式例では dot path 形式の `$.field` を推奨します。`get` OP を使う `["$", { get: ["field"] }]` 形式も有効ですが、field access だけなら `$.field` のほうが短く読みやすいです。
+
+```yaml
+defs:
+  line_total:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "$"
+      - let:
+          qty: ["$.qty", float]
+          price: ["$.unit_price", float]
+      - "@qty"
+      - "*": ["@price"]
+```
+
+`with` の値は caller scope の v2 expr として評価されます。文字列を literal として渡したい場合は `value`、明示的に expr として渡したい場合は `expr` wrapper を使います。
+
+```yaml
+- decorate:
+    - with:
+        label:
+          value: "$.quantity"
+        qty:
+          expr: "$.quantity"
+```
+
+direct adapter object は無効です。
+
+```yaml
+# invalid
+- line_total:
+    qty: "$.quantity"
+```
+
+custom OP body の `$` と `@input` は custom OP input を指します。outer `@input` は暗黙 capture できません。`@context` capture、再帰、built-in OP の shadowing、import、generic、overload は MVP では無効です。
+
+### 検証と trace
+
+validation は unknown custom OP、built-in shadowing、invalid identifier、`expr` / `mappings` の重複、`returns` missing、cycle、unknown/duplicate call option、`with` shape mismatch を fail-closed にします。runtime でも `input` / `returns` contract を検査し、contract error は raw input value を既定では message に含めません。
+
+semantic trace では custom OP call が `kind=custom_op` の span として出ます。span には `name`、`def_path`、`call_path`、`input_type`、`output_type`、`with_adapter`、`body_truncated` が入ります。値 snapshot は既存の `TraceValueMode` に従います。
 
 ## Input
 

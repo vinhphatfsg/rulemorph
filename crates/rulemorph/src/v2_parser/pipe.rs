@@ -86,7 +86,7 @@ pub fn parse_v2_pipe(arr: &[JsonValue]) -> Result<V2Pipe, V2ParseError> {
         // Single-step pipe can omit explicit `$` start.
         let steps: Result<Vec<V2Step>, _> = arr.iter().map(parse_v2_step).collect();
         return Ok(V2Pipe {
-            start: V2Start::PipeValue,
+            start: V2Start::ImplicitPipeValue,
             steps: steps?,
         });
     }
@@ -122,7 +122,9 @@ fn looks_like_step(value: &JsonValue) -> bool {
                 if !["op", "let", "if", "map", "then", "else", "cond", "ref"]
                     .contains(&key.as_str())
                 {
-                    // Only treat as step when the key matches a known v2 op name.
+                    // Treat known built-ins as omitted-start steps. Plain one-key objects,
+                    // including call-option-shaped objects, remain literal starts here because
+                    // the parser does not know the rule-local defs.
                     return is_valid_op(key);
                 }
             }

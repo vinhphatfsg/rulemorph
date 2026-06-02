@@ -23,6 +23,17 @@ pub fn validate_v2_ref(
             validate_path_syntax(path, base_path, ctx);
             validate_out_not_forward(path, base_path, ctx);
         }
+        V2Ref::Pipe(path) => {
+            if !scope.allows_pipe() {
+                ctx.push_error(
+                    ErrorCode::InvalidRefNamespace,
+                    "$ refs are only valid inside pipe steps or custom op bodies",
+                    base_path,
+                );
+            } else {
+                validate_path_syntax(path, base_path, ctx);
+            }
+        }
         V2Ref::Item(path) => {
             if !scope.allows_item() {
                 ctx.push_error(

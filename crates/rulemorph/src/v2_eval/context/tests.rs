@@ -1,4 +1,7 @@
 use super::*;
+use crate::transform::EvalLimits;
+use crate::v2_eval::eval_v2_pipe;
+use crate::v2_parser::parse_v2_pipe_from_value;
 use serde_json::json;
 
 #[test]
@@ -105,4 +108,38 @@ fn test_context_preserves_pipe_value_after_let() {
 
     assert_eq!(ctx.get_pipe_value(), Some(&EvalValue::Value(json!(100))));
     assert_eq!(ctx.resolve_local("x"), Some(&EvalValue::Value(json!(50))));
+}
+
+#[test]
+fn test_custom_op_counter_resets_for_public_eval_calls() {
+    let rule = crate::parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  id:
+    input: int
+    returns: int
+    expr: "$"
+mappings: []
+"#,
+    )
+    .expect("rule parses");
+    let pipe = parse_v2_pipe_from_value(&json!(["@input.n", "id"])).expect("pipe parses");
+    let ctx = V2EvalContext::new()
+        .with_limits(EvalLimits {
+            max_custom_op_calls_per_record: 1,
+            ..EvalLimits::default()
+        })
+        .with_rule(&rule);
+    let out = json!({});
+
+    for n in [1, 2] {
+        let record = json!({ "n": n });
+        let result =
+            eval_v2_pipe(&pipe, &record, None, &out, "expr", &ctx).expect("eval stays in limit");
+        assert_eq!(result, EvalValue::Value(json!(n)));
+    }
 }

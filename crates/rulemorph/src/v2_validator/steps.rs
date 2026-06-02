@@ -1,4 +1,5 @@
 use crate::v2_model::{V2Expr, V2IfStep, V2LetStep, V2MapStep, V2Pipe, V2Start, V2Step};
+use crate::v2_parser::{custom_call_step_candidate, parse_custom_call_step};
 
 use super::conditions::validate_v2_condition;
 use super::context::{V2Scope, V2ValidationCtx};
@@ -27,15 +28,66 @@ pub fn validate_v2_pipe(
     scope: &V2Scope,
     ctx: &mut V2ValidationCtx<'_>,
 ) {
-    // Validate start value (at index 0 in the array)
-    validate_v2_start(&pipe.start, &format!("{}[0]", base_path), scope, ctx);
+    let mut handled_start = false;
+    if let Some(call) = parse_known_custom_call_literal_start(&pipe.start, ctx, base_path) {
+        let step_path = format!("{}[0]", base_path);
+        match call {
+            Ok(call) => {
+                validate_custom_call_args(&call, &step_path, scope, ctx);
+                handled_start = true;
+            }
+            Err(err) => ctx.push_error(
+                crate::error::ErrorCode::InvalidExprShape,
+                format!("invalid custom op call: {}", err),
+                &step_path,
+            ),
+        }
+    }
 
-    // Validate each step with proper scope management
-    // Steps start at index 1 in the pipe array (after start value)
-    let mut current_scope = scope.clone();
+    if !handled_start {
+        // Validate start value (at index 0 in the array)
+        validate_v2_start(&pipe.start, &format!("{}[0]", base_path), scope, ctx);
+    }
+    if !handled_start && matches!(pipe.start, V2Start::PipeValue) && !scope.allows_pipe() {
+        ctx.push_error(
+            crate::error::ErrorCode::InvalidRefNamespace,
+            "$ refs are only valid inside pipe steps or custom op bodies",
+            &format!("{}[0]", base_path),
+        );
+    }
+
+    // Validate each step with proper scope management.
+    // Steps start at index 1 in the pipe array (after start value).
+    let has_pipe_value = !matches!(pipe.start, V2Start::ImplicitPipeValue) || scope.allows_pipe();
+    let mut current_scope = if has_pipe_value {
+        scope.clone().with_pipe()
+    } else {
+        scope.clone()
+    };
     for (i, step) in pipe.steps.iter().enumerate() {
         let step_path = format!("{}[{}]", base_path, i + 1);
         validate_v2_step(step, &step_path, &mut current_scope, ctx);
+    }
+}
+
+fn parse_known_custom_call_literal_start(
+    start: &V2Start,
+    ctx: &V2ValidationCtx<'_>,
+    _base_path: &str,
+) -> Option<Result<crate::v2_model::V2CustomCallStep, crate::v2_parser::V2ParseError>> {
+    let V2Start::Literal(value) = start else {
+        return None;
+    };
+    let (op_name, args_val) = custom_call_step_candidate(value)?;
+    if !ctx.is_custom_op(op_name) {
+        return None;
+    }
+    match parse_custom_call_step(op_name, args_val) {
+        Ok(Some(call)) => Some(Ok(call)),
+        Ok(None) => Some(Err(crate::v2_parser::V2ParseError::InvalidStep(
+            "custom op call must use with call options".to_string(),
+        ))),
+        Err(err) => Some(Err(err)),
     }
 }
 
@@ -48,9 +100,9 @@ fn validate_v2_start(
 ) {
     match start {
         V2Start::Ref(v2_ref) => validate_v2_ref(v2_ref, base_path, scope, ctx),
-        V2Start::PipeValue => {}  // $ is always valid
-        V2Start::Literal(_) => {} // Literals are always valid
-        V2Start::V1Expr(_) => {}  // V1 expressions are validated elsewhere
+        V2Start::PipeValue | V2Start::ImplicitPipeValue => {} // Missing pipe input is valid for single-step ops.
+        V2Start::Literal(_) => {}                             // Literals are always valid
+        V2Start::V1Expr(_) => {} // V1 expressions are validated elsewhere
     }
 }
 
@@ -63,10 +115,29 @@ fn validate_v2_step(
 ) {
     match step {
         V2Step::Op(op_step) => operators::validate_v2_op_step(op_step, base_path, scope, ctx),
+        V2Step::CustomCall(call_step) => {
+            let call_scope = scope.clone().with_pipe();
+            validate_custom_call_args(call_step, base_path, &call_scope, ctx);
+        }
         V2Step::Let(let_step) => validate_v2_let_step(let_step, base_path, scope, ctx),
         V2Step::If(if_step) => validate_v2_if_step(if_step, base_path, scope, ctx),
         V2Step::Map(map_step) => validate_v2_map_step(map_step, base_path, scope, ctx),
         V2Step::Ref(v2_ref) => validate_v2_ref(v2_ref, base_path, scope, ctx),
+    }
+}
+
+fn validate_custom_call_args(
+    call_step: &crate::v2_model::V2CustomCallStep,
+    base_path: &str,
+    scope: &V2Scope,
+    ctx: &mut V2ValidationCtx<'_>,
+) {
+    if let Some(with) = &call_step.with {
+        for (name, arg) in with {
+            if let crate::v2_model::V2CallArg::Expr(expr) = arg {
+                validate_v2_expr(expr, &format!("{}.with.{}", base_path, name), scope, ctx);
+            }
+        }
     }
 }
 

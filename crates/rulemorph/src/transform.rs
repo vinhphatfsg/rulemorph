@@ -50,6 +50,7 @@ fn cached_regex(pattern: &str, path: &str) -> Result<Regex, TransformError> {
 
 mod api;
 mod branch;
+mod custom_ops;
 mod finalize;
 mod mapping;
 mod operators;
@@ -65,8 +66,11 @@ mod v2_trace;
 
 use self::api::transform_record_with_warnings_inner;
 use self::branch::{BranchContext, load_rule_from_path, merge_branch_output};
+pub(crate) use self::custom_ops::{
+    eval_custom_call_step, eval_custom_op_step, parse_known_custom_call_literal_start,
+};
 use self::finalize::{apply_finalize, apply_finalize_traced, sort_key_from_value};
-use self::mapping::{eval_mapping, eval_mapping_traced};
+use self::mapping::{eval_mapping_traced, eval_mapping_with_v2_context};
 pub(crate) use self::operators::eval_op;
 use self::operators::{
     SortKey, arg_expr_at, args_len, cast_value, compare_sort_keys, locals_with_item,
@@ -85,7 +89,8 @@ pub(crate) use self::types::{
 };
 use self::v1_expr::{
     canonical_ref_path, eval_chain, eval_expr, eval_record_when, eval_record_when_traced, eval_ref,
-    eval_when, eval_when_expr, eval_when_expr_traced, eval_when_traced, resolve_source,
+    eval_when, eval_when_expr_traced_with_v2_context, eval_when_expr_with_v2_context,
+    eval_when_traced, resolve_source,
 };
 use self::v1_trace::eval_expr_traced;
 use self::v2_trace::{eval_v2_condition_traced, eval_v2_pipe_traced, sort_key_to_json};

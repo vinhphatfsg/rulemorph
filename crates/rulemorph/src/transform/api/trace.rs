@@ -103,7 +103,7 @@ fn transform_with_warnings_inner_traced(
     let mut output = JsonValue::Array(output_records);
     if let Some(finalize) = &rule.finalize {
         collector.start_finalize(&output);
-        match apply_finalize_traced(finalize, output, context, limits, collector) {
+        match apply_finalize_traced(rule, finalize, output, context, limits, collector) {
             Ok(finalized) => {
                 output = finalized;
                 collector
@@ -157,6 +157,7 @@ pub fn transform_record_with_trace(
                 let array = JsonValue::Array(records);
                 collector.start_finalize(&array);
                 match apply_finalize_traced(
+                    rule,
                     finalize,
                     array,
                     context,

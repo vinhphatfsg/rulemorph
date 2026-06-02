@@ -1,6 +1,7 @@
 use super::*;
 
 pub(super) fn apply_filter(
+    rule: &RuleFile,
     records: &mut Vec<JsonValue>,
     filter: &Expr,
     context: Option<&JsonValue>,
@@ -25,6 +26,7 @@ pub(super) fn apply_filter(
     for (index, item) in records.iter().enumerate() {
         let ctx = V2EvalContext::new()
             .with_limits(limits)
+            .with_rule(rule)
             .with_item(V2EvalItem { value: item, index });
         let keep = eval_v2_condition(&cond, item, context, &base_out, "finalize.filter", &ctx)?;
         if keep {
@@ -36,6 +38,7 @@ pub(super) fn apply_filter(
 }
 
 pub(super) fn apply_filter_traced(
+    rule: &RuleFile,
     records: &mut Vec<JsonValue>,
     filter: &Expr,
     context: Option<&JsonValue>,
@@ -62,6 +65,7 @@ pub(super) fn apply_filter_traced(
     for (index, item) in records.iter().enumerate() {
         let ctx = V2EvalContext::new()
             .with_limits(limits)
+            .with_rule(rule)
             .with_item(V2EvalItem { value: item, index });
         let item_path = format!("finalize.filter[{}]", index);
         let keep =
@@ -86,4 +90,96 @@ pub(super) fn apply_filter_traced(
         .attr_count("output_count", records.len())
         .finish_with_output(collector, &JsonValue::Array(records.clone()), None);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::trace::TransformTraceOptions;
+    use serde_json::json;
+
+    #[test]
+    fn filter_custom_op_calls_share_eval_limit_across_comparison_args() {
+        let rule = crate::parse_rule_file(
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  id:
+    input: int
+    returns: int
+    expr: "$"
+mappings: []
+finalize:
+  filter:
+    eq:
+      - ["@item.a", { map: [id] }, len]
+      - ["@item.b", { map: [id] }, len]
+"#,
+        )
+        .expect("rule parses");
+        let filter = rule
+            .finalize
+            .as_ref()
+            .and_then(|finalize| finalize.filter.as_ref())
+            .expect("filter exists");
+        let mut records = vec![json!({ "a": [1, 2], "b": [3, 4] })];
+        let limits = EvalLimits {
+            max_custom_op_calls_per_record: 3,
+            ..EvalLimits::default()
+        };
+
+        let err = apply_filter(&rule, &mut records, filter, None, limits)
+            .expect_err("calls across both comparison args share one eval limit");
+
+        assert!(
+            err.message
+                .contains("custom op calls per record exceed configured limit")
+        );
+    }
+
+    #[test]
+    fn traced_filter_custom_op_calls_share_eval_limit_within_expression() {
+        let rule = crate::parse_rule_file(
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  id:
+    input: int
+    returns: int
+    expr: "$"
+mappings: []
+finalize:
+  filter:
+    gt:
+      - ["@item.values", { map: [id] }, len]
+      - 0
+"#,
+        )
+        .expect("rule parses");
+        let filter = rule
+            .finalize
+            .as_ref()
+            .and_then(|finalize| finalize.filter.as_ref())
+            .expect("filter exists");
+        let mut records = vec![json!({ "values": [1, 2, 3, 4] })];
+        let limits = EvalLimits {
+            max_custom_op_calls_per_record: 3,
+            ..EvalLimits::default()
+        };
+        let mut collector = TraceCollector::new(TransformTraceOptions::metadata_only());
+
+        let err = apply_filter_traced(&rule, &mut records, filter, None, limits, &mut collector)
+            .expect_err("traced filter enforces custom op calls within one expression");
+
+        assert!(
+            err.message
+                .contains("custom op calls per record exceed configured limit")
+        );
+    }
 }

@@ -1,4 +1,7 @@
-use crate::v2_model::{V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Step};
+use crate::v2_model::{
+    V2CallArg, V2CustomCallStep, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Step,
+};
+use crate::v2_operator::is_valid_operator;
 use serde_json::Value as JsonValue;
 
 use super::{
@@ -44,6 +47,11 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
                 let (op_name, args_val) = obj.iter().next().unwrap();
                 // Skip reserved keywords
                 if !["op", "let", "if", "map", "then", "else", "cond"].contains(&op_name.as_str()) {
+                    if !is_valid_operator(op_name)
+                        && let Some(call) = parse_custom_call_step(op_name, args_val)?
+                    {
+                        return Ok(V2Step::CustomCall(call));
+                    }
                     let args = match args_val {
                         JsonValue::Array(arr) => arr
                             .iter()
@@ -84,6 +92,93 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
             "step must be object or string".to_string(),
         )),
     }
+}
+
+pub(crate) fn parse_custom_call_step(
+    op_name: &str,
+    value: &JsonValue,
+) -> Result<Option<V2CustomCallStep>, V2ParseError> {
+    let JsonValue::Array(options) = value else {
+        return Ok(None);
+    };
+    if options.is_empty() {
+        return Ok(None);
+    }
+    let mut with = None;
+    let mut saw_call_option = false;
+    for option in options {
+        let JsonValue::Object(option_obj) = option else {
+            return Ok(None);
+        };
+        if option_obj.len() != 1 {
+            return Ok(None);
+        }
+        let (key, value) = option_obj.iter().next().unwrap();
+        if key != "with" {
+            if saw_call_option {
+                return Err(V2ParseError::InvalidStep(format!(
+                    "unknown call option '{}'",
+                    key
+                )));
+            }
+            return Ok(None);
+        }
+        saw_call_option = true;
+        if with.is_some() {
+            return Err(V2ParseError::InvalidStep(
+                "duplicate call option 'with'".to_string(),
+            ));
+        }
+        with = Some(parse_with_args(value)?);
+    }
+    if !saw_call_option {
+        return Ok(None);
+    }
+    Ok(Some(V2CustomCallStep {
+        op: op_name.to_string(),
+        with,
+    }))
+}
+
+pub(crate) fn custom_call_step_candidate(value: &JsonValue) -> Option<(&str, &JsonValue)> {
+    let JsonValue::Object(obj) = value else {
+        return None;
+    };
+    if obj.len() != 1 {
+        return None;
+    }
+    let (op_name, args_val) = obj.iter().next().unwrap();
+    if ["op", "let", "if", "map", "then", "else", "cond", "ref"].contains(&op_name.as_str()) {
+        return None;
+    }
+    Some((op_name.as_str(), args_val))
+}
+
+fn parse_with_args(value: &JsonValue) -> Result<Vec<(String, V2CallArg)>, V2ParseError> {
+    let JsonValue::Object(map) = value else {
+        return Err(V2ParseError::InvalidStep(
+            "with option must be an object".to_string(),
+        ));
+    };
+    let mut args = Vec::new();
+    for (key, value) in map {
+        args.push((key.clone(), parse_call_arg(value)?));
+    }
+    Ok(args)
+}
+
+fn parse_call_arg(value: &JsonValue) -> Result<V2CallArg, V2ParseError> {
+    if let JsonValue::Object(map) = value
+        && map.len() == 1
+    {
+        if let Some(expr) = map.get("expr") {
+            return Ok(V2CallArg::Expr(parse_v2_expr(expr)?));
+        }
+        if let Some(value) = map.get("value") {
+            return Ok(V2CallArg::Value(value.clone()));
+        }
+    }
+    Ok(V2CallArg::Expr(parse_v2_expr(value)?))
 }
 
 /// Parse a let step from its bindings

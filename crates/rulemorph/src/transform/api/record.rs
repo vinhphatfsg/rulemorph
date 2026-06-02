@@ -79,7 +79,7 @@ pub(in crate::transform) fn transform_record_with_warnings_inner(
         if let Some(value) = output {
             records.push(value);
         }
-        let finalized = apply_finalize(finalize, JsonValue::Array(records), context, limits)?;
+        let finalized = apply_finalize(rule, finalize, JsonValue::Array(records), context, limits)?;
         return Ok((Some(finalized), warnings));
     }
     Ok((output, warnings))

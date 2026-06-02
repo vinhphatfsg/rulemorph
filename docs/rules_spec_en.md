@@ -34,6 +34,7 @@ For a first rule, read the sections in this order:
 | Record filtering | Decide whether a record should be processed | `record_when` |
 | Output mapping | Build one output object from one input record | `mappings` |
 | Ordered execution | Run mappings, filters, asserts, and branches in sequence | `steps` |
+| Reusable expressions | Name and reuse v2 pipes or mappings | `defs` |
 | Array post-processing | Apply filter/sort/limit/wrap to the output array | `finalize` |
 | References and expressions | Read input, context, and intermediate output values | `@input`, `@context`, `@out`, `expr` |
 
@@ -101,10 +102,140 @@ mappings:
 - `version` (required): fixed to `2`
 - `input` (required): input format and options
 - `mappings` (required): transformation rules (evaluated in order)
+- `defs` (optional): named custom OP definitions built from v2 pipes or mappings
 - `output` (optional): metadata (e.g., DTO name)
 - `record_when` (optional): condition to include/exclude records
 - `steps` (optional): ordered execution. Cannot be combined with top-level `mappings` or `record_when`
 - `finalize` (optional): post-process the output array. Works with either `mappings` or `steps`
+
+## defs (custom OPs)
+
+`defs` defines rule-local custom OPs. A custom OP does not run external code or side effects; it names a typed v2 pipe or mappings body.
+
+```yaml
+defs:
+  slug:
+    input: string
+    returns: string
+    expr:
+      - "$"
+      - trim
+      - lowercase
+
+mappings:
+  - target: slug
+    expr:
+      - "@input.title"
+      - slug
+```
+
+Each definition requires `input` and exactly one of `expr` or `mappings`. `expr` bodies require `returns`. `mappings` bodies may omit `returns`; in that case the object return contract is synthesized from mapping targets.
+
+### Types
+
+`defs.*.input` and `defs.*.returns` support:
+
+| Type | Meaning |
+| --- | --- |
+| `string` | JSON string |
+| `int` | JSON integer |
+| `float` | finite JSON number; integers are accepted |
+| `number` | finite JSON number without int/float distinction |
+| `bool` | JSON boolean |
+| `json` | any JSON value; nested shape is not checked |
+| `[T]` | homogeneous array |
+| `{ field: T }` | object field map |
+
+Object fields distinguish optional fields from nullable values.
+
+```yaml
+input:
+  {
+    name: string,
+    nickname?: string,
+    note: string?,
+    memo?: string?
+  }
+```
+
+Canonical field form is also supported.
+
+```yaml
+input:
+  {
+    nickname: { type: string, optional: true },
+    note: { type: string, nullable: true },
+    memo: { type: string, optional: true, nullable: true }
+  }
+```
+
+An object containing only `{ type: string }` is not treated as canonical field form; it is an object type with a field named `type`. Canonical form is selected only when `optional` or `nullable` is present.
+
+Direct object input calls use width matching: required fields must exist, and extra fields are allowed. `with` adapter input and object output contracts are exact. A `json` field does not validate nested shape. Numeric contracts do not parse strings, so `"2"` is not accepted as `int`, `float`, or `number`.
+
+### Calls
+
+A custom OP without call options receives the current pipe value `$`.
+
+```yaml
+expr:
+  - "@input.title"
+  - slug
+```
+
+When source field names differ from the `input` shape, use the official `with` adapter form:
+
+```yaml
+expr:
+  - "@input.line"
+  - line_total:
+      - with: { qty: "$.quantity", unit_price: "$.price" }
+```
+
+Inside a custom OP body, prefer dot-path field access with `$.field` in official examples. The `get` OP form, such as `["$", { get: ["field"] }]`, remains valid, but `$.field` is shorter and clearer for simple field access.
+
+```yaml
+defs:
+  line_total:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "$"
+      - let:
+          qty: ["$.qty", float]
+          price: ["$.unit_price", float]
+      - "@qty"
+      - "*": ["@price"]
+```
+
+`with` values are evaluated as v2 expressions in the caller scope. Use `value` to pass a literal string/object, and `expr` to mark an expression explicitly.
+
+```yaml
+- decorate:
+    - with:
+        label:
+          value: "$.quantity"
+        qty:
+          expr: "$.quantity"
+```
+
+Direct adapter objects are invalid.
+
+```yaml
+# invalid
+- line_total:
+    qty: "$.quantity"
+```
+
+Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are not supported in the MVP.
+
+### Validation, DTO, And Trace
+
+Validation fails closed for unknown custom OPs, built-in shadowing, invalid identifiers, duplicate `expr` / `mappings`, missing `returns` on `expr` bodies, cycles, unknown or duplicate call options, and `with` shape mismatch. Runtime also checks `input` and `returns`; contract errors do not include raw offending values by default.
+
+DTO generation propagates explicit `returns`. Object `returns` become nested DTO shapes. For mappings bodies without `returns`, the synthesized object contract is propagated; fields that cannot be narrowed use the language's JSON fallback type.
+
+Semantic trace emits custom OP calls as spans with `kind=custom_op`. The span includes `name`, `def_path`, `call_path`, `input_type`, `output_type`, `with_adapter`, and `body_truncated`. Value snapshots follow the existing `TraceValueMode`.
 
 ## Input
 

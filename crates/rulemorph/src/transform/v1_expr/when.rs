@@ -9,6 +9,7 @@ pub(in crate::transform) fn eval_when(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     limits: EvalLimits,
+    ctx: &V2EvalContext<'_>,
 ) -> bool {
     let expr = match &mapping.when {
         Some(expr) => expr,
@@ -16,7 +17,16 @@ pub(in crate::transform) fn eval_when(
     };
 
     let when_path = format!("{}.when", mapping_path);
-    match eval_when_expr(expr, record, context, out, &when_path, rule_version, limits) {
+    match eval_when_expr_with_v2_context(
+        expr,
+        record,
+        context,
+        out,
+        &when_path,
+        rule_version,
+        limits,
+        ctx,
+    ) {
         Ok(flag) => flag,
         Err(err) => {
             warnings.push(err.into());
@@ -35,6 +45,7 @@ pub(in crate::transform) fn eval_when_traced(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     limits: EvalLimits,
+    ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
 ) -> bool {
     let expr = match &mapping.when {
@@ -43,7 +54,7 @@ pub(in crate::transform) fn eval_when_traced(
     };
 
     let when_path = format!("{}.when", mapping_path);
-    match eval_when_expr_traced(
+    match eval_when_expr_traced_with_v2_context(
         expr,
         record,
         context,
@@ -51,6 +62,7 @@ pub(in crate::transform) fn eval_when_traced(
         &when_path,
         rule_version,
         limits,
+        ctx,
         collector,
     ) {
         Ok(flag) => flag,
@@ -67,6 +79,7 @@ pub(in crate::transform) fn eval_record_when(
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
     limits: EvalLimits,
+    ctx: &V2EvalContext<'_>,
 ) -> bool {
     let expr = match &rule.record_when {
         Some(expr) => expr,
@@ -74,7 +87,7 @@ pub(in crate::transform) fn eval_record_when(
     };
 
     let empty_out = JsonValue::Object(Map::new());
-    match eval_when_expr(
+    match eval_when_expr_with_v2_context(
         expr,
         record,
         context,
@@ -82,6 +95,7 @@ pub(in crate::transform) fn eval_record_when(
         "record_when",
         rule.version,
         limits,
+        ctx,
     ) {
         Ok(flag) => flag,
         Err(err) => {
@@ -97,6 +111,7 @@ pub(in crate::transform) fn eval_record_when_traced(
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
     limits: EvalLimits,
+    ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
 ) -> bool {
     let expr = match &rule.record_when {
@@ -105,7 +120,7 @@ pub(in crate::transform) fn eval_record_when_traced(
     };
 
     let empty_out = JsonValue::Object(Map::new());
-    match eval_when_expr_traced(
+    match eval_when_expr_traced_with_v2_context(
         expr,
         record,
         context,
@@ -113,6 +128,7 @@ pub(in crate::transform) fn eval_record_when_traced(
         "record_when",
         rule.version,
         limits,
+        ctx,
         collector,
     ) {
         Ok(flag) => flag,
@@ -164,14 +180,16 @@ fn eval_bool_expr_traced(
     }
 }
 
-pub(in crate::transform) fn eval_when_expr(
+#[allow(clippy::too_many_arguments)]
+pub(in crate::transform) fn eval_when_expr_with_v2_context<'a>(
     expr: &Expr,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
     path: &str,
     rule_version: u8,
     limits: EvalLimits,
+    ctx: &V2EvalContext<'a>,
 ) -> Result<bool, TransformError> {
     if rule_version >= 2 {
         if let Some(raw_value) = expr_to_json_for_v2_condition(expr) {
@@ -182,7 +200,7 @@ pub(in crate::transform) fn eval_when_expr(
                 )
                 .with_path(path)
             })?;
-            let ctx = V2EvalContext::new().with_limits(limits);
+            let ctx = ctx.clone().with_limits(limits);
             return eval_v2_condition(&condition, record, context, out, path, &ctx);
         }
     }
@@ -190,14 +208,16 @@ pub(in crate::transform) fn eval_when_expr(
     eval_bool_expr(expr, record, context, out, path, limits)
 }
 
-pub(in crate::transform) fn eval_when_expr_traced(
+#[allow(clippy::too_many_arguments)]
+pub(in crate::transform) fn eval_when_expr_traced_with_v2_context<'a>(
     expr: &Expr,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
     path: &str,
     rule_version: u8,
     limits: EvalLimits,
+    ctx: &V2EvalContext<'a>,
     collector: &mut TraceCollector,
 ) -> Result<bool, TransformError> {
     if rule_version >= 2 {
@@ -209,7 +229,7 @@ pub(in crate::transform) fn eval_when_expr_traced(
                 )
                 .with_path(path)
             })?;
-            let ctx = V2EvalContext::new().with_limits(limits);
+            let ctx = ctx.clone().with_limits(limits);
             return eval_v2_condition_traced(
                 &condition, record, context, out, path, &ctx, collector,
             );

@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use rulemorph::v2_eval::V2EvalContext;
 use rulemorph::{RuleFile, TransformError, TransformErrorKind};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
@@ -18,6 +19,7 @@ pub(super) fn apply_record_when_meta(
     error: &mut Option<JsonValue>,
     halted: &mut bool,
     meta: &mut JsonMap<String, JsonValue>,
+    trace_ctx: &V2EvalContext<'_>,
 ) {
     if !step_active || status == "error" {
         return;
@@ -32,12 +34,13 @@ pub(super) fn apply_record_when_meta(
     };
 
     match eval_trace_condition(
+        rule,
         expr,
         record,
         context,
         step_input,
         "record_when",
-        rule.version,
+        trace_ctx,
     ) {
         Ok(flag) => {
             meta.insert("record_when".to_string(), JsonValue::Bool(flag));
@@ -61,6 +64,7 @@ pub(super) fn apply_asserts_meta(
     error: &mut Option<JsonValue>,
     halted: &mut bool,
     meta: &mut JsonMap<String, JsonValue>,
+    trace_ctx: &V2EvalContext<'_>,
 ) {
     let Some(asserts) = rule
         .steps
@@ -81,12 +85,13 @@ pub(super) fn apply_asserts_meta(
     for (assert_index, assert) in asserts.iter().enumerate() {
         let assert_path = format!("steps[{}].asserts[{}].when", step_index, assert_index);
         match eval_trace_condition(
+            rule,
             &assert.when,
             record,
             context,
             step_input,
             &assert_path,
-            rule.version,
+            trace_ctx,
         ) {
             Ok(true) => {}
             Ok(false) => {
@@ -128,6 +133,7 @@ pub(super) fn apply_branch_meta(
     error: &mut Option<JsonValue>,
     halted: &mut bool,
     meta: &mut JsonMap<String, JsonValue>,
+    trace_ctx: &V2EvalContext<'_>,
 ) -> Option<JsonValue> {
     if !step_active || status == "error" {
         return None;
@@ -142,12 +148,13 @@ pub(super) fn apply_branch_meta(
     };
 
     let branch_taken = match eval_trace_condition(
+        rule,
         &branch.when,
         record,
         context,
         step_input,
         "branch.when",
-        rule.version,
+        trace_ctx,
     ) {
         Ok(true) => "then",
         Ok(false) => {

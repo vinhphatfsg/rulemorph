@@ -10,6 +10,8 @@ use crate::v2_eval::EvalValue as V2EvalValue;
 pub(crate) struct EvalLimits {
     pub(crate) max_range_items: Option<usize>,
     pub(crate) max_generated_array_items: usize,
+    pub(crate) max_custom_op_call_depth: usize,
+    pub(crate) max_custom_op_calls_per_record: usize,
 }
 
 impl Default for EvalLimits {
@@ -17,6 +19,8 @@ impl Default for EvalLimits {
         Self {
             max_range_items: Some(10_000),
             max_generated_array_items: 1_000_000,
+            max_custom_op_call_depth: crate::custom_ops::MAX_CUSTOM_OP_CALL_DEPTH,
+            max_custom_op_calls_per_record: crate::custom_ops::MAX_CUSTOM_OP_CALLS_PER_RECORD,
         }
     }
 }
@@ -26,6 +30,8 @@ impl From<&crate::normalization::NormalizationOptions> for EvalLimits {
         Self {
             max_range_items: options.max_range_items,
             max_generated_array_items: options.max_array_len,
+            max_custom_op_call_depth: crate::custom_ops::MAX_CUSTOM_OP_CALL_DEPTH,
+            max_custom_op_calls_per_record: crate::custom_ops::MAX_CUSTOM_OP_CALLS_PER_RECORD,
         }
     }
 }

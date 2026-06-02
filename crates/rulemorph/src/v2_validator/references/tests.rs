@@ -80,3 +80,21 @@ fn test_validate_defined_local() {
 
     assert!(!ctx.has_errors());
 }
+
+#[test]
+fn test_validate_pipe_ref_requires_pipe_scope() {
+    let mut ctx = V2ValidationCtx::new(None);
+    let scope = V2Scope::new();
+    let v2_ref = V2Ref::Pipe("value".to_string());
+
+    validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
+
+    assert!(ctx.has_errors());
+    assert_eq!(ctx.errors()[0].code, ErrorCode::InvalidRefNamespace);
+
+    let mut ctx = V2ValidationCtx::new(None);
+    let scope = V2Scope::new().with_pipe();
+    validate_v2_ref(&v2_ref, "test", &scope, &mut ctx);
+
+    assert!(!ctx.has_errors());
+}

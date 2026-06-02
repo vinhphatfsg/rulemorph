@@ -5,7 +5,7 @@ pub(super) fn eval_wrap_value(
     out: &JsonValue,
     context: Option<&JsonValue>,
     path: &str,
-    limits: EvalLimits,
+    ctx: &V2EvalContext<'_>,
 ) -> Result<JsonValue, TransformError> {
     match value {
         JsonValue::Object(map) => {
@@ -14,7 +14,7 @@ pub(super) fn eval_wrap_value(
                 let child_path = format!("{}.{}", path, key);
                 out_map.insert(
                     key.clone(),
-                    eval_wrap_value(value, out, context, &child_path, limits)?,
+                    eval_wrap_value(value, out, context, &child_path, ctx)?,
                 );
             }
             Ok(JsonValue::Object(out_map))
@@ -27,11 +27,52 @@ pub(super) fn eval_wrap_value(
                 )
                 .with_path(path)
             })?;
-            let ctx = V2EvalContext::new().with_limits(limits);
             match eval_v2_expr(&expr, out, context, out, path, &ctx)? {
                 V2EvalValue::Missing => Ok(JsonValue::Null),
                 V2EvalValue::Value(value) => Ok(value),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn wrap_custom_op_calls_share_limit_across_leaf_values() {
+        let rule = crate::parse_rule_file(
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  id:
+    input: int
+    returns: int
+    expr: "$"
+mappings: []
+finalize:
+  wrap:
+    a: ["@out", { map: [id] }]
+    b: ["@out", { map: [id] }]
+"#,
+        )
+        .expect("rule parses");
+        let finalize = rule.finalize.as_ref().expect("finalize exists");
+        let limits = EvalLimits {
+            max_custom_op_calls_per_record: 3,
+            ..EvalLimits::default()
+        };
+
+        let err = apply_finalize(&rule, finalize, json!([1, 2]), None, limits)
+            .expect_err("wrap leaves share one custom-op call budget");
+
+        assert!(
+            err.message
+                .contains("custom op calls per record exceed configured limit")
+        );
     }
 }

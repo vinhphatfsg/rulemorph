@@ -2,12 +2,16 @@ use std::collections::HashMap;
 
 use serde_json::Value as JsonValue;
 
-use crate::model::{Expr, Mapping, RuleFile};
+use crate::model::{CustomOpDef, Expr, Mapping, RuleFile, RuleType, RuleTypeKind};
 use crate::path::{PathToken, parse_path};
 use crate::v2_model::{
-    V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Ref, V2Start, V2Step,
+    V2CustomCallStep, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Ref, V2Start,
+    V2Step,
 };
-use crate::v2_parser::{is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_pipe_from_value};
+use crate::v2_parser::{
+    custom_call_step_candidate, is_literal_escape, is_pipe_value, is_v2_ref,
+    parse_custom_call_step, parse_v2_pipe_from_value,
+};
 
 use super::schema::{Field, FieldType, PrimitiveType, SchemaNode};
 
@@ -111,6 +115,8 @@ impl InferenceBudget {
 
 #[derive(Clone)]
 struct Scope {
+    input: Option<FieldType>,
+    out: Option<FieldType>,
     pipe: FieldType,
     item: Option<FieldType>,
     acc: Option<FieldType>,
@@ -120,11 +126,23 @@ struct Scope {
 impl Scope {
     fn new() -> Self {
         Self {
+            input: None,
+            out: None,
             pipe: FieldType::JsonValue,
             item: None,
             acc: None,
             locals: HashMap::new(),
         }
+    }
+
+    fn with_input(mut self, input: FieldType) -> Self {
+        self.input = Some(input);
+        self
+    }
+
+    fn with_out(mut self, out: FieldType) -> Self {
+        self.out = Some(out);
+        self
     }
 
     fn with_pipe(mut self, pipe: FieldType) -> Self {
@@ -227,6 +245,19 @@ fn infer_json_value(value: &JsonValue, state: &mut InferenceState, depth: usize)
 }
 
 fn infer_expr(expr: &Expr, rule: &RuleFile, state: &mut InferenceState) -> FieldType {
+    infer_expr_with_scope(expr, rule, state, Scope::new(), 0)
+}
+
+fn infer_expr_with_scope(
+    expr: &Expr,
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    scope: Scope,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth) {
+        return FieldType::JsonValue;
+    }
     let Some(value) = expr_to_json_for_v2_pipe_bounded(expr, state, 0) else {
         return FieldType::JsonValue;
     };
@@ -239,7 +270,7 @@ fn infer_expr(expr: &Expr, rule: &RuleFile, state: &mut InferenceState) -> Field
     if pipe.steps.len() > DTO_INFER_MAX_PIPE_STEPS {
         return FieldType::JsonValue;
     }
-    infer_pipe(&pipe, rule, state, Scope::new(), 0)
+    infer_pipe(&pipe, rule, state, scope, depth + 1)
 }
 
 fn infer_pipe(
@@ -253,7 +284,11 @@ fn infer_pipe(
         return FieldType::JsonValue;
     }
 
-    let mut current = infer_start(&pipe.start, state, &scope, depth + 1);
+    let mut current = match parse_known_custom_call_literal_start(rule, &pipe.start) {
+        Some(Ok(call)) => infer_custom_call(&call.op, rule, state, depth + 1),
+        Some(Err(_)) => FieldType::JsonValue,
+        None => infer_start(&pipe.start, state, &scope, depth + 1),
+    };
     scope.pipe = current.clone();
     for step in &pipe.steps {
         if !state.enter_node(depth + 1) {
@@ -276,9 +311,29 @@ fn infer_start(
     }
     match start {
         V2Start::Ref(value_ref) => infer_ref(value_ref, state, scope, depth + 1),
-        V2Start::PipeValue => scope.pipe.clone(),
+        V2Start::PipeValue | V2Start::ImplicitPipeValue => scope.pipe.clone(),
         V2Start::Literal(value) => infer_json_value(value, state, depth + 1),
         V2Start::V1Expr(_) => FieldType::JsonValue,
+    }
+}
+
+fn parse_known_custom_call_literal_start(
+    rule: &RuleFile,
+    start: &V2Start,
+) -> Option<Result<V2CustomCallStep, crate::v2_parser::V2ParseError>> {
+    let V2Start::Literal(value) = start else {
+        return None;
+    };
+    let (op_name, args_val) = custom_call_step_candidate(value)?;
+    if !rule.defs.contains_key(op_name) {
+        return None;
+    }
+    match parse_custom_call_step(op_name, args_val) {
+        Ok(Some(call)) => Some(Ok(call)),
+        Ok(None) => Some(Err(crate::v2_parser::V2ParseError::InvalidStep(
+            "custom op call must use with call options".to_string(),
+        ))),
+        Err(err) => Some(Err(err)),
     }
 }
 
@@ -295,6 +350,7 @@ fn infer_step(
     }
     match step {
         V2Step::Op(op_step) => infer_op(op_step, rule, state, scope, input_type, depth + 1),
+        V2Step::CustomCall(call_step) => infer_custom_call(&call_step.op, rule, state, depth + 1),
         V2Step::Let(let_step) => {
             infer_let_step(let_step, rule, state, scope, input_type, depth + 1)
         }
@@ -316,6 +372,10 @@ fn infer_op(
 ) -> FieldType {
     if !state.enter_node(depth) {
         return FieldType::JsonValue;
+    }
+
+    if op_step.args.is_empty() && rule.defs.contains_key(&op_step.op) {
+        return infer_custom_call(&op_step.op, rule, state, depth + 1);
     }
 
     match op_step.op.as_str() {
@@ -454,6 +514,243 @@ fn infer_op(
     }
 }
 
+fn infer_custom_call(
+    op: &str,
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth) {
+        return FieldType::JsonValue;
+    }
+    let Some(def) = rule.defs.get(op) else {
+        return FieldType::JsonValue;
+    };
+    infer_custom_op_return(def, rule, state, depth + 1)
+}
+
+fn infer_custom_op_return(
+    def: &CustomOpDef,
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth) {
+        return FieldType::JsonValue;
+    }
+    if let Some(returns) = &def.returns {
+        return rule_type_to_field_type(returns);
+    }
+    let Some(mappings) = &def.mappings else {
+        return FieldType::JsonValue;
+    };
+    synthesize_custom_mappings_return_type(def, mappings, rule, state, depth + 1)
+}
+
+fn synthesize_custom_mappings_return_type(
+    def: &CustomOpDef,
+    mappings: &[Mapping],
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth) || !state.reserve_generated_type() {
+        return FieldType::JsonValue;
+    }
+    let input_type = rule_type_to_field_type(&def.input);
+    let mut root = SchemaNode { fields: Vec::new() };
+    for mapping in mappings {
+        let Some(keys) = key_path(&mapping.target) else {
+            return FieldType::JsonValue;
+        };
+        if keys.is_empty() {
+            return FieldType::JsonValue;
+        }
+        let output_type = FieldType::Object(Box::new(root.clone()));
+        let field_type = infer_custom_mapping_field_type(
+            mapping,
+            rule,
+            state,
+            &input_type,
+            &output_type,
+            depth + 1,
+        );
+        let conditional = match &mapping.when {
+            None => false,
+            Some(Expr::Literal(JsonValue::Bool(true))) => false,
+            _ => true,
+        };
+        let optional = conditional
+            || !(mapping.required || mapping.value.is_some() || mapping.default.is_some());
+        if !insert_custom_return_field(&mut root, &keys, field_type, optional) {
+            return FieldType::JsonValue;
+        }
+    }
+    FieldType::Object(Box::new(root))
+}
+
+fn infer_custom_mapping_field_type(
+    mapping: &Mapping,
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    input_type: &FieldType,
+    output_type: &FieldType,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth) {
+        return FieldType::JsonValue;
+    }
+    if let Some(explicit) = mapping
+        .value_type
+        .as_deref()
+        .and_then(type_from_mapping_type)
+    {
+        return explicit;
+    }
+
+    let primary = if let Some(value) = &mapping.value {
+        infer_json_value(value, state, depth + 1)
+    } else if let Some(source) = &mapping.source {
+        infer_custom_mapping_source_type(source, input_type, output_type)
+    } else if let Some(expr) = &mapping.expr {
+        infer_expr_with_scope(
+            expr,
+            rule,
+            state,
+            Scope::new()
+                .with_input(input_type.clone())
+                .with_out(output_type.clone())
+                .with_pipe(input_type.clone()),
+            depth + 1,
+        )
+    } else {
+        FieldType::JsonValue
+    };
+
+    match (&primary, &mapping.default) {
+        (FieldType::JsonValue, _) => FieldType::JsonValue,
+        (_, Some(default)) => merge_types(primary, infer_json_value(default, state, depth + 1)),
+        (_, None) => primary,
+    }
+}
+
+fn infer_custom_mapping_source_type(
+    source: &str,
+    input_type: &FieldType,
+    output_type: &FieldType,
+) -> FieldType {
+    match parse_custom_mapping_source(source) {
+        Some((CustomMappingSource::Input, path)) => scoped_path_type(Some(input_type), path),
+        Some((CustomMappingSource::Out, path)) => scoped_path_type(Some(output_type), path),
+        Some((CustomMappingSource::Context, _)) | None => FieldType::JsonValue,
+    }
+}
+
+fn parse_custom_mapping_source(value: &str) -> Option<(CustomMappingSource, &str)> {
+    if let Some((prefix, path)) = value.split_once('.') {
+        if path.is_empty() {
+            return None;
+        }
+        let namespace = match prefix {
+            "input" => CustomMappingSource::Input,
+            "context" => CustomMappingSource::Context,
+            "out" => CustomMappingSource::Out,
+            _ => return None,
+        };
+        Some((namespace, path))
+    } else {
+        if value.is_empty() {
+            return None;
+        }
+        Some((CustomMappingSource::Input, value))
+    }
+}
+
+#[derive(Clone, Copy)]
+enum CustomMappingSource {
+    Input,
+    Context,
+    Out,
+}
+
+fn insert_custom_return_field(
+    node: &mut SchemaNode,
+    keys: &[String],
+    field_type: FieldType,
+    optional: bool,
+) -> bool {
+    let Some(key) = keys.first() else {
+        return false;
+    };
+    if keys.len() == 1 {
+        if let Some(field) = node.fields.iter_mut().find(|field| field.key == *key) {
+            field.field_type = field_type;
+            field.optional = field.optional && optional;
+            field.synthetic = false;
+            return true;
+        }
+        if node.fields.len() >= DTO_INFER_MAX_OBJECT_FIELDS {
+            return false;
+        }
+        node.fields.push(Field {
+            key: key.clone(),
+            field_type,
+            optional,
+            synthetic: false,
+        });
+        return true;
+    }
+
+    if let Some(field) = node.fields.iter_mut().find(|field| field.key == *key) {
+        let FieldType::Object(child) = &mut field.field_type else {
+            return false;
+        };
+        return insert_custom_return_field(child, &keys[1..], field_type, optional);
+    }
+
+    if node.fields.len() >= DTO_INFER_MAX_OBJECT_FIELDS {
+        return false;
+    }
+    let mut child = SchemaNode { fields: Vec::new() };
+    if !insert_custom_return_field(&mut child, &keys[1..], field_type, optional) {
+        return false;
+    }
+    node.fields.push(Field {
+        key: key.clone(),
+        field_type: FieldType::Object(Box::new(child)),
+        optional: false,
+        synthetic: true,
+    });
+    true
+}
+
+fn rule_type_to_field_type(rule_type: &RuleType) -> FieldType {
+    let field_type = match &rule_type.kind {
+        RuleTypeKind::String => FieldType::Primitive(PrimitiveType::String),
+        RuleTypeKind::Int => FieldType::Primitive(PrimitiveType::Int),
+        RuleTypeKind::Float | RuleTypeKind::Number => FieldType::Primitive(PrimitiveType::Float),
+        RuleTypeKind::Bool => FieldType::Primitive(PrimitiveType::Bool),
+        RuleTypeKind::Json => FieldType::JsonValue,
+        RuleTypeKind::Array(item) => FieldType::Array(Box::new(rule_type_to_field_type(item))),
+        RuleTypeKind::Object(fields) => FieldType::Object(Box::new(SchemaNode {
+            fields: fields
+                .iter()
+                .map(|(key, field)| Field {
+                    key: key.clone(),
+                    field_type: rule_type_to_field_type(&field.ty),
+                    optional: field.optional,
+                    synthetic: false,
+                })
+                .collect(),
+        })),
+    };
+    if rule_type.nullable {
+        FieldType::Nullable(Box::new(field_type))
+    } else {
+        field_type
+    }
+}
+
 fn infer_let_step(
     let_step: &V2LetStep,
     rule: &RuleFile,
@@ -554,11 +851,16 @@ fn infer_ref(
     _depth: usize,
 ) -> FieldType {
     match value_ref {
-        V2Ref::Input(_) | V2Ref::Context(_) => FieldType::JsonValue,
-        V2Ref::Out(path) => key_path(path)
-            .filter(|keys| !keys.is_empty())
-            .and_then(|keys| state.produced_type_for_ref(&keys))
-            .unwrap_or(FieldType::JsonValue),
+        V2Ref::Input(path) => scoped_path_type(scope.input.as_ref(), path),
+        V2Ref::Context(_) => FieldType::JsonValue,
+        V2Ref::Pipe(path) => scoped_path_type(Some(&scope.pipe), path),
+        V2Ref::Out(path) => match scope.out.as_ref() {
+            Some(out) => scoped_path_type(Some(out), path),
+            None => key_path(path)
+                .filter(|keys| !keys.is_empty())
+                .and_then(|keys| state.produced_type_for_ref(&keys))
+                .unwrap_or(FieldType::JsonValue),
+        },
         V2Ref::Item(path) => scoped_path_type(scope.item.as_ref(), path),
         V2Ref::Acc(path) => scoped_path_type(scope.acc.as_ref(), path),
         V2Ref::Local(name) => scope
@@ -1002,7 +1304,9 @@ fn expr_to_json_for_v2_pipe_bounded(
             Some(JsonValue::String(value.clone()))
         }
         Expr::Ref(expr_ref)
-            if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) =>
+            if is_v2_ref(&expr_ref.ref_path)
+                || is_pipe_value(&expr_ref.ref_path)
+                || is_literal_escape(&expr_ref.ref_path) =>
         {
             Some(JsonValue::Array(vec![JsonValue::String(
                 expr_ref.ref_path.clone(),
@@ -1012,11 +1316,7 @@ fn expr_to_json_for_v2_pipe_bounded(
             if chain.chain.len().saturating_sub(1) > DTO_INFER_MAX_PIPE_STEPS {
                 return None;
             }
-            let starts_with_v2_ref = matches!(
-                chain.chain.first(),
-                Some(Expr::Ref(first)) if first.ref_path.starts_with('@')
-            );
-            if !starts_with_v2_ref {
+            if !chain.chain.first().is_some_and(expr_starts_v2_pipe) {
                 return None;
             }
             let mut values = Vec::with_capacity(chain.chain.len());
@@ -1026,6 +1326,20 @@ fn expr_to_json_for_v2_pipe_bounded(
             Some(JsonValue::Array(values))
         }
         _ => None,
+    }
+}
+
+fn expr_starts_v2_pipe(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ref(reference) => {
+            is_v2_ref(&reference.ref_path)
+                || is_pipe_value(&reference.ref_path)
+                || is_literal_escape(&reference.ref_path)
+        }
+        Expr::Literal(JsonValue::String(value)) => {
+            is_v2_ref(value) || is_pipe_value(value) || is_literal_escape(value)
+        }
+        _ => false,
     }
 }
 

@@ -69,7 +69,7 @@ fn infer_start_type(start: &V2Start) -> V2Type {
     match start {
         V2Start::Literal(value) => infer_json_type(value),
         V2Start::Ref(_) => V2Type::Unknown,
-        V2Start::PipeValue => V2Type::Unknown,
+        V2Start::PipeValue | V2Start::ImplicitPipeValue => V2Type::Unknown,
         V2Start::V1Expr(_) => V2Type::Unknown,
     }
 }
@@ -90,6 +90,7 @@ fn infer_json_type(value: &JsonValue) -> V2Type {
 fn infer_step_result_type(step: &V2Step, _input_type: &V2Type) -> V2Type {
     match step {
         V2Step::Op(op_step) => infer_op_result_type(&op_step.op),
+        V2Step::CustomCall(_) => V2Type::Unknown,
         V2Step::Let(_) => V2Type::Unknown, // Let returns last expression or input
         V2Step::If(_) => V2Type::Unknown,  // Could be either branch
         V2Step::Map(_) => V2Type::Array(Box::new(V2Type::Unknown)),

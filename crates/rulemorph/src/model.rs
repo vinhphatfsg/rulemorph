@@ -1,5 +1,8 @@
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::Value as JsonValue;
+use std::collections::BTreeMap;
+
+use crate::custom_ops::{MAX_TYPE_DEPTH, MAX_TYPE_FIELDS};
 
 mod input;
 
@@ -20,6 +23,8 @@ pub struct RuleFile {
     pub input: InputSpec,
     #[serde(default)]
     pub output: Option<OutputSpec>,
+    #[serde(default)]
+    pub defs: BTreeMap<String, CustomOpDef>,
     #[serde(default)]
     pub record_when: Option<Expr>,
     #[serde(default)]
@@ -49,6 +54,189 @@ pub struct Mapping {
     #[serde(default)]
     pub required: bool,
     pub default: Option<JsonValue>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct CustomOpDef {
+    pub input: RuleType,
+    #[serde(default)]
+    pub returns: Option<RuleType>,
+    #[serde(default)]
+    pub expr: Option<Expr>,
+    #[serde(default)]
+    pub mappings: Option<Vec<Mapping>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleType {
+    pub kind: RuleTypeKind,
+    pub nullable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RuleTypeKind {
+    String,
+    Int,
+    Float,
+    Number,
+    Bool,
+    Json,
+    Array(Box<RuleType>),
+    Object(BTreeMap<String, RuleTypeField>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuleTypeField {
+    pub ty: RuleType,
+    pub optional: bool,
+}
+
+impl<'de> Deserialize<'de> for RuleType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = JsonValue::deserialize(deserializer)?;
+        let mut field_count = 0usize;
+        parse_rule_type_value(&value, 1, &mut field_count).map_err(serde::de::Error::custom)
+    }
+}
+
+fn parse_rule_type_value(
+    value: &JsonValue,
+    depth: usize,
+    field_count: &mut usize,
+) -> Result<RuleType, String> {
+    if depth > MAX_TYPE_DEPTH {
+        return Err("type exceeds configured depth limit".to_string());
+    }
+    match value {
+        JsonValue::String(name) => parse_rule_type_name(name),
+        JsonValue::Array(items) => {
+            if items.len() != 1 {
+                return Err("array type must contain exactly one item type".to_string());
+            }
+            Ok(RuleType {
+                kind: RuleTypeKind::Array(Box::new(parse_rule_type_value(
+                    &items[0],
+                    depth + 1,
+                    field_count,
+                )?)),
+                nullable: false,
+            })
+        }
+        JsonValue::Object(map) => parse_rule_type_object(map, depth, field_count),
+        _ => Err("type literal must be a string, array, or object".to_string()),
+    }
+}
+
+fn parse_rule_type_name(name: &str) -> Result<RuleType, String> {
+    let (base, nullable) = match name.strip_suffix('?') {
+        Some(base) => (base, true),
+        None => (name, false),
+    };
+    let kind = match base {
+        "string" => RuleTypeKind::String,
+        "int" => RuleTypeKind::Int,
+        "float" => RuleTypeKind::Float,
+        "number" => RuleTypeKind::Number,
+        "bool" => RuleTypeKind::Bool,
+        "json" => RuleTypeKind::Json,
+        other => return Err(format!("unknown type `{}`", other)),
+    };
+    Ok(RuleType { kind, nullable })
+}
+
+fn parse_rule_type_object(
+    map: &serde_json::Map<String, JsonValue>,
+    depth: usize,
+    field_count: &mut usize,
+) -> Result<RuleType, String> {
+    *field_count = field_count.saturating_add(map.len());
+    if *field_count > MAX_TYPE_FIELDS {
+        return Err("type exceeds configured field limit".to_string());
+    }
+
+    let mut fields = BTreeMap::new();
+    for (raw_key, value) in map {
+        let (key, optional) = match raw_key.strip_suffix('?') {
+            Some(key) => (key.to_string(), true),
+            None => (raw_key.clone(), false),
+        };
+        if key.is_empty() {
+            return Err("object field name must not be empty".to_string());
+        }
+        if fields.contains_key(&key) {
+            return Err(format!("object field `{}` is duplicated", key));
+        }
+        let (ty, value_optional) = parse_rule_type_field_value(value, depth + 1, field_count)?;
+        fields.insert(
+            key,
+            RuleTypeField {
+                ty,
+                optional: optional || value_optional,
+            },
+        );
+    }
+
+    Ok(RuleType {
+        kind: RuleTypeKind::Object(fields),
+        nullable: false,
+    })
+}
+
+fn parse_rule_type_field_value(
+    value: &JsonValue,
+    depth: usize,
+    field_count: &mut usize,
+) -> Result<(RuleType, bool), String> {
+    if let JsonValue::Object(map) = value
+        && is_canonical_rule_type_object(map)
+    {
+        return parse_canonical_rule_type_field_object(map, depth, field_count);
+    }
+    Ok((parse_rule_type_value(value, depth, field_count)?, false))
+}
+
+fn is_canonical_rule_type_object(map: &serde_json::Map<String, JsonValue>) -> bool {
+    map.contains_key("type")
+        && (map.contains_key("optional") || map.contains_key("nullable"))
+        && map
+            .keys()
+            .all(|key| matches!(key.as_str(), "type" | "optional" | "nullable"))
+}
+
+fn parse_canonical_rule_type_field_object(
+    map: &serde_json::Map<String, JsonValue>,
+    depth: usize,
+    field_count: &mut usize,
+) -> Result<(RuleType, bool), String> {
+    for key in map.keys() {
+        if !matches!(key.as_str(), "type" | "optional" | "nullable") {
+            return Err(format!("unknown type option `{}`", key));
+        }
+    }
+    let type_value = map
+        .get("type")
+        .ok_or_else(|| "canonical type object must include type".to_string())?;
+    let mut ty = parse_rule_type_value(type_value, depth, field_count)?;
+    if parse_type_option_bool(map, "nullable")? {
+        ty.nullable = true;
+    }
+    let optional = parse_type_option_bool(map, "optional")?;
+    Ok((ty, optional))
+}
+
+fn parse_type_option_bool(
+    map: &serde_json::Map<String, JsonValue>,
+    key: &str,
+) -> Result<bool, String> {
+    match map.get(key) {
+        Some(JsonValue::Bool(value)) => Ok(*value),
+        Some(_) => Err(format!("type option `{}` must be boolean", key)),
+        None => Ok(false),
+    }
 }
 
 // =============================================================================

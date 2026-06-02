@@ -12,6 +12,7 @@ use sort::{apply_sort, apply_sort_traced};
 use wrap::eval_wrap_value;
 
 pub(super) fn apply_finalize(
+    rule: &RuleFile,
     finalize: &FinalizeSpec,
     output: JsonValue,
     context: Option<&JsonValue>,
@@ -29,7 +30,7 @@ pub(super) fn apply_finalize(
     };
 
     if let Some(filter) = &finalize.filter {
-        apply_filter(&mut records, filter, context, limits)?;
+        apply_filter(rule, &mut records, filter, context, limits)?;
     }
 
     if let Some(sort) = &finalize.sort {
@@ -46,7 +47,11 @@ pub(super) fn apply_finalize(
 
     let output = JsonValue::Array(records);
     if let Some(wrap) = &finalize.wrap {
-        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", limits)?;
+        let wrap_ctx = V2EvalContext::new()
+            .with_limits(limits)
+            .with_rule(rule)
+            .with_shared_custom_op_counter();
+        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", &wrap_ctx)?;
         return Ok(wrapped);
     }
 
@@ -54,6 +59,7 @@ pub(super) fn apply_finalize(
 }
 
 pub(super) fn apply_finalize_traced(
+    rule: &RuleFile,
     finalize: &FinalizeSpec,
     output: JsonValue,
     context: Option<&JsonValue>,
@@ -72,7 +78,7 @@ pub(super) fn apply_finalize_traced(
     };
 
     if let Some(filter) = &finalize.filter {
-        apply_filter_traced(&mut records, filter, context, limits, collector)?;
+        apply_filter_traced(rule, &mut records, filter, context, limits, collector)?;
     }
 
     if let Some(sort) = &finalize.sort {
@@ -89,7 +95,11 @@ pub(super) fn apply_finalize_traced(
 
     let output = JsonValue::Array(records);
     if let Some(wrap) = &finalize.wrap {
-        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", limits)?;
+        let wrap_ctx = V2EvalContext::new()
+            .with_limits(limits)
+            .with_rule(rule)
+            .with_shared_custom_op_counter();
+        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", &wrap_ctx)?;
         collector
             .emit(TraceEventKind::FinalizeWrap, TracePhase::Instant)
             .rule_path("finalize.wrap")
