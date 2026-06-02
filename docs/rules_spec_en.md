@@ -108,6 +108,21 @@ mappings:
 - `steps` (optional): ordered execution. Cannot be combined with top-level `mappings` or `record_when`
 - `finalize` (optional): post-process the output array. Works with either `mappings` or `steps`
 
+### DTO Type Inference
+
+`generate_dto` first honors explicit `mapping.type` declarations.
+When no explicit type is present, it statically infers `string` / `int` / `float` / `bool`, arrays, maps, and nested objects from literal values, terminal v2 pipe operators, and object/array operations.
+Dynamic references, v1 expressions, and incompatible unions fall back to each language's JSON fallback type, such as Rust `serde_json::Value` or TypeScript `unknown`.
+
+Inference is bounded for untrusted rules. Excessively deep objects, huge arrays, too many fields, or too many generated types fall back to JSON rather than a narrow generated type.
+Huge or dynamic paths used by `get` / `pick` / `omit` also fall back to JSON.
+`default` / `coalesce` do not narrow dynamic or unknown input into a concrete type by themselves.
+
+`optional` means a field may be omitted. `nullable` means a present field may contain `null`.
+JSON integer literals that do not fit in a signed 64-bit integer are treated as JSON fallback types, because Rust / Go / JVM DTO integer outputs use `i64` / `int64` / `Long`.
+
+`defs.*.returns` also participates in DTO inference. Object `returns` become nested DTO shapes. For custom OPs with a `mappings` body and no explicit `returns`, the object shape is synthesized from the body targets. Fields that cannot be narrowed use the language's JSON fallback type.
+
 ## defs (custom OPs)
 
 `defs` defines rule-local custom OPs. A custom OP does not run external code or side effects; it names a typed v2 pipe or mappings body.
@@ -183,6 +198,17 @@ expr:
   - slug
 ```
 
+Use these call forms depending on the input shape.
+
+| Call form | When to use it | Example |
+| --- | --- | --- |
+| `- slug` | `input` is primitive, or the current pipe object should be passed as-is | `["@input.title", slug]` |
+| `- line_total: [{ with: ... }]` | Adapt caller field names or shape to `defs.*.input`. This is the official form for calls with arguments | `with: { qty: "$.quantity" }` |
+| `value` wrapper | Pass a string such as `$.field` as a literal rather than a reference | `{ value: "$.quantity" }` |
+| `expr` wrapper | Explicitly mark a value inside an object as an expression | `{ expr: "$.quantity" }` |
+
+When a custom OP call is the first pipe element, there may be no outer current pipe value. If the custom OP input depends on the current pipe, put an explicit start value before the call or pass the required fields with `with`.
+
 When source field names differ from the `input` shape, use the official `with` adapter form:
 
 ```yaml
@@ -229,6 +255,31 @@ Direct adapter objects are invalid.
 
 Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are not supported in the MVP.
 
+Custom OPs can return objects by declaring an object `returns` contract. For `expr` bodies, the returned value must match that object contract.
+
+```yaml
+defs:
+  public_line:
+    input: { sku: string, qty: int, secret?: string }
+    returns: { sku: string, qty: int }
+    expr:
+      - "$"
+      - pick: ["sku", "qty"]
+```
+
+For objects with computed fields, a `mappings` body is usually clearer. For `mappings` bodies, `returns` may be omitted; the object return contract is synthesized from mapping targets.
+
+```yaml
+defs:
+  line_summary:
+    input: { qty: int, unit_price: number }
+    mappings:
+      - target: qty
+        expr: "$.qty"
+      - target: total
+        expr: ["$.unit_price", { "*": ["$.qty"] }]
+```
+
 ### Validation, DTO, And Trace
 
 Validation fails closed for unknown custom OPs, built-in shadowing, invalid identifiers, duplicate `expr` / `mappings`, missing `returns` on `expr` bodies, cycles, unknown or duplicate call options, and `with` shape mismatch. Runtime also checks `input` and `returns`; contract errors do not include raw offending values by default.
@@ -236,6 +287,7 @@ Validation fails closed for unknown custom OPs, built-in shadowing, invalid iden
 DTO generation propagates explicit `returns`. Object `returns` become nested DTO shapes. For mappings bodies without `returns`, the synthesized object contract is propagated; fields that cannot be narrowed use the language's JSON fallback type.
 
 Semantic trace emits custom OP calls as spans with `kind=custom_op`. The span includes `name`, `def_path`, `call_path`, `input_type`, `output_type`, `with_adapter`, and `body_truncated`. Value snapshots follow the existing `TraceValueMode`.
+`with` args are evaluated in the caller scope before the body. The body `expr` / `mappings` are expanded as child events under the custom OP span. Body errors remain inside the custom OP span. `MetadataOnly` / `Redacted` modes preserve this span/event structure while suppressing raw values.
 
 ## Input
 
@@ -757,7 +809,7 @@ Support status:
 - String ops: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
-- Numeric ops: `+`, `-`, `*`, `/`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
+- Numeric ops: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
 - Logical ops: `and`, `or`, `not`
 - Comparison ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=` (aliases: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`)
@@ -770,6 +822,28 @@ Support status:
 - `object_*`: object-specific structural ops (`object_flatten`, `object_unflatten`)
 
 ### Core operations
+
+Most operators receive the current pipe value as their implicit first argument. Operators without additional arguments can be written as strings. Operators with arguments use object form.
+
+```yaml
+expr:
+  - "@input.name"
+  - trim
+  - lowercase
+  - replace: [" ", "-", "all"]
+```
+
+Numeric operators use the same pipe style. `range` is different: it generates an array rather than transforming the current value, so use explicit form instead of pipe-first shorthand.
+
+| Goal | Expression | Result |
+| --- | --- | --- |
+| Absolute value | `[-7.5, abs]` | `7.5` |
+| Square-root boundary | `[81, sqrt, floor]` | `9` |
+| Exponentiation | `[2, { pow: 8 }]` | `256` |
+| Euclidean remainder | `[-5, { mod: 3 }]` | `1` |
+| Clamp into bounds | `["@input.score", { clamp: [0, 100] }]` | a value in `0..100` |
+| Ascending range | `[{ range: [2, 8] }]` | `[2,3,4,5,6,7]` |
+| Descending range | `[{ range: [8, 2] }]` | `[8,7,6,5,4,3]` |
 
 | op | args | description | support |
 | --- | --- | --- | --- |
@@ -785,10 +859,10 @@ Support status:
 | `pad_end` | `1-2` | Pad to target length (`length`, `pad?`). | `runtime` |
 | `lookup` | `2-4` | Lookup all matches in an array. | `runtime` |
 | `lookup_first` | `2-4` | Lookup first match in an array. | `runtime` |
-| `+` | `>=1` | Numeric addition (alias: `add`). | `runtime` |
-| `-` | `>=1` | Numeric subtraction (pipe value minus arg). | `runtime` |
-| `*` | `>=1` | Numeric multiplication (alias: `multiply`). | `runtime` |
-| `/` | `>=1` | Numeric division. | `runtime` |
+| `+` / `add` | `>=1` | Numeric addition. | `runtime` |
+| `-` / `subtract` | `>=1` | Numeric subtraction (pipe value minus arg). | `runtime` |
+| `*` / `multiply` | `>=1` | Numeric multiplication. | `runtime` |
+| `/` / `divide` | `>=1` | Numeric division. | `runtime` |
 | `round` | `0-1` | Round a number (`scale` as arg). | `runtime` |
 | `abs` | `0` | Return the absolute value. | `runtime` |
 | `floor` | `0` | Round down toward negative infinity. | `runtime` |
@@ -825,7 +899,7 @@ expr:
   - range: [2, "$"]
 ```
 
-`range: [start, end, step?]` excludes `end`. When `step` is omitted, it defaults to `1` for ascending ranges and `-1` for descending ranges. If direction and `step` do not match, the result is `[]`. `step: 0` is an error. The default cap is 10,000 emitted items; the CLI can change it with `--limit range-items=...`. Even with `range-items=unlimited`, generated arrays are still bounded by `array-len`.
+`range: [start, end, step?]` excludes `end`. `start`, `end`, and `step` must be integers. When `step` is omitted, it defaults to `1` for ascending ranges and `-1` for descending ranges. If `start == end`, or if direction and `step` do not match, the result is `[]`. `step: 0` is an error. The default cap is 10,000 emitted items; the CLI can change it with `--limit range-items=...`. Even with `range-items=unlimited`, generated arrays are still bounded by `array-len` (default 1,000,000).
 
 ### JSON operations
 

@@ -125,6 +125,7 @@ mappings:
 `default` / `coalesce` は dynamic/unknown input を具体型へ狭める根拠には使いません。
 
 `optional` は field が省略される可能性、`nullable` は field 値が `null` になり得る可能性を表します。
+JSON integer literal が signed 64-bit integer に収まらない場合は、Rust / Go / JVM 系 DTO の `i64` / `int64` / `Long` で安全に表現できないため JSON fallback 型として扱います。
 
 `defs` の `returns` は DTO 推論にも使われます。`returns` が object の場合は nested DTO shape として伝播します。`mappings` body の関数OPで `returns` を省略した場合は、body の `target` から object shape を合成します。推論できない field は JSON fallback 型になります。
 
@@ -203,6 +204,17 @@ expr:
   - slug
 ```
 
+呼び出し方の使い分けは次の通りです。
+
+| 呼び出し方 | 使う場面 | 例 |
+| --- | --- | --- |
+| `- slug` | `input` が primitive、または current pipe の object をそのまま渡す | `["@input.title", slug]` |
+| `- line_total: [{ with: ... }]` | caller 側の field 名や shape を `defs.*.input` に合わせる。公式推奨の引数付き形式 | `with: { qty: "$.quantity" }` |
+| `value` wrapper | `$.field` のような文字列を参照ではなく literal として渡す | `{ value: "$.quantity" }` |
+| `expr` wrapper | object の中で値が expr であることを明示する | `{ expr: "$.quantity" }` |
+
+custom OP call が pipe の最初の要素になる場合、外側から渡された current pipe がないことがあります。`input` が current pipe を必要とする場合は、先に明示的な start value を置くか、`with` で必要な field を渡してください。
+
 入力元の field 名が `input` shape と違う場合は、公式推奨形として `with` adapter を使います。
 
 ```yaml
@@ -249,11 +261,37 @@ direct adapter object は無効です。
 
 custom OP body の `$` と `@input` は custom OP input を指します。outer `@input` は暗黙 capture できません。`@context` capture、再帰、built-in OP の shadowing、import、generic、overload は MVP では無効です。
 
+object を返す関数OPでは `returns` に object 型を書けます。`expr` body なら返す値がその object contract と一致する必要があります。
+
+```yaml
+defs:
+  public_line:
+    input: { sku: string, qty: int, secret?: string }
+    returns: { sku: string, qty: int }
+    expr:
+      - "$"
+      - pick: ["sku", "qty"]
+```
+
+computed field を持つ object を返す場合は `mappings` body が読みやすいです。`mappings` body では `returns` を省略でき、`target` から object return contract が合成されます。
+
+```yaml
+defs:
+  line_summary:
+    input: { qty: int, unit_price: number }
+    mappings:
+      - target: qty
+        expr: "$.qty"
+      - target: total
+        expr: ["$.unit_price", { "*": ["$.qty"] }]
+```
+
 ### 検証と trace
 
 validation は unknown custom OP、built-in shadowing、invalid identifier、`expr` / `mappings` の重複、`returns` missing、cycle、unknown/duplicate call option、`with` shape mismatch を fail-closed にします。runtime でも `input` / `returns` contract を検査し、contract error は raw input value を既定では message に含めません。
 
 semantic trace では custom OP call が `kind=custom_op` の span として出ます。span には `name`、`def_path`、`call_path`、`input_type`、`output_type`、`with_adapter`、`body_truncated` が入ります。値 snapshot は既存の `TraceValueMode` に従います。
+`with` args は body より先に caller scope で評価され、body の `expr` / `mappings` は custom OP span の子として展開されます。body 内で error が起きた場合も custom OP span の内側に記録されます。`MetadataOnly` / `Redacted` mode でも、この span/event 構造は保ち、raw value だけを出さないようにします。
 
 ## Input
 
@@ -836,7 +874,7 @@ when:
 - 文字列系: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
-- 数値系: `+`, `-`, `*`, `/`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
+- 数値系: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
 - 論理演算: `and`, `or`, `not`
 - 比較演算: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`（エイリアス: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`）
@@ -849,6 +887,28 @@ when:
 - `object_*`: object 構造専用（`object_flatten`, `object_unflatten`）
 
 ### コアオペレーション
+
+OP は current pipe value を暗黙の第 1 引数として受け取るものが中心です。追加引数が不要な OP は文字列で書けます。追加引数がある OP は object 形式で書きます。
+
+```yaml
+expr:
+  - "@input.name"
+  - trim
+  - lowercase
+  - replace: [" ", "-", "all"]
+```
+
+数値 OP も同じ pipe 形式で使えます。`range` だけは値を変換する OP ではなく配列生成 OPなので、pipe-first shorthand ではなく explicit form を使います。
+
+| やりたいこと | 書き方 | 結果 |
+| --- | --- | --- |
+| 絶対値 | `[-7.5, abs]` | `7.5` |
+| 平方根を整数境界にする | `[81, sqrt, floor]` | `9` |
+| べき乗 | `[2, { pow: 8 }]` | `256` |
+| Euclidean 剰余 | `[-5, { mod: 3 }]` | `1` |
+| 範囲内に丸める | `["@input.score", { clamp: [0, 100] }]` | `0..100` の値 |
+| 昇順 range | `[{ range: [2, 8] }]` | `[2,3,4,5,6,7]` |
+| 降順 range | `[{ range: [8, 2] }]` | `[8,7,6,5,4,3]` |
 
 | op | args | 説明 | 対応 |
 | --- | --- | --- | --- |
@@ -864,10 +924,10 @@ when:
 | `pad_end` | `1-2` | 指定長まで末尾を埋める（`length`, `pad?`）。 | `runtime` |
 | `lookup` | `2-4` | 配列から全一致を取得。 | `runtime` |
 | `lookup_first` | `2-4` | 配列から最初の一致を取得。 | `runtime` |
-| `+` | `>=1` | 数値加算（別名: `add`）。 | `runtime` |
-| `-` | `>=1` | 数値減算（pipe - arg）。 | `runtime` |
-| `*` | `>=1` | 数値乗算（別名: `multiply`）。 | `runtime` |
-| `/` | `>=1` | 数値除算。 | `runtime` |
+| `+` / `add` | `>=1` | 数値加算。 | `runtime` |
+| `-` / `subtract` | `>=1` | 数値減算（pipe - arg）。 | `runtime` |
+| `*` / `multiply` | `>=1` | 数値乗算。 | `runtime` |
+| `/` / `divide` | `>=1` | 数値除算。 | `runtime` |
 | `round` | `0-1` | 数値を丸める（`scale`）。 | `runtime` |
 | `abs` | `0` | 絶対値を返す。 | `runtime` |
 | `floor` | `0` | 小数点以下を負の無限大方向へ丸める。 | `runtime` |
@@ -904,7 +964,7 @@ expr:
   - range: [2, "$"]
 ```
 
-`range: [start, end, step?]` は `end` 排他です。`step` 省略時は `start < end` なら `1`、`start > end` なら `-1` です。向きと `step` が合わない場合は空配列を返します。`step: 0` はエラーです。既定では 10,000 要素まで生成し、CLI では `--limit range-items=...` で変更できます。`range-items=unlimited` でも、生成配列の総量は `array-len` に従います。
+`range: [start, end, step?]` は `end` 排他です。`start` / `end` / `step` は integer である必要があります。`step` 省略時は `start < end` なら `1`、`start > end` なら `-1` です。`start == end`、または向きと `step` が合わない場合は空配列を返します。`step: 0` はエラーです。既定では 10,000 要素まで生成し、CLI では `--limit range-items=...` で変更できます。`range-items=unlimited` でも、生成配列の総量は `array-len`（既定 1,000,000）に従います。
 
 ### JSON 操作
 

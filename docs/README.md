@@ -9,6 +9,8 @@
 | --- | --- |
 | 変換ルールの基本構造を理解する | [変換ルール仕様](rules_spec_ja.md) |
 | `source` / `expr` / `when` / `steps` の挙動を確認する | [変換ルール仕様](rules_spec_ja.md) |
+| 関数OPや数値OPなどのOP一覧と書き方を確認する | [変換ルール仕様: defs](rules_spec_ja.md#defs関数op) / [オペレーション一覧](rules_spec_ja.md#オペレーション一覧v2) |
+| DTO 型推論の対象と fallback を確認する | [変換ルール仕様: DTO 型推論](rules_spec_ja.md#dto-型推論) |
 | 入力形式ごとの正規化ルールを確認する | [変換ルール仕様: Input](rules_spec_ja.md#input) |
 | YAML で HTTP endpoint を定義する | [Endpoint ルール仕様](rules_spec_endpoint_ja.md) |
 | YAML から外部 HTTP request を行う | [Network ルール仕様](rules_spec_network_ja.md) |

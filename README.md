@@ -126,9 +126,12 @@ claude mcp add rulemorph -- rulemorph-mcp
 - Normalize CSV / JSON / YAML / TOML / XML / HTML / `.xlsx` Excel into JSON records
 - Build output fields with `mappings`
 - Transform values with v2 pipe expressions: trim, case conversion, concatenation, numeric operations, lookups, and array operations
+- Define rule-local custom OPs with `defs` to reuse typed v2 pipes or mapping bodies
+- Use numeric helpers such as `sqrt`, `mod`, `pow`, `clamp`, and `range` for bounded generated sequences
 - Control behavior with `record_when`, `when`, and `asserts`
 - Use `steps`, `branch`, and `finalize` for ordered execution and output-array processing
-- Generate DTOs for Rust, TypeScript, Python, Go, Java, Kotlin, and Swift
+- Generate inferred DTOs for Rust, TypeScript, Python, Go, Java, Kotlin, and Swift. Explicit `type` wins; dynamic or unsafe shapes fall back to JSON-friendly types.
+- Inspect semantic traces for built-in and custom OP execution without changing transform output
 - Run a local UI/API server or expose the same engine through MCP
 
 Input parsers are designed to be conservative. HTML parsing does not execute JavaScript or fetch URLs, and Excel parsing does not execute macros or evaluate formulas. XML DTD/entities and JSON/YAML duplicate keys are rejected to avoid ambiguous or side-effectful input behavior.
@@ -167,11 +170,13 @@ export interface Record {
 
 Supported languages: `rust`, `typescript`, `python`, `go`, `java`, `kotlin`, `swift`
 
+DTO generation uses explicit mapping types first, then infers simple scalar, array, map, and nested object shapes from literals and v2 pipe expressions. If a shape is dynamic or too broad to infer safely, the generated DTO uses each language's JSON fallback type.
+
 ## Library Usage
 
 ```toml
 [dependencies]
-rulemorph = "0.3.1"
+rulemorph = "0.3.2"
 ```
 
 The `html` and `excel` input parsers are enabled by default. Library users that only need
@@ -179,7 +184,7 @@ CSV, JSON, YAML, TOML, and XML can disable them to reduce optional parser depend
 
 ```toml
 [dependencies]
-rulemorph = { version = "0.3.1", default-features = false }
+rulemorph = { version = "0.3.2", default-features = false }
 ```
 
 Re-enable one parser explicitly with `features = ["html"]` or `features = ["excel"]`.
