@@ -35,6 +35,42 @@ pub(super) fn eval_wrap_value(
     }
 }
 
+pub(super) fn eval_wrap_value_traced(
+    value: &JsonValue,
+    out: &JsonValue,
+    context: Option<&JsonValue>,
+    path: &str,
+    ctx: &V2EvalContext<'_>,
+    collector: &mut TraceCollector,
+) -> Result<JsonValue, TransformError> {
+    match value {
+        JsonValue::Object(map) => {
+            let mut out_map = serde_json::Map::new();
+            for (key, value) in map {
+                let child_path = format!("{}.{}", path, key);
+                out_map.insert(
+                    key.clone(),
+                    eval_wrap_value_traced(value, out, context, &child_path, ctx, collector)?,
+                );
+            }
+            Ok(JsonValue::Object(out_map))
+        }
+        _ => {
+            let expr = parse_v2_expr(value).map_err(|err| {
+                TransformError::new(
+                    TransformErrorKind::ExprError,
+                    format!("invalid v2 expr: {}", err),
+                )
+                .with_path(path)
+            })?;
+            match eval_v2_expr_traced(&expr, out, context, out, path, ctx, collector)? {
+                V2EvalValue::Missing => Ok(JsonValue::Null),
+                V2EvalValue::Value(value) => Ok(value),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

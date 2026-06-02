@@ -67,10 +67,14 @@ mod v2_trace;
 use self::api::transform_record_with_warnings_inner;
 use self::branch::{BranchContext, load_rule_from_path, merge_branch_output};
 pub(crate) use self::custom_ops::{
-    eval_custom_call_step, eval_custom_op_step, parse_known_custom_call_literal_start,
+    eval_custom_call_step, eval_custom_call_step_traced, eval_custom_op_step,
+    eval_custom_op_step_traced, parse_known_custom_call_literal_start,
 };
 use self::finalize::{apply_finalize, apply_finalize_traced, sort_key_from_value};
-use self::mapping::{eval_mapping_traced, eval_mapping_with_v2_context};
+use self::mapping::{
+    eval_mapping_traced, eval_mapping_traced_with_source_redaction_hint,
+    eval_mapping_with_v2_context,
+};
 pub(crate) use self::operators::eval_op;
 use self::operators::{
     SortKey, arg_expr_at, args_len, cast_value, compare_sort_keys, locals_with_item,
@@ -93,7 +97,9 @@ use self::v1_expr::{
     eval_when_traced, resolve_source,
 };
 use self::v1_trace::eval_expr_traced;
-use self::v2_trace::{eval_v2_condition_traced, eval_v2_pipe_traced, sort_key_to_json};
+use self::v2_trace::{
+    eval_v2_condition_traced, eval_v2_expr_traced, eval_v2_pipe_traced, sort_key_to_json,
+};
 use crate::expr_json::{expr_to_json_for_v2_condition, expr_to_json_for_v2_pipe, literal_string};
 pub use api::*;
 pub use stream::*;

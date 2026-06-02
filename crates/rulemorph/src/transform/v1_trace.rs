@@ -37,11 +37,12 @@ pub(super) fn eval_expr_traced(
         Expr::Ref(expr_ref) => {
             let value = eval_ref(expr_ref, record, context, out, base_path, locals);
             if let Ok(value) = &value {
+                let path_hint = ref_read_path_hint(base_path, &expr_ref.ref_path);
                 collector
                     .emit(TraceEventKind::RefRead, TracePhase::Instant)
                     .rule_path(base_path)
                     .input_path(canonical_ref_path(&expr_ref.ref_path))
-                    .finish_with_eval_output(collector, value, Some(&expr_ref.ref_path));
+                    .finish_with_eval_output(collector, value, path_hint);
             }
             value
         }
@@ -160,4 +161,30 @@ pub(super) fn eval_expr_traced(
     }
 
     result
+}
+
+fn ref_read_path_hint<'a>(base_path: &str, ref_path: &'a str) -> Option<&'a str> {
+    if base_path.starts_with("defs.") && is_custom_body_local_ref(ref_path) {
+        None
+    } else {
+        Some(ref_path)
+    }
+}
+
+fn is_custom_body_local_ref(ref_path: &str) -> bool {
+    matches!(
+        ref_path,
+        "input" | "out" | "local" | "item" | "acc" | "pipe"
+    ) || ref_path.starts_with("input.")
+        || ref_path.starts_with("input[")
+        || ref_path.starts_with("out.")
+        || ref_path.starts_with("out[")
+        || ref_path.starts_with("local.")
+        || ref_path.starts_with("local[")
+        || ref_path.starts_with("item.")
+        || ref_path.starts_with("item[")
+        || ref_path.starts_with("acc.")
+        || ref_path.starts_with("acc[")
+        || ref_path.starts_with("pipe.")
+        || ref_path.starts_with("pipe[")
 }

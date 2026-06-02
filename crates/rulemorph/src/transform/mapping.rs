@@ -147,13 +147,80 @@ pub(super) fn eval_mapping_traced(
     base_v2_ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
 ) -> Result<Option<JsonValue>, TransformError> {
+    eval_mapping_traced_inner(
+        rule,
+        mapping,
+        record,
+        context,
+        out,
+        mapping_path,
+        version,
+        limits,
+        base_v2_ctx,
+        collector,
+        SourceRedactionHint::DefaultSource,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn eval_mapping_traced_with_source_redaction_hint(
+    rule: &crate::model::RuleFile,
+    mapping: &crate::model::Mapping,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    mapping_path: &str,
+    version: u8,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
+    collector: &mut TraceCollector,
+    source_redaction_hint: Option<&str>,
+) -> Result<Option<JsonValue>, TransformError> {
+    eval_mapping_traced_inner(
+        rule,
+        mapping,
+        record,
+        context,
+        out,
+        mapping_path,
+        version,
+        limits,
+        base_v2_ctx,
+        collector,
+        SourceRedactionHint::Override(source_redaction_hint),
+    )
+}
+
+enum SourceRedactionHint<'a> {
+    DefaultSource,
+    Override(Option<&'a str>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_mapping_traced_inner(
+    rule: &crate::model::RuleFile,
+    mapping: &crate::model::Mapping,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    mapping_path: &str,
+    version: u8,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
+    collector: &mut TraceCollector,
+    source_redaction_hint: SourceRedactionHint<'_>,
+) -> Result<Option<JsonValue>, TransformError> {
     let value = if let Some(source) = &mapping.source {
         let value = resolve_source(source, record, context, out, mapping_path)?;
+        let path_hint = match source_redaction_hint {
+            SourceRedactionHint::DefaultSource => Some(source.as_str()),
+            SourceRedactionHint::Override(path_hint) => path_hint,
+        };
         collector
             .emit(TraceEventKind::SourceRead, TracePhase::Instant)
             .rule_path(format!("{}.source", mapping_path))
             .input_path(canonical_source_path(source))
-            .finish_with_eval_output(collector, &value, Some(source));
+            .finish_with_eval_output(collector, &value, path_hint);
         value
     } else if let Some(literal) = &mapping.value {
         collector

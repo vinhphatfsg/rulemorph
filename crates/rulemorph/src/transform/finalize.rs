@@ -9,7 +9,7 @@ use filter::{apply_filter, apply_filter_traced};
 use pagination::{apply_limit, apply_limit_traced, apply_offset, apply_offset_traced};
 pub(super) use sort::sort_key_from_value;
 use sort::{apply_sort, apply_sort_traced};
-use wrap::eval_wrap_value;
+use wrap::{eval_wrap_value, eval_wrap_value_traced};
 
 pub(super) fn apply_finalize(
     rule: &RuleFile,
@@ -99,7 +99,14 @@ pub(super) fn apply_finalize_traced(
             .with_limits(limits)
             .with_rule(rule)
             .with_shared_custom_op_counter();
-        let wrapped = eval_wrap_value(wrap, &output, context, "finalize.wrap", &wrap_ctx)?;
+        let wrapped = eval_wrap_value_traced(
+            wrap,
+            &output,
+            context,
+            "finalize.wrap",
+            &wrap_ctx,
+            collector,
+        )?;
         collector
             .emit(TraceEventKind::FinalizeWrap, TracePhase::Instant)
             .rule_path("finalize.wrap")

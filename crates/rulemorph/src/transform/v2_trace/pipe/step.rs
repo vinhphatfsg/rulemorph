@@ -15,9 +15,10 @@ pub(super) fn eval_v2_step_traced<'a>(
 ) -> Result<(V2EvalValue, V2EvalContext<'a>), TransformError> {
     match step {
         V2Step::Op(op)
-            if ctx
-                .rule()
-                .is_some_and(|rule| rule.defs.contains_key(&op.op)) =>
+            if !op.op.starts_with('@')
+                && ctx
+                    .rule()
+                    .is_some_and(|rule| rule.defs.contains_key(&op.op)) =>
         {
             let def = ctx
                 .rule()
@@ -41,27 +42,37 @@ pub(super) fn eval_v2_step_traced<'a>(
                 .attr_bool("body_truncated", false)
                 .attr_count("arg_count", op.args.len())
                 .finish(collector);
-            let output =
-                match eval_v2_op_step(op, pipe_value.clone(), record, context, out, step_path, ctx)
-                {
-                    Ok(output) => output,
-                    Err(error) => {
-                        collector
-                            .error_span(TraceEventKind::OpError, "OP_ERROR", "custom op failed")
-                            .rule_path(step_path)
-                            .operator(&op.op)
-                            .input_v2_eval_value(&pipe_value, collector.options(), None)
-                            .attr_enum("kind", "custom_op")
-                            .attr_path("name", op.op.clone())
-                            .attr_path("def_path", def_path.clone())
-                            .attr_path("call_path", step_path)
-                            .attr_path("input_type", input_type.clone())
-                            .attr_path("output_type", output_type.clone())
-                            .attr_bool("with_adapter", false)
-                            .finish(collector);
-                        return Err(error);
-                    }
-                };
+            let output = match eval_custom_op_step_traced(
+                op,
+                pipe_value.clone(),
+                record,
+                context,
+                out,
+                step_path,
+                ctx,
+                collector,
+            ) {
+                Ok(Some(output)) => output,
+                Ok(None) => {
+                    eval_v2_op_step(op, pipe_value.clone(), record, context, out, step_path, ctx)?
+                }
+                Err(error) => {
+                    collector
+                        .error_span(TraceEventKind::OpError, "OP_ERROR", "custom op failed")
+                        .rule_path(step_path)
+                        .operator(&op.op)
+                        .input_v2_eval_value(&pipe_value, collector.options(), None)
+                        .attr_enum("kind", "custom_op")
+                        .attr_path("name", op.op.clone())
+                        .attr_path("def_path", def_path.clone())
+                        .attr_path("call_path", step_path)
+                        .attr_path("input_type", input_type.clone())
+                        .attr_path("output_type", output_type.clone())
+                        .attr_bool("with_adapter", false)
+                        .finish(collector);
+                    return Err(error);
+                }
+            };
             collector
                 .end_span(TraceEventKind::OpEnd, TracePhase::End)
                 .rule_path(step_path)
@@ -170,7 +181,7 @@ pub(super) fn eval_v2_step_traced<'a>(
                 .attr_bool("body_truncated", false)
                 .attr_count("arg_count", call.with.as_ref().map_or(0, Vec::len))
                 .finish(collector);
-            let output = match eval_custom_call_step(
+            let output = match eval_custom_call_step_traced(
                 call,
                 pipe_value.clone(),
                 record,
@@ -178,6 +189,7 @@ pub(super) fn eval_v2_step_traced<'a>(
                 out,
                 step_path,
                 ctx,
+                collector,
             ) {
                 Ok(output) => output,
                 Err(error) => {
