@@ -117,7 +117,7 @@ pub fn extract_literal(s: &str) -> Option<&str> {
     s.strip_prefix("lit:")
 }
 
-/// Check if a string looks like a v2 reference (starts with @)
+/// Check if a string looks like a v2 reference (`@...`, `$.path`, or `$[...]`).
 pub fn is_v2_ref(s: &str) -> bool {
     s.starts_with('@') || s.starts_with("$.") || s.starts_with("$[")
 }
