@@ -10,6 +10,7 @@ pub(super) enum TracedStepOutcome {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_steps_traced(
+    rule: &RuleFile,
     steps: &[V2RuleStep],
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -17,6 +18,8 @@ pub(super) fn apply_steps_traced(
     rule_version: u8,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
 ) -> Result<Option<JsonValue>, TransformError> {
     let mut out = JsonValue::Object(Map::new());
@@ -32,6 +35,7 @@ pub(super) fn apply_steps_traced(
         let step_result = (|| -> Result<TracedStepOutcome, TransformError> {
             if let Some(mappings) = &step.mappings {
                 apply_mappings_into_traced(
+                    rule,
                     mappings,
                     record,
                     context,
@@ -39,6 +43,8 @@ pub(super) fn apply_steps_traced(
                     warnings,
                     rule_version,
                     &format!("{}.mappings", base_path),
+                    limits,
+                    base_v2_ctx,
                     collector,
                 )?;
                 return Ok(TracedStepOutcome::Continue);
@@ -50,13 +56,15 @@ pub(super) fn apply_steps_traced(
                     .start_span(TraceEventKind::RecordWhenStart, TracePhase::Start)
                     .rule_path(&when_path)
                     .finish(collector);
-                let keep = match eval_when_expr_traced(
+                let keep = match eval_when_expr_traced_with_v2_context(
                     expr,
                     record,
                     context,
                     &out,
                     &when_path,
                     rule_version,
+                    limits,
+                    base_v2_ctx,
                     collector,
                 ) {
                     Ok(keep) => keep,
@@ -90,13 +98,15 @@ pub(super) fn apply_steps_traced(
             if let Some(asserts) = &step.asserts {
                 for (assert_index, assert) in asserts.iter().enumerate() {
                     let assert_path = format!("{}.asserts[{}]", base_path, assert_index);
-                    let ok = eval_when_expr(
+                    let ok = eval_when_expr_with_v2_context(
                         &assert.when,
                         record,
                         context,
                         &out,
                         &format!("{}.when", assert_path),
                         rule_version,
+                        limits,
+                        base_v2_ctx,
                     )?;
                     collector
                         .emit(TraceEventKind::AssertEval, TracePhase::Instant)
@@ -127,6 +137,8 @@ pub(super) fn apply_steps_traced(
                     rule_version,
                     base_dir,
                     branch_context,
+                    limits,
+                    base_v2_ctx,
                     collector,
                     &base_path,
                 );

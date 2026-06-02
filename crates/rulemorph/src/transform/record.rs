@@ -5,9 +5,12 @@ fn apply_mappings(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
     apply_mappings_into(
+        rule,
         &rule.mappings,
         record,
         context,
@@ -15,11 +18,14 @@ fn apply_mappings(
         warnings,
         rule.version,
         "mappings",
+        limits,
+        base_v2_ctx,
     )?;
     Ok(out)
 }
 
 fn apply_mappings_into(
+    rule: &RuleFile,
     mappings: &[Mapping],
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -27,6 +33,8 @@ fn apply_mappings_into(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     base_path: &str,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
 ) -> Result<(), TransformError> {
     for (index, mapping) in mappings.iter().enumerate() {
         let mapping_path = format!("{}[{}]", base_path, index);
@@ -38,10 +46,22 @@ fn apply_mappings_into(
             &mapping_path,
             warnings,
             rule_version,
+            limits,
+            base_v2_ctx,
         ) {
             continue;
         }
-        let value = eval_mapping(mapping, record, context, out, &mapping_path, rule_version)?;
+        let value = eval_mapping_with_v2_context(
+            rule,
+            mapping,
+            record,
+            context,
+            out,
+            &mapping_path,
+            rule_version,
+            limits,
+            base_v2_ctx,
+        )?;
         if let Some(value) = value {
             set_path(out, &mapping.target, value, &mapping_path)?;
         }
@@ -56,9 +76,15 @@ pub(super) fn apply_rule_to_record(
     warnings: &mut Vec<TransformWarning>,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
 ) -> Result<Option<JsonValue>, TransformError> {
+    let base_v2_ctx = V2EvalContext::new()
+        .with_limits(limits)
+        .with_rule(rule)
+        .with_shared_custom_op_counter();
     if let Some(steps) = &rule.steps {
         return apply_steps(
+            rule,
             steps,
             record,
             context,
@@ -66,18 +92,21 @@ pub(super) fn apply_rule_to_record(
             rule.version,
             base_dir,
             branch_context,
+            limits,
+            &base_v2_ctx,
         );
     }
 
-    if !eval_record_when(rule, record, context, warnings) {
+    if !eval_record_when(rule, record, context, warnings, limits, &base_v2_ctx) {
         return Ok(None);
     }
 
-    let output = apply_mappings(rule, record, context, warnings)?;
+    let output = apply_mappings(rule, record, context, warnings, limits, &base_v2_ctx)?;
     Ok(Some(output))
 }
 
 fn apply_steps(
+    rule: &RuleFile,
     steps: &[V2RuleStep],
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -85,6 +114,8 @@ fn apply_steps(
     rule_version: u8,
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
 ) -> Result<Option<JsonValue>, TransformError> {
     let mut out = JsonValue::Object(Map::new());
 
@@ -93,6 +124,7 @@ fn apply_steps(
 
         if let Some(mappings) = &step.mappings {
             apply_mappings_into(
+                rule,
                 mappings,
                 record,
                 context,
@@ -100,13 +132,24 @@ fn apply_steps(
                 warnings,
                 rule_version,
                 &format!("{}.mappings", base_path),
+                limits,
+                base_v2_ctx,
             )?;
             continue;
         }
 
         if let Some(expr) = &step.record_when {
             let when_path = format!("{}.record_when", base_path);
-            let keep = eval_when_expr(expr, record, context, &out, &when_path, rule_version)?;
+            let keep = eval_when_expr_with_v2_context(
+                expr,
+                record,
+                context,
+                &out,
+                &when_path,
+                rule_version,
+                limits,
+                base_v2_ctx,
+            )?;
             if !keep {
                 return Ok(None);
             }
@@ -116,13 +159,15 @@ fn apply_steps(
         if let Some(asserts) = &step.asserts {
             for (assert_index, assert) in asserts.iter().enumerate() {
                 let assert_path = format!("{}.asserts[{}]", base_path, assert_index);
-                let ok = eval_when_expr(
+                let ok = eval_when_expr_with_v2_context(
                     &assert.when,
                     record,
                     context,
                     &out,
                     &format!("{}.when", assert_path),
                     rule_version,
+                    limits,
+                    base_v2_ctx,
                 )?;
                 if !ok {
                     return Err(TransformError::new(
@@ -140,13 +185,15 @@ fn apply_steps(
 
         if let Some(branch) = &step.branch {
             let branch_path = format!("{}.branch", base_path);
-            let take = eval_when_expr(
+            let take = eval_when_expr_with_v2_context(
                 &branch.when,
                 record,
                 context,
                 &out,
                 &format!("{}.when", branch_path),
                 rule_version,
+                limits,
+                base_v2_ctx,
             )?;
             let (target, target_field) = if take {
                 (Some(branch.then.as_str()), "then")
@@ -168,6 +215,7 @@ fn apply_steps(
                     context,
                     Some(&branch_base_dir),
                     branch_context,
+                    limits,
                 )?;
                 branch_context.exit(branch_path_guard);
                 warnings.extend(branch_warnings);
@@ -185,4 +233,56 @@ fn apply_steps(
     }
 
     Ok(Some(out))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn custom_op_call_limit_is_shared_across_mappings_in_one_record() {
+        let rule = crate::parse_rule_file(
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  id:
+    input: int
+    returns: int
+    expr: "$"
+mappings:
+  - target: a
+    expr: ["@input.a", { map: [id] }]
+  - target: b
+    expr: ["@input.b", { map: [id] }]
+"#,
+        )
+        .expect("rule parses");
+        let record = json!({ "a": [1, 2], "b": [3, 4] });
+        let mut warnings = Vec::new();
+        let mut branch_context = BranchContext::default();
+        let limits = EvalLimits {
+            max_custom_op_calls_per_record: 3,
+            ..EvalLimits::default()
+        };
+
+        let err = apply_rule_to_record(
+            &rule,
+            &record,
+            None,
+            &mut warnings,
+            None,
+            &mut branch_context,
+            limits,
+        )
+        .expect_err("four calls across two mappings exceed shared per-record limit");
+
+        assert!(
+            err.message
+                .contains("custom op calls per record exceed configured limit")
+        );
+    }
 }

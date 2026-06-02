@@ -10,6 +10,18 @@ use crate::v2_model::V2Ref;
 /// - `@acc.total` -> V2Ref::Acc("total")
 /// - `@myVar` -> V2Ref::Local("myVar")
 pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
+    if let Some(path) = s.strip_prefix("$.") {
+        if path.is_empty() {
+            return None;
+        }
+        return Some(V2Ref::Pipe(path.to_string()));
+    }
+    if let Some(path) = s.strip_prefix('$') {
+        if path.starts_with('[') {
+            return Some(V2Ref::Pipe(path.to_string()));
+        }
+    }
+
     if !s.starts_with('@') {
         return None;
     }
@@ -105,7 +117,7 @@ pub fn extract_literal(s: &str) -> Option<&str> {
     s.strip_prefix("lit:")
 }
 
-/// Check if a string looks like a v2 reference (starts with @)
+/// Check if a string looks like a v2 reference (`@...`, `$.path`, or `$[...]`).
 pub fn is_v2_ref(s: &str) -> bool {
-    s.starts_with('@')
+    s.starts_with('@') || s.starts_with("$.") || s.starts_with("$[")
 }

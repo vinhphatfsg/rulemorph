@@ -24,22 +24,47 @@ pub(crate) fn load_normalization_options(
             .as_table()
             .ok_or_else(|| "limits file must contain a TOML table".to_string())?;
         for (name, value) in table {
-            let value = value
-                .as_integer()
-                .ok_or_else(|| format!("limit `{}` must be an integer", name))?;
-            apply_limit_override(&mut options, name, value.into())?;
+            apply_limit_toml_override(&mut options, name, value)?;
         }
     }
     for item in overrides {
         let (name, value) = item
             .split_once('=')
             .ok_or_else(|| "limit override must use name=value".to_string())?;
-        let value = value
-            .parse::<i128>()
-            .map_err(|_| format!("limit `{}` must be a positive integer", name))?;
-        apply_limit_override(&mut options, name, value)?;
+        apply_limit_text_override(&mut options, name, value)?;
     }
     Ok(options)
+}
+
+fn apply_limit_toml_override(
+    options: &mut NormalizationOptions,
+    name: &str,
+    value: &toml::Value,
+) -> Result<(), String> {
+    if name == "range-items" {
+        if let Some(text) = value.as_str() {
+            return apply_limit_text_override(options, name, text);
+        }
+    }
+    let value = value
+        .as_integer()
+        .ok_or_else(|| format!("limit `{}` must be an integer", name))?;
+    apply_limit_override(options, name, value.into())
+}
+
+fn apply_limit_text_override(
+    options: &mut NormalizationOptions,
+    name: &str,
+    value: &str,
+) -> Result<(), String> {
+    if name == "range-items" && value == "unlimited" {
+        options.max_range_items = None;
+        return Ok(());
+    }
+    let value = value
+        .parse::<i128>()
+        .map_err(|_| format!("limit `{}` must be a positive integer", name))?;
+    apply_limit_override(options, name, value)
 }
 
 fn apply_limit_override(
@@ -74,6 +99,7 @@ fn apply_limit_override(
         "excel-shared-strings" => options.max_excel_shared_strings = value,
         "excel-shared-string-bytes" => options.max_excel_shared_string_bytes = value,
         "excel-styles" => options.max_excel_styles = value,
+        "range-items" => options.max_range_items = Some(value),
         _ => return Err(format!("unknown limit `{}`", name)),
     }
     Ok(())

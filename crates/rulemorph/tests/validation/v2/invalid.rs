@@ -29,3 +29,29 @@ fn v2_forward_out_ref_should_fail_validation() {
         "error mismatch for tv26_v02_forward_out_ref"
     );
 }
+
+#[test]
+fn v2_chain_starting_with_pipe_ref_is_validated_as_v2_pipe() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: value
+    expr:
+      chain:
+        - "$.foo"
+        - op: uppercase
+"#,
+    )
+    .expect("rule parses");
+
+    let errors = validate_rule_file(&rule).expect_err("top-level pipe ref is invalid");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code == ErrorCode::InvalidRefNamespace)
+    );
+}

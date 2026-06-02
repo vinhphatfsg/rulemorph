@@ -1,6 +1,7 @@
 use std::path::Path;
 use std::time::Instant;
 
+use rulemorph::v2_eval::V2EvalContext;
 use rulemorph::{RuleFile, TransformError};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
@@ -26,21 +27,26 @@ pub(in crate::endpoint_engine) fn build_rule_nodes_from_rule(
     context: Option<&JsonValue>,
     base_dir: &Path,
 ) -> RuleTraceNodes {
+    let trace_ctx = V2EvalContext::new()
+        .with_rule(rule)
+        .with_shared_custom_op_counter();
     let mut nodes = Vec::new();
     let mut finalize_trace: Option<JsonValue> = None;
     let mut pre_finalize_output: Option<JsonValue> = None;
     if rule.steps.is_some() {
-        nodes = build_step_nodes(rule, record, context, base_dir);
+        nodes = build_step_nodes(rule, record, context, base_dir, &trace_ctx);
     } else {
         let started = Instant::now();
         let mut out = JsonValue::Object(JsonMap::new());
         let children = build_mapping_ops_with_values(
+            Some(rule),
             &rule.mappings,
             record,
             context,
             &mut out,
             rule.version,
             0,
+            Some(&trace_ctx),
         );
         let duration_us = started.elapsed().as_micros() as u64;
         let mut node = json!({

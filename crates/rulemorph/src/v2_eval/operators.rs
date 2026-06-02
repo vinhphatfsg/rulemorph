@@ -14,6 +14,7 @@ use super::{
     eval_type_cast, eval_v2_op_with_v1_fallback, eval_v2_ref,
 };
 use crate::error::{TransformError, TransformErrorKind};
+use crate::transform::eval_custom_op_step;
 use crate::v2_model::V2OpStep;
 
 /// Evaluate a v2 op step with a pipe value as implicit first argument
@@ -40,6 +41,18 @@ pub fn eval_v2_op_step<'a>(
             format!("invalid reference: {}", op_step.op),
         )
         .with_path(path));
+    }
+
+    if let Some(value) = eval_custom_op_step(
+        op_step,
+        pipe_value.clone(),
+        record,
+        context,
+        out,
+        path,
+        &step_ctx,
+    )? {
+        return Ok(value);
     }
 
     match op_step.op.as_str() {

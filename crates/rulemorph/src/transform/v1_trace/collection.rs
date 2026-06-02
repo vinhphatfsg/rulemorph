@@ -33,6 +33,8 @@ pub(super) fn eval_array_map_traced(
     let expr_index = if injected.is_some() { 0 } else { 1 };
     let expr_path = format!("{}.args[{}]", base_path, expr_index);
 
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(array.len());
     for (index, item) in array.iter().enumerate() {
         let item_locals = locals_with_item(locals, EvalItem { value: item, index });
@@ -46,10 +48,11 @@ pub(super) fn eval_array_map_traced(
             collector,
         )?;
         emit_arg_eval(collector, &expr_path, expr_index, &value);
-        results.push(match value {
+        let value = match value {
             EvalValue::Missing => JsonValue::Null,
             EvalValue::Value(value) => value,
-        });
+        };
+        push_generated_array_item(&mut results, value, limits, base_path, &mut generated_items)?;
     }
 
     Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -100,6 +103,7 @@ pub(super) fn eval_array_reduce_traced(
             pipe: locals.and_then(|locals| locals.pipe),
             locals: locals.and_then(|locals| locals.locals),
             precomputed_op_args: None,
+            limits: locals.map(|locals| locals.limits).unwrap_or_default(),
         };
         let value = eval_expr_traced(
             expr,
@@ -170,6 +174,7 @@ pub(super) fn eval_array_fold_traced(
             pipe: locals.and_then(|locals| locals.pipe),
             locals: locals.and_then(|locals| locals.locals),
             precomputed_op_args: None,
+            limits: locals.map(|locals| locals.limits).unwrap_or_default(),
         };
         let value = eval_expr_traced(
             expr,

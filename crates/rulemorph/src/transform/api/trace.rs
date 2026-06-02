@@ -10,7 +10,7 @@ use crate::trace::{
 };
 
 use super::super::{
-    BranchContext, apply_finalize_traced, apply_rule_to_record_traced,
+    BranchContext, EvalLimits, apply_finalize_traced, apply_rule_to_record_traced,
     records::input_records_iter_with_options,
 };
 
@@ -70,6 +70,7 @@ fn transform_with_warnings_inner_traced(
 ) -> Result<(JsonValue, Vec<TransformWarning>), (TransformError, Vec<TransformWarning>)> {
     let mut warnings = Vec::new();
     let mut output_records = Vec::new();
+    let limits = EvalLimits::from(options);
     let mut records = input_records_iter_with_options(rule, input, options)
         .map_err(|error| (error, warnings.clone()))?;
     let mut record_index = 0usize;
@@ -86,6 +87,7 @@ fn transform_with_warnings_inner_traced(
             &mut record_warnings,
             base_dir,
             &mut branch_context,
+            limits,
             collector,
         ) {
             Ok(Some(output)) => output_records.push(output),
@@ -101,7 +103,7 @@ fn transform_with_warnings_inner_traced(
     let mut output = JsonValue::Array(output_records);
     if let Some(finalize) = &rule.finalize {
         collector.start_finalize(&output);
-        match apply_finalize_traced(finalize, output, context, collector) {
+        match apply_finalize_traced(rule, finalize, output, context, limits, collector) {
             Ok(finalized) => {
                 output = finalized;
                 collector
@@ -137,6 +139,7 @@ pub fn transform_record_with_trace(
         &mut warnings,
         None,
         &mut branch_context,
+        EvalLimits::default(),
         &mut collector,
     );
     match result {
@@ -153,7 +156,14 @@ pub fn transform_record_with_trace(
                 records.push(value);
                 let array = JsonValue::Array(records);
                 collector.start_finalize(&array);
-                match apply_finalize_traced(finalize, array, context, &mut collector) {
+                match apply_finalize_traced(
+                    rule,
+                    finalize,
+                    array,
+                    context,
+                    EvalLimits::default(),
+                    &mut collector,
+                ) {
                     Ok(finalized) => {
                         collector
                             .end_span(TraceEventKind::FinalizeEnd, TracePhase::End)

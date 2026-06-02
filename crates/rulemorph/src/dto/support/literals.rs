@@ -34,6 +34,8 @@ pub(in crate::dto) fn go_json_tag_literal(key: &str, optional: bool) -> String {
         && !key.contains('\\')
         && !key.contains('\r')
         && !key.contains('\n')
+        && !key.contains('\t')
+        && !key.chars().any(char::is_control)
     {
         if optional {
             return format!("`json:\"{},omitempty\"`", key);

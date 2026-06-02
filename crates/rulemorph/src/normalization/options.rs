@@ -18,6 +18,7 @@ pub struct NormalizationOptions {
     pub max_excel_shared_strings: usize,
     pub max_excel_shared_string_bytes: usize,
     pub max_excel_styles: usize,
+    pub max_range_items: Option<usize>,
 }
 
 impl Default for NormalizationOptions {
@@ -41,6 +42,7 @@ impl Default for NormalizationOptions {
             max_excel_shared_strings: 1_000_000,
             max_excel_shared_string_bytes: 64 * 1024 * 1024,
             max_excel_styles: 65_536,
+            max_range_items: Some(10_000),
         }
     }
 }

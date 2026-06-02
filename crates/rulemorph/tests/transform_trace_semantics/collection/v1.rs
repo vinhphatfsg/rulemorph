@@ -28,6 +28,44 @@ mappings:
 }
 
 #[test]
+fn trace_v1_map_generated_arrays_respect_array_limit() {
+    let yaml = r#"
+version: 1
+input:
+  format: json
+mappings:
+  - target: "nested"
+    expr:
+      op: map
+      args:
+        - { op: range, args: [1, 4] }
+        - { op: range, args: [0, { ref: "item.value" }] }
+"#;
+    let rule = parse_rule(yaml);
+    let options = NormalizationOptions {
+        max_array_len: 8,
+        ..NormalizationOptions::default()
+    };
+    let err = transform_input_with_trace_with_base_dir_and_options(
+        &rule,
+        InputData::Text("[{}]"),
+        None,
+        None,
+        &options,
+        &TransformTraceOptions::raw(),
+    )
+    .expect_err("v1 trace should enforce generated array limit");
+
+    assert_eq!(err.error.kind, TransformErrorKind::ExprError);
+    assert!(
+        err.error
+            .message
+            .contains("generated array items exceed configured limit")
+    );
+    assert_trace_shape(&err.trace);
+}
+
+#[test]
 fn trace_v1_reduce_ref_read_preserves_acc_namespace() {
     let yaml = r#"
 version: 1

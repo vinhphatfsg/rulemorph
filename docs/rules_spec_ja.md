@@ -37,6 +37,7 @@ raw input
 | レコード単位の除外 | record を処理するか決める | `record_when` |
 | 出力生成 | 1 record から 1 output object を作る | `mappings` |
 | 段階実行 | mapping、filter、assert、branch を順序付きで実行する | `steps` |
+| 再利用可能な式 | v2 pipe / mappings に名前を付けて再利用する | `defs` |
 | 配列全体の後処理 | filter/sort/limit/wrap を出力配列へ適用する | `finalize` |
 | 参照と式 | 入力、context、途中出力を参照し、値を加工する | `@input`, `@context`, `@out`, `expr` |
 
@@ -104,10 +105,193 @@ mappings:
 - `version`（必須）: `2` 固定
 - `input`（必須）: 入力形式とオプション
 - `mappings`（必須）: 変換ルール（上から順に評価）
+- `defs`（任意）: v2 pipe / mappings を名前付き関数OPとして定義
 - `output`（任意）: メタデータ（DTO 名など）
 - `record_when`（任意）: レコードの採用/除外条件
 - `steps`（任意）: 段階実行（`mappings` / `record_when` と併用不可）
 - `finalize`（任意）: 出力配列の最終加工（`mappings` / `steps` どちらでも利用可）
+
+### DTO 型推論
+
+`generate_dto` は `mapping.type` がある場合、その明示型を最優先します。
+`mapping.type` がない場合は、literal value、v2 pipe の終端 op、object/array 操作から
+`string` / `int` / `float` / `bool` / array / map / nested object を静的に推測します。
+推測できない dynamic reference、v1 expr、互換性のない union は各言語の JSON fallback 型
+（Rust `serde_json::Value`、TypeScript `unknown` など）として出力します。
+
+推論は untrusted rule input に対して bounded に実行されます。過度に深い object、巨大な array、
+大量 field、または生成 type 数の上限を超える shape は、狭い型にせず JSON fallback 型へ戻します。
+巨大な path や dynamic path を含む `get` / `pick` / `omit` も JSON fallback 型へ戻します。
+`default` / `coalesce` は dynamic/unknown input を具体型へ狭める根拠には使いません。
+
+`optional` は field が省略される可能性、`nullable` は field 値が `null` になり得る可能性を表します。
+JSON integer literal が signed 64-bit integer に収まらない場合は、Rust / Go / JVM 系 DTO の `i64` / `int64` / `Long` で安全に表現できないため JSON fallback 型として扱います。
+
+`defs` の `returns` は DTO 推論にも使われます。`returns` が object の場合は nested DTO shape として伝播します。`mappings` body の関数OPで `returns` を省略した場合は、body の `target` から object shape を合成します。推論できない field は JSON fallback 型になります。
+
+## defs（関数OP）
+
+`defs` は rule file 内だけで使える名前付きOPです。外部コード、IO、network、time/random などの side effect は実行せず、既存の v2 pipe / mappings に型付きの名前を付ける機能です。
+
+```yaml
+defs:
+  slug:
+    input: string
+    returns: string
+    expr:
+      - "$"
+      - trim
+      - lowercase
+
+mappings:
+  - target: slug
+    expr:
+      - "@input.title"
+      - slug
+```
+
+各定義は `input` を必須にし、`expr` または `mappings` のどちらか一方を持ちます。`expr` body では `returns` が必須です。`mappings` body では `returns` を省略でき、その場合は `target` から object return contract を合成します。
+
+### 型
+
+`defs.*.input` と `defs.*.returns` では次の型を使えます。
+
+| 型 | 説明 |
+| --- | --- |
+| `string` | JSON string |
+| `int` | JSON integer |
+| `float` | finite JSON number。integer も受け入れる |
+| `number` | integer / float を区別しない finite JSON number |
+| `bool` | JSON boolean |
+| `json` | 任意 JSON。内側の shape check はしない |
+| `[T]` | homogeneous array |
+| `{ field: T }` | object field map |
+
+object field は `?` で optional と nullable を区別します。
+
+```yaml
+input:
+  {
+    name: string,
+    nickname?: string,
+    note: string?,
+    memo?: string?
+  }
+```
+
+canonical form も使えます。
+
+```yaml
+input:
+  {
+    nickname: { type: string, optional: true },
+    note: { type: string, nullable: true },
+    memo: { type: string, optional: true, nullable: true }
+  }
+```
+
+`{ type: string }` だけの object は canonical form ではなく、`type` という field を持つ object 型として扱われます。canonical form として解釈されるのは `optional` または `nullable` を含む場合です。
+
+object input の direct call は required field が揃っていれば extra field を許可します。`with` adapter と object output contract は exact match です。`json` field の内側だけは shape check しません。数値型は文字列を暗黙 parse しないため、`"2"` は `int` / `float` / `number` としては通りません。
+
+### 呼び出し
+
+引数なしの custom OP は current pipe value `$` をそのまま受け取ります。
+
+```yaml
+expr:
+  - "@input.title"
+  - slug
+```
+
+呼び出し方の使い分けは次の通りです。
+
+| 呼び出し方 | 使う場面 | 例 |
+| --- | --- | --- |
+| `- slug` | `input` が primitive、または current pipe の object をそのまま渡す | `["@input.title", slug]` |
+| `- line_total: [{ with: ... }]` | caller 側の field 名や shape を `defs.*.input` に合わせる。公式推奨の引数付き形式 | `with: { qty: "$.quantity" }` |
+| `value` wrapper | `$.field` のような文字列を参照ではなく literal として渡す | `{ value: "$.quantity" }` |
+| `expr` wrapper | object の中で値が expr であることを明示する | `{ expr: "$.quantity" }` |
+
+custom OP call が pipe の最初の要素になる場合、外側から渡された current pipe がないことがあります。`input` が current pipe を必要とする場合は、先に明示的な start value を置くか、`with` で必要な field を渡してください。
+
+入力元の field 名が `input` shape と違う場合は、公式推奨形として `with` adapter を使います。
+
+```yaml
+expr:
+  - "@input.line"
+  - line_total:
+      - with: { qty: "$.quantity", unit_price: "$.price" }
+```
+
+custom OP body で input object の field を読む場合は、公式例では dot path 形式の `$.field` を推奨します。`get` OP を使う `["$", { get: ["field"] }]` 形式も有効ですが、field access だけなら `$.field` のほうが短く読みやすいです。
+
+```yaml
+defs:
+  line_total:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "$"
+      - let:
+          qty: ["$.qty", float]
+          price: ["$.unit_price", float]
+      - "@qty"
+      - "*": ["@price"]
+```
+
+`with` の値は caller scope の v2 expr として評価されます。文字列を literal として渡したい場合は `value`、明示的に expr として渡したい場合は `expr` wrapper を使います。
+
+```yaml
+- decorate:
+    - with:
+        label:
+          value: "$.quantity"
+        qty:
+          expr: "$.quantity"
+```
+
+direct adapter object は無効です。
+
+```yaml
+# invalid
+- line_total:
+    qty: "$.quantity"
+```
+
+custom OP body の `$` と `@input` は custom OP input を指します。outer `@input` は暗黙 capture できません。`@context` capture、再帰、built-in OP の shadowing、import、generic、overload は MVP では無効です。
+
+object を返す関数OPでは `returns` に object 型を書けます。`expr` body なら返す値がその object contract と一致する必要があります。
+
+```yaml
+defs:
+  public_line:
+    input: { sku: string, qty: int, secret?: string }
+    returns: { sku: string, qty: int }
+    expr:
+      - "$"
+      - pick: ["sku", "qty"]
+```
+
+computed field を持つ object を返す場合は `mappings` body が読みやすいです。`mappings` body では `returns` を省略でき、`target` から object return contract が合成されます。
+
+```yaml
+defs:
+  line_summary:
+    input: { qty: int, unit_price: number }
+    mappings:
+      - target: qty
+        expr: "$.qty"
+      - target: total
+        expr: ["$.unit_price", { "*": ["$.qty"] }]
+```
+
+### 検証と trace
+
+validation は unknown custom OP、built-in shadowing、invalid identifier、`expr` / `mappings` の重複、`returns` missing、cycle、unknown/duplicate call option、`with` shape mismatch を fail-closed にします。runtime でも `input` / `returns` contract を検査し、contract error は raw input value を既定では message に含めません。
+
+semantic trace では custom OP call が `kind=custom_op` の span として出ます。span には `name`、`def_path`、`call_path`、`input_type`、`output_type`、`with_adapter`、`body_truncated` が入ります。値 snapshot は既存の `TraceValueMode` に従います。
+`with` args は body より先に caller scope で評価され、body の `expr` / `mappings` は custom OP span の子として展開されます。body 内で error が起きた場合も custom OP span の内側に記録されます。`MetadataOnly` / `Redacted` mode でも、この span/event 構造は保ち、raw value だけを出さないようにします。
 
 ## Input
 
@@ -140,9 +324,17 @@ mappings:
 
 ### CSV
 - `input.csv` は `format=csv` のとき必須
-- `has_header`（任意）: 既定 `true`
-- `delimiter`（任意）: 既定 `","`（1 文字のみ）
-- `columns`（任意）: `has_header=false` のとき必須
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `has_header` | 任意 | `true` | `true` では最初の行を header として使います。`false` では `columns` が field name になります。 |
+| `delimiter` | 任意 | `","` | CSV delimiter。1 byte 文字のみ指定できます。`"||"` や全角カンマのような multi-byte delimiter は無効です。 |
+| `columns` | `has_header=false` のとき必須 | なし | header なし CSV の field 定義。各要素は `name` 必須、`type` 任意です。 |
+
+- header / `columns[].name` は空文字不可、重複不可です。
+- `has_header=true` の場合、先頭 header の UTF-8 BOM は取り除かれます。
+- `columns[].type` は受け取れますが、現行の validation / normalization では使いません。CSV cell はすべて string として JSON record に入ります。
+- 各 data row の field 数は header / `columns` の数と一致する必要があります。
 
 ```yaml
 input:
@@ -151,16 +343,22 @@ input:
     has_header: false
     delimiter: ","
     columns:
-      - { name: "id", type: "string" }
+      - { name: "id" }
       - { name: "price", type: "float" }
 ```
 
 ### JSON
 - `input.json` は `format=json` のとき必須
-- `records_path`（任意）: レコード配列または単一レコードのドットパス。省略時はルート。
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `records_path` | 任意 | ルート | レコード配列または単一 record object を指すドットパス。 |
+
 - root / `records_path` が配列の場合、各要素を record として扱います。
 - root / `records_path` が object の場合、単一 record として扱います。
 - scalar は record として扱えません。
+- `records_path` は通常の Rulemorph path と同じ構文です。存在しない path、または scalar を指す path はエラーです。
+- duplicate key と non-finite number は拒否されます。
 
 ```yaml
 input:
@@ -171,9 +369,16 @@ input:
 
 ### YAML / TOML
 - `input.yaml` / `input.toml` は対応する `format` のとき必須
-- `records_path`（任意）: レコード配列または単一レコードを指すドットパス
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `records_path` | 任意 | ルート | レコード配列または単一 record object を指すドットパス。 |
+
 - YAML/TOML は JSON record に正規化されてから mapping / steps / finalize に渡されます。
-- YAML alias / anchor、TOML datetime など、形式固有の表現は parser が JSON value へ正規化します。
+- `records_path` は通常の Rulemorph path と同じ構文です。存在しない path、または scalar を指す path はエラーです。
+- YAML stream は 1 document のみ受け付けます。duplicate key、string 以外の mapping key、custom tag は拒否されます。
+- YAML alias / anchor は展開できますが、alias 数と展開後 node 数は resource limit の対象です。
+- TOML datetime は string に正規化されます。TOML table / array-of-tables / inline table は JSON object / array に正規化されます。
 
 ```yaml
 input:
@@ -191,10 +396,23 @@ input:
 
 ### XML
 - `input.xml` は `format=xml` のとき必須
-- `records_path`（必須）: root element を含むドット区切り element path
-- attributes は `attr_prefix` 付き string field、direct text は `text_key` に格納
-- child elements は常に array
-- DTD/entity/processing instruction は拒否されます。
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `records_path` | 必須 | なし | root element を含むドット区切り element path。`[]` index は使えません。 |
+| `attr_prefix` | 任意 | `"@"` | attribute field 名の prefix。空文字不可。 |
+| `text_key` | 任意 | `"#text"` | direct text を格納する field 名。空文字不可。`attr_prefix` と同一不可。 |
+| `child_policy` | 任意 | `array` | child element の格納形式。現行は `array` のみ有効で、子要素は常に配列になります。 |
+| `trim_text` | 任意 | `true` | direct text / CDATA の前後空白を取り除きます。 |
+| `collapse_whitespace` | 任意 | `true` | direct text / CDATA 内の連続空白を 1 space に畳みます。 |
+| `namespaces` | 任意 | `qualified` | `qualified` は prefix 付き名を保持します。`strip` は local name のみにします。 |
+
+- attribute は `attr_prefix + attribute_name` の string field になります。
+- direct text / CDATA は正規化後に空でなければ `text_key` に入ります。
+- child element は名前ごとに配列 field になります。単一 child でも配列です。
+- mixed content では child element の text は child 側に入り、record element の direct text は `text_key` に入ります。
+- `namespaces: strip` で local name が衝突する場合や、attribute / text / child の key が衝突する場合はエラーです。
+- XML は single root document のみ受け付けます。DTD、processing instruction、root 外の非空 text は拒否されます。
 
 ```yaml
 input:
@@ -203,12 +421,33 @@ input:
     records_path: "users.user"
     attr_prefix: "@"
     text_key: "#text"
+    child_policy: array
+    namespaces: strip
 ```
 
 ### HTML
 - `input.html` は `format=html` のとき必須
-- `records_selector` で record element を選択し、`fields` の CSS selector で field を抽出
-- `value: text` / `html` / `attr` を指定可能。`html` は raw inner HTML string であり sanitize も実行もしません。
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `records_selector` | 必須 | なし | record element を選択する CSS selector。空文字不可。 |
+| `fields` | 必須 | なし | 出力 field 名から field 抽出設定への map。空 map 不可。 |
+| `trim_text` | 任意 | `true` | `value: text` / `attr` の前後空白を取り除きます。 |
+| `collapse_whitespace` | 任意 | `true` | `value: text` / `attr` の連続空白を 1 space に畳みます。 |
+
+`fields.<name>`:
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `selector` | 任意 | record element 自身 | record element からの相対 CSS selector。省略時は record element 自身を対象にします。 |
+| `value` | 任意 | `text` | `text` / `html` / `attr`。 |
+| `attr` | `value=attr` のとき必須 | なし | 抽出する attribute 名。空文字不可。 |
+| `multiple` | 任意 | `false` | `true` では一致した要素の値を array として返します。 |
+
+- field 名は空文字不可です。
+- `multiple=false` では最初に一致した element だけを使います。一致しない場合、その field は `missing` です。
+- `multiple=true` では一致した値だけを配列に入れます。一致しない場合は空配列です。`value=attr` で attribute がない element は配列に入りません。
+- `value: html` は raw inner HTML string です。空白の trim / collapse は行わず、sanitize も実行もしません。
 - HTML parser は JavaScript 実行や URL 取得を行いません。
 
 ```yaml
@@ -219,14 +458,34 @@ input:
     fields:
       id: { selector: "td:nth-child(1)", value: text }
       name: { selector: "td:nth-child(2)", value: text }
+      profile_url: { selector: "a.profile", value: attr, attr: href }
+      tags: { selector: ".tag", value: text, multiple: true }
 ```
 
 ### Excel
 - `input.excel` は `format=excel` のとき必須
-- `.xlsx` のみ対応。macro / external relationship / formula evaluation は拒否または非実行です。
-- `has_header=true` では header row を field name として使います。
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `sheet` | 任意 | 最初の sheet | sheet 名 string、または 0-based sheet index。 |
+| `has_header` | 任意 | `true` | `true` では `header_row` の cell を field name にします。`false` では `columns` が field name と対象列を決めます。 |
+| `header_row` | 任意 | `1` | header 行番号。1-based。`has_header=true` のとき使います。 |
+| `data_start_row` | 任意 | header ありなら `header_row + 1`、header なしなら `range` の開始行または 1 行目 | data row の開始行番号。1-based。 |
+| `range` | 任意 | sheet の有効範囲 | 対象 cell 範囲。`A:D` または `A1:D100` 形式。 |
+| `columns` | `has_header=false` のとき必須 | なし | header なし Excel の field 定義。各要素は `name` と `column` が必須です。 |
+| `empty_cell` | 任意 | `missing` | 現行は `missing` のみ有効。空 cell は field から省略されます。 |
+| `formula` | 任意 | `cached` | `cached` / `formula` / `error`。formula cell は計算しません。 |
+| `date` | 任意 | `iso8601` | `iso8601` / `serial` / `string`。Excel datetime cell の正規化方法。 |
+| `cell_error` | 任意 | `error` | 現行は `error` のみ有効。Excel error cell は拒否されます。 |
+
+- `range` の列指定は Excel column letter です。`A:D` は列だけを絞り、`B3:F100` は行列の window を絞ります。
+- `header_row` は `range` の開始行より前にできません。`range: "B3:F100"` で header を使う場合は通常 `header_row: 3` を指定します。
+- `has_header=true` では選択列の header cell が field name になります。header は空文字不可、重複不可です。
+- `has_header=false` の `columns[].column` は Excel column letter です。`columns[].name` は空文字不可、重複不可です。
 - 空 cell は `missing` として扱います。空文字列が実値として存在する場合は `""` として扱い、`missing` とは区別します。
-- formula cell は計算しません。`formula` の既定は `cached` で、cached value がない formula cell はエラーです。`formula: formula` では式文字列を値として読み、`formula: error` では formula cell を拒否します。
+- formula cell は計算しません。`formula: cached` では cached value を読み、cached value がない formula cell はエラーです。`formula: formula` では式文字列を値として読み、`formula: error` では formula cell を拒否します。
+- `date: iso8601` と `date: string` は `YYYY-MM-DDTHH:MM:SS` string、`date: serial` は Excel serial number を JSON number として出力します。
+- `.xlsx` のみ対応。macro、external relationship、shared formula metadata、ambiguous workbook structure は拒否されます。
 
 ```yaml
 input:
@@ -234,6 +493,30 @@ input:
   excel:
     sheet: "Users"
     has_header: true
+    header_row: 1
+```
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: 0
+    has_header: true
+    header_row: 3
+    data_start_row: 4
+    range: "B3:F100"
+```
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: "Users"
+    has_header: false
+    data_start_row: 2
+    columns:
+      - { name: "id", column: "A" }
+      - { name: "name", column: "B" }
 ```
 
 ## Output
@@ -248,9 +531,13 @@ CLI は大きなローカル入力向けに有限の resource limit を緩和で
 
 ```sh
 rulemorph transform -r rules.yaml -i huge.csv --limit records=500000 --limit input-bytes=536870912
+rulemorph transform -r rules.yaml -i trusted.json --limit range-items=50000
+rulemorph transform -r rules.yaml -i trusted.json --limit range-items=unlimited
 rulemorph transform -r rules.yaml -i huge.csv --limits-profile large
 rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 ```
+
+`range` OP の生成数は既定で 10,000 要素までです。`range-items=<integer>` で上限を変更できます。`range-items=unlimited` は trusted なローカル入力/ルール向けに `range` 単体の上限制約を外します。`--limits-file` で指定する場合は `range-items = "unlimited"` のように文字列で書きます。`range-items=unlimited` の場合でも、`range`/`map`/`flat_map`/`flatten` などが生成する配列の総量は `array-len` で制限されます。
 
 これらは処理量の上限を広げるだけです。duplicate key rejection、XML DTD/entity rejection、HTML no-network/no-JS、Excel no-macro/no-formula-evaluation、MCP pathless branch guard などの安全性 invariant は変更できません。
 
@@ -587,7 +874,7 @@ when:
 - 文字列系: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
 - JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
-- 数値系: `+`, `-`, `*`, `/`, `round`, `to_base`, `sum`, `avg`, `min`, `max`
+- 数値系: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
 - 論理演算: `and`, `or`, `not`
 - 比較演算: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`（エイリアス: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`）
@@ -600,6 +887,28 @@ when:
 - `object_*`: object 構造専用（`object_flatten`, `object_unflatten`）
 
 ### コアオペレーション
+
+OP は current pipe value を暗黙の第 1 引数として受け取るものが中心です。追加引数が不要な OP は文字列で書けます。追加引数がある OP は object 形式で書きます。
+
+```yaml
+expr:
+  - "@input.name"
+  - trim
+  - lowercase
+  - replace: [" ", "-", "all"]
+```
+
+数値 OP も同じ pipe 形式で使えます。`range` だけは値を変換する OP ではなく配列生成 OPなので、pipe-first shorthand ではなく explicit form を使います。
+
+| やりたいこと | 書き方 | 結果 |
+| --- | --- | --- |
+| 絶対値 | `[-7.5, abs]` | `7.5` |
+| 平方根を整数境界にする | `[81, sqrt, floor]` | `9` |
+| べき乗 | `[2, { pow: 8 }]` | `256` |
+| Euclidean 剰余 | `[-5, { mod: 3 }]` | `1` |
+| 範囲内に丸める | `["@input.score", { clamp: [0, 100] }]` | `0..100` の値 |
+| 昇順 range | `[{ range: [2, 8] }]` | `[2,3,4,5,6,7]` |
+| 降順 range | `[{ range: [8, 2] }]` | `[8,7,6,5,4,3]` |
 
 | op | args | 説明 | 対応 |
 | --- | --- | --- | --- |
@@ -615,11 +924,21 @@ when:
 | `pad_end` | `1-2` | 指定長まで末尾を埋める（`length`, `pad?`）。 | `runtime` |
 | `lookup` | `2-4` | 配列から全一致を取得。 | `runtime` |
 | `lookup_first` | `2-4` | 配列から最初の一致を取得。 | `runtime` |
-| `+` | `>=1` | 数値加算（別名: `add`）。 | `runtime` |
-| `-` | `>=1` | 数値減算（pipe - arg）。 | `runtime` |
-| `*` | `>=1` | 数値乗算（別名: `multiply`）。 | `runtime` |
-| `/` | `>=1` | 数値除算。 | `runtime` |
+| `+` / `add` | `>=1` | 数値加算。 | `runtime` |
+| `-` / `subtract` | `>=1` | 数値減算（pipe - arg）。 | `runtime` |
+| `*` / `multiply` | `>=1` | 数値乗算。 | `runtime` |
+| `/` / `divide` | `>=1` | 数値除算。 | `runtime` |
 | `round` | `0-1` | 数値を丸める（`scale`）。 | `runtime` |
+| `abs` | `0` | 絶対値を返す。 | `runtime` |
+| `floor` | `0` | 小数点以下を負の無限大方向へ丸める。 | `runtime` |
+| `ceil` | `0` | 小数点以下を正の無限大方向へ丸める。 | `runtime` |
+| `trunc` | `0` | 小数点以下を 0 方向へ切り捨てる。 | `runtime` |
+| `sqrt` | `0` | 平方根を返す。負数はエラー。 | `runtime` |
+| `sign` | `0` | 負数は `-1`、ゼロは `0`、正数は `1` を返す。 | `runtime` |
+| `mod` | `1` | Euclidean 剰余を返す。除数 `0` はエラー。 | `runtime` |
+| `pow` | `1` | べき乗を返す。結果が有限でない場合はエラー。 | `runtime` |
+| `clamp` | `2` | 値を `min..max` に収める。`min > max` はエラー。 | `runtime` |
+| `range` | `2-3` | 整数列を生成する（`start`, `end`, `step?`。`end` は排他）。 | `runtime` |
 | `to_base` | `1` | 整数を指定進数の文字列に変換（2-36）。 | `runtime` |
 | `date_format` | `1-3` | 日時文字列をフォーマット変換。 | `runtime` |
 | `to_unixtime` | `0-2` | 日時文字列を unix time へ。 | `runtime` |
@@ -633,6 +952,19 @@ when:
 | `>` | `1` | 数値比較。条件は `gt` を推奨。 | `runtime` |
 | `>=` | `1` | 数値比較。条件は `gte` を推奨。 | `runtime` |
 | `~=` | `1` | 正規表現マッチ。条件は `match` を推奨。 | `runtime` |
+
+`range` は pipe-first ではなく explicit form で使います。現在のパイプ値を境界値に使う場合は `$` を明示してください。
+
+```yaml
+expr:
+  - "@input.n"
+  - sqrt
+  - floor
+  - { "+": 1 }
+  - range: [2, "$"]
+```
+
+`range: [start, end, step?]` は `end` 排他です。`start` / `end` / `step` は integer である必要があります。`step` 省略時は `start < end` なら `1`、`start > end` なら `-1` です。`start == end`、または向きと `step` が合わない場合は空配列を返します。`step: 0` はエラーです。既定では 10,000 要素まで生成し、CLI では `--limit range-items=...` で変更できます。`range-items=unlimited` でも、生成配列の総量は `array-len`（既定 1,000,000）に従います。
 
 ### JSON 操作
 

@@ -13,6 +13,7 @@ pub fn eval_v2_condition<'a>(
     path: &str,
     ctx: &V2EvalContext<'a>,
 ) -> Result<bool, TransformError> {
+    let _eval_scope = ctx.enter_eval_scope();
     match condition {
         V2Condition::All(conditions) => {
             for (i, cond) in conditions.iter().enumerate() {

@@ -1,5 +1,16 @@
 use serde_json::Value as JsonValue;
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::model::RuleFile;
+use crate::transform::EvalLimits;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CustomOpCounterScope {
+    Evaluation,
+    Shared,
+}
 
 /// Evaluation result - either a value or missing
 #[derive(Debug, Clone, PartialEq)]
@@ -48,6 +59,12 @@ pub struct V2EvalContext<'a> {
     acc: Option<&'a JsonValue>,
     /// Trace-mode precomputed operator args, keyed by the operator rule path.
     precomputed_op_args: Option<(String, Vec<EvalValue>)>,
+    limits: EvalLimits,
+    rule: Option<&'a RuleFile>,
+    custom_op_depth: usize,
+    custom_op_calls: Rc<Cell<usize>>,
+    custom_op_eval_depth: Rc<Cell<usize>>,
+    custom_op_counter_scope: CustomOpCounterScope,
 }
 
 impl<'a> V2EvalContext<'a> {
@@ -59,6 +76,12 @@ impl<'a> V2EvalContext<'a> {
             item: None,
             acc: None,
             precomputed_op_args: None,
+            limits: EvalLimits::default(),
+            rule: None,
+            custom_op_depth: 0,
+            custom_op_calls: Rc::new(Cell::new(0)),
+            custom_op_eval_depth: Rc::new(Cell::new(0)),
+            custom_op_counter_scope: CustomOpCounterScope::Evaluation,
         }
     }
 
@@ -101,6 +124,68 @@ impl<'a> V2EvalContext<'a> {
     ) -> Self {
         self.precomputed_op_args = Some((base_path.into(), values));
         self
+    }
+
+    pub(crate) fn with_limits(mut self, limits: EvalLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    pub fn with_rule(mut self, rule: &'a RuleFile) -> Self {
+        self.rule = Some(rule);
+        self
+    }
+
+    pub fn has_custom_op(&self, name: &str) -> bool {
+        self.rule.is_some_and(|rule| rule.defs.contains_key(name))
+    }
+
+    pub(crate) fn with_custom_op_depth(mut self, depth: usize) -> Self {
+        self.custom_op_depth = depth;
+        self
+    }
+
+    pub(crate) fn with_custom_op_counter_from(mut self, other: &Self) -> Self {
+        self.custom_op_calls = other.custom_op_calls.clone();
+        self.custom_op_eval_depth = other.custom_op_eval_depth.clone();
+        self.custom_op_counter_scope = other.custom_op_counter_scope;
+        self
+    }
+
+    #[doc(hidden)]
+    pub fn with_shared_custom_op_counter(mut self) -> Self {
+        self.custom_op_counter_scope = CustomOpCounterScope::Shared;
+        self
+    }
+
+    pub(crate) fn limits(&self) -> EvalLimits {
+        self.limits
+    }
+
+    pub(crate) fn rule(&self) -> Option<&'a RuleFile> {
+        self.rule
+    }
+
+    pub(crate) fn custom_op_depth(&self) -> usize {
+        self.custom_op_depth
+    }
+
+    pub(crate) fn increment_custom_op_calls(&self) -> usize {
+        let next = self.custom_op_calls.get().saturating_add(1);
+        self.custom_op_calls.set(next);
+        next
+    }
+
+    pub(crate) fn enter_eval_scope(&self) -> EvalScopeGuard<'_> {
+        let current_depth = self.custom_op_eval_depth.get();
+        if self.custom_op_counter_scope == CustomOpCounterScope::Evaluation && current_depth == 0 {
+            self.custom_op_calls.set(0);
+        }
+        self.custom_op_eval_depth
+            .set(current_depth.saturating_add(1));
+        EvalScopeGuard {
+            depth: self.custom_op_eval_depth.as_ref(),
+        }
     }
 
     /// Get the current pipe value
@@ -152,6 +237,16 @@ impl<'a> V2EvalContext<'a> {
 impl<'a> Default for V2EvalContext<'a> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+pub(crate) struct EvalScopeGuard<'a> {
+    depth: &'a Cell<usize>,
+}
+
+impl Drop for EvalScopeGuard<'_> {
+    fn drop(&mut self) {
+        self.depth.set(self.depth.get().saturating_sub(1));
     }
 }
 

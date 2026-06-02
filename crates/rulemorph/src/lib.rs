@@ -1,6 +1,8 @@
 mod cache;
+mod custom_ops;
 mod dto;
 mod error;
+mod expr_json;
 mod locator;
 mod model;
 pub mod normalization;
@@ -25,7 +27,10 @@ pub use error::{
     ErrorCode, RuleError, TransformError, TransformErrorKind, TransformWarning, ValidationResult,
     YamlLocation,
 };
-pub use model::{Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, RuleFile};
+pub use model::{
+    CustomOpDef, Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, RuleFile,
+    RuleType, RuleTypeField, RuleTypeKind,
+};
 pub use normalization::{
     InputData, NormalizationOptions, NormalizedRecords, normalize_records,
     normalize_records_with_options,

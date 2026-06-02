@@ -64,7 +64,12 @@ pub(super) fn category_docs_json() -> Value {
             "summary": "Numeric arithmetic and formatting.",
             "examples": [
                 { "op": "+", "expr": { "op": "+", "args": [1, 2, 3] } },
-                { "op": "round", "expr": { "op": "round", "args": [12.345, 2] } }
+                { "op": "round", "expr": { "op": "round", "args": [12.345, 2] } },
+                { "op": "range", "syntax": "v2", "expr": [{ "range": [2, 8] }], "output_type": "array<number>" },
+                { "op": "range", "syntax": "v1", "expr": { "op": "range", "args": [2, 8] }, "output_type": "array<number>" },
+                { "op": "mod", "expr": { "op": "mod", "args": [29, 2] } },
+                { "op": "sqrt", "expr": { "op": "sqrt", "args": [81] } },
+                { "op": "clamp", "expr": { "op": "clamp", "args": [120, 0, 100] } }
             ]
         },
         "date_ops": {

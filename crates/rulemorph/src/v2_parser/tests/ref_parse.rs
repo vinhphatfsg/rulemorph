@@ -86,6 +86,15 @@ mod v2_ref_parser_tests {
     }
 
     #[test]
+    fn test_parse_pipe_bracket_ref() {
+        assert_eq!(parse_v2_ref("$[0]"), Some(V2Ref::Pipe("[0]".to_string())));
+        assert_eq!(
+            parse_v2_ref("$[\"a.b\"]"),
+            Some(V2Ref::Pipe("[\"a.b\"]".to_string()))
+        );
+    }
+
+    #[test]
     fn test_invalid_refs() {
         // No @ prefix
         assert_eq!(parse_v2_ref("input.name"), None);
@@ -130,6 +139,7 @@ mod v2_ref_parser_tests {
     fn test_is_v2_ref() {
         assert!(is_v2_ref("@input.name"));
         assert!(is_v2_ref("@myVar"));
+        assert!(is_v2_ref("$[0]"));
         assert!(!is_v2_ref("input.name"));
         assert!(!is_v2_ref("$"));
         assert!(!is_v2_ref("lit:@input"));

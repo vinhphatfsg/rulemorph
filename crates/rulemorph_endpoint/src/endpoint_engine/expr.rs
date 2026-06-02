@@ -65,6 +65,7 @@ pub(super) fn apply_mappings_via_rule(
             html: None,
             excel: None,
         },
+        defs: Default::default(),
         output: None,
         record_when: None,
         mappings: mappings.to_vec(),

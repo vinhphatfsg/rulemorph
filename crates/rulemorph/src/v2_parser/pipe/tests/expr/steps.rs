@@ -41,7 +41,7 @@ fn test_parse_v2_expr_single_step_comparison_alias() {
         let expr = parse_v2_expr(&value).unwrap();
 
         if let V2Expr::Pipe(pipe) = expr {
-            assert_eq!(pipe.start, V2Start::PipeValue);
+            assert_eq!(pipe.start, V2Start::ImplicitPipeValue);
             assert_eq!(pipe.steps.len(), 1);
             if let V2Step::Op(op) = &pipe.steps[0] {
                 assert_eq!(op.op, "gt");

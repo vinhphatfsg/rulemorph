@@ -26,6 +26,8 @@ include!("cli/limits.rs");
 
 include!("cli/generate.rs");
 
+include!("cli/custom_ops.rs");
+
 include!("cli/api_keys.rs");
 
 include!("cli/server_commands.rs");

@@ -5,10 +5,13 @@ pub(super) fn apply_mappings_traced(
     record: &JsonValue,
     context: Option<&JsonValue>,
     warnings: &mut Vec<TransformWarning>,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
     apply_mappings_into_traced(
+        rule,
         &rule.mappings,
         record,
         context,
@@ -16,6 +19,8 @@ pub(super) fn apply_mappings_traced(
         warnings,
         rule.version,
         "mappings",
+        limits,
+        base_v2_ctx,
         collector,
     )?;
     Ok(out)
@@ -23,6 +28,7 @@ pub(super) fn apply_mappings_traced(
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn apply_mappings_into_traced(
+    rule: &RuleFile,
     mappings: &[Mapping],
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -30,6 +36,8 @@ pub(super) fn apply_mappings_into_traced(
     warnings: &mut Vec<TransformWarning>,
     rule_version: u8,
     base_path: &str,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
 ) -> Result<(), TransformError> {
     for (index, mapping) in mappings.iter().enumerate() {
@@ -54,6 +62,8 @@ pub(super) fn apply_mappings_into_traced(
                 &mapping_path,
                 warnings,
                 rule_version,
+                limits,
+                base_v2_ctx,
                 collector,
             );
             collector
@@ -81,12 +91,15 @@ pub(super) fn apply_mappings_into_traced(
         }
 
         let value = match eval_mapping_traced(
+            rule,
             mapping,
             record,
             context,
             out,
             &mapping_path,
             rule_version,
+            limits,
+            base_v2_ctx,
             collector,
         ) {
             Ok(value) => value,

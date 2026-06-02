@@ -10,6 +10,7 @@ pub(in crate::transform) fn eval_v2_condition_traced<'a>(
     ctx: &V2EvalContext<'a>,
     collector: &mut TraceCollector,
 ) -> Result<bool, TransformError> {
+    let _eval_scope = ctx.enter_eval_scope();
     match condition {
         V2Condition::All(conditions) => {
             for (index, cond) in conditions.iter().enumerate() {

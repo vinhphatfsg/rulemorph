@@ -1,8 +1,8 @@
 use std::time::Instant;
 
-use rulemorph::Mapping;
 use rulemorph::v2_eval::V2EvalContext;
 use rulemorph::v2_parser::parse_v2_pipe_from_value;
+use rulemorph::{Mapping, RuleFile};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 use super::v2_helpers::{
@@ -11,12 +11,14 @@ use super::v2_helpers::{
 };
 
 pub(in crate::endpoint_engine) fn build_mapping_ops_with_values(
+    rule: Option<&RuleFile>,
     mappings: &[Mapping],
     record: &JsonValue,
     context: Option<&JsonValue>,
     out: &mut JsonValue,
     rule_version: u8,
     step_index: usize,
+    trace_ctx: Option<&V2EvalContext<'_>>,
 ) -> Vec<JsonValue> {
     let mut ops = Vec::new();
     for (index, mapping) in mappings.iter().enumerate() {
@@ -57,7 +59,9 @@ pub(in crate::endpoint_engine) fn build_mapping_ops_with_values(
                 if let Some(raw) = expr_to_json_for_v2_pipe(expr) {
                     pipe_value = Some(raw.clone());
                     if let Ok(pipe) = parse_v2_pipe_from_value(&raw) {
-                        let ctx = V2EvalContext::new();
+                        let ctx = trace_ctx
+                            .cloned()
+                            .unwrap_or_else(|| fresh_trace_eval_ctx(rule));
                         input_value = eval_v2_start_value(&pipe.start, record, context, out, &ctx);
                         output_value = eval_v2_pipe_value(&pipe, record, context, out, &ctx);
                         pipe_steps = Some(build_pipe_steps(&pipe, record, context, out, &ctx));
@@ -104,4 +108,13 @@ pub(in crate::endpoint_engine) fn build_mapping_ops_with_values(
         }));
     }
     ops
+}
+
+fn fresh_trace_eval_ctx<'a>(rule: Option<&'a RuleFile>) -> V2EvalContext<'a> {
+    match rule {
+        Some(rule) => V2EvalContext::new()
+            .with_rule(rule)
+            .with_shared_custom_op_counter(),
+        None => V2EvalContext::new(),
+    }
 }

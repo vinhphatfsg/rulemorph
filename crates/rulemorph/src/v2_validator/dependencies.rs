@@ -42,6 +42,15 @@ fn collect_out_refs_from_step(step: &V2Step, refs: &mut HashSet<String>) {
                 collect_out_refs_recursive(arg, refs);
             }
         }
+        V2Step::CustomCall(call_step) => {
+            if let Some(with) = &call_step.with {
+                for (_, arg) in with {
+                    if let crate::v2_model::V2CallArg::Expr(expr) = arg {
+                        collect_out_refs_recursive(expr, refs);
+                    }
+                }
+            }
+        }
         V2Step::Let(let_step) => {
             for (_, expr) in &let_step.bindings {
                 collect_out_refs_recursive(expr, refs);

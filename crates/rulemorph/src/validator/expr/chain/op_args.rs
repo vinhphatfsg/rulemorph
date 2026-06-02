@@ -95,6 +95,22 @@ pub(super) fn validate_chain_op_args(
         "round" => {
             require(args_len, OneOrTwo, base_path, ctx);
         }
+        "abs" | "floor" | "ceil" | "trunc" | "sqrt" | "sign" => {
+            require(args_len, ExactlyOne, base_path, ctx);
+        }
+        "mod" | "pow" => {
+            require(args_len, ExactlyTwo, base_path, ctx);
+        }
+        "clamp" => {
+            require(args_len, ExactlyThree, base_path, ctx);
+        }
+        "range" => {
+            ctx.push(
+                crate::error::ErrorCode::InvalidArgs,
+                "range does not support chain pipe input; use { op: \"range\", args: [start, end, step?] }",
+                format!("{}.args", base_path),
+            );
+        }
         "date_format" => {
             require(args_len, TwoToFour, base_path, ctx);
         }

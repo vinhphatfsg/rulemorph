@@ -38,11 +38,13 @@ pub(in crate::transform::operators) fn eval_array_map(
     let expr_index = if injected.is_some() { 0 } else { 1 };
     let expr_path = format!("{}.args[{}]", base_path, expr_index);
 
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(array.len());
     for (index, item) in array.iter().enumerate() {
         let item_locals = locals_with_item(locals, EvalItem { value: item, index });
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
-        results.push(value);
+        push_generated_array_item(&mut results, value, limits, base_path, &mut generated_items)?;
     }
 
     Ok(EvalValue::Value(JsonValue::Array(results)))
@@ -77,13 +79,27 @@ pub(in crate::transform::operators) fn eval_array_flat_map(
     let expr_index = if injected.is_some() { 0 } else { 1 };
     let expr_path = format!("{}.args[{}]", base_path, expr_index);
 
+    let limits = locals.map(|locals| locals.limits).unwrap_or_default();
+    let mut generated_items = 0usize;
     let mut results = Vec::new();
     for (index, item) in array.iter().enumerate() {
         let item_locals = locals_with_item(locals, EvalItem { value: item, index });
         let value = eval_expr_or_null(expr, record, context, out, &expr_path, Some(&item_locals))?;
         match value {
-            JsonValue::Array(items) => results.extend(items),
-            value => results.push(value),
+            JsonValue::Array(items) => extend_generated_array_items(
+                &mut results,
+                items,
+                limits,
+                base_path,
+                &mut generated_items,
+            )?,
+            value => push_generated_array_item(
+                &mut results,
+                value,
+                limits,
+                base_path,
+                &mut generated_items,
+            )?,
         }
     }
 

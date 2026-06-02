@@ -1,6 +1,7 @@
 use serde_json::Value as JsonValue;
 
 use crate::error::{TransformError, TransformErrorKind};
+use crate::transform::{eval_custom_call_step, push_generated_array_item};
 use crate::v2_eval::{
     EvalItem, EvalValue, V2EvalContext, eval_v2_if_step, eval_v2_let_step, eval_v2_op_step,
     eval_v2_ref,
@@ -33,6 +34,8 @@ pub fn eval_v2_map_step<'a>(
     };
 
     // Map over each element
+    let limits = ctx.limits();
+    let mut generated_items = 0usize;
     let mut results = Vec::with_capacity(arr.len());
     for (index, item_value) in arr.iter().enumerate() {
         let item_path = format!("{}[{}]", path, index);
@@ -58,6 +61,11 @@ pub fn eval_v2_map_step<'a>(
                 V2Step::Op(op_step) => {
                     current = eval_v2_op_step(
                         op_step, current, record, context, out, &step_path, &step_ctx,
+                    )?;
+                }
+                V2Step::CustomCall(call_step) => {
+                    current = eval_custom_call_step(
+                        call_step, current, record, context, out, &step_path, &step_ctx,
                     )?;
                 }
                 V2Step::Let(let_step) => {
@@ -93,7 +101,7 @@ pub fn eval_v2_map_step<'a>(
 
         // Only add non-missing values to results
         if let EvalValue::Value(v) = current {
-            results.push(v);
+            push_generated_array_item(&mut results, v, limits, path, &mut generated_items)?;
         }
     }
 

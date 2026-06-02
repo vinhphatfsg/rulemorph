@@ -5,7 +5,9 @@ use serde_json::Value as JsonValue;
 use crate::error::ErrorCode;
 use crate::model::Expr;
 use crate::path::PathToken;
-use crate::v2_parser::{is_literal_escape, parse_v2_condition, parse_v2_expr};
+use crate::v2_parser::{
+    is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
+};
 use crate::v2_validator::{
     V2Scope, V2ValidationCtx, collect_out_references, validate_v2_condition, validate_v2_expr,
 };
@@ -20,16 +22,57 @@ pub(super) fn expr_to_json_value(expr: &Expr) -> Option<serde_json::Value> {
         // Handle serde_yaml quirk: single-element YAML array ["@ref"] or ["lit:..."]
         // gets deserialized as ExprRef, but should be treated as v2 expr.
         Expr::Ref(ref_expr)
-            if ref_expr.ref_path.starts_with('@') || is_literal_escape(&ref_expr.ref_path) =>
+            if is_v2_ref(&ref_expr.ref_path)
+                || is_pipe_value(&ref_expr.ref_path)
+                || is_literal_escape(&ref_expr.ref_path) =>
         {
             // Convert back to a single-element array for v2 parsing
             Some(serde_json::Value::Array(vec![serde_json::Value::String(
                 ref_expr.ref_path.clone(),
             )]))
         }
+        Expr::Chain(chain) => {
+            if let Some(first) = chain.chain.first()
+                && expr_starts_v2_pipe(first)
+            {
+                let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_literal).collect();
+                return Some(JsonValue::Array(arr));
+            }
+            None
+        }
         // For v1 expressions (Ref, Op, Chain), return None
         // These will be handled by v1 validator
         _ => None,
+    }
+}
+
+fn expr_to_json_literal(expr: &Expr) -> JsonValue {
+    match expr {
+        Expr::Ref(reference) => JsonValue::String(reference.ref_path.clone()),
+        Expr::Literal(value) => value.clone(),
+        Expr::Op(op) => {
+            let mut obj = serde_json::Map::new();
+            let args: Vec<JsonValue> = op.args.iter().map(expr_to_json_literal).collect();
+            obj.insert(op.op.clone(), JsonValue::Array(args));
+            JsonValue::Object(obj)
+        }
+        Expr::Chain(chain) => {
+            JsonValue::Array(chain.chain.iter().map(expr_to_json_literal).collect())
+        }
+    }
+}
+
+fn expr_starts_v2_pipe(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ref(reference) => {
+            is_v2_ref(&reference.ref_path)
+                || is_pipe_value(&reference.ref_path)
+                || is_literal_escape(&reference.ref_path)
+        }
+        Expr::Literal(JsonValue::String(value)) => {
+            is_v2_ref(value) || is_pipe_value(value) || is_literal_escape(value)
+        }
+        _ => false,
     }
 }
 
@@ -60,7 +103,8 @@ pub(super) fn validate_v2_mapping_expr(
         ctx.locator,
         produced_targets.clone(),
         ctx.allow_any_out_ref,
-    );
+    )
+    .with_custom_op_names(ctx.custom_op_names.clone());
     let scope = V2Scope::new();
 
     // Validate the v2 expression
@@ -119,7 +163,8 @@ pub(super) fn validate_v2_condition_expr_with_scope(
         ctx.locator,
         produced_targets.clone(),
         ctx.allow_any_out_ref,
-    );
+    )
+    .with_custom_op_names(ctx.custom_op_names.clone());
     validate_v2_condition(&condition, base_path, &scope, &mut v2_ctx);
 
     for err in v2_ctx.errors() {

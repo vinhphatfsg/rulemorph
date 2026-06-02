@@ -69,16 +69,31 @@ pub(super) fn collect_types<'a>(
     out: &mut Vec<TypeDef<'a>>,
 ) {
     for field in &node.fields {
-        if let FieldType::Object(child) = &field.field_type {
-            let mut child_path = path.clone();
-            child_path.push(field.key.clone());
-            registry.type_name_for_path(&child_path);
-            collect_types(child, child_path, registry, out);
-        }
+        let mut child_path = path.clone();
+        child_path.push(field.key.clone());
+        collect_nested_types(&field.field_type, child_path, registry, out);
     }
 
     let name = registry.type_name_for_path(&path);
     out.push(TypeDef { name, node, path });
+}
+
+fn collect_nested_types<'a>(
+    field_type: &'a FieldType,
+    path: Vec<String>,
+    registry: &mut NameRegistry,
+    out: &mut Vec<TypeDef<'a>>,
+) {
+    match field_type {
+        FieldType::Object(child) => {
+            registry.type_name_for_path(&path);
+            collect_types(child, path, registry, out);
+        }
+        FieldType::Array(inner) | FieldType::Map(inner) | FieldType::Nullable(inner) => {
+            collect_nested_types(inner, path, registry, out);
+        }
+        FieldType::Primitive(_) | FieldType::JsonValue => {}
+    }
 }
 
 fn words_from_key(key: &str) -> Vec<String> {
@@ -86,6 +101,16 @@ fn words_from_key(key: &str) -> Vec<String> {
     let mut current = String::new();
     for ch in key.chars() {
         if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase()
+                && !current.is_empty()
+                && current
+                    .chars()
+                    .last()
+                    .is_some_and(|prev| prev.is_ascii_lowercase() || prev.is_ascii_digit())
+            {
+                words.push(current);
+                current = String::new();
+            }
             current.push(ch);
         } else if !current.is_empty() {
             words.push(current);

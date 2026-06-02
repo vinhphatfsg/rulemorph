@@ -173,6 +173,9 @@ fn redaction_reason(
 ) -> Option<String> {
     if let Some(path) = path_hint {
         let path = path.to_ascii_lowercase();
+        if is_unknown_provenance_hint(&path) {
+            return Some("unknown_provenance".to_string());
+        }
         if redaction
             .secret_key_fragments
             .iter()
@@ -192,4 +195,34 @@ fn redaction_reason(
         return Some("bearer_credential".to_string());
     }
     None
+}
+
+fn is_unknown_provenance_hint(path: &str) -> bool {
+    path.split_whitespace().any(is_unknown_provenance_path)
+}
+
+fn is_unknown_provenance_path(path: &str) -> bool {
+    matches!(
+        path,
+        "out" | "@out" | "local" | "@local" | "item" | "@item" | "acc" | "@acc" | "pipe" | "@pipe"
+    ) || path.starts_with("out.")
+        || path.starts_with("out[")
+        || path.starts_with("@out.")
+        || path.starts_with("@out[")
+        || path.starts_with("local.")
+        || path.starts_with("local[")
+        || path.starts_with("@local.")
+        || path.starts_with("@local[")
+        || path.starts_with("item.")
+        || path.starts_with("item[")
+        || path.starts_with("@item.")
+        || path.starts_with("@item[")
+        || path.starts_with("acc.")
+        || path.starts_with("acc[")
+        || path.starts_with("@acc.")
+        || path.starts_with("@acc[")
+        || path.starts_with("pipe.")
+        || path.starts_with("pipe[")
+        || path.starts_with("@pipe.")
+        || path.starts_with("@pipe[")
 }

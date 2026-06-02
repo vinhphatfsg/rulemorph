@@ -37,14 +37,21 @@ fn validate_rule_file_with_locator(
     rule: &RuleFile,
     locator: Option<&YamlLocator>,
 ) -> ValidationResult {
-    let mut ctx = ValidationCtx::new(locator);
+    let mut ctx = ValidationCtx::new(locator, rule.defs.keys().cloned().collect());
 
     validate_version(rule, &mut ctx);
     validate_input(rule, &mut ctx);
+    if let Err(errors) = crate::custom_ops::validate_defs(rule, locator) {
+        ctx.errors.extend(errors);
+    }
     validate_steps(rule, &mut ctx);
     validate_record_when(rule, &mut ctx);
     validate_mappings(rule, &mut ctx);
     validate_finalize(rule, &mut ctx);
+    if rule.version == 2 {
+        ctx.errors
+            .extend(crate::custom_ops::validate_custom_call_sites(rule, locator));
+    }
 
     ctx.finish()
 }
@@ -102,7 +109,8 @@ fn validate_finalize(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
     }
 
     if let Some(wrap) = &finalize.wrap {
-        let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, HashSet::new(), true);
+        let mut v2_ctx = V2ValidationCtx::with_produced_targets(ctx.locator, HashSet::new(), true)
+            .with_custom_op_names(ctx.custom_op_names.clone());
         validate_finalize_wrap_value(wrap, "finalize.wrap", &mut v2_ctx);
         for err in v2_ctx.errors() {
             ctx.errors.push(err.clone());
@@ -124,14 +132,16 @@ struct ValidationCtx<'a> {
     locator: Option<&'a YamlLocator>,
     errors: Vec<RuleError>,
     allow_any_out_ref: bool,
+    custom_op_names: HashSet<String>,
 }
 
 impl<'a> ValidationCtx<'a> {
-    fn new(locator: Option<&'a YamlLocator>) -> Self {
+    fn new(locator: Option<&'a YamlLocator>, custom_op_names: HashSet<String>) -> Self {
         Self {
             locator,
             errors: Vec::new(),
             allow_any_out_ref: false,
+            custom_op_names,
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "rulemorph"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 license = "MIT"
 description = "YAML-based declarative data transformation engine for CSV/JSON to JSON"
@@ -23,7 +23,7 @@ chrono = "0.4"
 toml = "0.8"
 toml_edit = "0.22"
 calamine = { version = "0.26", features = ["dates"], optional = true }
-zip = { version = "0.6", optional = true }
+zip = { version = "0.6", default-features = false, features = ["deflate"], optional = true }
 quick-xml = "0.31"
 scraper = { version = "0.20", optional = true }
 

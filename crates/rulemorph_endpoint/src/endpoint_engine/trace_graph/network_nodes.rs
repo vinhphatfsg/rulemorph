@@ -47,7 +47,7 @@ pub(in crate::endpoint_engine) fn build_network_nodes_with_timing(
     if let Some(body_map) = &rule.body_map {
         let mut out = JsonValue::Object(JsonMap::new());
         let empty = JsonValue::Object(JsonMap::new());
-        let ops = build_mapping_ops_with_values(body_map, &empty, None, &mut out, 2, 0);
+        let ops = build_mapping_ops_with_values(None, body_map, &empty, None, &mut out, 2, 0, None);
         children.extend(ops);
     }
     if rule.body_rule.is_some() {

@@ -28,7 +28,8 @@ fn list_ops_success() {
     assert_eq!(
         response["result"]["meta"]["ops"]["categories"]["numeric_ops"],
         json!([
-            "+", "-", "*", "/", "round", "to_base", "sum", "avg", "min", "max"
+            "+", "-", "*", "/", "round", "abs", "floor", "ceil", "trunc", "sqrt", "sign",
+            "mod", "pow", "clamp", "range", "to_base", "sum", "avg", "min", "max"
         ])
     );
     assert_eq!(
@@ -94,6 +95,16 @@ fn list_ops_success() {
             "*",
             "/",
             "round",
+            "abs",
+            "floor",
+            "ceil",
+            "trunc",
+            "sqrt",
+            "sign",
+            "mod",
+            "pow",
+            "clamp",
+            "range",
             "to_base",
             "date_format",
             "to_unixtime"

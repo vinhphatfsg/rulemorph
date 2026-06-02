@@ -4,6 +4,7 @@ use super::{
     EvalItem, EvalValue, V2EvalContext, eval_v2_expr, eval_v2_expr_or_null, value_to_string,
 };
 use crate::error::{TransformError, TransformErrorKind};
+use crate::transform::{extend_generated_array_items, push_generated_array_item};
 use crate::v2_model::{V2Expr, V2OpStep};
 
 mod keyed;

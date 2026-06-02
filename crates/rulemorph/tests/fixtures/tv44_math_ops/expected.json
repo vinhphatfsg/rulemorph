@@ -1,0 +1,17 @@
+[
+  {
+    "abs_value": 7.5,
+    "floor_value": 3,
+    "ceil_value": 4,
+    "trunc_value": -3,
+    "sqrt_value": 9,
+    "pow_value": 256,
+    "mod_value": 1,
+    "clamped_score": 100,
+    "sign_value": -1,
+    "range_value": [2, 3, 4, 5, 6, 7],
+    "descending_range": [8, 7, 6, 5, 4, 3],
+    "prime_29": true,
+    "prime_30": false
+  }
+]
