@@ -88,6 +88,24 @@ mappings:
 }
 
 #[test]
+fn dto_oversized_unsigned_json_integer_falls_back_to_json_value() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: id
+    value: 9223372036854775808
+    required: true
+"#;
+
+    let rust = render(yaml, DtoLanguage::Rust);
+    assert!(rust.contains("pub id: Value,"));
+    assert!(!rust.contains("pub id: i64,"));
+}
+
+#[test]
 fn dto_infers_literal_object_arrays_and_maps() {
     let yaml = r#"
 version: 2

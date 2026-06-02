@@ -208,8 +208,10 @@ fn infer_json_value(value: &JsonValue, state: &mut InferenceState, depth: usize)
         JsonValue::Null => FieldType::Nullable(Box::new(FieldType::JsonValue)),
         JsonValue::Bool(_) => FieldType::Primitive(PrimitiveType::Bool),
         JsonValue::Number(number) => {
-            if number.as_i64().is_some() || number.as_u64().is_some() {
+            if number.as_i64().is_some() {
                 FieldType::Primitive(PrimitiveType::Int)
+            } else if number.as_u64().is_some() {
+                FieldType::JsonValue
             } else {
                 FieldType::Primitive(PrimitiveType::Float)
             }

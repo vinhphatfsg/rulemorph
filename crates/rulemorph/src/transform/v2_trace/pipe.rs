@@ -165,6 +165,8 @@ fn canonical_v2_ref_path(v2_ref: &V2Ref) -> Option<String> {
         V2Ref::Out(path) => Some(canonical_out_path(path)),
         V2Ref::Pipe(path) => Some(if path.is_empty() {
             "$".to_string()
+        } else if path.starts_with('[') {
+            format!("${}", path)
         } else {
             format!("$.{}", path)
         }),

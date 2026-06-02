@@ -484,6 +484,26 @@ mappings:
         output,
         json!([{ "value": { "first": "first", "dotted": "quoted" } }])
     );
+
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"values":["first"],"a.b":"quoted"}]"#),
+        None,
+        &TransformTraceOptions::raw(),
+    )
+    .expect("pipe bracket refs trace in custom op args");
+    let ref_paths = traced
+        .trace
+        .records
+        .iter()
+        .flat_map(|record| record.events.iter())
+        .filter(|event| event.kind == TraceEventKind::RefRead)
+        .filter_map(|event| event.input_path.as_deref())
+        .collect::<Vec<_>>();
+    assert!(ref_paths.contains(&"$[0]"));
+    assert!(ref_paths.contains(&"$[\"a.b\"]"));
+    assert!(!ref_paths.contains(&"$.[0]"));
+    assert!(!ref_paths.contains(&"$.[\"a.b\"]"));
 }
 
 #[test]
