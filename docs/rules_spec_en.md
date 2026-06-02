@@ -34,6 +34,7 @@ For a first rule, read the sections in this order:
 | Record filtering | Decide whether a record should be processed | `record_when` |
 | Output mapping | Build one output object from one input record | `mappings` |
 | Ordered execution | Run mappings, filters, asserts, and branches in sequence | `steps` |
+| Reusable expressions | Name and reuse v2 pipes or mappings | `defs` |
 | Array post-processing | Apply filter/sort/limit/wrap to the output array | `finalize` |
 | References and expressions | Read input, context, and intermediate output values | `@input`, `@context`, `@out`, `expr` |
 
@@ -101,10 +102,140 @@ mappings:
 - `version` (required): fixed to `2`
 - `input` (required): input format and options
 - `mappings` (required): transformation rules (evaluated in order)
+- `defs` (optional): named custom OP definitions built from v2 pipes or mappings
 - `output` (optional): metadata (e.g., DTO name)
 - `record_when` (optional): condition to include/exclude records
 - `steps` (optional): ordered execution. Cannot be combined with top-level `mappings` or `record_when`
 - `finalize` (optional): post-process the output array. Works with either `mappings` or `steps`
+
+## defs (custom OPs)
+
+`defs` defines rule-local custom OPs. A custom OP does not run external code or side effects; it names a typed v2 pipe or mappings body.
+
+```yaml
+defs:
+  slug:
+    input: string
+    returns: string
+    expr:
+      - "$"
+      - trim
+      - lowercase
+
+mappings:
+  - target: slug
+    expr:
+      - "@input.title"
+      - slug
+```
+
+Each definition requires `input` and exactly one of `expr` or `mappings`. `expr` bodies require `returns`. `mappings` bodies may omit `returns`; in that case the object return contract is synthesized from mapping targets.
+
+### Types
+
+`defs.*.input` and `defs.*.returns` support:
+
+| Type | Meaning |
+| --- | --- |
+| `string` | JSON string |
+| `int` | JSON integer |
+| `float` | finite JSON number; integers are accepted |
+| `number` | finite JSON number without int/float distinction |
+| `bool` | JSON boolean |
+| `json` | any JSON value; nested shape is not checked |
+| `[T]` | homogeneous array |
+| `{ field: T }` | object field map |
+
+Object fields distinguish optional fields from nullable values.
+
+```yaml
+input:
+  {
+    name: string,
+    nickname?: string,
+    note: string?,
+    memo?: string?
+  }
+```
+
+Canonical field form is also supported.
+
+```yaml
+input:
+  {
+    nickname: { type: string, optional: true },
+    note: { type: string, nullable: true },
+    memo: { type: string, optional: true, nullable: true }
+  }
+```
+
+An object containing only `{ type: string }` is not treated as canonical field form; it is an object type with a field named `type`. Canonical form is selected only when `optional` or `nullable` is present.
+
+Direct object input calls use width matching: required fields must exist, and extra fields are allowed. `with` adapter input and object output contracts are exact. A `json` field does not validate nested shape. Numeric contracts do not parse strings, so `"2"` is not accepted as `int`, `float`, or `number`.
+
+### Calls
+
+A custom OP without call options receives the current pipe value `$`.
+
+```yaml
+expr:
+  - "@input.title"
+  - slug
+```
+
+When source field names differ from the `input` shape, use the official `with` adapter form:
+
+```yaml
+expr:
+  - "@input.line"
+  - line_total:
+      - with: { qty: "$.quantity", unit_price: "$.price" }
+```
+
+Inside a custom OP body, prefer dot-path field access with `$.field` in official examples. The `get` OP form, such as `["$", { get: ["field"] }]`, remains valid, but `$.field` is shorter and clearer for simple field access.
+
+```yaml
+defs:
+  line_total:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "$"
+      - let:
+          qty: ["$.qty", float]
+          price: ["$.unit_price", float]
+      - "@qty"
+      - "*": ["@price"]
+```
+
+`with` values are evaluated as v2 expressions in the caller scope. Use `value` to pass a literal string/object, and `expr` to mark an expression explicitly.
+
+```yaml
+- decorate:
+    - with:
+        label:
+          value: "$.quantity"
+        qty:
+          expr: "$.quantity"
+```
+
+Direct adapter objects are invalid.
+
+```yaml
+# invalid
+- line_total:
+    qty: "$.quantity"
+```
+
+Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are not supported in the MVP.
+
+### Validation, DTO, And Trace
+
+Validation fails closed for unknown custom OPs, built-in shadowing, invalid identifiers, duplicate `expr` / `mappings`, missing `returns` on `expr` bodies, cycles, unknown or duplicate call options, and `with` shape mismatch. Runtime also checks `input` and `returns`; contract errors do not include raw offending values by default.
+
+DTO generation propagates explicit `returns`. Object `returns` become nested DTO shapes. For mappings bodies without `returns`, the synthesized object contract is propagated; fields that cannot be narrowed use the language's JSON fallback type.
+
+Semantic trace emits custom OP calls as spans with `kind=custom_op`. The span includes `name`, `def_path`, `call_path`, `input_type`, `output_type`, `with_adapter`, and `body_truncated`. Value snapshots follow the existing `TraceValueMode`.
 
 ## Input
 
@@ -137,9 +268,17 @@ Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/ent
 
 ### CSV
 - `input.csv` is required when `format=csv`
-- `has_header` (optional): default `true`
-- `delimiter` (optional): default `","` (must be exactly 1 character)
-- `columns` (optional): required when `has_header=false`
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `has_header` | Optional | `true` | When `true`, the first row provides field names. When `false`, `columns` provides field names. |
+| `delimiter` | Optional | `","` | CSV delimiter. It must be a single-byte character. Multi-byte delimiters such as `"||"` or a full-width comma are invalid. |
+| `columns` | Required when `has_header=false` | None | Field definitions for headerless CSV. Each item requires `name`; `type` is optional. |
+
+- Headers and `columns[].name` values must be non-blank and unique.
+- With `has_header=true`, a UTF-8 BOM is stripped from the first header only.
+- `columns[].type` is accepted, but the current validation and normalization logic does not use it. CSV cells enter JSON records as strings.
+- Each data row must have exactly the same field count as the header or `columns` list.
 
 ```yaml
 input:
@@ -148,16 +287,22 @@ input:
     has_header: false
     delimiter: ","
     columns:
-      - { name: "id", type: "string" }
+      - { name: "id" }
       - { name: "price", type: "float" }
 ```
 
 ### JSON
 - `input.json` is required when `format=json`
-- `records_path` (optional): dot path to a record array or single record. If omitted, use the root value.
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `records_path` | Optional | Root | Dot path to a record array or single record object. |
+
 - If the root or `records_path` is an array, each element becomes a record.
 - If the root or `records_path` is an object, it becomes a single record.
 - Scalars cannot be records.
+- `records_path` uses the normal Rulemorph path syntax. A missing path, or a path that points to a scalar, is an error.
+- Duplicate keys and non-finite numbers are rejected.
 
 ```yaml
 input:
@@ -168,9 +313,16 @@ input:
 
 ### YAML / TOML
 - `input.yaml` / `input.toml` is required for the matching `format`
-- `records_path` (optional): dot path to a record array or single record
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `records_path` | Optional | Root | Dot path to a record array or single record object. |
+
 - YAML/TOML input is normalized to JSON records before mappings, steps, and finalize run.
-- Format-specific values such as YAML aliases/anchors and TOML datetimes are normalized by the parser layer into JSON values.
+- `records_path` uses the normal Rulemorph path syntax. A missing path, or a path that points to a scalar, is an error.
+- A YAML stream must contain exactly one document. Duplicate keys, non-string mapping keys, and custom tags are rejected.
+- YAML aliases/anchors can be expanded, but alias count and expanded node count are bounded by resource limits.
+- TOML datetimes are normalized to strings. TOML tables, arrays of tables, and inline tables are normalized to JSON objects and arrays.
 
 ```yaml
 input:
@@ -188,10 +340,23 @@ input:
 
 ### XML
 - `input.xml` is required when `format=xml`
-- `records_path` (required): dot-separated element path including the root element
-- Attributes become string fields with `attr_prefix`; direct text is stored under `text_key`
-- Child elements are always arrays
-- DTDs, entities, and processing instructions are rejected.
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `records_path` | Required | None | Dot-separated element path including the root element. `[]` indexes are not supported. |
+| `attr_prefix` | Optional | `"@"` | Prefix for attribute field names. Must not be empty. |
+| `text_key` | Optional | `"#text"` | Field name for direct text. Must not be empty or equal to `attr_prefix`. |
+| `child_policy` | Optional | `array` | Child element storage policy. The current implementation only supports `array`, so child elements are always arrays. |
+| `trim_text` | Optional | `true` | Trims leading and trailing whitespace from direct text and CDATA. |
+| `collapse_whitespace` | Optional | `true` | Collapses consecutive whitespace in direct text and CDATA to one space. |
+| `namespaces` | Optional | `qualified` | `qualified` keeps prefixed names visible. `strip` uses local names only. |
+
+- Attributes become string fields named `attr_prefix + attribute_name`.
+- Direct text and CDATA are stored under `text_key` when non-empty after normalization.
+- Child elements become array fields grouped by name. A single child is still an array.
+- In mixed content, child element text stays on the child; direct text on the record element goes to `text_key`.
+- `namespaces: strip` errors when stripped local names collide. Attribute, text, and child key collisions also error.
+- XML input must be a single-root document. DTDs, processing instructions, and non-blank text outside the root are rejected.
 
 ```yaml
 input:
@@ -200,12 +365,33 @@ input:
     records_path: "users.user"
     attr_prefix: "@"
     text_key: "#text"
+    child_policy: array
+    namespaces: strip
 ```
 
 ### HTML
 - `input.html` is required when `format=html`
-- `records_selector` selects record elements; each field uses a CSS selector relative to the record
-- `value: text` / `html` / `attr` are supported. `html` is raw inner HTML string extraction; it is not sanitized or executed.
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `records_selector` | Required | None | CSS selector for record elements. Must not be empty. |
+| `fields` | Required | None | Map from output field name to field extraction config. Must not be empty. |
+| `trim_text` | Optional | `true` | Trims leading and trailing whitespace for `value: text` and `attr`. |
+| `collapse_whitespace` | Optional | `true` | Collapses consecutive whitespace to one space for `value: text` and `attr`. |
+
+`fields.<name>`:
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `selector` | Optional | The record element itself | CSS selector relative to the record element. If omitted, the record element itself is used. |
+| `value` | Optional | `text` | `text` / `html` / `attr`. |
+| `attr` | Required when `value=attr` | None | Attribute name to extract. Must not be empty. |
+| `multiple` | Optional | `false` | When `true`, returns an array of all matched values. |
+
+- Field names must not be empty.
+- With `multiple=false`, only the first matched element is used. If no element matches, the field is `missing`.
+- With `multiple=true`, only matched values are included in the array. If nothing matches, the field is an empty array. For `value=attr`, elements without the attribute are skipped.
+- `value: html` returns raw inner HTML. It does not trim or collapse whitespace, sanitize, or execute content.
 - The HTML parser does not execute JavaScript or fetch URLs.
 
 ```yaml
@@ -216,14 +402,34 @@ input:
     fields:
       id: { selector: "td:nth-child(1)", value: text }
       name: { selector: "td:nth-child(2)", value: text }
+      profile_url: { selector: "a.profile", value: attr, attr: href }
+      tags: { selector: ".tag", value: text, multiple: true }
 ```
 
 ### Excel
 - `input.excel` is required when `format=excel`
-- Only `.xlsx` is supported. Macros, external relationships, and formula evaluation are rejected or not executed.
-- With `has_header=true`, the header row provides field names.
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `sheet` | Optional | First sheet | Sheet name string, or 0-based sheet index. |
+| `has_header` | Optional | `true` | When `true`, cells from `header_row` provide field names. When `false`, `columns` provides field names and selected columns. |
+| `header_row` | Optional | `1` | Header row number, 1-based. Used when `has_header=true`. |
+| `data_start_row` | Optional | With headers, `header_row + 1`; without headers, the `range` start row or row 1 | Data row start number, 1-based. |
+| `range` | Optional | Effective sheet range | Cell window to read, in `A:D` or `A1:D100` form. |
+| `columns` | Required when `has_header=false` | None | Headerless Excel field definitions. Each item requires `name` and `column`. |
+| `empty_cell` | Optional | `missing` | The current implementation only supports `missing`; empty cells are omitted from the record. |
+| `formula` | Optional | `cached` | `cached` / `formula` / `error`. Formula cells are never evaluated. |
+| `date` | Optional | `iso8601` | `iso8601` / `serial` / `string`. Controls Excel datetime cell normalization. |
+| `cell_error` | Optional | `error` | The current implementation only supports `error`; Excel error cells are rejected. |
+
+- `range` columns use Excel column letters. `A:D` limits columns only; `B3:F100` limits both rows and columns.
+- `header_row` cannot be before the selected range. With `range: "B3:F100"` and headers, usually set `header_row: 3`.
+- With `has_header=true`, selected header cells become field names. Header names must be non-blank and unique.
+- With `has_header=false`, `columns[].column` is an Excel column letter. `columns[].name` must be non-blank and unique.
 - Empty cells are treated as `missing`. Empty strings are real values and remain distinct from `missing`.
-- Formula cells are never evaluated. The default `formula` policy is `cached`; formula cells without cached values are errors. `formula: formula` reads the formula string, and `formula: error` rejects formula cells.
+- Formula cells are never evaluated. `formula: cached` reads cached values, and formula cells without cached values are errors. `formula: formula` reads the formula string. `formula: error` rejects formula cells.
+- `date: iso8601` and `date: string` emit `YYYY-MM-DDTHH:MM:SS` strings. `date: serial` emits the Excel serial number as a JSON number.
+- Only `.xlsx` is supported. Macros, external relationships, shared formula metadata, and ambiguous workbook structure are rejected.
 
 ```yaml
 input:
@@ -231,6 +437,30 @@ input:
   excel:
     sheet: "Users"
     has_header: true
+    header_row: 1
+```
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: 0
+    has_header: true
+    header_row: 3
+    data_start_row: 4
+    range: "B3:F100"
+```
+
+```yaml
+input:
+  format: excel
+  excel:
+    sheet: "Users"
+    has_header: false
+    data_start_row: 2
+    columns:
+      - { name: "id", column: "A" }
+      - { name: "name", column: "B" }
 ```
 
 ## Output

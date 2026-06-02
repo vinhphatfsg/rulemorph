@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use rulemorph::v2_eval::V2EvalContext;
 use rulemorph::{RuleFile, TransformError, TransformErrorKind};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
@@ -17,6 +18,7 @@ pub(super) fn build_step_nodes(
     record: &JsonValue,
     context: Option<&JsonValue>,
     base_dir: &Path,
+    trace_ctx: &V2EvalContext<'_>,
 ) -> Vec<JsonValue> {
     let Some(steps) = rule.steps.as_deref() else {
         return Vec::new();
@@ -83,6 +85,7 @@ pub(super) fn build_step_nodes(
             &mut error,
             &mut halted,
             &mut meta,
+            trace_ctx,
         );
         apply_asserts_meta(
             rule,
@@ -95,6 +98,7 @@ pub(super) fn build_step_nodes(
             &mut error,
             &mut halted,
             &mut meta,
+            trace_ctx,
         );
         let child_trace = apply_branch_meta(
             rule,
@@ -108,18 +112,21 @@ pub(super) fn build_step_nodes(
             &mut error,
             &mut halted,
             &mut meta,
+            trace_ctx,
         );
 
         let children = if status == "ok" {
             if let Some(mappings) = step.mappings.as_deref() {
                 let mut mapping_out = step_input.clone();
                 build_mapping_ops_with_values(
+                    Some(rule),
                     mappings,
                     record,
                     context,
                     &mut mapping_out,
                     rule.version,
                     index,
+                    Some(trace_ctx),
                 )
             } else {
                 Vec::new()

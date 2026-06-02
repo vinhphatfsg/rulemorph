@@ -17,8 +17,13 @@ pub(super) fn apply_rule_to_record_traced(
     limits: EvalLimits,
     collector: &mut TraceCollector,
 ) -> Result<Option<JsonValue>, TransformError> {
+    let base_v2_ctx = V2EvalContext::new()
+        .with_limits(limits)
+        .with_rule(rule)
+        .with_shared_custom_op_counter();
     if let Some(steps) = &rule.steps {
         return apply_steps_traced(
+            rule,
             steps,
             record,
             context,
@@ -27,6 +32,7 @@ pub(super) fn apply_rule_to_record_traced(
             base_dir,
             branch_context,
             limits,
+            &base_v2_ctx,
             collector,
         );
     }
@@ -37,7 +43,15 @@ pub(super) fn apply_rule_to_record_traced(
             .rule_path("record_when")
             .finish(collector);
     }
-    let keep = eval_record_when_traced(rule, record, context, warnings, limits, collector);
+    let keep = eval_record_when_traced(
+        rule,
+        record,
+        context,
+        warnings,
+        limits,
+        &base_v2_ctx,
+        collector,
+    );
     if rule.record_when.is_some() {
         collector
             .end_span(TraceEventKind::RecordWhenEnd, TracePhase::End)
@@ -52,7 +66,15 @@ pub(super) fn apply_rule_to_record_traced(
         return Ok(None);
     }
 
-    let output = apply_mappings_traced(rule, record, context, warnings, limits, collector)?;
+    let output = apply_mappings_traced(
+        rule,
+        record,
+        context,
+        warnings,
+        limits,
+        &base_v2_ctx,
+        collector,
+    )?;
     Ok(Some(output))
 }
 
@@ -87,7 +109,7 @@ fn transform_record_with_warnings_inner_traced(
             .start_span(TraceEventKind::FinalizeStart, TracePhase::Start)
             .rule_path("finalize")
             .finish_with_output(collector, &array, None);
-        match apply_finalize_traced(finalize, array, context, limits, collector) {
+        match apply_finalize_traced(rule, finalize, array, context, limits, collector) {
             Ok(finalized) => {
                 collector
                     .end_span(TraceEventKind::FinalizeEnd, TracePhase::End)

@@ -24,3 +24,4 @@ pub use pipe::{
 };
 pub use ref_parse::{extract_literal, is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_ref};
 pub use step::parse_v2_step;
+pub(crate) use step::{custom_call_step_candidate, parse_custom_call_step};

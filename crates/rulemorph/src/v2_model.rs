@@ -30,6 +30,7 @@ pub struct V2Pipe {
 pub enum V2Start {
     Ref(V2Ref),
     PipeValue,
+    ImplicitPipeValue,
     Literal(JsonValue),
     V1Expr(Box<Expr>),
 }
@@ -41,6 +42,7 @@ pub enum V2Ref {
     Input(String),   // @input.path
     Context(String), // @context.path
     Out(String),     // @out.path
+    Pipe(String),    // $.path
     Item(String),    // @item.path (in map)
     Acc(String),     // @acc.path (in reduce)
     Local(String),   // @varName (let-bound)
@@ -50,6 +52,7 @@ pub enum V2Ref {
 #[derive(Debug, Clone, PartialEq)]
 pub enum V2Step {
     Op(V2OpStep),
+    CustomCall(V2CustomCallStep),
     Let(V2LetStep),
     If(V2IfStep),
     Map(V2MapStep),
@@ -62,6 +65,18 @@ pub enum V2Step {
 pub struct V2OpStep {
     pub op: String,
     pub args: Vec<V2Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct V2CustomCallStep {
+    pub op: String,
+    pub with: Option<Vec<(String, V2CallArg)>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum V2CallArg {
+    Expr(V2Expr),
+    Value(JsonValue),
 }
 
 /// v2 Let Step - variable bindings

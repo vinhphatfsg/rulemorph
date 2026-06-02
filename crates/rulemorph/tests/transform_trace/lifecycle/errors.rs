@@ -28,6 +28,45 @@ steps:
 }
 
 #[test]
+fn trace_malformed_literal_start_custom_call_error_closes_open_spans() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+defs:
+  my_op:
+    input: json
+    returns: json
+    expr: ["$"]
+mappings:
+  - target: payload
+    expr:
+      - my_op:
+          - bogus: 1
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        transform_input_with_trace(
+            &rule,
+            InputData::Text(r#"[{}]"#),
+            None,
+            &TransformTraceOptions::raw(),
+        )
+    }));
+
+    assert!(
+        result.is_ok(),
+        "malformed literal-start custom call must close the expression span"
+    );
+    let err = result
+        .expect("no panic")
+        .expect_err("malformed custom call should fail");
+    assert_eq!(err.error.kind, rulemorph::TransformErrorKind::ExprError);
+    assert_parent_ids_point_to_emitted_events(&err.trace);
+    assert_trace_paths_are_canonical(&err.trace);
+}
+
+#[test]
 fn trace_assert_failure_uses_configured_error_message() {
     let yaml = r#"
 version: 2

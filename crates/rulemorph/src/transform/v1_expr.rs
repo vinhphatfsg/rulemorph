@@ -7,8 +7,8 @@ mod when;
 pub(super) use chain::eval_chain;
 pub(super) use ref_resolution::{canonical_ref_path, eval_ref, resolve_source};
 pub(super) use when::{
-    eval_record_when, eval_record_when_traced, eval_when, eval_when_expr, eval_when_expr_traced,
-    eval_when_traced,
+    eval_record_when, eval_record_when_traced, eval_when, eval_when_expr_traced_with_v2_context,
+    eval_when_expr_with_v2_context, eval_when_traced,
 };
 
 pub(super) fn eval_expr(

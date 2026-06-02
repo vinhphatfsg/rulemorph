@@ -17,6 +17,8 @@ pub struct V2Scope {
     item_available: bool,
     /// Whether @acc is available
     acc_available: bool,
+    /// Whether $ / $.path pipe-value references are available
+    pipe_available: bool,
     /// Parent scope (for lexical scoping)
     parent: Option<Box<V2Scope>>,
 }
@@ -28,6 +30,7 @@ impl V2Scope {
             let_bindings: HashSet::new(),
             item_available: false,
             acc_available: false,
+            pipe_available: false,
             parent: None,
         }
     }
@@ -38,6 +41,7 @@ impl V2Scope {
             let_bindings: HashSet::new(),
             item_available: parent.item_available,
             acc_available: parent.acc_available,
+            pipe_available: parent.pipe_available,
             parent: Some(Box::new(parent.clone())),
         }
     }
@@ -51,6 +55,12 @@ impl V2Scope {
     /// Enable @acc references in this scope
     pub fn with_acc(mut self) -> Self {
         self.acc_available = true;
+        self
+    }
+
+    /// Enable $ / $.path references in this scope
+    pub fn with_pipe(mut self) -> Self {
+        self.pipe_available = true;
         self
     }
 
@@ -79,6 +89,11 @@ impl V2Scope {
     pub fn allows_acc(&self) -> bool {
         self.acc_available
     }
+
+    /// Check if pipe-value references are available
+    pub fn allows_pipe(&self) -> bool {
+        self.pipe_available
+    }
 }
 
 impl Default for V2Scope {
@@ -103,6 +118,8 @@ pub struct V2ValidationCtx<'a> {
     pub(super) allow_any_out_ref: bool,
     /// Whether @context was referenced (for informational purposes)
     pub context_referenced: bool,
+    /// Custom operations available in the current rule.
+    pub(super) custom_op_names: HashSet<String>,
 }
 
 impl<'a> V2ValidationCtx<'a> {
@@ -114,6 +131,7 @@ impl<'a> V2ValidationCtx<'a> {
             produced_targets: HashSet::new(),
             allow_any_out_ref: false,
             context_referenced: false,
+            custom_op_names: HashSet::new(),
         }
     }
 
@@ -129,7 +147,17 @@ impl<'a> V2ValidationCtx<'a> {
             produced_targets,
             allow_any_out_ref,
             context_referenced: false,
+            custom_op_names: HashSet::new(),
         }
+    }
+
+    pub(crate) fn with_custom_op_names(mut self, names: HashSet<String>) -> Self {
+        self.custom_op_names = names;
+        self
+    }
+
+    pub(crate) fn is_custom_op(&self, name: &str) -> bool {
+        self.custom_op_names.contains(name)
     }
 
     /// Push an error with path

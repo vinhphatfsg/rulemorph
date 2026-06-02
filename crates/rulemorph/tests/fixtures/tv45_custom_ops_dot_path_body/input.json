@@ -1,0 +1,14 @@
+[
+  {
+    "line": {
+      "quantity": 3,
+      "price": 19.5
+    }
+  },
+  {
+    "line": {
+      "quantity": 2,
+      "price": 4.25
+    }
+  }
+]

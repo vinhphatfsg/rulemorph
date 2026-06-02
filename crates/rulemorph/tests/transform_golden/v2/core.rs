@@ -55,3 +55,13 @@ fn tv37_root_refs() {
     let output = transform(&rule, &input, context.as_ref()).expect("transform failed");
     assert_eq!(output, expected);
 }
+
+#[test]
+fn tv45_custom_ops_dot_path_body() {
+    assert_json_fixture("tv45_custom_ops_dot_path_body");
+}
+
+#[test]
+fn tv46_custom_ops_body_input_and_pipe_refs() {
+    assert_json_fixture("tv46_custom_ops_body_input_and_pipe_refs");
+}

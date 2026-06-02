@@ -125,7 +125,13 @@ fn preflight_validate_input_with_warnings_inner(
             warnings.extend(record_warnings);
         }
         if let Some(finalize) = &rule.finalize {
-            let _ = apply_finalize(finalize, JsonValue::Array(output_records), context, limits)?;
+            let _ = apply_finalize(
+                rule,
+                finalize,
+                JsonValue::Array(output_records),
+                context,
+                limits,
+            )?;
         }
     } else {
         let stream = match base_dir {

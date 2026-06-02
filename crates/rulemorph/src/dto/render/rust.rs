@@ -45,7 +45,7 @@ pub(in crate::dto) fn render_rust(schema: &SchemaNode, name: &str) -> Result<Str
                 out.push_str(&format!("    #[serde({})]\n", attrs.join(", ")));
             }
 
-            let final_type = if optional {
+            let final_type = if optional && !field_type_is_top_level_nullable(&field.field_type) {
                 format!("Option<{}>", field_type)
             } else {
                 field_type
@@ -57,6 +57,10 @@ pub(in crate::dto) fn render_rust(schema: &SchemaNode, name: &str) -> Result<Str
     }
 
     Ok(out.trim_end().to_string())
+}
+
+fn field_type_is_top_level_nullable(field_type: &FieldType) -> bool {
+    matches!(field_type, FieldType::Nullable(_))
 }
 
 fn rust_type_for_field(field: &Field, parent_path: &[String], registry: &NameRegistry) -> String {

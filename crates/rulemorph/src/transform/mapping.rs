@@ -13,7 +13,8 @@ use super::{
     eval_v2_pipe_traced, expr_to_json_for_v2_pipe, parse_source, resolve_source,
 };
 
-pub(super) fn eval_mapping(
+pub(super) fn eval_mapping_with_v2_context(
+    rule: &crate::model::RuleFile,
     mapping: &crate::model::Mapping,
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -21,6 +22,32 @@ pub(super) fn eval_mapping(
     mapping_path: &str,
     version: u8,
     limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
+) -> Result<Option<JsonValue>, TransformError> {
+    eval_mapping_inner(
+        rule,
+        mapping,
+        record,
+        context,
+        out,
+        mapping_path,
+        version,
+        limits,
+        Some(base_v2_ctx),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_mapping_inner(
+    rule: &crate::model::RuleFile,
+    mapping: &crate::model::Mapping,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    mapping_path: &str,
+    version: u8,
+    limits: EvalLimits,
+    base_v2_ctx: Option<&V2EvalContext<'_>>,
 ) -> Result<Option<JsonValue>, TransformError> {
     let value = if let Some(source) = &mapping.source {
         resolve_source(source, record, context, out, mapping_path)?
@@ -37,7 +64,11 @@ pub(super) fn eval_mapping(
                     TransformError::new(TransformErrorKind::ExprError, e.to_string())
                         .with_path(&expr_path)
                 })?;
-                let v2_ctx = V2EvalContext::new().with_limits(limits);
+                let v2_ctx = base_v2_ctx
+                    .cloned()
+                    .unwrap_or_else(V2EvalContext::new)
+                    .with_limits(limits)
+                    .with_rule(rule);
                 let v2_result = eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
                 // Convert v2 EvalValue to v1 EvalValue
                 match v2_result {
@@ -105,6 +136,7 @@ pub(super) fn eval_mapping(
 }
 
 pub(super) fn eval_mapping_traced(
+    rule: &crate::model::RuleFile,
     mapping: &crate::model::Mapping,
     record: &JsonValue,
     context: Option<&JsonValue>,
@@ -112,15 +144,83 @@ pub(super) fn eval_mapping_traced(
     mapping_path: &str,
     version: u8,
     limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
     collector: &mut TraceCollector,
+) -> Result<Option<JsonValue>, TransformError> {
+    eval_mapping_traced_inner(
+        rule,
+        mapping,
+        record,
+        context,
+        out,
+        mapping_path,
+        version,
+        limits,
+        base_v2_ctx,
+        collector,
+        SourceRedactionHint::DefaultSource,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn eval_mapping_traced_with_source_redaction_hint(
+    rule: &crate::model::RuleFile,
+    mapping: &crate::model::Mapping,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    mapping_path: &str,
+    version: u8,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
+    collector: &mut TraceCollector,
+    source_redaction_hint: Option<&str>,
+) -> Result<Option<JsonValue>, TransformError> {
+    eval_mapping_traced_inner(
+        rule,
+        mapping,
+        record,
+        context,
+        out,
+        mapping_path,
+        version,
+        limits,
+        base_v2_ctx,
+        collector,
+        SourceRedactionHint::Override(source_redaction_hint),
+    )
+}
+
+enum SourceRedactionHint<'a> {
+    DefaultSource,
+    Override(Option<&'a str>),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_mapping_traced_inner(
+    rule: &crate::model::RuleFile,
+    mapping: &crate::model::Mapping,
+    record: &JsonValue,
+    context: Option<&JsonValue>,
+    out: &JsonValue,
+    mapping_path: &str,
+    version: u8,
+    limits: EvalLimits,
+    base_v2_ctx: &V2EvalContext<'_>,
+    collector: &mut TraceCollector,
+    source_redaction_hint: SourceRedactionHint<'_>,
 ) -> Result<Option<JsonValue>, TransformError> {
     let value = if let Some(source) = &mapping.source {
         let value = resolve_source(source, record, context, out, mapping_path)?;
+        let path_hint = match source_redaction_hint {
+            SourceRedactionHint::DefaultSource => Some(source.as_str()),
+            SourceRedactionHint::Override(path_hint) => path_hint,
+        };
         collector
             .emit(TraceEventKind::SourceRead, TracePhase::Instant)
             .rule_path(format!("{}.source", mapping_path))
             .input_path(canonical_source_path(source))
-            .finish_with_eval_output(collector, &value, Some(source));
+            .finish_with_eval_output(collector, &value, path_hint);
         value
     } else if let Some(literal) = &mapping.value {
         collector
@@ -137,7 +237,7 @@ pub(super) fn eval_mapping_traced(
                     TransformError::new(TransformErrorKind::ExprError, e.to_string())
                         .with_path(&expr_path)
                 })?;
-                let v2_ctx = V2EvalContext::new().with_limits(limits);
+                let v2_ctx = base_v2_ctx.clone().with_limits(limits).with_rule(rule);
                 let v2_result = eval_v2_pipe_traced(
                     &v2_pipe, record, context, out, &expr_path, &v2_ctx, collector,
                 )?;

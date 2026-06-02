@@ -1,0 +1,22 @@
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  line_total:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "$"
+      - let:
+          qty: ["$.qty", float]
+          price: ["$.unit_price", float]
+      - "@qty"
+      - "*": ["@price"]
+mappings:
+  - target: total
+    expr:
+      - "@input.line"
+      - line_total:
+          - with: { qty: "$.quantity", unit_price: "$.price" }
+    required: true

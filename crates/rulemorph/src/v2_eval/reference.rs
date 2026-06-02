@@ -59,6 +59,16 @@ pub fn eval_v2_ref<'a>(
                 get_path_str(out, ref_path, path)
             }
         }
+        V2Ref::Pipe(ref_path) => {
+            let value = ctx.get_pipe_value().ok_or_else(|| {
+                TransformError::new(TransformErrorKind::ExprError, "$ is not available")
+                    .with_path(path)
+            })?;
+            match value {
+                EvalValue::Missing => Ok(EvalValue::Missing),
+                EvalValue::Value(value) => get_path_str(value, ref_path, path),
+            }
+        }
         V2Ref::Item(ref_path) => {
             let item = ctx.get_item().ok_or_else(|| {
                 TransformError::new(
@@ -123,7 +133,7 @@ pub fn eval_v2_start<'a>(
 ) -> Result<EvalValue, TransformError> {
     match start {
         V2Start::Ref(v2_ref) => eval_v2_ref(v2_ref, record, context, out, path, ctx),
-        V2Start::PipeValue => {
+        V2Start::PipeValue | V2Start::ImplicitPipeValue => {
             // If pipe value is not available, return Missing instead of error
             // This allows ops like lookup_first that don't use pipe input to work
             Ok(ctx.get_pipe_value().cloned().unwrap_or(EvalValue::Missing))

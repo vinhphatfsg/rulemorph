@@ -10,6 +10,7 @@ pub use map_step::eval_v2_map_step;
 
 use super::{EvalValue, V2EvalContext, eval_v2_op_step, eval_v2_ref, eval_v2_start};
 use crate::error::{TransformError, TransformErrorKind};
+use crate::transform::{eval_custom_call_step, parse_known_custom_call_literal_start};
 use crate::v2_model::{V2Expr, V2Pipe, V2Step};
 
 /// Evaluate a v2 pipe expression
@@ -21,8 +22,16 @@ pub fn eval_v2_pipe<'a>(
     path: &str,
     ctx: &V2EvalContext<'a>,
 ) -> Result<EvalValue, TransformError> {
-    // Evaluate start value
-    let mut current = eval_v2_start(&pipe.start, record, context, out, path, ctx)?;
+    let _eval_scope = ctx.enter_eval_scope();
+    let first_path = format!("{}[0]", path);
+    let mut current =
+        if let Some(call) = parse_known_custom_call_literal_start(&pipe.start, ctx, &first_path)? {
+            let pipe_value = ctx.get_pipe_value().cloned().unwrap_or(EvalValue::Missing);
+            eval_custom_call_step(&call, pipe_value, record, context, out, &first_path, ctx)?
+        } else {
+            // Evaluate start value
+            eval_v2_start(&pipe.start, record, context, out, path, ctx)?
+        };
     let mut current_ctx = ctx.clone();
 
     // Apply each step
@@ -35,6 +44,17 @@ pub fn eval_v2_pipe<'a>(
             V2Step::Op(op_step) => {
                 current = eval_v2_op_step(
                     op_step,
+                    current,
+                    record,
+                    context,
+                    out,
+                    &step_path,
+                    &current_ctx,
+                )?;
+            }
+            V2Step::CustomCall(call_step) => {
+                current = eval_custom_call_step(
+                    call_step,
                     current,
                     record,
                     context,
@@ -96,6 +116,7 @@ pub fn eval_v2_expr<'a>(
     path: &str,
     ctx: &V2EvalContext<'a>,
 ) -> Result<EvalValue, TransformError> {
+    let _eval_scope = ctx.enter_eval_scope();
     if let Some(value) = ctx.precomputed_arg_for_path(path) {
         return Ok(value);
     }

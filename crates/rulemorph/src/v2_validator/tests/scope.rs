@@ -5,6 +5,7 @@ fn test_scope_new() {
     let scope = V2Scope::new();
     assert!(!scope.allows_item());
     assert!(!scope.allows_acc());
+    assert!(!scope.allows_pipe());
     assert!(!scope.has_binding("x"));
 }
 
@@ -20,6 +21,12 @@ fn test_scope_with_acc() {
     let scope = V2Scope::new().with_acc();
     assert!(!scope.allows_item());
     assert!(scope.allows_acc());
+}
+
+#[test]
+fn test_scope_with_pipe() {
+    let scope = V2Scope::new().with_pipe();
+    assert!(scope.allows_pipe());
 }
 
 #[test]

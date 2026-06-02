@@ -15,7 +15,9 @@ pub(in crate::endpoint_engine::trace_graph) fn expr_to_json_for_v2_pipe(
             }
         }
         Expr::Ref(expr_ref)
-            if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) =>
+            if is_v2_ref(&expr_ref.ref_path)
+                || is_pipe_value(&expr_ref.ref_path)
+                || is_literal_escape(&expr_ref.ref_path) =>
         {
             Some(JsonValue::Array(vec![JsonValue::String(
                 expr_ref.ref_path.clone(),
@@ -23,12 +25,10 @@ pub(in crate::endpoint_engine::trace_graph) fn expr_to_json_for_v2_pipe(
         }
         Expr::Chain(chain) => {
             if let Some(first) = chain.chain.first() {
-                if let Expr::Ref(reference) = first {
-                    if reference.ref_path.starts_with('@') {
-                        let items: Vec<JsonValue> =
-                            chain.chain.iter().map(expr_to_json_value).collect();
-                        return Some(JsonValue::Array(items));
-                    }
+                if expr_starts_v2_pipe(first) {
+                    let items: Vec<JsonValue> =
+                        chain.chain.iter().map(expr_to_json_value).collect();
+                    return Some(JsonValue::Array(items));
                 }
             }
             None
@@ -43,21 +43,21 @@ pub(in crate::endpoint_engine::trace_graph) fn expr_to_json_for_v2_condition(
     match expr {
         Expr::Literal(value) => Some(value.clone()),
         Expr::Ref(reference)
-            if reference.ref_path.starts_with('@') || is_literal_escape(&reference.ref_path) =>
+            if is_v2_ref(&reference.ref_path)
+                || is_pipe_value(&reference.ref_path)
+                || is_literal_escape(&reference.ref_path) =>
         {
             Some(JsonValue::String(reference.ref_path.clone()))
         }
         Expr::Chain(chain) => {
             if let Some(first) = chain.chain.first() {
-                if let Expr::Ref(reference) = first {
-                    if reference.ref_path.starts_with('@') {
-                        let items: Vec<JsonValue> = chain
-                            .chain
-                            .iter()
-                            .map(expr_to_json_value_for_condition)
-                            .collect();
-                        return Some(JsonValue::Array(items));
-                    }
+                if expr_starts_v2_pipe(first) {
+                    let items: Vec<JsonValue> = chain
+                        .chain
+                        .iter()
+                        .map(expr_to_json_value_for_condition)
+                        .collect();
+                    return Some(JsonValue::Array(items));
                 }
             }
             None
@@ -103,5 +103,19 @@ pub(in crate::endpoint_engine::trace_graph) fn expr_to_json_value(expr: &Expr) -
             JsonValue::Array(items)
         }
         Expr::Literal(value) => value.clone(),
+    }
+}
+
+fn expr_starts_v2_pipe(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ref(reference) => {
+            is_v2_ref(&reference.ref_path)
+                || is_pipe_value(&reference.ref_path)
+                || is_literal_escape(&reference.ref_path)
+        }
+        Expr::Literal(JsonValue::String(value)) => {
+            is_v2_ref(value) || is_pipe_value(value) || is_literal_escape(value)
+        }
+        _ => false,
     }
 }

@@ -30,7 +30,9 @@ pub(crate) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
             }
         }
         Expr::Ref(expr_ref)
-            if expr_ref.ref_path.starts_with('@') || is_literal_escape(&expr_ref.ref_path) =>
+            if is_v2_ref(&expr_ref.ref_path)
+                || is_pipe_value(&expr_ref.ref_path)
+                || is_literal_escape(&expr_ref.ref_path) =>
         {
             // Single v2 reference or literal escape (serde collapsed 1-element array)
             // Wrap it as single-element array
@@ -39,15 +41,13 @@ pub(crate) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
             )]))
         }
         Expr::Chain(chain) => {
-            // Check if first element is a v2 ref
+            // Check if first element is a v2 start value. serde may decode
+            // single-element arrays like ["$"] through ExprChain.
             if let Some(first) = chain.chain.first() {
-                if let Expr::Ref(r) = first {
-                    if r.ref_path.starts_with('@') {
-                        // Convert chain to array
-                        let arr: Vec<JsonValue> =
-                            chain.chain.iter().map(expr_to_json_value).collect();
-                        return Some(JsonValue::Array(arr));
-                    }
+                if expr_starts_v2_pipe(first) {
+                    // Convert chain to array
+                    let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+                    return Some(JsonValue::Array(arr));
                 }
             }
             None
@@ -62,18 +62,17 @@ pub(crate) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
     match expr {
         Expr::Literal(value) => Some(value.clone()),
         Expr::Ref(ref_expr)
-            if ref_expr.ref_path.starts_with('@') || is_literal_escape(&ref_expr.ref_path) =>
+            if is_v2_ref(&ref_expr.ref_path)
+                || is_pipe_value(&ref_expr.ref_path)
+                || is_literal_escape(&ref_expr.ref_path) =>
         {
             Some(JsonValue::String(ref_expr.ref_path.clone()))
         }
         Expr::Chain(chain) => {
             if let Some(first) = chain.chain.first() {
-                if let Expr::Ref(r) = first {
-                    if r.ref_path.starts_with('@') {
-                        let arr: Vec<JsonValue> =
-                            chain.chain.iter().map(expr_to_json_value).collect();
-                        return Some(JsonValue::Array(arr));
-                    }
+                if expr_starts_v2_pipe(first) {
+                    let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+                    return Some(JsonValue::Array(arr));
                 }
             }
             None
@@ -97,5 +96,19 @@ fn expr_to_json_value(expr: &Expr) -> JsonValue {
             let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
             JsonValue::Array(arr)
         }
+    }
+}
+
+fn expr_starts_v2_pipe(expr: &Expr) -> bool {
+    match expr {
+        Expr::Ref(reference) => {
+            is_v2_ref(&reference.ref_path)
+                || is_pipe_value(&reference.ref_path)
+                || is_literal_escape(&reference.ref_path)
+        }
+        Expr::Literal(JsonValue::String(value)) => {
+            is_v2_ref(value) || is_pipe_value(value) || is_literal_escape(value)
+        }
+        _ => false,
     }
 }

@@ -13,6 +13,24 @@ pub(super) fn validate_v2_op_step(
     scope: &V2Scope,
     ctx: &mut V2ValidationCtx<'_>,
 ) {
+    if ctx.is_custom_op(&op_step.op) {
+        if !scope.allows_pipe() {
+            ctx.push_error(
+                ErrorCode::InvalidRefNamespace,
+                "custom op direct call requires a pipe value; use with call options for literal-start calls",
+                base_path,
+            );
+        }
+        if !op_step.args.is_empty() {
+            ctx.push_error(
+                ErrorCode::InvalidArgs,
+                "custom op arguments must use with call options",
+                base_path,
+            );
+        }
+        return;
+    }
+
     // Check if op is known
     if !is_valid_op(&op_step.op) {
         ctx.push_error(

@@ -15,22 +15,68 @@ pub(in crate::transform) fn eval_v2_pipe_traced<'a>(
     ctx: &V2EvalContext<'a>,
     collector: &mut TraceCollector,
 ) -> Result<V2EvalValue, TransformError> {
+    let _eval_scope = ctx.enter_eval_scope();
     collector
         .start_span(TraceEventKind::ExprStart, TracePhase::Start)
         .rule_path(base_path)
         .finish(collector);
 
-    let mut current = match eval_v2_start(&pipe.start, record, context, out, base_path, ctx) {
-        Ok(value) => {
-            emit_v2_start_trace(&pipe.start, &value, base_path, collector);
-            value
-        }
+    let first_path = format!("{}[0]", base_path);
+    let literal_start_call = match crate::transform::parse_known_custom_call_literal_start(
+        &pipe.start,
+        ctx,
+        &first_path,
+    ) {
+        Ok(call) => call,
         Err(error) => {
             collector
                 .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
                 .rule_path(base_path)
                 .finish(collector);
             return Err(error);
+        }
+    };
+    let mut current = if let Some(call) = literal_start_call {
+        let current = ctx
+            .get_pipe_value()
+            .cloned()
+            .unwrap_or(V2EvalValue::Missing);
+        emit_v2_start_trace(&V2Start::PipeValue, &current, base_path, collector);
+        let step_ctx = ctx.clone().with_pipe_value(current.clone());
+        let step = V2Step::CustomCall(call);
+        let (current, _) = match eval_v2_step_traced(
+            &step,
+            current,
+            record,
+            context,
+            out,
+            &first_path,
+            &step_ctx,
+            collector,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
+                    .rule_path(base_path)
+                    .finish(collector);
+                return Err(error);
+            }
+        };
+        current
+    } else {
+        match eval_v2_start(&pipe.start, record, context, out, base_path, ctx) {
+            Ok(value) => {
+                emit_v2_start_trace(&pipe.start, &value, base_path, collector);
+                value
+            }
+            Err(error) => {
+                collector
+                    .error_span(TraceEventKind::Error, "EXPR_ERROR", "expression failed")
+                    .rule_path(base_path)
+                    .finish(collector);
+                return Err(error);
+            }
         }
     };
     let mut current_ctx = ctx.clone();
@@ -62,7 +108,7 @@ pub(in crate::transform) fn eval_v2_pipe_traced<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn eval_v2_expr_traced<'a>(
+pub(in crate::transform) fn eval_v2_expr_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,
     context: Option<&'a JsonValue>,
@@ -103,7 +149,7 @@ fn emit_v2_start_trace(
                 .rule_path(path)
                 .finish_with_v2_eval_output(collector, value, None);
         }
-        V2Start::PipeValue | V2Start::V1Expr(_) => {
+        V2Start::PipeValue | V2Start::ImplicitPipeValue | V2Start::V1Expr(_) => {
             collector
                 .emit(TraceEventKind::ChainStep, TracePhase::Instant)
                 .rule_path(path)
@@ -117,6 +163,13 @@ fn canonical_v2_ref_path(v2_ref: &V2Ref) -> Option<String> {
         V2Ref::Input(path) => Some(canonical_input_path(path)),
         V2Ref::Context(path) => Some(canonical_context_path(path)),
         V2Ref::Out(path) => Some(canonical_out_path(path)),
+        V2Ref::Pipe(path) => Some(if path.is_empty() {
+            "$".to_string()
+        } else if path.starts_with('[') {
+            format!("${}", path)
+        } else {
+            format!("$.{}", path)
+        }),
         V2Ref::Item(path) => Some(canonical_item_path(path)),
         V2Ref::Acc(path) => Some(canonical_acc_path(path)),
         V2Ref::Local(_) => None,

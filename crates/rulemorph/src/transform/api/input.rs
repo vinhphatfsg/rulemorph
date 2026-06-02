@@ -202,7 +202,7 @@ pub(super) fn transform_with_warnings_inner(
 
     let mut output = JsonValue::Array(output_records);
     if let Some(finalize) = &rule.finalize {
-        output = apply_finalize(finalize, output, context, limits)?;
+        output = apply_finalize(rule, finalize, output, context, limits)?;
     }
 
     Ok((output, warnings))

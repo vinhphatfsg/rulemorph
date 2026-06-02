@@ -1,0 +1,30 @@
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  total_from_input_ref:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "@input.qty"
+      - float
+      - "*": [["@input.unit_price", float]]
+  total_from_pipe_ref:
+    input: { qty: int, unit_price: number }
+    returns: number
+    expr:
+      - "$.qty"
+      - float
+      - "*": [["@input.unit_price", float]]
+mappings:
+  - target: input_ref_total
+    expr:
+      - "@input.line"
+      - total_from_input_ref
+    required: true
+  - target: pipe_ref_total
+    expr:
+      - "@input.line"
+      - total_from_pipe_ref
+    required: true
