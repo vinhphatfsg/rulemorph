@@ -450,6 +450,43 @@ mappings:
 }
 
 #[test]
+fn custom_op_with_args_accept_pipe_bracket_refs() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  pair:
+    input: { first: string, dotted: string }
+    mappings:
+      - target: first
+        expr: "$.first"
+        required: true
+      - target: dotted
+        expr: "$.dotted"
+        required: true
+mappings:
+  - target: value
+    expr:
+      - "@input"
+      - pair:
+          - with: { first: ["$.values", "$[0]"], dotted: "$[\"a.b\"]" }
+    required: true
+"#;
+    let rule = parse(yaml);
+    validate_rule_file(&rule).expect("pipe bracket refs validate in custom op args");
+
+    let output = transform(&rule, r#"[{"values":["first"],"a.b":"quoted"}]"#, None)
+        .expect("pipe bracket refs transform in custom op args");
+
+    assert_eq!(
+        output,
+        json!([{ "value": { "first": "first", "dotted": "quoted" } }])
+    );
+}
+
+#[test]
 fn custom_op_literal_start_call_continues_following_steps() {
     let yaml = r#"
 version: 2
