@@ -21,6 +21,14 @@ PR や作業ブランチで committed snapshot と比較する場合:
 python3 scripts/perf_report.py --criterion-dir target/criterion --baseline-json crates/rulemorph/PERF.json --json-output perf-report.json > perf-report.md
 ```
 
+## CI 測定モード
+
+`pull_request` では wall-clock 全体を測らず、短い Criterion canary だけを実行します。対象は `transform/batch/simple/records_5k` と `trace/simple/trace_off` です。GitHub runner の wall-clock は揺れるため、この結果は advisory とし、Markdown summary では未実行 benchmark の `missing` 行を表示しません。artifact の `perf-report.json` には `missing_from_current` と `hidden_missing_count` を残します。
+
+`workflow_dispatch` と nightly schedule では全 core benchmark target を実行します。full run では `missing` が 0 になることを期待し、baseline 更新や全体傾向の確認に使います。
+
+CI は Criterion 実行前に `target/criterion` を削除します。Rust cache から古い Criterion 結果が復元されても、今回実行していない benchmark が report に混ざらないようにするためです。
+
 ## 指標
 
 - `records/sec`: record evaluator や batch transform の主指標。
@@ -37,7 +45,7 @@ python3 scripts/perf_report.py --criterion-dir target/criterion --baseline-json 
 - `warn`: baseline 比で +10% 以上遅くなった。PR 説明に理由を書く。
 - `regression`: baseline 比で +20% 以上遅くなった。CI は fail しないが、意図した劣化でなければ修正する。
 - `new`: baseline に存在しない benchmark。新規追加時は `crates/rulemorph/PERF.json` を更新する。
-- `missing`: baseline には存在するが、今回の short canary では実行されなかった benchmark。PR CI では advisory として表示し、full baseline 更新時には空にする。
+- `missing`: baseline には存在するが、今回実行されなかった benchmark。PR short canary の Markdown では表示せず、JSON artifact に残す。full baseline 更新時には空にする。
 
 ## ゲート方針
 

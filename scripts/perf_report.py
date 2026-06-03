@@ -205,12 +205,13 @@ def markdown_cell(value):
     )
 
 
-def write_json_snapshot(rows, missing, path):
+def write_json_snapshot(rows, missing, path, report_mode, hidden_missing_count):
     if path is None:
         return
     payload = {
         "schema_version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "report_mode": report_mode,
         "thresholds": {
             "improvement_percent": IMPROVEMENT_THRESHOLD,
             "warn_percent": WARN_THRESHOLD,
@@ -227,14 +228,39 @@ def write_json_snapshot(rows, missing, path):
             for row in rows
         },
         "missing_from_current": missing,
+        "hidden_missing_count": hidden_missing_count,
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def print_markdown(rows, missing):
+def print_markdown(rows, missing, baseline_count, report_mode, hide_missing):
     print("# Rulemorph Core Performance Snapshot")
     print()
+    if report_mode == "short-pr":
+        measured = len(rows)
+        print("Mode: short PR canary.")
+        if baseline_count:
+            print(
+                f"Measured {measured} of {baseline_count} baseline benchmarks. "
+                f"{len(missing)} baseline-only benchmarks were not run in PR mode "
+                "and are hidden from this table."
+            )
+        else:
+            print(f"Measured {measured} benchmarks. No baseline snapshot was available.")
+        print(
+            "Criterion wall-clock deltas are advisory; blocking gates are cargo "
+            "tests, allocation canaries, and bench compilation."
+        )
+        print()
+    elif report_mode == "full":
+        if baseline_count:
+            print(f"Mode: full benchmark. Measured {len(rows)} of {baseline_count} baseline benchmarks.")
+        else:
+            print(f"Mode: full benchmark. Measured {len(rows)} benchmarks.")
+        print("Criterion wall-clock deltas are advisory.")
+        print()
+
     print("| benchmark | mean ns/iter | records/sec | MB/sec | baseline delta | status |")
     print("| --- | ---: | ---: | ---: | ---: | --- |")
     for row in rows:
@@ -245,9 +271,10 @@ def print_markdown(rows, missing):
             f"{format_delta(row['delta_percent'])} | "
             f"{markdown_cell(row['status'])} |"
         )
-    for name in missing:
+    visible_missing = [] if hide_missing else missing
+    for name in visible_missing:
         print(f"| {markdown_cell(name)} | - | - | - | - | missing |")
-    if not rows and not missing:
+    if not rows and not visible_missing:
         print("| `_no_criterion_results_found_` | 0 | - | - | - | new |")
 
 
@@ -256,6 +283,16 @@ def main():
     parser.add_argument("--criterion-dir", type=Path, default=DEFAULT_CRITERION)
     parser.add_argument("--baseline-json", type=Path)
     parser.add_argument("--json-output", type=Path)
+    parser.add_argument(
+        "--report-mode",
+        choices=["default", "short-pr", "full"],
+        default="default",
+    )
+    parser.add_argument(
+        "--hide-missing",
+        action="store_true",
+        help="hide baseline-only missing rows from Markdown output",
+    )
     args = parser.parse_args()
 
     rows = load_estimates(args.criterion_dir)
@@ -263,9 +300,16 @@ def main():
     compared = with_comparison(rows, baseline)
     current_names = {row["benchmark"] for row in compared}
     missing = sorted(name for name in baseline if name not in current_names)
+    hidden_missing_count = len(missing) if args.hide_missing else 0
 
-    write_json_snapshot(compared, missing, args.json_output)
-    print_markdown(compared, missing)
+    write_json_snapshot(
+        compared,
+        missing,
+        args.json_output,
+        args.report_mode,
+        hidden_missing_count,
+    )
+    print_markdown(compared, missing, len(baseline), args.report_mode, args.hide_missing)
 
 
 if __name__ == "__main__":
