@@ -4,7 +4,7 @@ use crate::error::{TransformError, TransformErrorKind};
 use crate::model::RuleFile;
 use crate::serde_guard::parse_json_value_strict;
 
-use super::{NormalizationOptions, enforce_json_limits, select_records_from_document};
+use super::{NormalizationOptions, enforce_json_limits, select_records_from_owned_document};
 
 pub fn normalize_json_records(
     rule: &RuleFile,
@@ -19,8 +19,8 @@ pub fn normalize_json_records(
     })?;
     enforce_json_limits(&value, options)?;
 
-    let records = select_records_from_document(
-        &value,
+    let records = select_records_from_owned_document(
+        value,
         rule.input
             .json
             .as_ref()

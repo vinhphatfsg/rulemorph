@@ -12,4 +12,4 @@ pub(super) use flatten::flatten_object;
 pub(super) use merge::merge_object;
 pub(super) use mutation::{remove_path, set_path_object_only, set_path_with_indexes};
 pub(super) use refs::{parse_path_tokens, parse_ref, parse_source};
-pub(super) use target::set_path;
+pub(super) use target::{set_path, set_path_tokens};

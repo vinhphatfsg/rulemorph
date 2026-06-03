@@ -19,11 +19,14 @@ use self::args::{
 };
 use self::boolean::compare_eq;
 pub(crate) use self::dispatch::eval_op;
+pub(super) use self::lookup::eval_lookup;
 pub(super) use self::shared::{
     SortKey, SortKeyKind, compare_sort_keys, locals_with_item, locals_with_precomputed_args,
 };
-pub(super) use self::value::{cast_value, value_as_bool, value_to_string};
+pub(super) use self::value::{
+    cast_value, value_as_bool, value_matches_string_key, value_to_string, value_to_string_optional,
+};
 use self::value::{
     expr_type_error, json_number_from_f64, to_radix_string, value_as_string, value_to_i64,
-    value_to_number, value_to_string_optional,
+    value_to_number,
 };

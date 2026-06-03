@@ -47,6 +47,7 @@ pub(crate) fn eval_op(
             base_path,
             false,
             locals,
+            None,
         ),
         "lookup_first" => eval_lookup(
             &expr_op.args,
@@ -57,6 +58,7 @@ pub(crate) fn eval_op(
             base_path,
             true,
             locals,
+            None,
         ),
         op if is_json_operator(op) => {
             eval_json_dispatch(expr_op, record, context, out, base_path, injected, locals)

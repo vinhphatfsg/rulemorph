@@ -19,6 +19,15 @@ pub(in crate::transform) fn set_path(
         .with_path(format!("{}.target", mapping_path)));
     }
 
+    set_path_tokens(root, &tokens, value, mapping_path)
+}
+
+pub(in crate::transform) fn set_path_tokens(
+    root: &mut JsonValue,
+    tokens: &[PathToken],
+    value: JsonValue,
+    mapping_path: &str,
+) -> Result<(), TransformError> {
     let mut current = root;
     for (index, token) in tokens.iter().enumerate() {
         let is_last = index == tokens.len() - 1;

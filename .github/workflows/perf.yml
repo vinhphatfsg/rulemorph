@@ -12,6 +12,9 @@ on:
       - "scripts/perf_report.py"
       - "docs/perf.md"
   workflow_dispatch:
+  schedule:
+    # Full benchmark smoke on the default branch. PRs use short canaries only.
+    - cron: "0 18 * * *"
 
 permissions:
   contents: read
@@ -76,7 +79,14 @@ jobs:
           cargo bench -p rulemorph --bench trace_bench --no-run
           cargo bench -p rulemorph --bench v2_bench --no-run
 
+      - name: Clear previous Criterion results
+        working-directory: pr
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: rm -rf target/criterion
+
       - name: Run short Criterion canaries
+        if: github.event_name == 'pull_request'
         working-directory: pr
         env:
           GITHUB_STEP_SUMMARY: /dev/null
@@ -84,9 +94,40 @@ jobs:
           cargo bench -p rulemorph --bench transform_bench -- transform/batch/simple/records_5k --warm-up-time 1 --measurement-time 2
           cargo bench -p rulemorph --bench trace_bench -- trace_off --warm-up-time 1 --measurement-time 2
 
-      - name: Build performance report
-        if: hashFiles('trusted/scripts/perf_report.py') != ''
-        run: python3 trusted/scripts/perf_report.py --criterion-dir pr/target/criterion --baseline-json trusted/crates/rulemorph/PERF.json --json-output perf-report.json > perf-report.md
+      - name: Run full Criterion benchmarks
+        if: github.event_name != 'pull_request'
+        working-directory: pr
+        env:
+          GITHUB_STEP_SUMMARY: /dev/null
+        run: |
+          cargo bench -p rulemorph --bench transform_bench
+          cargo bench -p rulemorph --bench parse_bench
+          cargo bench -p rulemorph --bench normalize_bench
+          cargo bench -p rulemorph --bench exec_mode_bench
+          cargo bench -p rulemorph --bench trace_bench
+          cargo bench -p rulemorph --bench v2_bench
+
+      - name: Build short performance report
+        if: github.event_name == 'pull_request' && hashFiles('trusted/scripts/perf_report.py') != ''
+        run: |
+          if python3 trusted/scripts/perf_report.py --help | grep -q -- "--hide-missing"; then
+            python3 trusted/scripts/perf_report.py --criterion-dir pr/target/criterion --baseline-json trusted/crates/rulemorph/PERF.json --json-output perf-report.json --report-mode short-pr --hide-missing > perf-report.md
+          else
+            python3 trusted/scripts/perf_report.py --criterion-dir pr/target/criterion --baseline-json trusted/crates/rulemorph/PERF.json --json-output perf-report.json > perf-report.raw.md
+            {
+              echo "# Rulemorph Core Performance Snapshot"
+              echo
+              echo "Mode: short PR canary."
+              echo "Measured short canary benchmarks only. Baseline-only benchmarks are hidden from this table."
+              echo "Criterion wall-clock deltas are advisory; blocking gates are cargo tests, allocation canaries, and bench compilation."
+              echo
+              awk 'NR <= 2 { next } /\| missing \|$/ { next } { print }' perf-report.raw.md
+            } > perf-report.md
+          fi
+
+      - name: Build full performance report
+        if: github.event_name != 'pull_request' && hashFiles('trusted/scripts/perf_report.py') != ''
+        run: python3 trusted/scripts/perf_report.py --criterion-dir pr/target/criterion --baseline-json trusted/crates/rulemorph/PERF.json --json-output perf-report.json --report-mode full > perf-report.md
 
       - name: Record missing trusted report renderer
         if: hashFiles('trusted/scripts/perf_report.py') == ''
