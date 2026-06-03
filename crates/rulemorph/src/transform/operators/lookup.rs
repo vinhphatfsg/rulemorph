@@ -166,7 +166,7 @@ pub(in crate::transform) fn eval_lookup(
     let match_key = value_to_string(&match_value, &match_path)?;
 
     if let (None, Some(compiled)) = (injected, compiled_lookup) {
-        if let Some(index) = compiled.index(&args, collection_array, key_tokens, output_tokens) {
+        if let Some(index) = compiled.index(args, collection_array, key_tokens, output_tokens) {
             let Some(matches) = index.get(&match_key) else {
                 return Ok(EvalValue::Missing);
             };
@@ -205,7 +205,7 @@ pub(in crate::transform) fn eval_lookup(
 
     let mut results = Vec::new();
     for item in collection_array {
-        let key_value = match get_path(item, &key_tokens) {
+        let key_value = match get_path(item, key_tokens) {
             Some(value) => value,
             None => continue,
         };
