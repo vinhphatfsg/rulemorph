@@ -165,10 +165,12 @@ pub(super) fn transform_with_warnings_inner(
     let mut warnings = Vec::new();
     let mut output_records = Vec::new();
     let limits = EvalLimits::from(options);
+    let mut compiled_rule = None;
     if rule.finalize.is_some() {
         let mut records = input_records_iter_with_options(rule, input, options)?;
         while let Some(record) = records.next() {
             let record = record?;
+            let compiled_rule_ref = compiled_rule.get_or_insert_with(|| CompiledRule::new(rule));
             let mut record_warnings = Vec::new();
             let mut branch_context = BranchContext::default();
             if let Some(output) = apply_rule_to_record(
@@ -179,6 +181,7 @@ pub(super) fn transform_with_warnings_inner(
                 base_dir,
                 &mut branch_context,
                 limits,
+                Some(compiled_rule_ref),
             )? {
                 output_records.push(output);
             }

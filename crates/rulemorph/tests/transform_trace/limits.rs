@@ -48,6 +48,59 @@ mappings:
 }
 
 #[test]
+fn trace_max_snapshot_bytes_counts_bytes_before_first_truncated_snapshot() {
+    let yaml = r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "input.id"
+  - target: "big"
+    source: "input.big"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let mut options = TransformTraceOptions::raw();
+    options.max_snapshot_bytes = Some(40);
+
+    let traced = transform_input_with_trace(
+        &rule,
+        InputData::Text(r#"[{"id":"a","big":"ok"},{"id":"b","big":"abcdefghijklmnopqrstuvwxyz"}]"#),
+        None,
+        &options,
+    )
+    .expect("traced transform");
+
+    assert_eq!(
+        traced.output,
+        json!([
+            { "id": "a", "big": "ok" },
+            { "id": "b", "big": "abcdefghijklmnopqrstuvwxyz" }
+        ])
+    );
+    let truncation = traced.trace.truncation.as_ref().expect("truncation");
+    assert_eq!(truncation.reason, "max_snapshot_bytes");
+
+    let events = iter_trace_events(&traced.trace);
+    let truncated_event = events
+        .get(truncation.emitted_events)
+        .expect("truncated event should be emitted");
+    let truncated_event_bytes = serde_json::to_value(truncated_event)
+        .ok()
+        .and_then(|value| serde_json::to_vec(&value).ok())
+        .map(|bytes| bytes.len())
+        .expect("event should serialize");
+
+    assert!(
+        truncation.emitted_bytes > truncated_event_bytes,
+        "snapshot truncation should include bytes from prior emitted events: truncation={:?} truncated_event_bytes={}",
+        truncation,
+        truncated_event_bytes
+    );
+}
+
+#[test]
 fn trace_max_trace_bytes_freezes_with_truncation_reason() {
     let yaml = r#"
 version: 2

@@ -47,6 +47,63 @@ fn performance_workload_smoke_still_transforms_lookup_records() {
     assert_eq!(records[999]["tags"], json!(["tag-99"]));
 }
 
+#[test]
+fn indexed_lookup_preserves_duplicate_and_missing_output_semantics() {
+    let rule = parse_rule_file(
+        r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "first"
+    expr:
+      op: "lookup_first"
+      args:
+        - { ref: "context.items" }
+        - "id"
+        - { ref: "input.id" }
+        - "value"
+  - target: "all"
+    expr:
+      op: "lookup"
+      args:
+        - { ref: "context.items" }
+        - "id"
+        - { ref: "input.id" }
+        - "value"
+"#,
+    )
+    .expect("failed to parse lookup rules");
+    let input = serde_json::to_string(&vec![
+        json!({ "id": "a" }),
+        json!({ "id": "b" }),
+        json!({ "id": "c" }),
+    ])
+    .expect("failed to serialize input");
+    let context = json!({
+        "items": [
+            { "id": "a", "value": "first-a" },
+            { "id": "a" },
+            { "id": "a", "value": "second-a" },
+            { "id": "b" },
+            { "id": "b", "value": "only-b" },
+            { "id": "c" }
+        ]
+    });
+
+    let output = transform(&rule, &input, Some(&context)).expect("transform failed");
+
+    assert_eq!(
+        output,
+        json!([
+            { "first": "first-a", "all": ["first-a", "second-a"] },
+            { "first": "only-b", "all": ["only-b"] },
+            {}
+        ])
+    );
+}
+
 fn build_context(user_count: usize, tag_count: usize) -> serde_json::Value {
     let mut users = Vec::with_capacity(user_count);
     for i in 0..user_count {

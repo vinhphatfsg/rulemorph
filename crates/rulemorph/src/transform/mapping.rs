@@ -1,6 +1,7 @@
 use serde_json::Value as JsonValue;
 
 use crate::error::{TransformError, TransformErrorKind};
+use crate::model::Expr;
 use crate::trace::{
     TraceCollector, TraceEventKind, TracePhase, canonical_context_path, canonical_input_path,
     canonical_out_path,
@@ -9,8 +10,9 @@ use crate::v2_eval::{EvalValue as V2EvalValue, V2EvalContext, eval_v2_pipe};
 use crate::v2_parser::parse_v2_pipe_from_value;
 
 use super::{
-    EvalLimits, EvalLocals, EvalValue, Namespace, cast_value, eval_expr, eval_expr_traced,
-    eval_v2_pipe_traced, expr_to_json_for_v2_pipe, parse_source, resolve_source,
+    CompiledMapping, EvalLimits, EvalLocals, EvalValue, Namespace, cast_value, eval_expr,
+    eval_expr_traced, eval_lookup, eval_v2_pipe_traced, expr_to_json_for_v2_pipe, parse_source,
+    resolve_source,
 };
 
 pub(super) fn eval_mapping_with_v2_context(
@@ -23,6 +25,7 @@ pub(super) fn eval_mapping_with_v2_context(
     version: u8,
     limits: EvalLimits,
     base_v2_ctx: &V2EvalContext<'_>,
+    compiled_mapping: Option<&CompiledMapping>,
 ) -> Result<Option<JsonValue>, TransformError> {
     eval_mapping_inner(
         rule,
@@ -34,6 +37,7 @@ pub(super) fn eval_mapping_with_v2_context(
         version,
         limits,
         Some(base_v2_ctx),
+        compiled_mapping,
     )
 }
 
@@ -48,6 +52,7 @@ fn eval_mapping_inner(
     version: u8,
     limits: EvalLimits,
     base_v2_ctx: Option<&V2EvalContext<'_>>,
+    compiled_mapping: Option<&CompiledMapping>,
 ) -> Result<Option<JsonValue>, TransformError> {
     let value = if let Some(source) = &mapping.source {
         resolve_source(source, record, context, out, mapping_path)?
@@ -56,41 +61,83 @@ fn eval_mapping_inner(
     } else if let Some(expr) = &mapping.expr {
         // Check if this is a v2 expression (version 2)
         if version >= 2 {
-            let expr_path = format!("{}.expr", mapping_path);
-            // Try to interpret as v2 pipe
-            let v2_json = expr_to_json_for_v2_pipe(expr);
-            if let Some(json_val) = v2_json {
-                let v2_pipe = parse_v2_pipe_from_value(&json_val).map_err(|e| {
-                    TransformError::new(TransformErrorKind::ExprError, e.to_string())
-                        .with_path(&expr_path)
-                })?;
+            let expr_path_storage;
+            let expr_path = if let Some(compiled) = compiled_mapping {
+                compiled.expr_path()
+            } else {
+                expr_path_storage = format!("{}.expr", mapping_path);
+                &expr_path_storage
+            };
+            if let Some(v2_pipe) =
+                compiled_mapping.and_then(|compiled| compiled.v2_pipe(mapping, version))
+            {
+                let v2_pipe = v2_pipe?;
                 let v2_ctx = base_v2_ctx
                     .cloned()
                     .unwrap_or_else(V2EvalContext::new)
                     .with_limits(limits)
                     .with_rule(rule);
                 let v2_result = eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
-                // Convert v2 EvalValue to v1 EvalValue
                 match v2_result {
                     V2EvalValue::Missing => EvalValue::Missing,
                     V2EvalValue::Value(v) => EvalValue::Value(v),
                 }
             } else {
-                // v2 but not a v2 pipe - use v1 eval
-                let eval_locals = root_eval_locals(limits);
-                eval_expr(expr, record, context, out, &expr_path, Some(&eval_locals))?
+                // Try to interpret as v2 pipe
+                let v2_json = expr_to_json_for_v2_pipe(expr);
+                if let Some(json_val) = v2_json {
+                    let v2_pipe = parse_v2_pipe_from_value(&json_val).map_err(|e| {
+                        TransformError::new(TransformErrorKind::ExprError, e.to_string())
+                            .with_path(expr_path)
+                    })?;
+                    let v2_ctx = base_v2_ctx
+                        .cloned()
+                        .unwrap_or_else(V2EvalContext::new)
+                        .with_limits(limits)
+                        .with_rule(rule);
+                    let v2_result =
+                        eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
+                    match v2_result {
+                        V2EvalValue::Missing => EvalValue::Missing,
+                        V2EvalValue::Value(v) => EvalValue::Value(v),
+                    }
+                } else {
+                    // v2 but not a v2 pipe - use v1 eval
+                    let eval_locals = root_eval_locals(limits);
+                    eval_expr(expr, record, context, out, &expr_path, Some(&eval_locals))?
+                }
             }
         } else {
             // v1 rule - use v1 eval
             let eval_locals = root_eval_locals(limits);
-            eval_expr(
+            let expr_path_storage;
+            let expr_path = if let Some(compiled) = compiled_mapping {
+                compiled.expr_path()
+            } else {
+                expr_path_storage = format!("{}.expr", mapping_path);
+                &expr_path_storage
+            };
+            match (
                 expr,
-                record,
-                context,
-                out,
-                &format!("{}.expr", mapping_path),
-                Some(&eval_locals),
-            )?
+                compiled_mapping.and_then(|compiled| compiled.v1_lookup(mapping)),
+            ) {
+                (Expr::Op(expr_op), Some(compiled_lookup))
+                    if matches!(expr_op.op.as_str(), "lookup" | "lookup_first") =>
+                {
+                    eval_lookup(
+                        &expr_op.args,
+                        None,
+                        record,
+                        context,
+                        out,
+                        expr_path,
+                        expr_op.op == "lookup_first",
+                        Some(&eval_locals),
+                        Some(compiled_lookup),
+                    )?
+                }
+                _ => eval_expr(expr, record, context, out, expr_path, Some(&eval_locals))?,
+            }
         }
     } else {
         return Err(TransformError::new(

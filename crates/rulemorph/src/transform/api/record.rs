@@ -70,6 +70,7 @@ pub(in crate::transform) fn transform_record_with_warnings_inner(
         base_dir,
         branch_context,
         limits,
+        None,
     )?;
     if output.is_none() {
         return Ok((None, warnings));

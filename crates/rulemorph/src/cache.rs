@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::{HashMap, VecDeque};
 use std::hash::Hash;
 
@@ -28,6 +29,17 @@ where
         Some(value)
     }
 
+    pub fn get_cloned_by<Q>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+        Q: Eq + Hash + ?Sized,
+        V: Clone,
+    {
+        let value = self.map.get(key)?.clone();
+        self.touch_by(key);
+        Some(value)
+    }
+
     pub fn insert(&mut self, key: K, value: V) {
         if self.capacity == 0 {
             return;
@@ -54,5 +66,17 @@ where
             self.order.remove(pos);
         }
         self.order.push_back(key.clone());
+    }
+
+    fn touch_by<Q>(&mut self, key: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Eq + ?Sized,
+    {
+        if let Some(pos) = self.order.iter().position(|k| k.borrow() == key) {
+            if let Some(existing) = self.order.remove(pos) {
+                self.order.push_back(existing);
+            }
+        }
     }
 }

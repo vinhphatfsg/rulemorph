@@ -671,6 +671,7 @@ fn eval_custom_op_body(
                 2,
                 limits,
                 &body_ctx,
+                None,
             )?;
             if let Some(value) = value {
                 set_path(&mut output, &mapping.target, value, &mapping_path)?;
