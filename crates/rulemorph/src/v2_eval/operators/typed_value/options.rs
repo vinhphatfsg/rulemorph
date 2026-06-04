@@ -135,6 +135,7 @@ pub(super) fn parse_options<'a>(
     let decode_map = match merged.get("decode") {
         Some(JsonValue::Object(map)) => {
             validate_decode_option_keys(map, path)?;
+            validate_decode_option_values(map, path)?;
             Some(map)
         }
         Some(_) => return Err(expr_error("decode must be an object", path)),
@@ -235,6 +236,12 @@ pub(super) fn parse_options<'a>(
         }
         validate_profile_hint_type(profile, root_type, "type", path)?;
     }
+    if root_type.is_some() && hints.iter().any(|hint| hint.path.0.is_empty()) {
+        return Err(expr_error(
+            "root type and root field type path cannot be used together",
+            path,
+        ));
+    }
     if !profile.supports_root_type() {
         for hint in &hints {
             if hint.path.0.is_empty() {
@@ -307,6 +314,71 @@ fn validate_option_keys(
         }
     }
     Ok(())
+}
+
+fn validate_decode_option_values(
+    map: &JsonMap<String, JsonValue>,
+    path: &str,
+) -> Result<(), TransformError> {
+    validate_string_choice(
+        map,
+        "mode",
+        &["safe_json", "json_shape_roundtrip"],
+        "unsupported decode mode",
+        path,
+    )?;
+    validate_string_choice(
+        map,
+        "number_policy",
+        &["string", "parse_json_number_if_safe"],
+        "unsupported typed value number_policy",
+        path,
+    )?;
+    validate_string_choice(
+        map,
+        "binary_policy",
+        &["base64"],
+        "unsupported binary_policy",
+        path,
+    )?;
+    validate_string_choice(
+        map,
+        "timestamp_policy",
+        &["string"],
+        "unsupported timestamp_policy",
+        path,
+    )?;
+    validate_string_choice(
+        map,
+        "object_id_policy",
+        &["string"],
+        "unsupported object_id_policy",
+        path,
+    )?;
+    validate_string_choice(
+        map,
+        "set_policy",
+        &["array"],
+        "unsupported set_policy",
+        path,
+    )
+}
+
+fn validate_string_choice(
+    map: &JsonMap<String, JsonValue>,
+    key: &str,
+    allowed: &[&str],
+    label: &str,
+    path: &str,
+) -> Result<(), TransformError> {
+    let Some(value) = get_string(map, key, path)? else {
+        return Ok(());
+    };
+    if allowed.contains(&value.as_str()) {
+        Ok(())
+    } else {
+        Err(expr_error(format!("{}: {}", label, value), path))
+    }
 }
 
 fn validate_decode_option_keys(

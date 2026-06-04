@@ -56,6 +56,26 @@ mappings:
 }
 
 #[test]
+fn typed_value_runtime_rejects_shadowed_decode_policy_values() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input.value"
+      - from_typed_value: "@input.options"
+"#;
+    let message = transform_err(
+        yaml,
+        r#"{"value":{"count":{"N":"1"}},"options":{"profile":"dynamodb_item","number_policy":"string","decode":{"number_policy":"parse_json_number_if_sfae"}}}"#,
+    );
+    assert!(message.contains("unsupported typed value number_policy"));
+}
+
+#[test]
 fn typed_value_runtime_rejects_mongo_only_options_on_non_mongo_profiles() {
     let dynamodb_mode_yaml = r#"
 version: 2
@@ -174,6 +194,31 @@ mappings:
 }
 
 #[test]
+fn typed_value_validation_checks_top_level_codec_profile_constraints() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  bad:
+    profile: dynamodb_item
+    field_types:
+      id: object_id
+mappings:
+  - target: unchanged
+    expr: "@input"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("top-level codec binding should be invalid");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.message.contains("field type is not supported by dynamodb_item profile"))
+    );
+}
+
+#[test]
 fn typed_value_validation_rejects_root_hints_on_map_shaped_profiles() {
     let codec_binding_yaml = r#"
 version: 2
@@ -217,6 +262,52 @@ mappings:
 "#;
     let message = transform_err(inline_yaml, r#"{"count":"1"}"#);
     assert!(message.contains("root field type path is not supported"));
+}
+
+#[test]
+fn typed_value_validation_rejects_conflicting_root_type_contracts() {
+    let static_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  mongo:
+    profile: mongo_extended_json
+    type: object_id
+    field_types:
+      ".": date
+mappings:
+  - target: typed
+    expr:
+      - "@input.id"
+      - to_typed_value:
+          codec: mongo
+"#;
+    let rule = parse_rule_file(static_yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("conflicting root contracts should fail");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.message.contains("root type and root field type path cannot be used together"))
+    );
+
+    let dynamic_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: typed
+    expr:
+      - "@input.id"
+      - to_typed_value: "@input.options"
+"#;
+    let message = transform_err(
+        dynamic_yaml,
+        r#"{"id":"0123456789abcdef01234567","options":{"profile":"mongo_extended_json","type":"object_id","field_types":{".":"date"}}}"#,
+    );
+    assert!(message.contains("root type and root field type path cannot be used together"));
 }
 
 #[test]

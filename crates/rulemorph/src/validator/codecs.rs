@@ -451,6 +451,7 @@ fn validate_resolved_codec_options(
     }
     validate_combined_hint_count(&merged, base_path, ctx);
     validate_duplicate_hint_paths(&merged, base_path, ctx);
+    validate_root_type_hint_conflicts(&merged, base_path, ctx);
     validate_root_hint_paths(&merged, base_path, ctx);
     validate_profile_hint_types(&merged, base_path, ctx);
 }
@@ -645,6 +646,7 @@ fn validate_codec_option_values(
     validate_dynamodb_sugar_values(map, base_path, ctx);
     validate_combined_hint_count(map, base_path, ctx);
     validate_duplicate_hint_paths(map, base_path, ctx);
+    validate_root_type_hint_conflicts(map, base_path, ctx);
     validate_root_hint_paths(map, base_path, ctx);
     validate_profile_hint_types(map, base_path, ctx);
 }
@@ -1176,6 +1178,28 @@ fn validate_root_hint_paths(
                     "root field type path is not supported by {} profile",
                     profile
                 ),
+                base_path,
+            );
+        }
+    }
+}
+
+fn validate_root_type_hint_conflicts(
+    map: &JsonMap<String, JsonValue>,
+    base_path: &str,
+    ctx: &mut ValidationCtx<'_>,
+) {
+    if !map.contains_key("type") {
+        return;
+    }
+    for raw_path in collect_hint_paths(map) {
+        let Ok(path) = parse_hint_path(&raw_path) else {
+            continue;
+        };
+        if path.0.is_empty() {
+            ctx.push(
+                ErrorCode::InvalidExprShape,
+                "root type and root field type path cannot be used together",
                 base_path,
             );
         }
