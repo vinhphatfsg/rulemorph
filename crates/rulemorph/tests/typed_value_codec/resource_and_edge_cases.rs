@@ -333,6 +333,55 @@ mappings:
 }
 
 #[test]
+fn typed_value_runtime_rejects_oversized_number_set_and_firestore_double_strings() {
+    let mut options = rulemorph::NormalizationOptions::default();
+    options.max_text_bytes = 16 * 1024 * 1024;
+    options.max_input_bytes = 32 * 1024 * 1024;
+
+    let number_set_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: dynamodb_item
+          field_types:
+            scores: number_set
+"#;
+    let oversized = "0".repeat(8 * 1024 * 1024 + 1);
+    let input = serde_json::json!({"scores": [oversized]}).to_string();
+    let rule = parse_rule_file(number_set_yaml).expect("parse rule");
+    let err = transform_input_with_options(&rule, InputData::Text(&input), None, &options)
+        .expect_err("oversized DynamoDB number-set string");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("input string bytes"));
+
+    let firestore_double_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: firestore_value
+"#;
+    let oversized = "0".repeat(8 * 1024 * 1024 + 1);
+    let input = serde_json::json!({"doubleValue": oversized}).to_string();
+    let rule = parse_rule_file(firestore_double_yaml).expect("parse rule");
+    let err = transform_input_with_options(&rule, InputData::Text(&input), None, &options)
+        .expect_err("oversized Firestore double string");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("input string bytes"));
+}
+
+#[test]
 fn typed_value_dynamodb_number_precision_trims_trailing_zeroes_and_rejects_provider_invalid_forms()
 {
     let encode_yaml = r#"

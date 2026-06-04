@@ -1259,6 +1259,14 @@ fn validate_profile_hint_type(
     let Some(raw) = value.as_str() else {
         return;
     };
+    if label == "type" && !profile_supports_root_type(profile) {
+        ctx.push(
+            ErrorCode::InvalidExprShape,
+            &format!("type is not supported by {} profile", profile),
+            base_path,
+        );
+        return;
+    }
     let allowed = match profile {
         "dynamodb_attribute_value" | "dynamodb_item" => matches!(
             raw,
@@ -1294,4 +1302,11 @@ fn validate_profile_hint_type(
             base_path,
         );
     }
+}
+
+fn profile_supports_root_type(profile: &str) -> bool {
+    matches!(
+        profile,
+        "dynamodb_attribute_value" | "firestore_value" | "mongo_extended_json"
+    )
 }

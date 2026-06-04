@@ -131,7 +131,10 @@ pub(super) fn encode_number_set(
     for value in values {
         let s = match value {
             JsonValue::Number(n) => n.to_string(),
-            JsonValue::String(s) => s.clone(),
+            JsonValue::String(s) => {
+                validate_input_string_bytes(s, path)?;
+                s.clone()
+            }
             _ => {
                 return Err(expr_error(
                     "number set entries must be numbers or strings",

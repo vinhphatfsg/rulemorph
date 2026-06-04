@@ -227,6 +227,12 @@ pub(super) fn parse_options<'a>(
         None => None,
     };
     if let Some(root_type) = root_type {
+        if !profile.supports_root_type() {
+            return Err(expr_error(
+                format!("type is not supported by {} profile", profile.name()),
+                path,
+            ));
+        }
         validate_profile_hint_type(profile, root_type, "type", path)?;
     }
     for hint in &hints {

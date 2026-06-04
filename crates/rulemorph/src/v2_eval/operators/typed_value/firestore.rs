@@ -271,18 +271,20 @@ pub(super) fn decode_firestore_value(
         }
         "doubleValue" => match value {
             JsonValue::Number(n) => Ok(JsonValue::Number(n.clone())),
-            JsonValue::String(s) if is_special_double_string(s) => {
-                validate_firestore_double_string(s, path)?;
-                Ok(JsonValue::String(s.clone()))
-            }
-            JsonValue::String(s)
-                if options.number_policy == NumberPolicy::ParseJsonNumberIfSafe =>
-            {
-                parse_json_number_if_safe(s, path).map(JsonValue::Number)
-            }
-            JsonValue::String(s) => {
-                validate_firestore_double_string(s, path)?;
-                Ok(JsonValue::String(s.clone()))
+            JsonValue::String(_) => {
+                let s = expect_string(value, "doubleValue must be number or string", path)?;
+                if s.len() > FIRESTORE_VALUE_MAX_BYTES {
+                    return Err(expr_error("Firestore doubleValue exceeds size limit", path));
+                }
+                if is_special_double_string(&s) {
+                    validate_firestore_double_string(&s, path)?;
+                    return Ok(JsonValue::String(s));
+                }
+                if options.number_policy == NumberPolicy::ParseJsonNumberIfSafe {
+                    return parse_json_number_if_safe(&s, path).map(JsonValue::Number);
+                }
+                validate_firestore_double_string(&s, path)?;
+                Ok(JsonValue::String(s))
             }
             _ => Err(expr_error("doubleValue must be number or string", path)),
         },

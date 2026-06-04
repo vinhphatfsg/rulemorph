@@ -34,6 +34,13 @@ impl Profile {
         matches!(self, Self::MongoExtendedJson)
     }
 
+    pub(in crate::v2_eval::operators::typed_value) fn supports_root_type(self) -> bool {
+        matches!(
+            self,
+            Self::DynamoDbAttributeValue | Self::FirestoreValue | Self::MongoExtendedJson
+        )
+    }
+
     pub(in crate::v2_eval::operators::typed_value) fn name(self) -> &'static str {
         match self {
             Self::DynamoDbAttributeValue => "dynamodb_attribute_value",

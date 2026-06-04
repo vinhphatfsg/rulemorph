@@ -131,6 +131,49 @@ mappings:
 }
 
 #[test]
+fn typed_value_validation_rejects_root_type_on_map_shaped_profiles() {
+    let codec_binding_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  doc:
+    profile: firestore_document
+    type: integer
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: doc
+"#;
+    let rule = parse_rule_file(codec_binding_yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("map-shaped codec type should be invalid");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.message.contains("type is not supported by firestore_document profile"))
+    );
+
+    let inline_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: dynamodb_item
+          type: number_string
+"#;
+    let message = transform_err(inline_yaml, r#"{"count":"1"}"#);
+    assert!(message.contains("type is not supported by dynamodb_item profile"));
+}
+
+#[test]
 fn typed_value_requires_profile_argument_at_validation_time() {
     let yaml = r#"
 version: 2
@@ -171,4 +214,3 @@ mappings:
     let message = transform_err(yaml, r#"{"events":{"created_at":"1"}}"#);
     assert!(message.contains("empty segment"));
 }
-
