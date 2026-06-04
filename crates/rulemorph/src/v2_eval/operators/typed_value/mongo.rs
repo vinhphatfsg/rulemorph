@@ -83,8 +83,9 @@ pub(super) fn encode_mongo_value(
         )),
         None => match value {
             JsonValue::Object(map) => {
-                if is_known_mongo_wrapper_object(map) {
+                if let Some((key, inner)) = exactly_one_known_mongo_wrapper(map) {
                     if options.allow_extended_json_passthrough {
+                        decode_mongo_wrapper(key, inner, options, None, path)?;
                         return Ok(value.clone());
                     }
                     if options.extended_json_wrapper_objects == WrapperObjectPolicy::RejectUnhinted
@@ -104,6 +105,7 @@ pub(super) fn encode_mongo_value(
                 let mut out = JsonMap::new();
                 for (key, item) in map {
                     validate_input_string_bytes(key, path)?;
+                    validate_mongo_field_name(key, path)?;
                     if key.starts_with('$') && !options.allow_dollar_prefixed_fields {
                         return Err(expr_error(
                             "MongoDB dollar-prefixed field requires opt-in",
@@ -185,6 +187,7 @@ pub(super) fn decode_mongo_value(
             let mut out = JsonMap::new();
             for (key, item) in map {
                 validate_input_string_bytes(key, path)?;
+                validate_mongo_field_name(key, path)?;
                 if key.starts_with('$') && !options.allow_dollar_prefixed_fields {
                     return Err(expr_error("unknown MongoDB dollar-prefixed field", path));
                 }

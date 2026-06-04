@@ -1,0 +1,124 @@
+#[test]
+fn typed_value_decode_rejects_malformed_dynamodb_sets() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: dynamodb_item
+"#;
+    let empty = transform_err(yaml, r#"{"tags":{"SS":[]}}"#);
+    assert!(empty.contains("set must not be empty"));
+
+    let duplicate = transform_err(yaml, r#"{"tags":{"SS":["a","a"]}}"#);
+    assert!(duplicate.contains("duplicate"));
+
+    let numeric_duplicate = transform_err(yaml, r#"{"scores":{"NS":["1","1.0","10e-1"]}}"#);
+    assert!(numeric_duplicate.contains("duplicate"));
+}
+
+#[test]
+fn typed_value_dynamodb_decode_rejects_tags_that_contradict_field_types() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  ddb:
+    profile: dynamodb_item
+    field_types:
+      tags: string_set
+mappings:
+  - target: decoded
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: ddb
+"#;
+    let message = transform_err(yaml, r#"{"tags":{"L":[{"S":"a"},{"S":"b"}]}}"#);
+    assert!(message.contains("does not match field type"));
+}
+
+#[test]
+fn typed_value_firestore_decode_rejects_direct_nested_arrays() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: firestore_value
+"#;
+    let message = transform_err(
+        yaml,
+        r#"{"arrayValue":{"values":[{"arrayValue":{"values":[]}}]}}"#,
+    );
+    assert!(message.contains("direct nested array"));
+}
+
+#[test]
+fn typed_value_firestore_decode_rejects_map_value_unknown_fields() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: firestore_value
+"#;
+    let message = transform_err(yaml, r#"{"mapValue":{"fields":{},"extra":1}}"#);
+    assert!(message.contains("mapValue contains unknown field"));
+
+    let message = transform_err(yaml, r#"{"mapValue":{"extra":1}}"#);
+    assert!(message.contains("mapValue contains unknown field"));
+}
+
+#[test]
+fn typed_value_decode_rejects_invalid_provider_number_strings() {
+    let dynamodb_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: dynamodb_attribute_value
+"#;
+    let message = transform_err(dynamodb_yaml, r#"{"N":"abc"}"#);
+    assert!(message.contains("invalid DynamoDB number"));
+
+    let firestore_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: firestore_value
+"#;
+    let message = transform_err(firestore_yaml, r#"{"integerValue":"abc"}"#);
+    assert!(message.contains("integerValue requires int64 string"));
+
+    let message = transform_err(firestore_yaml, r#"{"doubleValue":"abc"}"#);
+    assert!(message.contains("doubleValue requires finite number string"));
+}

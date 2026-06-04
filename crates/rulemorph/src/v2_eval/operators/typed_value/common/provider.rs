@@ -147,6 +147,19 @@ pub(in crate::v2_eval::operators::typed_value) fn validate_binary_subtype(
     }
 }
 
+pub(in crate::v2_eval::operators::typed_value) fn validate_mongo_field_name(
+    key: &str,
+    path: &str,
+) -> Result<(), TransformError> {
+    if key.contains('\0') {
+        return Err(expr_error(
+            "MongoDB field name must not contain null bytes",
+            path,
+        ));
+    }
+    Ok(())
+}
+
 pub(in crate::v2_eval::operators::typed_value) fn validate_firestore_geo_point(
     value: &JsonValue,
     path: &str,
@@ -250,16 +263,6 @@ pub(in crate::v2_eval::operators::typed_value) fn decode_base64(
         }
     }
     Ok(out)
-}
-
-pub(in crate::v2_eval::operators::typed_value) fn is_known_mongo_wrapper_object(
-    map: &JsonMap<String, JsonValue>,
-) -> bool {
-    map.len() == 1
-        && map
-            .keys()
-            .next()
-            .is_some_and(|key| is_known_mongo_wrapper_key(key))
 }
 
 pub(in crate::v2_eval::operators::typed_value) fn exactly_one_known_mongo_wrapper<'a>(

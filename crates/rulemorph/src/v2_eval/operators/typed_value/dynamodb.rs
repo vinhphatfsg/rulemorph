@@ -68,9 +68,8 @@ pub(super) fn encode_dynamodb_value(
             JsonValue::Null => single_key("NULL", JsonValue::Bool(true)),
             JsonValue::Array(items) => {
                 let mut out = Vec::with_capacity(items.len());
-                for (index, item) in items.iter().enumerate() {
+                for item in items {
                     let mut child = path_elems.to_vec();
-                    let _ = index;
                     child.push(PathElem::Index);
                     out.push(encode_dynamodb_value(
                         item, options, &child, None, path, guard,
@@ -234,6 +233,37 @@ pub(super) fn validate_binary_set_values(
     Ok(())
 }
 
+fn validate_dynamodb_tag_matches_hint(
+    tag: &str,
+    hint_ty: Option<HintType>,
+    path: &str,
+) -> Result<(), TransformError> {
+    let Some(hint_ty) = hint_ty else {
+        return Ok(());
+    };
+    let expected = match hint_ty {
+        HintType::StringSet => Some("SS"),
+        HintType::NumberSet | HintType::NumberStringSet => Some("NS"),
+        HintType::BinarySetBase64 => Some("BS"),
+        HintType::NumberString => Some("N"),
+        HintType::BinaryBase64 => Some("B"),
+        _ => None,
+    };
+    if let Some(expected) = expected
+        && tag != expected
+    {
+        return Err(expr_error(
+            format!(
+                "DynamoDB AttributeValue tag {} does not match field type {}",
+                tag,
+                hint_ty.name()
+            ),
+            path,
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn decode_dynamodb_attribute(
     input: &JsonValue,
     options: &CodecOptions,
@@ -253,6 +283,7 @@ pub(super) fn decode_dynamodb_attribute(
     }
     let (tag, value) = map.iter().next().unwrap();
     let hint_ty = decode_hint_type(options, path_elems);
+    validate_dynamodb_tag_matches_hint(tag, hint_ty, path)?;
     match tag.as_str() {
         "S" => Ok(JsonValue::String(expect_string(
             value,

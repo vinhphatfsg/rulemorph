@@ -163,11 +163,12 @@ pub(in crate::v2_eval::operators::typed_value) fn canonical_decimal(
         .find('.')
         .map_or(0_i64, |index| (mantissa.len() - index - 1) as i64);
     let mut digits = mantissa.chars().filter(|ch| *ch != '.').collect::<String>();
-    while digits.len() > 1 && digits.starts_with('0') {
-        digits.remove(0);
-    }
-    if digits.chars().all(|ch| ch == '0') {
+    let trimmed_digits = digits.trim_start_matches('0');
+    if trimmed_digits.is_empty() {
         return Ok("0".to_string());
+    }
+    if trimmed_digits.len() != digits.len() {
+        digits = trimmed_digits.to_string();
     }
 
     let mut scale = fractional_digits - exponent;
