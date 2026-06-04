@@ -825,7 +825,63 @@ direct mode は通常の v2 `expr` 構文を使います。operator を連結す
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
 ```
 
-direct mode は既定で JSON 入力として扱います。CSV 入力では `-f csv` を指定します。`--limit` / `--limits-profile` / `--limits-file` は `transform` と同じ resource limit として適用されます。`--rule` は subcommand と同時には使えず、direct mode 用の top-level option を subcommand 前に置くとエラーになります。
+direct mode の入力形式は、`-f/--format`、`-i` の拡張子、stdin の先頭 token の順で決まります。stdin は UTF-8 BOM と ASCII whitespace を除いた先頭が `{` または `[` なら JSON、それ以外なら CSV として扱います。`-i` の未知拡張子 / 拡張子なしは既存互換のため JSON です。CSV が `{` または `[` で始まる場合は `-f csv` を明示してください。
+
+CSV direct input では、header 行がある `.csv` file はそのまま field 名で参照できます。headerless CSV は `@input.0` のような numeric field 参照から列数を推定するか、`-H/--headers` で field 名を与えます。`-h` は help 用のため、headers の short option は `-H` です。
+
+```sh
+echo 'a,test,1' | rulemorph -rule '@input.0'
+echo 'a,test,1' | rulemorph -H 'id,name,age' -rule '@input.id'
+rulemorph -H 'id,name,age' -rule '@input.id' -i non_header.csv
+rulemorph -rule '@input.id' -i with_header.csv
+```
+
+direct mode でも通常の `expr` と同じ pipe operator を使えます。
+
+```sh
+echo 'a,test,1' | rulemorph -rule '["@input.0", {"concat": ["-", "@input.1"]}]'
+# => "a-test"
+
+echo 'u1, Alice ,42' | rulemorph -H 'id,name,age' -rule '["@input.name", "trim", "uppercase"]'
+# => "ALICE"
+```
+
+direct mode で複数 field を出力する場合は、`-F/--field <TARGET=EXPR>` を複数指定するか、`--output-map <JSON_OBJECT>` を使います。どちらも通常の `mappings` に寄せた sugar です。target は出力先 path、expr は既存 v2 `expr` と同じ値です。`--rule`、`-F/--field`、`--output-map` は同時指定できません。
+
+```sh
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  -F id='@input.id' \
+  -F name='["@input.name","uppercase"]' \
+  -F kind='lit:user'
+# => {"id":"u1","kind":"user","name":"ALICE"}
+
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  --output-map '{"user.id":"@input.id","user.name":["@input.name","uppercase"],"kind":"lit:user"}'
+# => {"kind":"user","user":{"id":"u1","name":"ALICE"}}
+```
+
+`-F/--field` は CLI 指定順を mapping の評価順として維持するため、後続 field から先行 field を `@out.*` で参照できます。`--output-map` は JSON object の key order に意味を持たせないため、評価される `@out.*` 参照を拒否します。`--output-map` は recursive template ではありません。key が target、value が expr です。したがって `--output-map '{"user":{"id":"@input.id"}}'` は `user` field に object literal expr を入れる指定であり、`user.id` target への mapping ではありません。
+
+direct mode でも `-c/--context <JSON_FILE>` を指定でき、`--rule`、`-F/--field`、`--output-map` の expr から `@context.*` を参照できます。
+
+```sh
+echo '{"tenant_id":"t1"}' > context.json
+echo 'u1,Alice' | rulemorph -H 'id,name' -c context.json \
+  -F id='@input.id' \
+  -F tenant='@context.tenant_id'
+# => {"id":"u1","tenant":"t1"}
+```
+
+Excel direct input は `.xlsx` file または `-f excel` で扱います。Excel では `--excel-header-row` と、header 行を含まない data range としての `--excel-data-range` が必須です。`--excel-sheet <NAME>` または `--excel-sheet-index <INDEX>` で sheet を選べますが、同時指定はできません。
+
+```sh
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D3
+rulemorph -rule '["@input.score", {"+": [7.5]}, "round"]' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
+# => 50
+```
+
+CSV / Excel direct convenience mode は、`--rule` では 0 record なら `[]`、1 record なら direct value、2 record 以上なら direct value の配列を出力します。`-F/--field` / `--output-map` では 1 record なら object、2 record 以上なら object array を出力します。既存互換のため、`-f csv` だけを明示して新しい tabular option を使わない場合は、1 record でも従来どおり配列を維持します。`--limit` / `--limits-profile` / `--limits-file` は `transform` と同じ resource limit として適用されます。`--rule` / `-F/--field` / `--output-map` は subcommand と同時には使えず、direct mode 用の top-level option を subcommand 前に置くとエラーになります。
 
 ## Resource limits
 

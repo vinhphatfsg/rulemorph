@@ -71,6 +71,11 @@ For a quick one-off expression without a rule file, use direct mode:
 ```sh
 echo '{ "test": 1 }' | rulemorph -rule '@input.test'
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
+echo 'a,test,1' | rulemorph -rule '@input.0'
+echo 'a,test,1' | rulemorph -H 'id,name,age' -rule '@input.id'
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' -F id='@input.id' -F age='["@input.age","int"]'
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' --output-map '{"user.id":"@input.id","age":["@input.age","int"]}'
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
 ```
 
 **Output**

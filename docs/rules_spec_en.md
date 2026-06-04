@@ -821,7 +821,63 @@ Direct mode uses the normal v2 `expr` syntax. Use a pipe array when chaining ope
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
 ```
 
-Direct mode defaults to JSON input. Pass `-f csv` for CSV input. `--limit`, `--limits-profile`, and `--limits-file` apply the same resource limits as `transform`. `--rule` cannot be used with a subcommand, and direct-mode top-level options placed before a subcommand are rejected.
+Direct mode resolves the input format from `-f/--format`, then the `-i` extension, then the first stdin token. Stdin is JSON when the first byte after UTF-8 BOM and ASCII whitespace is `{` or `[`; otherwise it is CSV. Unknown or missing `-i` extensions stay JSON for compatibility. If CSV data starts with `{` or `[`, pass `-f csv`.
+
+For CSV direct input, a headered `.csv` file can be referenced by field name. Headerless CSV can either infer numeric fields from references such as `@input.0`, or receive field names with `-H/--headers`. `-h` remains the help option, so the short headers option is `-H`.
+
+```sh
+echo 'a,test,1' | rulemorph -rule '@input.0'
+echo 'a,test,1' | rulemorph -H 'id,name,age' -rule '@input.id'
+rulemorph -H 'id,name,age' -rule '@input.id' -i non_header.csv
+rulemorph -rule '@input.id' -i with_header.csv
+```
+
+Direct mode can use the same pipe operators as normal `expr`.
+
+```sh
+echo 'a,test,1' | rulemorph -rule '["@input.0", {"concat": ["-", "@input.1"]}]'
+# => "a-test"
+
+echo 'u1, Alice ,42' | rulemorph -H 'id,name,age' -rule '["@input.name", "trim", "uppercase"]'
+# => "ALICE"
+```
+
+For multiple output fields in direct mode, repeat `-F/--field <TARGET=EXPR>` or pass `--output-map <JSON_OBJECT>`. Both are sugar for normal `mappings`: the target is the output path, and the expr is the same v2 `expr` value used elsewhere. `--rule`, `-F/--field`, and `--output-map` are mutually exclusive.
+
+```sh
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  -F id='@input.id' \
+  -F name='["@input.name","uppercase"]' \
+  -F kind='lit:user'
+# => {"id":"u1","kind":"user","name":"ALICE"}
+
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  --output-map '{"user.id":"@input.id","user.name":["@input.name","uppercase"],"kind":"lit:user"}'
+# => {"kind":"user","user":{"id":"u1","name":"ALICE"}}
+```
+
+`-F/--field` preserves CLI argument order as mapping order, so a later field can reference an earlier field through `@out.*`. `--output-map` does not assign meaning to JSON object key order, so evaluated `@out.*` references are rejected there. `--output-map` is not a recursive template. The key is the target and the value is the expr. Therefore `--output-map '{"user":{"id":"@input.id"}}'` assigns an object literal expr to the `user` field; it does not create a mapping for the `user.id` target.
+
+Direct mode also accepts `-c/--context <JSON_FILE>`. `--rule`, `-F/--field`, and `--output-map` expressions can reference `@context.*`.
+
+```sh
+echo '{"tenant_id":"t1"}' > context.json
+echo 'u1,Alice' | rulemorph -H 'id,name' -c context.json \
+  -F id='@input.id' \
+  -F tenant='@context.tenant_id'
+# => {"id":"u1","tenant":"t1"}
+```
+
+Excel direct input is selected for `.xlsx` files or with `-f excel`. Excel requires `--excel-header-row` and `--excel-data-range`, where `--excel-data-range` is the data range and does not include the header row. Use `--excel-sheet <NAME>` or `--excel-sheet-index <INDEX>` to select a sheet; they cannot be used together.
+
+```sh
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D3
+rulemorph -rule '["@input.score", {"+": [7.5]}, "round"]' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
+# => 50
+```
+
+For `--rule`, CSV / Excel direct convenience mode outputs `[]` for zero records, the direct value for one record, and an array of direct values for multiple records. For `-F/--field` and `--output-map`, it outputs an object for one record and an object array for multiple records. For compatibility, explicit `-f csv` without the new tabular options keeps the legacy array output even for one record. `--limit`, `--limits-profile`, and `--limits-file` apply the same resource limits as `transform`. `--rule` / `-F/--field` / `--output-map` cannot be used with a subcommand, and direct-mode top-level options placed before a subcommand are rejected.
 
 ## Resource limits
 
