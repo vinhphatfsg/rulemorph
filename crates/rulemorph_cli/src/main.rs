@@ -146,9 +146,15 @@ fn main() {
 }
 
 fn normalize_rule_alias(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut after_options_marker = false;
     args.into_iter()
         .map(|arg| {
-            if arg == "-rule" {
+            if after_options_marker {
+                arg
+            } else if arg == "--" {
+                after_options_marker = true;
+                arg
+            } else if arg == "-rule" {
                 OsString::from("--rule")
             } else if let Some(value) = arg.to_str().and_then(|text| text.strip_prefix("-rule=")) {
                 OsString::from(format!("--rule={}", value))
@@ -175,4 +181,52 @@ fn has_direct_options(
         || !limits.is_empty()
         || limits_profile.is_some()
         || limits_file.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn normalize_rule_alias_rewrites_before_options_marker() {
+        let args = normalize_rule_alias(os_args(&[
+            "rulemorph",
+            "-rule",
+            "@input.test",
+            "-rule=@input.id",
+        ]));
+
+        assert_eq!(
+            args,
+            os_args(&["rulemorph", "--rule", "@input.test", "--rule=@input.id",])
+        );
+    }
+
+    #[test]
+    fn normalize_rule_alias_preserves_args_after_options_marker() {
+        let args = normalize_rule_alias(os_args(&[
+            "rulemorph",
+            "--rule",
+            "@input.test",
+            "--",
+            "-rule",
+            "-rule=@input.id",
+        ]));
+
+        assert_eq!(
+            args,
+            os_args(&[
+                "rulemorph",
+                "--rule",
+                "@input.test",
+                "--",
+                "-rule",
+                "-rule=@input.id",
+            ])
+        );
+    }
 }
