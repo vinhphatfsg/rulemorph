@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use rulemorph::{
@@ -269,20 +270,40 @@ fn validate_field_specs(fields: &[FieldSpec]) -> Result<(), String> {
             return Err("direct output target is duplicated".to_string());
         }
     }
-    for (index, field) in fields.iter().enumerate() {
-        if fields.iter().enumerate().any(|(other_index, other)| {
-            index != other_index
-                && (is_path_prefix(&field.tokens, &other.tokens)
-                    || is_path_prefix(&other.tokens, &field.tokens))
-        }) {
-            return Err("direct output target conflicts with another target".to_string());
-        }
+    if has_parent_child_target_conflict(fields) {
+        return Err("direct output target conflicts with another target".to_string());
     }
     Ok(())
 }
 
-fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
-    prefix.len() < tokens.len() && tokens.starts_with(prefix)
+fn has_parent_child_target_conflict(fields: &[FieldSpec]) -> bool {
+    let mut paths = fields
+        .iter()
+        .map(|field| field.tokens.as_slice())
+        .collect::<Vec<_>>();
+    paths.sort_unstable_by(|left, right| compare_path_tokens(left, right));
+    paths
+        .windows(2)
+        .any(|pair| pair[0].len() < pair[1].len() && pair[1].starts_with(pair[0]))
+}
+
+fn compare_path_tokens(left: &[PathToken], right: &[PathToken]) -> Ordering {
+    for (left_token, right_token) in left.iter().zip(right.iter()) {
+        let ordering = compare_path_token(left_token, right_token);
+        if ordering != Ordering::Equal {
+            return ordering;
+        }
+    }
+    left.len().cmp(&right.len())
+}
+
+fn compare_path_token(left: &PathToken, right: &PathToken) -> Ordering {
+    match (left, right) {
+        (PathToken::Key(left), PathToken::Key(right)) => left.cmp(right),
+        (PathToken::Index(left), PathToken::Index(right)) => left.cmp(right),
+        (PathToken::Key(_), PathToken::Index(_)) => Ordering::Less,
+        (PathToken::Index(_), PathToken::Key(_)) => Ordering::Greater,
+    }
 }
 
 fn validate_direct_output_cells(
@@ -515,4 +536,36 @@ fn is_canonical_numeric_root_path(rest: &str) -> bool {
 
 fn strip_utf8_bom(input: &[u8]) -> &[u8] {
     input.strip_prefix(b"\xef\xbb\xbf").unwrap_or(input)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_field_specs_rejects_large_parent_child_conflict() {
+        let shared_prefix = (0..255)
+            .map(|index| PathToken::Key(format!("p{}", index)))
+            .collect::<Vec<_>>();
+        let mut fields = (0..1000)
+            .map(|index| {
+                let mut tokens = shared_prefix.clone();
+                tokens.push(PathToken::Key(format!("k{}", index)));
+                FieldSpec {
+                    target: format!("t{}", index),
+                    expr: serde_json::Value::Null,
+                    tokens,
+                }
+            })
+            .collect::<Vec<_>>();
+        fields.push(FieldSpec {
+            target: "parent".to_string(),
+            expr: serde_json::Value::Null,
+            tokens: shared_prefix,
+        });
+
+        let error = validate_field_specs(&fields).unwrap_err();
+
+        assert_eq!(error, "direct output target conflicts with another target");
+    }
 }
