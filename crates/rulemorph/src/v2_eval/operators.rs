@@ -4,11 +4,13 @@ mod number;
 mod projection;
 mod special;
 mod string;
+mod typed_value;
 
 use self::number::eval_number_op;
 use self::projection::eval_projection_op;
 use self::special::{eval_coalesce_op, eval_first_last_op, eval_logical_op, eval_not_op};
 use self::string::eval_string_op;
+use self::typed_value::eval_typed_value_op;
 use super::{
     EvalValue, V2EvalContext, eval_collection_op, eval_comparison_op, eval_lookup_op,
     eval_type_cast, eval_v2_op_with_v1_fallback, eval_v2_ref,
@@ -84,6 +86,10 @@ pub fn eval_v2_op_step<'a>(
         }
         "pick" | "omit" => {
             eval_projection_op(op_step, pipe_value, record, context, out, path, &step_ctx)
+        }
+
+        "to_typed_value" | "from_typed_value" => {
+            eval_typed_value_op(op_step, pipe_value, record, context, out, path, &step_ctx)
         }
 
         "lookup_first" | "lookup" => {

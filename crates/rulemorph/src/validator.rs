@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use serde_json::Value as JsonValue;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::error::{ErrorCode, RuleError, ValidationResult};
 use crate::locator::YamlLocator;
@@ -7,6 +8,7 @@ use crate::path::parse_path;
 use crate::v2_validator::{V2Scope, V2ValidationCtx};
 
 mod bool_expr;
+mod codecs;
 mod expr;
 mod expr_args;
 mod input;
@@ -17,6 +19,7 @@ mod scope;
 mod steps;
 mod v2_expr;
 
+use self::codecs::validate_codecs;
 use self::input::validate_input;
 use self::mapping::{validate_mappings, validate_record_when};
 use self::steps::validate_steps;
@@ -37,7 +40,11 @@ fn validate_rule_file_with_locator(
     rule: &RuleFile,
     locator: Option<&YamlLocator>,
 ) -> ValidationResult {
-    let mut ctx = ValidationCtx::new(locator, rule.defs.keys().cloned().collect());
+    let mut ctx = ValidationCtx::new(
+        locator,
+        rule.defs.keys().cloned().collect(),
+        rule.codecs.clone(),
+    );
 
     validate_version(rule, &mut ctx);
     validate_input(rule, &mut ctx);
@@ -48,6 +55,7 @@ fn validate_rule_file_with_locator(
     validate_record_when(rule, &mut ctx);
     validate_mappings(rule, &mut ctx);
     validate_finalize(rule, &mut ctx);
+    validate_codecs(rule, &mut ctx);
     if rule.version == 2 {
         ctx.errors
             .extend(crate::custom_ops::validate_custom_call_sites(rule, locator));
@@ -133,15 +141,21 @@ struct ValidationCtx<'a> {
     errors: Vec<RuleError>,
     allow_any_out_ref: bool,
     custom_op_names: HashSet<String>,
+    codec_bindings: BTreeMap<String, JsonValue>,
 }
 
 impl<'a> ValidationCtx<'a> {
-    fn new(locator: Option<&'a YamlLocator>, custom_op_names: HashSet<String>) -> Self {
+    fn new(
+        locator: Option<&'a YamlLocator>,
+        custom_op_names: HashSet<String>,
+        codec_bindings: BTreeMap<String, JsonValue>,
+    ) -> Self {
         Self {
             locator,
             errors: Vec::new(),
             allow_any_out_ref: false,
             custom_op_names,
+            codec_bindings,
         }
     }
 
@@ -162,5 +176,9 @@ impl<'a> ValidationCtx<'a> {
         } else {
             Err(self.errors)
         }
+    }
+
+    fn codec_binding(&self, name: &str) -> Option<&JsonValue> {
+        self.codec_bindings.get(name)
     }
 }

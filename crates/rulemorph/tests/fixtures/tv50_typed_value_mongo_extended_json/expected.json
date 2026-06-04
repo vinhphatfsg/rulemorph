@@ -1,0 +1,15 @@
+[
+  {
+    "document": {
+      "_id": { "$oid": "0123456789abcdef01234567" },
+      "avatar": {
+        "$binary": {
+          "base64": "AQID",
+          "subType": "00"
+        }
+      },
+      "created_at": { "$date": "2026-06-03T00:00:00.000Z" },
+      "name": "Ada"
+    }
+  }
+]

@@ -1,0 +1,9 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value: dynamodb_attribute_value

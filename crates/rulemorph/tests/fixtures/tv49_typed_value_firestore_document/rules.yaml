@@ -1,0 +1,14 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: document
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: firestore_document
+          field_types:
+            age: integer
+            created_at: timestamp
+            avatar: bytes_base64

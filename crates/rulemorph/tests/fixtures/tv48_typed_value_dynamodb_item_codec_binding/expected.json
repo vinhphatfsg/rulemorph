@@ -1,0 +1,16 @@
+[
+  {
+    "Item": {
+      "age": { "N": "31" },
+      "avatar": { "B": "AQID" },
+      "id": { "S": "u1" },
+      "tags": { "SS": ["admin", "paid"] }
+    },
+    "raw_again": {
+      "age": 31,
+      "avatar": "AQID",
+      "id": "u1",
+      "tags": ["admin", "paid"]
+    }
+  }
+]

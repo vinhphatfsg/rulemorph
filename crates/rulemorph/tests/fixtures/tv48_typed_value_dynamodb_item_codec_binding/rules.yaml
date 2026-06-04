@@ -1,0 +1,24 @@
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  ddb_user:
+    profile: dynamodb_item
+    field_types:
+      age: number_string
+      tags: string_set
+      avatar: binary_base64
+    decode:
+      mode: json_shape_roundtrip
+mappings:
+  - target: Item
+    expr:
+      - "@input"
+      - to_typed_value:
+          codec: ddb_user
+  - target: raw_again
+    expr:
+      - "@out.Item"
+      - from_typed_value:
+          codec: ddb_user

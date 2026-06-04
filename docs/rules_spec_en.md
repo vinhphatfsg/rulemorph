@@ -35,6 +35,7 @@ For a first rule, read the sections in this order:
 | Output mapping | Build one output object from one input record | `mappings` |
 | Ordered execution | Run mappings, filters, asserts, and branches in sequence | `steps` |
 | Reusable expressions | Name and reuse v2 pipes or mappings | `defs` |
+| Provider typed value conversion | Convert between JSON values and DynamoDB / Firestore / MongoDB typed representations | `codecs`, `to_typed_value`, `from_typed_value` |
 | Array post-processing | Apply filter/sort/limit/wrap to the output array | `finalize` |
 | References and expressions | Read input, context, and intermediate output values | `@input`, `@context`, `@out`, `expr` |
 
@@ -103,6 +104,7 @@ mappings:
 - `input` (required): input format and options
 - `mappings` (required): transformation rules (evaluated in order)
 - `defs` (optional): named custom OP definitions built from v2 pipes or mappings
+- `codecs` (optional): named profile bindings and field type contracts for provider typed value conversion
 - `output` (optional): metadata (e.g., DTO name)
 - `record_when` (optional): condition to include/exclude records
 - `steps` (optional): ordered execution. Cannot be combined with top-level `mappings` or `record_when`
@@ -288,6 +290,280 @@ DTO generation propagates explicit `returns`. Object `returns` become nested DTO
 
 Semantic trace emits custom OP calls as spans with `kind=custom_op`. The span includes `name`, `def_path`, `call_path`, `input_type`, `output_type`, `with_adapter`, and `body_truncated`. Value snapshots follow the existing `TraceValueMode`.
 `with` args are evaluated in the caller scope before the body. The body `expr` / `mappings` are expanded as child events under the custom OP span. Body errors remain inside the custom OP span. `MetadataOnly` / `Redacted` modes preserve this span/event structure while suppressing raw values.
+
+## typed value codec
+
+Rulemorph normally works with JSON values. Some providers represent value types with JSON wrappers: DynamoDB AttributeValue, Firestore REST `Value`, and MongoDB Extended JSON. Typed value codecs bridge those shapes.
+
+```text
+raw JSON
+  -> to_typed_value
+  -> provider typed value
+
+provider typed value
+  -> from_typed_value
+  -> raw JSON
+```
+
+| Goal | OP | Example |
+| --- | --- | --- |
+| Build provider payloads from JSON | `to_typed_value` | `{ "age": 31 }` -> `{ "age": { "N": "31" } }` |
+| Decode provider typed payloads back to JSON | `from_typed_value` | `{ "age": { "N": "31" } }` -> `{ "age": "31" }` |
+
+`profile` selects a built-in provider conversion. Use a profile directly for simple cases. Use top-level `codecs` when field type intent should be named and shared.
+
+| profile | Root meaning | Typical use |
+| --- | --- | --- |
+| `dynamodb_attribute_value` | One DynamoDB AttributeValue | Encode one value as `{ "S": ... }`, `{ "N": ... }`, and so on |
+| `dynamodb_item` | DynamoDB Item attribute map | Build an `Item`-like map for put/update payloads |
+| `firestore_value` | One Firestore REST `Value` | Encode one value as `stringValue`, `integerValue`, and so on |
+| `firestore_fields` | Firestore `Document.fields` | Build only a fields map |
+| `firestore_document` | Firestore REST `Document` body | Build a document body with `{ fields: ... }` |
+| `mongo_extended_json` | MongoDB Extended JSON v2 | Build JSON containing `$oid`, `$date`, `$numberLong`, and related wrappers |
+
+`to_typed_value: dynamodb_item` is shorthand for `profile: dynamodb_item`. This shorthand converts only what can be inferred from JSON types: `S`, `N`, `BOOL`, `NULL`, `L`, and `M`. It does not infer domain intent such as `SS`, `NS`, `B`, timestamp, or ObjectId; use `field_types` or `codec` for those cases.
+
+### DynamoDB Item example
+
+Input:
+
+```json
+{ "id": "u1", "age": "31", "tags": ["admin", "paid"] }
+```
+
+Rule:
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+codecs:
+  ddb_user:
+    profile: dynamodb_item
+    field_types:
+      age: number_string
+      tags: string_set
+
+mappings:
+  - target: Item
+    expr:
+      - "@input"
+      - to_typed_value:
+          codec: ddb_user
+```
+
+Output shape:
+
+```json
+{
+  "Item": {
+    "id": { "S": "u1" },
+    "age": { "N": "31" },
+    "tags": { "SS": ["admin", "paid"] }
+  }
+}
+```
+
+`age` is a JSON string, but `number_string` encodes it as DynamoDB `N`. `tags` would otherwise look like a JSON list, so `string_set` is required to encode it as `SS`.
+
+### Decoding a DynamoDB Item
+
+Input:
+
+```json
+{
+  "id": { "S": "u1" },
+  "age": { "N": "31" },
+  "tags": { "SS": ["admin", "paid"] }
+}
+```
+
+Rule:
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: user
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: dynamodb_item
+```
+
+Output shape:
+
+```json
+{
+  "user": {
+    "id": "u1",
+    "age": "31",
+    "tags": ["admin", "paid"]
+  }
+}
+```
+
+DynamoDB `N` / `NS` are strings on the wire. The default decode policy keeps them as strings for safety. Use `number_policy: parse_json_number_if_safe` only when safe JSON number parsing is desired.
+
+### Firestore document example
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: document
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: firestore_document
+          field_types:
+            age: integer
+            created_at:
+              type: timestamp
+              on_missing: ignore
+```
+
+Input:
+
+```json
+{ "name": "Ada", "age": 31, "created_at": "2026-06-03T00:00:00Z" }
+```
+
+Output shape:
+
+```json
+{
+  "document": {
+    "fields": {
+      "name": { "stringValue": "Ada" },
+      "age": { "integerValue": "31" },
+      "created_at": { "timestampValue": "2026-06-03T00:00:00.000000Z" }
+    }
+  }
+}
+```
+
+Firestore REST `Value` is a oneof object. Decode rejects payloads with multiple value fields, such as both `stringValue` and `integerValue`. Direct nested arrays are also rejected according to Firestore semantics.
+
+### MongoDB Extended JSON example
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: document
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: mongo_extended_json
+          mode: relaxed
+          field_types:
+            _id:
+              type: object_id
+              on_missing: ignore
+            created_at:
+              type: date
+              on_missing: ignore
+```
+
+Input:
+
+```json
+{ "_id": "0123456789abcdef01234567", "created_at": "2026-06-03T00:00:00Z", "name": "Ada" }
+```
+
+Output shape:
+
+```json
+{
+  "document": {
+    "_id": { "$oid": "0123456789abcdef01234567" },
+    "created_at": { "$date": "2026-06-03T00:00:00.000Z" },
+    "name": "Ada"
+  }
+}
+```
+
+MongoDB Extended JSON mixes ordinary JSON objects and wrappers such as `$date` / `$oid`. To avoid wrapper injection, unhinted wrapper-shaped objects are rejected by default.
+
+### Codec bindings and reverse conversion
+
+Use `codecs` when encode and decode should share provider type intent.
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+codecs:
+  ddb_user:
+    profile: dynamodb_item
+    field_types:
+      age: number_string
+      tags: string_set
+
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          codec: ddb_user
+  - target: raw_again
+    expr:
+      - "@out.item"
+      - from_typed_value:
+          codec: ddb_user
+```
+
+`from_typed_value` decodes provider typed values into usable JSON. It is not a strict inverse by default. For example, DynamoDB `{ "N": "31" }` decodes to `"31"` by default; re-encoding that raw value without shared field type intent may produce `S`. Reuse the same `codec` and `field_types` when `N`, `SS`, `B`, and similar provider intent must be preserved.
+
+`decode.mode: json_shape_roundtrip` tries to restore JSON number shapes. For fields such as `number_string`, where a decimal string should be re-encoded as `N`, the default `safe_json` decode is usually the better choice because it keeps the string.
+
+### Common options
+
+| option | Meaning |
+| --- | --- |
+| `profile` | Built-in profile name. Cannot be combined with `codec` |
+| `codec` | Name from top-level `codecs`. Cannot be combined with `profile` |
+| `type` | Provider domain type for the current value, such as `object_id`, `timestamp`, or `binary_base64` |
+| `field_types` | Provider domain types by logical path. Provider wrapper keys are not included in paths |
+| `hints` | Detailed form of `field_types`; prefer `field_types` for normal rules |
+| `on_missing` | Root missing behavior: `error`, `propagate`, or `ignore` |
+| `decode.mode` | `safe_json` or `json_shape_roundtrip` |
+| `number_policy` | Decode number behavior: `string` or `parse_json_number_if_safe` |
+| `mode` | MongoDB encode mode: `relaxed` or `canonical` |
+
+`field_types` paths are logical raw paths before and after provider wrappers. For `dynamodb_item`, write `age`, not `M.age` or `Item.age.N`. For Firestore documents, write `age`, not `fields.age`.
+
+Each `field_types` path is required by default. For optional fields, write `{ type: ..., on_missing: ignore }` or `{ type: ..., on_missing: propagate }`.
+
+Common field types:
+
+| field type | Profiles | Meaning |
+| --- | --- | --- |
+| `number_string` | DynamoDB | Treat a decimal string as `N` |
+| `string_set` / `number_set` / `number_string_set` | DynamoDB | Treat an array as `SS` / `NS` |
+| `binary_base64` | DynamoDB / MongoDB | Treat a base64 string as binary |
+| `integer` | Firestore | Encode as `integerValue` |
+| `timestamp` | Firestore | Encode an RFC3339 timestamp as `timestampValue` |
+| `bytes_base64` | Firestore | Encode a base64 string as `bytesValue` |
+| `object_id` | MongoDB | Encode a 24-hex string as `$oid` |
+| `date` | MongoDB | Encode a timestamp string as `$date` |
+| `int32` / `int64` / `double` / `decimal128` | MongoDB | Encode as Extended JSON numeric wrappers |
+
+For safety, typed value codecs fail closed on unknown profiles, unknown options, and disabled inline codec options (`style` / `types`). Malformed provider wrappers, empty or duplicate DynamoDB sets, duplicated Firestore oneof fields, and malformed MongoDB wrappers are not silently accepted.
 
 ## Input
 
@@ -811,6 +1087,7 @@ Support status:
 - Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - Numeric ops: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
+- Provider typed value ops: `to_typed_value`, `from_typed_value`
 - Logical ops: `and`, `or`, `not`
 - Comparison ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=` (aliases: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`)
 - Type casts: `string`, `int`, `float`, `bool`
@@ -877,6 +1154,8 @@ Numeric operators use the same pipe style. `range` is different: it generates an
 | `to_base` | `1` | Convert integer to base-N string (2-36). | `runtime` |
 | `date_format` | `1-3` | Reformat date strings. | `runtime` |
 | `to_unixtime` | `0-2` | Convert date strings to unix time. | `runtime` |
+| `to_typed_value` | `1` | Convert JSON values into DynamoDB / Firestore / MongoDB provider typed values. | `runtime` |
+| `from_typed_value` | `1` | Decode provider typed values into JSON values. | `runtime` |
 | `and` | `>=1` | Boolean AND. Prefer `all` conditions. | `runtime` |
 | `or` | `>=1` | Boolean OR. Prefer `any` conditions. | `runtime` |
 | `not` | `0` | Boolean NOT. | `runtime` |
