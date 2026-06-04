@@ -1,8 +1,12 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use std::ffi::OsString;
+use std::path::PathBuf;
+
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 
 #[cfg(feature = "server")]
 mod api_keys;
 mod core_commands;
+mod direct;
 mod emit;
 mod generate;
 mod input;
@@ -14,8 +18,24 @@ mod server_commands;
 #[command(name = "rulemorph")]
 #[command(version, about = "Transform CSV/JSON data using YAML rules")]
 struct Cli {
+    #[arg(long = "rule")]
+    rule: Option<String>,
+    #[arg(short = 'i', long)]
+    input: Option<PathBuf>,
+    #[arg(short = 'f', long)]
+    format: Option<FormatOverride>,
+    #[arg(short = 'o', long)]
+    output: Option<PathBuf>,
+    #[arg(short = 'e', long)]
+    error_format: Option<ErrorFormat>,
+    #[arg(long = "limit")]
+    limits: Vec<String>,
+    #[arg(long, value_enum)]
+    limits_profile: Option<LimitsProfileArg>,
+    #[arg(long)]
+    limits_file: Option<PathBuf>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -59,20 +79,154 @@ enum LimitsProfileArg {
 }
 
 fn main() {
-    let cli = Cli::parse();
-    let exit_code = match cli.command {
-        Commands::Validate(args) => core_commands::run_validate(args),
+    let cli = Cli::parse_from(normalize_rule_alias(std::env::args_os()));
+    let Cli {
+        rule,
+        input,
+        format,
+        output,
+        error_format,
+        limits,
+        limits_profile,
+        limits_file,
+        command,
+    } = cli;
+
+    let exit_code = match (rule, command) {
+        (Some(rule), None) => direct::run(direct::DirectArgs {
+            rule,
+            input,
+            format,
+            output,
+            error_format,
+            limits,
+            limits_profile,
+            limits_file,
+        }),
+        (Some(_), Some(_)) => {
+            eprintln!("--rule cannot be used with a subcommand");
+            2
+        }
+        (None, Some(command))
+            if has_direct_options(
+                &input,
+                &format,
+                &output,
+                &error_format,
+                &limits,
+                &limits_profile,
+                &limits_file,
+            ) =>
+        {
+            eprintln!("direct-mode options require --rule and cannot be used before a subcommand");
+            let _ = command;
+            2
+        }
+        (None, Some(Commands::Validate(args))) => core_commands::run_validate(args),
         #[cfg(feature = "server")]
-        Commands::ValidateRulesDir(args) => server_commands::run_validate_rules_dir(args),
-        Commands::Preflight(args) => core_commands::run_preflight(args),
-        Commands::Transform(args) => core_commands::run_transform(args),
-        Commands::Generate(args) => generate::run(args),
+        (None, Some(Commands::ValidateRulesDir(args))) => {
+            server_commands::run_validate_rules_dir(args)
+        }
+        (None, Some(Commands::Preflight(args))) => core_commands::run_preflight(args),
+        (None, Some(Commands::Transform(args))) => core_commands::run_transform(args),
+        (None, Some(Commands::Generate(args))) => generate::run(args),
         #[cfg(feature = "server")]
-        Commands::Ui(args) => server_commands::run_ui(args),
+        (None, Some(Commands::Ui(args))) => server_commands::run_ui(args),
         #[cfg(feature = "server")]
-        Commands::PurgeTraces(args) => server_commands::run_purge_traces(args),
+        (None, Some(Commands::PurgeTraces(args))) => server_commands::run_purge_traces(args),
         #[cfg(feature = "server")]
-        Commands::ApiKeys(args) => api_keys::run(args),
+        (None, Some(Commands::ApiKeys(args))) => api_keys::run(args),
+        (None, None) => {
+            let _ = Cli::command().print_help();
+            eprintln!();
+            2
+        }
     };
     std::process::exit(exit_code);
+}
+
+fn normalize_rule_alias(args: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut after_options_marker = false;
+    args.into_iter()
+        .map(|arg| {
+            if after_options_marker {
+                arg
+            } else if arg == "--" {
+                after_options_marker = true;
+                arg
+            } else if arg == "-rule" {
+                OsString::from("--rule")
+            } else if let Some(value) = arg.to_str().and_then(|text| text.strip_prefix("-rule=")) {
+                OsString::from(format!("--rule={}", value))
+            } else {
+                arg
+            }
+        })
+        .collect()
+}
+
+fn has_direct_options(
+    input: &Option<PathBuf>,
+    format: &Option<FormatOverride>,
+    output: &Option<PathBuf>,
+    error_format: &Option<ErrorFormat>,
+    limits: &[String],
+    limits_profile: &Option<LimitsProfileArg>,
+    limits_file: &Option<PathBuf>,
+) -> bool {
+    input.is_some()
+        || format.is_some()
+        || output.is_some()
+        || error_format.is_some()
+        || !limits.is_empty()
+        || limits_profile.is_some()
+        || limits_file.is_some()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn os_args(args: &[&str]) -> Vec<OsString> {
+        args.iter().map(OsString::from).collect()
+    }
+
+    #[test]
+    fn normalize_rule_alias_rewrites_before_options_marker() {
+        let args = normalize_rule_alias(os_args(&[
+            "rulemorph",
+            "-rule",
+            "@input.test",
+            "-rule=@input.id",
+        ]));
+
+        assert_eq!(
+            args,
+            os_args(&["rulemorph", "--rule", "@input.test", "--rule=@input.id",])
+        );
+    }
+
+    #[test]
+    fn normalize_rule_alias_preserves_args_after_options_marker() {
+        let args = normalize_rule_alias(os_args(&[
+            "rulemorph",
+            "--rule",
+            "@input.test",
+            "--",
+            "-rule",
+            "-rule=@input.id",
+        ]));
+
+        assert_eq!(
+            args,
+            os_args(&[
+                "rulemorph",
+                "--rule",
+                "@input.test",
+                "--",
+                "-rule",
+                "-rule=@input.id",
+            ])
+        );
+    }
 }

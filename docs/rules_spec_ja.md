@@ -525,6 +525,32 @@ input:
 - CLI `transform --ndjson` は 1 行 1 JSON（ストリーミング）
 - `records_path` がオブジェクトを指す場合は単一レコード
 
+## CLI input
+
+`rulemorph transform` は `-i/--input` で入力ファイルを指定します。`-i` を省略して stdin が pipe されている場合、stdin を入力として読み込みます。明示的に stdin を使う場合は `-i -` を指定します。
+
+```sh
+rulemorph transform -r rules.yaml -i input.json
+cat input.json | rulemorph transform -r rules.yaml
+cat input.json | rulemorph transform -r rules.yaml -i -
+```
+
+rule file を作らずに 1 つの式だけを試す場合は direct mode を使えます。標準形は `--rule` です。jq 風の短縮形として `-rule` と `-rule=...` も受け付けます。
+
+```sh
+echo '{ "test": 1 }' | rulemorph --rule '@input.test'
+echo '{ "test": 1 }' | rulemorph -rule '@input.test'
+echo '{ "test": 1 }' | rulemorph -rule=@input.test
+```
+
+direct mode は通常の v2 `expr` 構文を使います。operator を連結する場合は pipe 配列で書きます。
+
+```sh
+echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
+```
+
+direct mode は既定で JSON 入力として扱います。CSV 入力では `-f csv` を指定します。`--limit` / `--limits-profile` / `--limits-file` は `transform` と同じ resource limit として適用されます。`--rule` は subcommand と同時には使えず、direct mode 用の top-level option を subcommand 前に置くとエラーになります。
+
 ## Resource limits
 
 CLI は大きなローカル入力向けに有限の resource limit を緩和できます。

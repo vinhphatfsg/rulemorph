@@ -59,6 +59,20 @@ mappings:
 rulemorph transform -r rules.yaml -i input.json
 ```
 
+You can also pipe input to `transform`:
+
+```sh
+cat input.json | rulemorph transform -r rules.yaml
+cat input.json | rulemorph transform -r rules.yaml -i -
+```
+
+For a quick one-off expression without a rule file, use direct mode:
+
+```sh
+echo '{ "test": 1 }' | rulemorph -rule '@input.test'
+echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
+```
+
 **Output**
 
 ```json
