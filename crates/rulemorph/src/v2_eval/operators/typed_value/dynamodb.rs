@@ -31,11 +31,11 @@ pub(super) fn encode_dynamodb_value(
         return single_key("NULL", JsonValue::Bool(true));
     }
     match hint.as_ref().map(|hint| hint.ty) {
-        Some(HintType::StringSet) => encode_string_set(value, "SS", path),
+        Some(HintType::StringSet) => encode_string_set(value, "SS", path, guard, path_elems.len()),
         Some(HintType::NumberSet) | Some(HintType::NumberStringSet) => {
-            encode_number_set(value, path)
+            encode_number_set(value, path, guard, path_elems.len())
         }
-        Some(HintType::BinarySetBase64) => encode_binary_set(value, path),
+        Some(HintType::BinarySetBase64) => encode_binary_set(value, path, guard, path_elems.len()),
         Some(HintType::NumberString) => {
             let s = value
                 .as_str()
@@ -99,17 +99,11 @@ pub(super) fn encode_string_set(
     value: &JsonValue,
     tag: &str,
     path: &str,
+    guard: &mut ResourceGuard,
+    depth: usize,
 ) -> Result<JsonValue, TransformError> {
     let items = array_of_strings(value, "set field requires array of strings", path)?;
-    if items.is_empty() {
-        return Err(expr_error("DynamoDB set must not be empty", path));
-    }
-    let mut seen = BTreeSet::new();
-    for item in &items {
-        if !seen.insert(item.clone()) {
-            return Err(expr_error("DynamoDB set contains duplicate value", path));
-        }
-    }
+    validate_string_set_values(&items, path, guard, depth)?;
     single_key(
         tag,
         JsonValue::Array(items.into_iter().map(JsonValue::String).collect()),
@@ -119,6 +113,8 @@ pub(super) fn encode_string_set(
 pub(super) fn encode_number_set(
     value: &JsonValue,
     path: &str,
+    guard: &mut ResourceGuard,
+    depth: usize,
 ) -> Result<JsonValue, TransformError> {
     let values = value
         .as_array()
@@ -129,6 +125,7 @@ pub(super) fn encode_number_set(
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
     for value in values {
+        visit_set_entry_node(guard, depth, path)?;
         let s = match value {
             JsonValue::Number(n) => n.to_string(),
             JsonValue::String(s) => {
@@ -158,21 +155,11 @@ pub(super) fn encode_number_set(
 pub(super) fn encode_binary_set(
     value: &JsonValue,
     path: &str,
+    guard: &mut ResourceGuard,
+    depth: usize,
 ) -> Result<JsonValue, TransformError> {
     let items = array_of_strings(value, "binary set field requires array of strings", path)?;
-    if items.is_empty() {
-        return Err(expr_error("DynamoDB set must not be empty", path));
-    }
-    let mut seen = BTreeSet::new();
-    for item in &items {
-        let bytes = decode_base64(item, path)?;
-        if !seen.insert(bytes) {
-            return Err(expr_error(
-                "DynamoDB binary set contains duplicate value",
-                path,
-            ));
-        }
-    }
+    validate_binary_set_values(&items, path, guard, depth)?;
     single_key(
         "BS",
         JsonValue::Array(items.into_iter().map(JsonValue::String).collect()),
@@ -182,12 +169,15 @@ pub(super) fn encode_binary_set(
 pub(super) fn validate_string_set_values(
     values: &[String],
     path: &str,
+    guard: &mut ResourceGuard,
+    depth: usize,
 ) -> Result<(), TransformError> {
     if values.is_empty() {
         return Err(expr_error("DynamoDB set must not be empty", path));
     }
     let mut seen = BTreeSet::new();
     for value in values {
+        visit_set_entry_node(guard, depth, path)?;
         if !seen.insert(value.clone()) {
             return Err(expr_error("DynamoDB set contains duplicate value", path));
         }
@@ -198,12 +188,15 @@ pub(super) fn validate_string_set_values(
 pub(super) fn validate_number_set_values(
     values: &[String],
     path: &str,
+    guard: &mut ResourceGuard,
+    depth: usize,
 ) -> Result<(), TransformError> {
     if values.is_empty() {
         return Err(expr_error("DynamoDB set must not be empty", path));
     }
     let mut seen = BTreeSet::new();
     for value in values {
+        visit_set_entry_node(guard, depth, path)?;
         validate_dynamodb_number(value, path)?;
         let canonical = canonical_decimal(value, path)?;
         if !seen.insert(canonical) {
@@ -219,12 +212,15 @@ pub(super) fn validate_number_set_values(
 pub(super) fn validate_binary_set_values(
     values: &[String],
     path: &str,
+    guard: &mut ResourceGuard,
+    depth: usize,
 ) -> Result<(), TransformError> {
     if values.is_empty() {
         return Err(expr_error("DynamoDB set must not be empty", path));
     }
     let mut seen = BTreeSet::new();
     for value in values {
+        visit_set_entry_node(guard, depth, path)?;
         let bytes = decode_base64(value, path)?;
         if !seen.insert(bytes) {
             return Err(expr_error(
@@ -234,6 +230,14 @@ pub(super) fn validate_binary_set_values(
         }
     }
     Ok(())
+}
+
+fn visit_set_entry_node(
+    guard: &mut ResourceGuard,
+    depth: usize,
+    path: &str,
+) -> Result<(), TransformError> {
+    guard.visit_node(path, depth.saturating_add(1))
 }
 
 fn validate_dynamodb_tag_matches_hint(
@@ -353,14 +357,14 @@ pub(super) fn decode_dynamodb_attribute(
         }
         "SS" => {
             let values = array_of_strings(value, "SS value must be array of strings", path)?;
-            validate_string_set_values(&values, path)?;
+            validate_string_set_values(&values, path, guard, path_elems.len())?;
             Ok(JsonValue::Array(
                 values.into_iter().map(JsonValue::String).collect(),
             ))
         }
         "NS" => {
             let values = array_of_strings(value, "NS value must be array of strings", path)?;
-            validate_number_set_values(&values, path)?;
+            validate_number_set_values(&values, path, guard, path_elems.len())?;
             let mut out = Vec::new();
             for value in values {
                 out.push(decode_provider_number(value, options, hint_ty, path)?);
@@ -369,7 +373,7 @@ pub(super) fn decode_dynamodb_attribute(
         }
         "BS" => {
             let values = array_of_strings(value, "BS value must be array of strings", path)?;
-            validate_binary_set_values(&values, path)?;
+            validate_binary_set_values(&values, path, guard, path_elems.len())?;
             Ok(JsonValue::Array(
                 values.into_iter().map(JsonValue::String).collect(),
             ))

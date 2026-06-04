@@ -382,6 +382,63 @@ mappings:
 }
 
 #[test]
+fn typed_value_dynamodb_sets_count_entries_against_node_limit() {
+    let mut options = rulemorph::NormalizationOptions::default();
+    options.max_text_bytes = 16 * 1024 * 1024;
+    options.max_input_bytes = 32 * 1024 * 1024;
+
+    let assert_node_count_error = |rule_yaml: &str, input: String| {
+        let rule = parse_rule_file(rule_yaml).expect("parse rule");
+        match transform_input_with_options(&rule, InputData::Text(&input), None, &options) {
+            Ok(_) => panic!("expected DynamoDB set entries to count against node limit"),
+            Err(err) => {
+                assert_eq!(err.kind, TransformErrorKind::ExprError);
+                assert!(err.message.contains("node count"));
+            }
+        }
+    };
+
+    let encode_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: dynamodb_item
+          field_types:
+            tags: string_set
+"#;
+    let values = (0..100_001)
+        .map(|index| format!("v{index}"))
+        .collect::<Vec<_>>();
+    assert_node_count_error(encode_yaml, serde_json::json!({"tags": values}).to_string());
+
+    let decode_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: dynamodb_item
+"#;
+    let values = (0..100_001)
+        .map(|index| format!("v{index}"))
+        .collect::<Vec<_>>();
+    assert_node_count_error(
+        decode_yaml,
+        serde_json::json!({"tags": {"SS": values}}).to_string(),
+    );
+}
+
+#[test]
 fn typed_value_dynamodb_number_precision_trims_trailing_zeroes_and_rejects_provider_invalid_forms()
 {
     let encode_yaml = r#"
