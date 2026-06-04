@@ -1,6 +1,23 @@
 use std::fs;
-use std::io::Read;
-use std::path::PathBuf;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
+
+pub(crate) fn load_input_bytes_from_path_or_stdin(
+    path: Option<&PathBuf>,
+    max_input_bytes: usize,
+) -> Result<Vec<u8>, i32> {
+    match path {
+        Some(path) if path != Path::new("-") => load_input_bytes_with_limit(path, max_input_bytes),
+        Some(_) => load_stdin_bytes_with_limit(max_input_bytes),
+        None => {
+            if std::io::stdin().is_terminal() {
+                eprintln!("input file is required unless stdin is piped");
+                return Err(1);
+            }
+            load_stdin_bytes_with_limit(max_input_bytes)
+        }
+    }
+}
 
 pub(crate) fn load_input_bytes_with_limit(
     path: &PathBuf,
@@ -30,6 +47,28 @@ fn read_file_with_limit(path: &PathBuf, max_bytes: usize) -> Result<Vec<u8>, Str
         return Err(format!("input exceeds max_input_bytes ({})", max_bytes));
     }
     Ok(bytes)
+}
+
+fn load_stdin_bytes_with_limit(max_input_bytes: usize) -> Result<Vec<u8>, i32> {
+    let mut stdin = std::io::stdin().lock();
+    let mut bytes = Vec::new();
+    match Read::by_ref(&mut stdin)
+        .take(max_input_bytes as u64 + 1)
+        .read_to_end(&mut bytes)
+    {
+        Ok(_) if bytes.len() <= max_input_bytes => Ok(bytes),
+        Ok(_) => {
+            eprintln!(
+                "failed to read input: input exceeds max_input_bytes ({})",
+                max_input_bytes
+            );
+            Err(1)
+        }
+        Err(err) => {
+            eprintln!("failed to read input: {}", err);
+            Err(1)
+        }
+    }
 }
 
 pub(crate) fn load_context(path: &Option<PathBuf>) -> Result<Option<serde_json::Value>, i32> {

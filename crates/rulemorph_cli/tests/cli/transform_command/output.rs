@@ -21,6 +21,50 @@ fn transform_outputs_json() {
 }
 
 #[test]
+fn transform_reads_input_from_stdin_when_input_path_is_omitted() {
+    let base = fixtures_dir().join("t03_json_out_context");
+    let rules = base.join("rules.yaml");
+    let context = base.join("context.json");
+    let input = fs::read_to_string(base.join("input.json")).unwrap();
+    let expected = read_json(&base.join("expected.json"));
+
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("transform")
+            .arg("-r")
+            .arg(rules)
+            .arg("-c")
+            .arg(context)
+            .write_stdin(input);
+    });
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_json_stdout_eq(output, &expected);
+}
+
+#[test]
+fn transform_reads_input_from_stdin_when_input_path_is_dash() {
+    let base = fixtures_dir().join("t03_json_out_context");
+    let rules = base.join("rules.yaml");
+    let context = base.join("context.json");
+    let input = fs::read_to_string(base.join("input.json")).unwrap();
+    let expected = read_json(&base.join("expected.json"));
+
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("transform")
+            .arg("-r")
+            .arg(rules)
+            .arg("-i")
+            .arg("-")
+            .arg("-c")
+            .arg(context)
+            .write_stdin(input);
+    });
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_json_stdout_eq(output, &expected);
+}
+
+#[test]
 fn transform_accepts_json_rule_file_by_extension() {
     let base = fixtures_dir().join("t30_json_rule_file");
     let expected = read_json(&base.join("expected.json"));

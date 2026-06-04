@@ -521,6 +521,32 @@ input:
 - CLI `transform --ndjson` outputs one JSON object per line (streaming)
 - If `records_path` points to an object, a single record is produced
 
+## CLI input
+
+`rulemorph transform` accepts an input file with `-i/--input`. If `-i` is omitted and stdin is piped, stdin is used as the input. Use `-i -` to request stdin explicitly.
+
+```sh
+rulemorph transform -r rules.yaml -i input.json
+cat input.json | rulemorph transform -r rules.yaml
+cat input.json | rulemorph transform -r rules.yaml -i -
+```
+
+For a one-off expression without a rule file, use direct mode. The canonical option is `--rule`; the jq-like `-rule` and `-rule=...` aliases are also accepted.
+
+```sh
+echo '{ "test": 1 }' | rulemorph --rule '@input.test'
+echo '{ "test": 1 }' | rulemorph -rule '@input.test'
+echo '{ "test": 1 }' | rulemorph -rule=@input.test
+```
+
+Direct mode uses the normal v2 `expr` syntax. Use a pipe array when chaining operators.
+
+```sh
+echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
+```
+
+Direct mode defaults to JSON input. Pass `-f csv` for CSV input. `--limit`, `--limits-profile`, and `--limits-file` apply the same resource limits as `transform`. `--rule` cannot be used with a subcommand, and direct-mode top-level options placed before a subcommand are rejected.
+
 ## Resource limits
 
 The CLI can relax finite resource limits for large local inputs:
