@@ -50,13 +50,19 @@ pub(super) fn best_hint<'a>(options: &'a CodecOptions, path: &[PathElem<'_>]) ->
 }
 
 pub(super) fn decode_hint_type(options: &CodecOptions, path: &[PathElem<'_>]) -> Option<HintType> {
+    decode_hint_contract(options, path).map(|(ty, _)| ty)
+}
+
+pub(super) fn decode_hint_contract(
+    options: &CodecOptions,
+    path: &[PathElem<'_>],
+) -> Option<(HintType, bool)> {
     if path.is_empty() {
-        options
-            .root_type
-            .or_else(|| best_hint(options, path).map(|hint| hint.ty))
-    } else {
-        best_hint(options, path).map(|hint| hint.ty)
+        if let Some(root_type) = options.root_type {
+            return Some((root_type, false));
+        }
     }
+    best_hint(options, path).map(|hint| (hint.ty, hint.nullable))
 }
 
 pub(super) fn check_required_hints(

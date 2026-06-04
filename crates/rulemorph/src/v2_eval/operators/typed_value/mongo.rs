@@ -174,7 +174,7 @@ pub(super) fn decode_mongo_value(
                     key,
                     inner,
                     options,
-                    decode_hint_type(options, path_elems),
+                    decode_hint_contract(options, path_elems),
                     path,
                 );
             }
@@ -205,16 +205,25 @@ pub(super) fn decode_mongo_value(
             validate_input_string_bytes(value, path)?;
             Ok(JsonValue::String(value.clone()))
         }
+        JsonValue::Null => {
+            if let Some((hint_ty, false)) = decode_hint_contract(options, path_elems) {
+                return Err(expr_error(
+                    format!("MongoDB null does not match field type {}", hint_ty.name()),
+                    path,
+                ));
+            }
+            Ok(JsonValue::Null)
+        }
         _ => Ok(value.clone()),
     }
 }
 
 fn validate_mongo_wrapper_matches_hint(
     key: &str,
-    hint_ty: Option<HintType>,
+    hint_contract: Option<(HintType, bool)>,
     path: &str,
 ) -> Result<(), TransformError> {
-    let Some(hint_ty) = hint_ty else {
+    let Some((hint_ty, _)) = hint_contract else {
         return Ok(());
     };
     let expected = match hint_ty {
@@ -246,10 +255,11 @@ pub(super) fn decode_mongo_wrapper(
     key: &str,
     value: &JsonValue,
     options: &CodecOptions,
-    hint_ty: Option<HintType>,
+    hint_contract: Option<(HintType, bool)>,
     path: &str,
 ) -> Result<JsonValue, TransformError> {
-    validate_mongo_wrapper_matches_hint(key, hint_ty, path)?;
+    validate_mongo_wrapper_matches_hint(key, hint_contract, path)?;
+    let hint_ty = hint_contract.map(|(ty, _)| ty);
     match key {
         "$oid" => {
             let s = expect_string(value, "$oid must be string", path)?;

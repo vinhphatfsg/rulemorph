@@ -185,14 +185,24 @@ pub(super) fn decode_firestore_fields(
 
 fn validate_firestore_value_tag_matches_hint(
     tag: &str,
-    hint_ty: Option<HintType>,
+    hint_contract: Option<(HintType, bool)>,
     path: &str,
 ) -> Result<(), TransformError> {
-    let Some(hint_ty) = hint_ty else {
+    let Some((hint_ty, nullable)) = hint_contract else {
         return Ok(());
     };
     if tag == "nullValue" {
-        return Ok(());
+        if nullable {
+            return Ok(());
+        }
+        return Err(expr_error(
+            format!(
+                "Firestore Value field {} does not match field type {}",
+                tag,
+                hint_ty.name()
+            ),
+            path,
+        ));
     }
     let expected = match hint_ty {
         HintType::Integer => Some("integerValue"),
@@ -236,7 +246,11 @@ pub(super) fn decode_firestore_value(
         ));
     }
     let (key, value) = map.iter().next().unwrap();
-    validate_firestore_value_tag_matches_hint(key, decode_hint_type(options, path_elems), path)?;
+    validate_firestore_value_tag_matches_hint(
+        key,
+        decode_hint_contract(options, path_elems),
+        path,
+    )?;
     match key.as_str() {
         "nullValue" => {
             if value.is_null() {

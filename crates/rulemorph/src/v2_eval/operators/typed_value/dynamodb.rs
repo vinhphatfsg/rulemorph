@@ -235,12 +235,15 @@ pub(super) fn validate_binary_set_values(
 
 fn validate_dynamodb_tag_matches_hint(
     tag: &str,
-    hint_ty: Option<HintType>,
+    hint_contract: Option<(HintType, bool)>,
     path: &str,
 ) -> Result<(), TransformError> {
-    let Some(hint_ty) = hint_ty else {
+    let Some((hint_ty, nullable)) = hint_contract else {
         return Ok(());
     };
+    if tag == "NULL" && nullable {
+        return Ok(());
+    }
     let expected = match hint_ty {
         HintType::StringSet => Some("SS"),
         HintType::NumberSet | HintType::NumberStringSet => Some("NS"),
@@ -282,8 +285,9 @@ pub(super) fn decode_dynamodb_attribute(
         ));
     }
     let (tag, value) = map.iter().next().unwrap();
-    let hint_ty = decode_hint_type(options, path_elems);
-    validate_dynamodb_tag_matches_hint(tag, hint_ty, path)?;
+    let hint_contract = decode_hint_contract(options, path_elems);
+    let hint_ty = hint_contract.map(|(ty, _)| ty);
+    validate_dynamodb_tag_matches_hint(tag, hint_contract, path)?;
     match tag.as_str() {
         "S" => Ok(JsonValue::String(expect_string(
             value,
