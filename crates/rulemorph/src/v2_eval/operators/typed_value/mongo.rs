@@ -151,6 +151,19 @@ pub(super) fn decode_mongo_value(
     depth: usize,
 ) -> Result<JsonValue, TransformError> {
     guard.visit_node(path, depth)?;
+    let hint_contract = decode_hint_contract(options, path_elems);
+    if let Some((hint_ty, nullable)) = hint_contract {
+        match value {
+            JsonValue::Null if nullable => return Ok(JsonValue::Null),
+            JsonValue::Object(map) if exactly_one_known_mongo_wrapper(map).is_some() => {}
+            _ => {
+                return Err(expr_error(
+                    format!("MongoDB value does not match field type {}", hint_ty.name()),
+                    path,
+                ));
+            }
+        }
+    }
     match value {
         JsonValue::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
@@ -175,7 +188,7 @@ pub(super) fn decode_mongo_value(
                     key,
                     inner,
                     options,
-                    decode_hint_contract(options, path_elems),
+                    hint_contract,
                     hint.and_then(|hint| hint.subtype.as_deref()),
                     path,
                 );
@@ -207,15 +220,7 @@ pub(super) fn decode_mongo_value(
             validate_input_string_bytes(value, path)?;
             Ok(JsonValue::String(value.clone()))
         }
-        JsonValue::Null => {
-            if let Some((hint_ty, false)) = decode_hint_contract(options, path_elems) {
-                return Err(expr_error(
-                    format!("MongoDB null does not match field type {}", hint_ty.name()),
-                    path,
-                ));
-            }
-            Ok(JsonValue::Null)
-        }
+        JsonValue::Null => Ok(JsonValue::Null),
         _ => Ok(value.clone()),
     }
 }
@@ -355,8 +360,111 @@ fn validate_mongo_passthrough_wrapper(
     options: &CodecOptions,
     path: &str,
 ) -> Result<(), TransformError> {
-    let mut shape_options = options.clone();
-    shape_options.decode_mode = DecodeMode::SafeJson;
-    shape_options.number_policy = NumberPolicy::String;
-    decode_mongo_wrapper(key, value, &shape_options, None, None, path).map(|_| ())
+    match key {
+        "$oid" | "$date" | "$numberInt" | "$numberLong" | "$numberDouble" | "$numberDecimal"
+        | "$binary" => {
+            let mut shape_options = options.clone();
+            shape_options.decode_mode = DecodeMode::SafeJson;
+            shape_options.number_policy = NumberPolicy::String;
+            decode_mongo_wrapper(key, value, &shape_options, None, None, path).map(|_| ())
+        }
+        "$uuid" => validate_mongo_uuid_wrapper(value, path),
+        "$timestamp" => validate_mongo_timestamp_wrapper(value, path),
+        "$minKey" | "$maxKey" => validate_mongo_key_marker_wrapper(key, value, path),
+        "$regularExpression" => validate_mongo_regular_expression_wrapper(value, path),
+        _ => Err(expr_error(
+            format!("unknown MongoDB wrapper: {}", key),
+            path,
+        )),
+    }
+}
+
+fn validate_mongo_uuid_wrapper(value: &JsonValue, path: &str) -> Result<(), TransformError> {
+    let s = expect_string(value, "$uuid must be string", path)?;
+    validate_input_string_bytes(&s, path)?;
+    let bytes = s.as_bytes();
+    let valid = bytes.len() == 36
+        && [8usize, 13, 18, 23]
+            .iter()
+            .all(|index| bytes[*index] == b'-')
+        && bytes
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| [8usize, 13, 18, 23].contains(&index) || byte.is_ascii_hexdigit());
+    if valid {
+        Ok(())
+    } else {
+        Err(expr_error("malformed MongoDB $uuid wrapper", path))
+    }
+}
+
+fn validate_mongo_timestamp_wrapper(value: &JsonValue, path: &str) -> Result<(), TransformError> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| expr_error("$timestamp must be object", path))?;
+    if map.len() != 2 || !map.contains_key("t") || !map.contains_key("i") {
+        return Err(expr_error("malformed MongoDB $timestamp wrapper", path));
+    }
+    expect_u32_json_number(map.get("t").unwrap(), "$timestamp.t must be uint32", path)?;
+    expect_u32_json_number(map.get("i").unwrap(), "$timestamp.i must be uint32", path)?;
+    Ok(())
+}
+
+fn validate_mongo_key_marker_wrapper(
+    key: &str,
+    value: &JsonValue,
+    path: &str,
+) -> Result<(), TransformError> {
+    if value.as_i64() == Some(1) {
+        Ok(())
+    } else {
+        Err(expr_error(format!("{} must be 1", key), path))
+    }
+}
+
+fn validate_mongo_regular_expression_wrapper(
+    value: &JsonValue,
+    path: &str,
+) -> Result<(), TransformError> {
+    let map = value
+        .as_object()
+        .ok_or_else(|| expr_error("$regularExpression must be object", path))?;
+    if map.len() != 2 || !map.contains_key("pattern") || !map.contains_key("options") {
+        return Err(expr_error(
+            "malformed MongoDB $regularExpression wrapper",
+            path,
+        ));
+    }
+    let pattern = expect_string(
+        map.get("pattern").unwrap(),
+        "$regularExpression.pattern must be string",
+        path,
+    )?;
+    let options = expect_string(
+        map.get("options").unwrap(),
+        "$regularExpression.options must be string",
+        path,
+    )?;
+    validate_input_string_bytes(&pattern, path)?;
+    validate_input_string_bytes(&options, path)?;
+    let mut seen = [false; 256];
+    for byte in options.bytes() {
+        if !matches!(byte, b'i' | b'm' | b's' | b'x') || seen[byte as usize] {
+            return Err(expr_error(
+                "$regularExpression.options contains unsupported flags",
+                path,
+            ));
+        }
+        seen[byte as usize] = true;
+    }
+    Ok(())
+}
+
+fn expect_u32_json_number(
+    value: &JsonValue,
+    message: &str,
+    path: &str,
+) -> Result<u32, TransformError> {
+    let n = value.as_u64().ok_or_else(|| expr_error(message, path))?;
+    u32::try_from(n).map_err(|_| expr_error(message, path))
 }

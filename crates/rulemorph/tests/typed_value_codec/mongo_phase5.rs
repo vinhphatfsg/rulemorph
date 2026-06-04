@@ -175,6 +175,31 @@ mappings:
         output["doc"]["raw"],
         serde_json::json!({"$numberLong":"9223372036854775807"})
     );
+    let output = transform_json(
+        passthrough_yaml,
+        r#"{"raw":{"$uuid":"3b241101-e2bb-4255-8caf-4136c566a962"}}"#,
+    );
+    assert_eq!(
+        output["doc"]["raw"],
+        serde_json::json!({"$uuid":"3b241101-e2bb-4255-8caf-4136c566a962"})
+    );
+    let output = transform_json(passthrough_yaml, r#"{"raw":{"$timestamp":{"t":1,"i":2}}}"#);
+    assert_eq!(
+        output["doc"]["raw"],
+        serde_json::json!({"$timestamp":{"t":1,"i":2}})
+    );
+    let output = transform_json(passthrough_yaml, r#"{"raw":{"$minKey":1}}"#);
+    assert_eq!(output["doc"]["raw"], serde_json::json!({"$minKey":1}));
+    let output = transform_json(passthrough_yaml, r#"{"raw":{"$maxKey":1}}"#);
+    assert_eq!(output["doc"]["raw"], serde_json::json!({"$maxKey":1}));
+    let output = transform_json(
+        passthrough_yaml,
+        r#"{"raw":{"$regularExpression":{"pattern":"^H","options":"i"}}}"#,
+    );
+    assert_eq!(
+        output["doc"]["raw"],
+        serde_json::json!({"$regularExpression":{"pattern":"^H","options":"i"}})
+    );
 
     let decode_yaml = r#"
 version: 2
@@ -216,6 +241,9 @@ mappings:
         r#"{"raw":{"$binary":{"base64":"AQ==","subType":"zz"}}}"#,
     );
     assert!(message.contains("binary subtype"));
+
+    let message = transform_err(yaml, r#"{"raw":{"$timestamp":{"t":1}}}"#);
+    assert!(message.contains("$timestamp"));
 }
 
 #[test]

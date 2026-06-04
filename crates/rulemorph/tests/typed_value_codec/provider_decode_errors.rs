@@ -165,6 +165,33 @@ mappings:
 }
 
 #[test]
+fn typed_value_mongodb_decode_rejects_unwrapped_values_for_typed_fields() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  mongo:
+    profile: mongo_extended_json
+    field_types:
+      _id: object_id
+      count: int32
+mappings:
+  - target: decoded
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: mongo
+"#;
+    let string_message = transform_err(yaml, r#"{"_id":"0123456789abcdef01234567"}"#);
+    assert!(string_message.contains("does not match field type"));
+
+    let number_message = transform_err(yaml, r#"{"count":31}"#);
+    assert!(number_message.contains("does not match field type"));
+}
+
+#[test]
 fn typed_value_mongodb_decode_rejects_null_for_non_nullable_field_types() {
     let yaml = r#"
 version: 2

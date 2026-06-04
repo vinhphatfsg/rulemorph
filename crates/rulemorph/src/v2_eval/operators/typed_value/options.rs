@@ -235,6 +235,19 @@ pub(super) fn parse_options<'a>(
         }
         validate_profile_hint_type(profile, root_type, "type", path)?;
     }
+    if !profile.supports_root_type() {
+        for hint in &hints {
+            if hint.path.0.is_empty() {
+                return Err(expr_error(
+                    format!(
+                        "root field type path is not supported by {} profile",
+                        profile.name()
+                    ),
+                    path,
+                ));
+            }
+        }
+    }
     for hint in &hints {
         validate_profile_hint_type(profile, hint.ty, "field type", path)?;
     }

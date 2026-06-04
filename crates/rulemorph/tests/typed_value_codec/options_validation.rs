@@ -174,6 +174,52 @@ mappings:
 }
 
 #[test]
+fn typed_value_validation_rejects_root_hints_on_map_shaped_profiles() {
+    let codec_binding_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  doc:
+    profile: firestore_document
+    field_types:
+      ".": integer
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: doc
+"#;
+    let rule = parse_rule_file(codec_binding_yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("map-shaped root hint should be invalid");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.message.contains("root field type path is not supported"))
+    );
+
+    let inline_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: dynamodb_item
+          hints:
+            - path: "."
+              type: number_string
+"#;
+    let message = transform_err(inline_yaml, r#"{"count":"1"}"#);
+    assert!(message.contains("root field type path is not supported"));
+}
+
+#[test]
 fn typed_value_requires_profile_argument_at_validation_time() {
     let yaml = r#"
 version: 2
