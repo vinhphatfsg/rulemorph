@@ -310,6 +310,26 @@ mappings:
         .expect_err("oversized key");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
     assert!(err.message.contains("input string bytes"));
+
+    let decode_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: mongo_extended_json
+"#;
+    let oversized = "x".repeat(8 * 1024 * 1024 + 1);
+    let input = serde_json::json!({"payload": oversized}).to_string();
+    let rule = parse_rule_file(decode_yaml).expect("parse rule");
+    let err = transform_input_with_options(&rule, InputData::Text(&input), None, &options)
+        .expect_err("oversized MongoDB decode string");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("input string bytes"));
 }
 
 #[test]

@@ -183,6 +183,40 @@ pub(super) fn decode_firestore_fields(
     Ok(JsonValue::Object(out))
 }
 
+fn validate_firestore_value_tag_matches_hint(
+    tag: &str,
+    hint_ty: Option<HintType>,
+    path: &str,
+) -> Result<(), TransformError> {
+    let Some(hint_ty) = hint_ty else {
+        return Ok(());
+    };
+    if tag == "nullValue" {
+        return Ok(());
+    }
+    let expected = match hint_ty {
+        HintType::Integer => Some("integerValue"),
+        HintType::Timestamp => Some("timestampValue"),
+        HintType::BytesBase64 | HintType::BinaryBase64 => Some("bytesValue"),
+        HintType::Reference => Some("referenceValue"),
+        HintType::GeoPoint => Some("geoPointValue"),
+        _ => None,
+    };
+    if let Some(expected) = expected
+        && tag != expected
+    {
+        return Err(expr_error(
+            format!(
+                "Firestore Value field {} does not match field type {}",
+                tag,
+                hint_ty.name()
+            ),
+            path,
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn decode_firestore_value(
     input: &JsonValue,
     options: &CodecOptions,
@@ -202,6 +236,7 @@ pub(super) fn decode_firestore_value(
         ));
     }
     let (key, value) = map.iter().next().unwrap();
+    validate_firestore_value_tag_matches_hint(key, decode_hint_type(options, path_elems), path)?;
     match key.as_str() {
         "nullValue" => {
             if value.is_null() {

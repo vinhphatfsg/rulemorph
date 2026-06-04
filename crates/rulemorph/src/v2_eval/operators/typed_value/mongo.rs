@@ -201,8 +201,45 @@ pub(super) fn decode_mongo_value(
             }
             Ok(JsonValue::Object(out))
         }
+        JsonValue::String(value) => {
+            validate_input_string_bytes(value, path)?;
+            Ok(JsonValue::String(value.clone()))
+        }
         _ => Ok(value.clone()),
     }
+}
+
+fn validate_mongo_wrapper_matches_hint(
+    key: &str,
+    hint_ty: Option<HintType>,
+    path: &str,
+) -> Result<(), TransformError> {
+    let Some(hint_ty) = hint_ty else {
+        return Ok(());
+    };
+    let expected = match hint_ty {
+        HintType::ObjectId => Some("$oid"),
+        HintType::Date | HintType::Timestamp => Some("$date"),
+        HintType::BinaryBase64 => Some("$binary"),
+        HintType::Decimal128 => Some("$numberDecimal"),
+        HintType::Int32 => Some("$numberInt"),
+        HintType::Int64 => Some("$numberLong"),
+        HintType::Double => Some("$numberDouble"),
+        _ => None,
+    };
+    if let Some(expected) = expected
+        && key != expected
+    {
+        return Err(expr_error(
+            format!(
+                "MongoDB Extended JSON wrapper {} does not match field type {}",
+                key,
+                hint_ty.name()
+            ),
+            path,
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn decode_mongo_wrapper(
@@ -212,6 +249,7 @@ pub(super) fn decode_mongo_wrapper(
     hint_ty: Option<HintType>,
     path: &str,
 ) -> Result<JsonValue, TransformError> {
+    validate_mongo_wrapper_matches_hint(key, hint_ty, path)?;
     match key {
         "$oid" => {
             let s = expect_string(value, "$oid must be string", path)?;

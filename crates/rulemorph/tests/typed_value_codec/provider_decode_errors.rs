@@ -46,6 +46,52 @@ mappings:
 }
 
 #[test]
+fn typed_value_firestore_decode_rejects_tags_that_contradict_field_types() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  fs:
+    profile: firestore_document
+    field_types:
+      age: integer
+mappings:
+  - target: decoded
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: fs
+"#;
+    let message = transform_err(yaml, r#"{"fields":{"age":{"stringValue":"31"}}}"#);
+    assert!(message.contains("does not match field type"));
+}
+
+#[test]
+fn typed_value_mongodb_decode_rejects_wrappers_that_contradict_field_types() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  mongo:
+    profile: mongo_extended_json
+    field_types:
+      count: int32
+mappings:
+  - target: decoded
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: mongo
+"#;
+    let message = transform_err(yaml, r#"{"count":{"$numberLong":"31"}}"#);
+    assert!(message.contains("does not match field type"));
+}
+
+#[test]
 fn typed_value_firestore_decode_rejects_direct_nested_arrays() {
     let yaml = r#"
 version: 2
