@@ -37,7 +37,7 @@ pub(super) fn encode_mongo_value(
             validate_object_id(s, path)?;
             wrapper("$oid", JsonValue::String(s.to_string()))
         }
-        Some(HintType::Date) | Some(HintType::Timestamp) => {
+        Some(HintType::Date) => {
             let s = value
                 .as_str()
                 .ok_or_else(|| expr_error("date field requires string", path))?;
@@ -235,7 +235,7 @@ fn validate_mongo_wrapper_matches_hint(
     };
     let expected = match hint_ty {
         HintType::ObjectId => Some("$oid"),
-        HintType::Date | HintType::Timestamp => Some("$date"),
+        HintType::Date => Some("$date"),
         HintType::BinaryBase64 => Some("$binary"),
         HintType::Decimal128 => Some("$numberDecimal"),
         HintType::Int32 => Some("$numberInt"),

@@ -151,6 +151,50 @@ mappings:
 }
 
 #[test]
+fn typed_value_mongodb_rejects_timestamp_hint_contracts() {
+    let runtime_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: doc
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: mongo_extended_json
+          field_types:
+            created_at: timestamp
+"#;
+    let message = transform_err(runtime_yaml, r#"{"created_at":"2026-06-03T00:00:00Z"}"#);
+    assert!(message.contains("field type is not supported by mongo_extended_json profile: timestamp"));
+
+    let static_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  mongo:
+    profile: mongo_extended_json
+    type: timestamp
+mappings:
+  - target: typed
+    expr:
+      - "@input.created_at"
+      - to_typed_value:
+          codec: mongo
+"#;
+    let rule = parse_rule_file(static_yaml).expect("parse rule");
+    let errors = validate_rule_file(&rule).expect_err("MongoDB timestamp hint should be invalid");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.message.contains("type is not supported by mongo_extended_json profile: timestamp"))
+    );
+}
+
+#[test]
 fn typed_value_validation_rejects_root_type_on_map_shaped_profiles() {
     let codec_binding_yaml = r#"
 version: 2

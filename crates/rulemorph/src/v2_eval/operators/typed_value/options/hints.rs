@@ -70,7 +70,6 @@ pub(super) fn validate_profile_hint_type(
             ty,
             HintType::ObjectId
                 | HintType::Date
-                | HintType::Timestamp
                 | HintType::BinaryBase64
                 | HintType::Decimal128
                 | HintType::Int32

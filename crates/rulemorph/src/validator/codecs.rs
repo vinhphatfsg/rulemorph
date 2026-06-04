@@ -1338,14 +1338,7 @@ fn validate_profile_hint_type(
         ),
         "mongo_extended_json" => matches!(
             raw,
-            "object_id"
-                | "date"
-                | "timestamp"
-                | "binary_base64"
-                | "decimal128"
-                | "int32"
-                | "int64"
-                | "double"
+            "object_id" | "date" | "binary_base64" | "decimal128" | "int32" | "int64" | "double"
         ),
         _ => return,
     };
