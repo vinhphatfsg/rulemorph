@@ -2247,6 +2247,7 @@ version = "0.3.2"
 dependencies = [
  "assert_cmd",
  "clap",
+ "csv",
  "predicates",
  "rulemorph",
  "rulemorph_server",

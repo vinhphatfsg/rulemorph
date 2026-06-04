@@ -20,10 +20,24 @@ mod server_commands;
 struct Cli {
     #[arg(long = "rule")]
     rule: Option<String>,
+    #[arg(short = 'F', long = "field")]
+    fields: Vec<String>,
+    #[arg(long = "output-map")]
+    output_map: Option<String>,
     #[arg(short = 'i', long)]
     input: Option<PathBuf>,
     #[arg(short = 'f', long)]
-    format: Option<FormatOverride>,
+    format: Option<DirectFormatArg>,
+    #[arg(short = 'H', long = "headers")]
+    headers: Option<String>,
+    #[arg(long = "excel-data-range")]
+    excel_data_range: Option<String>,
+    #[arg(long)]
+    excel_header_row: Option<usize>,
+    #[arg(long)]
+    excel_sheet: Option<String>,
+    #[arg(long)]
+    excel_sheet_index: Option<usize>,
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
     #[arg(short = 'e', long)]
@@ -34,6 +48,8 @@ struct Cli {
     limits_profile: Option<LimitsProfileArg>,
     #[arg(long)]
     limits_file: Option<PathBuf>,
+    #[arg(short = 'c', long)]
+    context: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -66,6 +82,13 @@ enum FormatOverride {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum DirectFormatArg {
+    Csv,
+    Json,
+    Excel,
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum RulesFormatArg {
     Yaml,
@@ -82,61 +105,87 @@ fn main() {
     let cli = Cli::parse_from(normalize_rule_alias(std::env::args_os()));
     let Cli {
         rule,
+        fields,
+        output_map,
         input,
         format,
+        headers,
+        excel_data_range,
+        excel_header_row,
+        excel_sheet,
+        excel_sheet_index,
         output,
         error_format,
         limits,
         limits_profile,
         limits_file,
+        context,
         command,
     } = cli;
 
-    let exit_code = match (rule, command) {
-        (Some(rule), None) => direct::run(direct::DirectArgs {
+    let has_direct_output_spec = rule.is_some() || !fields.is_empty() || output_map.is_some();
+
+    let exit_code = match (has_direct_output_spec, command) {
+        (true, None) => direct::run(direct::DirectArgs {
             rule,
+            fields,
+            output_map,
             input,
             format,
+            headers,
+            excel_data_range,
+            excel_header_row,
+            excel_sheet,
+            excel_sheet_index,
             output,
             error_format,
             limits,
             limits_profile,
             limits_file,
+            context,
         }),
-        (Some(_), Some(_)) => {
-            eprintln!("--rule cannot be used with a subcommand");
+        (true, Some(_)) => {
+            eprintln!("--rule, --output-map, and --field cannot be used with a subcommand");
             2
         }
-        (None, Some(command))
+        (false, Some(command))
             if has_direct_options(
                 &input,
                 &format,
+                &headers,
+                &excel_data_range,
+                &excel_header_row,
+                &excel_sheet,
+                &excel_sheet_index,
                 &output,
                 &error_format,
                 &limits,
                 &limits_profile,
                 &limits_file,
+                &context,
             ) =>
         {
-            eprintln!("direct-mode options require --rule and cannot be used before a subcommand");
+            eprintln!(
+                "direct-mode options require --rule, --output-map, or --field and cannot be used before a subcommand"
+            );
             let _ = command;
             2
         }
-        (None, Some(Commands::Validate(args))) => core_commands::run_validate(args),
+        (false, Some(Commands::Validate(args))) => core_commands::run_validate(args),
         #[cfg(feature = "server")]
-        (None, Some(Commands::ValidateRulesDir(args))) => {
+        (false, Some(Commands::ValidateRulesDir(args))) => {
             server_commands::run_validate_rules_dir(args)
         }
-        (None, Some(Commands::Preflight(args))) => core_commands::run_preflight(args),
-        (None, Some(Commands::Transform(args))) => core_commands::run_transform(args),
-        (None, Some(Commands::Generate(args))) => generate::run(args),
+        (false, Some(Commands::Preflight(args))) => core_commands::run_preflight(args),
+        (false, Some(Commands::Transform(args))) => core_commands::run_transform(args),
+        (false, Some(Commands::Generate(args))) => generate::run(args),
         #[cfg(feature = "server")]
-        (None, Some(Commands::Ui(args))) => server_commands::run_ui(args),
+        (false, Some(Commands::Ui(args))) => server_commands::run_ui(args),
         #[cfg(feature = "server")]
-        (None, Some(Commands::PurgeTraces(args))) => server_commands::run_purge_traces(args),
+        (false, Some(Commands::PurgeTraces(args))) => server_commands::run_purge_traces(args),
         #[cfg(feature = "server")]
-        (None, Some(Commands::ApiKeys(args))) => api_keys::run(args),
-        (None, None) => {
+        (false, Some(Commands::ApiKeys(args))) => api_keys::run(args),
+        (false, None) => {
             let _ = Cli::command().print_help();
             eprintln!();
             2
@@ -167,20 +216,32 @@ fn normalize_rule_alias(args: impl IntoIterator<Item = OsString>) -> Vec<OsStrin
 
 fn has_direct_options(
     input: &Option<PathBuf>,
-    format: &Option<FormatOverride>,
+    format: &Option<DirectFormatArg>,
+    headers: &Option<String>,
+    excel_range: &Option<String>,
+    excel_header_row: &Option<usize>,
+    excel_sheet: &Option<String>,
+    excel_sheet_index: &Option<usize>,
     output: &Option<PathBuf>,
     error_format: &Option<ErrorFormat>,
     limits: &[String],
     limits_profile: &Option<LimitsProfileArg>,
     limits_file: &Option<PathBuf>,
+    context: &Option<PathBuf>,
 ) -> bool {
     input.is_some()
         || format.is_some()
+        || headers.is_some()
+        || excel_range.is_some()
+        || excel_header_row.is_some()
+        || excel_sheet.is_some()
+        || excel_sheet_index.is_some()
         || output.is_some()
         || error_format.is_some()
         || !limits.is_empty()
         || limits_profile.is_some()
         || limits_file.is_some()
+        || context.is_some()
 }
 
 #[cfg(test)]
