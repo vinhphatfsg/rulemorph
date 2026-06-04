@@ -144,10 +144,11 @@ fn decode_root(
             let map = input
                 .as_object()
                 .ok_or_else(|| expr_error("firestore_document decode requires object", path))?;
-            let fields = map
-                .get("fields")
-                .ok_or_else(|| expr_error("firestore_document requires fields", path))?;
-            decode_firestore_fields(fields, options, &[], guard, path)
+            if let Some(fields) = map.get("fields") {
+                decode_firestore_fields(fields, options, &[], guard, path)
+            } else {
+                Ok(JsonValue::Object(JsonMap::new()))
+            }
         }
         Profile::MongoExtendedJson => decode_mongo_value(input, options, &[], guard, path, 0),
     }?;

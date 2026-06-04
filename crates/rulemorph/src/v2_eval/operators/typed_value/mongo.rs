@@ -85,7 +85,7 @@ pub(super) fn encode_mongo_value(
             JsonValue::Object(map) => {
                 if let Some((key, inner)) = exactly_one_known_mongo_wrapper(map) {
                     if options.allow_extended_json_passthrough {
-                        decode_mongo_wrapper(key, inner, options, None, path)?;
+                        validate_mongo_passthrough_wrapper(key, inner, options, path)?;
                         return Ok(value.clone());
                     }
                     if options.extended_json_wrapper_objects == WrapperObjectPolicy::RejectUnhinted
@@ -170,11 +170,13 @@ pub(super) fn decode_mongo_value(
         }
         JsonValue::Object(map) => {
             if let Some((key, inner)) = exactly_one_known_mongo_wrapper(map) {
+                let hint = best_hint(options, path_elems);
                 return decode_mongo_wrapper(
                     key,
                     inner,
                     options,
                     decode_hint_contract(options, path_elems),
+                    hint.and_then(|hint| hint.subtype.as_deref()),
                     path,
                 );
             }
@@ -256,6 +258,7 @@ pub(super) fn decode_mongo_wrapper(
     value: &JsonValue,
     options: &CodecOptions,
     hint_contract: Option<(HintType, bool)>,
+    hint_subtype: Option<&str>,
     path: &str,
 ) -> Result<JsonValue, TransformError> {
     validate_mongo_wrapper_matches_hint(key, hint_contract, path)?;
@@ -324,6 +327,15 @@ pub(super) fn decode_mongo_wrapper(
             )?;
             validate_base64(&base64, path)?;
             validate_binary_subtype(&subtype, path)?;
+            if let Some(expected) = hint_subtype {
+                validate_binary_subtype(expected, path)?;
+                if subtype != expected {
+                    return Err(expr_error(
+                        "MongoDB binary subtype does not match field type subtype",
+                        path,
+                    ));
+                }
+            }
             Ok(JsonValue::String(base64))
         }
         "$regularExpression" | "$timestamp" | "$minKey" | "$maxKey" | "$uuid" => Err(expr_error(
@@ -335,4 +347,16 @@ pub(super) fn decode_mongo_wrapper(
             path,
         )),
     }
+}
+
+fn validate_mongo_passthrough_wrapper(
+    key: &str,
+    value: &JsonValue,
+    options: &CodecOptions,
+    path: &str,
+) -> Result<(), TransformError> {
+    let mut shape_options = options.clone();
+    shape_options.decode_mode = DecodeMode::SafeJson;
+    shape_options.number_policy = NumberPolicy::String;
+    decode_mongo_wrapper(key, value, &shape_options, None, None, path).map(|_| ())
 }

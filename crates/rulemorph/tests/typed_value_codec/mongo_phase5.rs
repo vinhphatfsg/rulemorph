@@ -150,6 +150,32 @@ mappings:
         serde_json::json!({"$oid":"0123456789abcdef01234567"})
     );
 
+    let parse_policy_yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  mongo_doc:
+    profile: mongo_extended_json
+    allow_extended_json_passthrough: true
+    number_policy: parse_json_number_if_safe
+mappings:
+  - target: doc
+    expr:
+      - "@input"
+      - to_typed_value:
+          codec: mongo_doc
+"#;
+    let output = transform_json(
+        parse_policy_yaml,
+        r#"{"raw":{"$numberLong":"9223372036854775807"}}"#,
+    );
+    assert_eq!(
+        output["doc"]["raw"],
+        serde_json::json!({"$numberLong":"9223372036854775807"})
+    );
+
     let decode_yaml = r#"
 version: 2
 input:
@@ -192,3 +218,30 @@ mappings:
     assert!(message.contains("binary subtype"));
 }
 
+#[test]
+fn phase5_mongodb_decode_rejects_binary_subtype_hint_mismatch() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+codecs:
+  mongo_doc:
+    profile: mongo_extended_json
+    field_types:
+      blob:
+        type: binary_base64
+        subtype: "00"
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          codec: mongo_doc
+"#;
+    let message = transform_err(
+        yaml,
+        r#"{"blob":{"$binary":{"base64":"AQID","subType":"04"}}}"#,
+    );
+    assert!(message.contains("binary subtype does not match field type"));
+}

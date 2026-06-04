@@ -271,6 +271,10 @@ pub(super) fn decode_firestore_value(
         }
         "doubleValue" => match value {
             JsonValue::Number(n) => Ok(JsonValue::Number(n.clone())),
+            JsonValue::String(s) if is_special_double_string(s) => {
+                validate_firestore_double_string(s, path)?;
+                Ok(JsonValue::String(s.clone()))
+            }
             JsonValue::String(s)
                 if options.number_policy == NumberPolicy::ParseJsonNumberIfSafe =>
             {

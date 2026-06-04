@@ -106,6 +106,34 @@ mappings:
     );
     assert_eq!(output["raw"]["name"], serde_json::json!("Ada"));
     assert_eq!(output["raw"]["tags"], serde_json::json!(["admin"]));
+
+    let empty_output = transform_json(
+        document_decode_yaml,
+        r#"{"name":"projects/p/databases/d/documents/users/u1","createTime":"2026-06-03T00:00:00Z"}"#,
+    );
+    assert_eq!(empty_output["raw"], serde_json::json!({}));
+}
+
+#[test]
+fn phase4_firestore_special_doubles_survive_parse_number_policy() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: firestore_value
+          number_policy: parse_json_number_if_safe
+"#;
+    for raw in ["NaN", "Infinity", "-Infinity"] {
+        let input = serde_json::json!({"doubleValue": raw}).to_string();
+        let output = transform_json(yaml, &input);
+        assert_eq!(output["raw"], serde_json::json!(raw));
+    }
 }
 
 #[test]
@@ -147,4 +175,3 @@ mappings:
     let output = transform_json(bytes_yaml, &input);
     assert!(output["bytes"]["bytesValue"].as_str().is_some());
 }
-
