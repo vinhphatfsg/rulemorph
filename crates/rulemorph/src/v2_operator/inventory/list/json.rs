@@ -98,4 +98,20 @@ pub(super) const JSON_OPERATORS: &[V2OperatorMetadata] = &[
         false,
         NO_SCOPE,
     ),
+    op(
+        "to_typed_value",
+        range(1, Some(1)),
+        V2OperatorTrace::EagerArgs,
+        false,
+        false,
+        NO_SCOPE,
+    ),
+    op(
+        "from_typed_value",
+        range(1, Some(1)),
+        V2OperatorTrace::EagerArgs,
+        false,
+        false,
+        NO_SCOPE,
+    ),
 ];

@@ -43,6 +43,36 @@ fn tv44_math_ops() {
 }
 
 #[test]
+fn tv47_typed_value_dynamodb_item_shorthand() {
+    assert_json_fixture("tv47_typed_value_dynamodb_item_shorthand");
+}
+
+#[test]
+fn tv48_typed_value_dynamodb_item_codec_binding() {
+    assert_json_fixture("tv48_typed_value_dynamodb_item_codec_binding");
+}
+
+#[test]
+fn tv49_typed_value_firestore_document() {
+    assert_json_fixture("tv49_typed_value_firestore_document");
+}
+
+#[test]
+fn tv50_typed_value_mongo_extended_json() {
+    assert_json_fixture("tv50_typed_value_mongo_extended_json");
+}
+
+#[test]
+fn r10_typed_value_dynamodb_attribute_value_requires_single_tag() {
+    assert_transform_error_fixture("r10_typed_value_dynamodb_attribute_value_requires_single_tag");
+}
+
+#[test]
+fn r11_typed_value_mongo_rejects_unhinted_extended_json_wrapper() {
+    assert_transform_error_fixture("r11_typed_value_mongo_rejects_unhinted_extended_json_wrapper");
+}
+
+#[test]
 fn tv44_range_limit_options_apply_to_finalize_wrap() {
     let yaml = r#"
 version: 2

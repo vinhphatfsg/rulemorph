@@ -1,0 +1,10 @@
+{
+  "id": "u1",
+  "age": 31,
+  "active": true,
+  "tags": ["admin", "paid"],
+  "profile": {
+    "tier": "gold"
+  },
+  "none": null
+}

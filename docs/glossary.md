@@ -38,6 +38,16 @@
 - **パイプステップ（step）**: `expr` の 2 要素目以降（OP[1..] 相当）。
 - **演算ステップ**: `trim` / `uppercase` / `len` / `concat` などの処理。
 
+### typed value codec
+
+- **typed value codec**: JSON value と provider 固有の型付き JSON 表現を相互変換する仕組み。例: DynamoDB AttributeValue、Firestore REST `Value`、MongoDB Extended JSON。
+- **provider typed value**: provider が値の型を wrapper で表した JSON。例: `{ "S": "u1" }`、`{ "integerValue": "31" }`、`{ "$oid": "..." }`。
+- **profile**: provider ごとの組み込み変換 profile。例: `dynamodb_item`、`firestore_document`、`mongo_extended_json`。
+- **codec binding**: top-level `codecs` で profile、`field_types`、decode policy に名前を付けたもの。同じ型意図を `to_typed_value` と `from_typed_value` で共有するために使う。
+- **field type**: logical path ごとの provider domain type。例: `tags: string_set`、`created_at: timestamp`、`_id: object_id`。
+- **encode**: `to_typed_value` で raw JSON から provider typed value を作る方向。
+- **decode**: `from_typed_value` で provider typed value から raw JSON へ戻す方向。
+
 ### v2 steps（steps:）
 
 - **ステップ（steps）**: v2 の `steps:` における実行単位（mappings/record_when/asserts/branch を持つ）。

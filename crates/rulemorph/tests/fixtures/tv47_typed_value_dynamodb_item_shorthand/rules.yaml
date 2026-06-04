@@ -1,0 +1,9 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: Item
+    expr:
+      - "@input"
+      - to_typed_value: dynamodb_item
