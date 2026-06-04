@@ -68,6 +68,30 @@ fn direct_rule_distinguishes_missing_from_empty_object() {
 }
 
 #[test]
+fn direct_rule_rejects_duplicate_keys_in_inline_json() {
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("--rule")
+            .arg(r#"{ "a": 1, "a": 2 }"#)
+            .write_stdin(r#"{ "test": 1 }"#);
+    });
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr_string(output).contains("duplicate key"));
+}
+
+#[test]
+fn direct_rule_unwraps_bom_prefixed_json_object() {
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("--rule")
+            .arg("@input.test")
+            .write_stdin(Vec::from(b"\xef\xbb\xbf{ \"test\": 1 }".as_slice()));
+    });
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_string(output), "1\n");
+}
+
+#[test]
 fn direct_options_cannot_be_ignored_before_subcommand() {
     let output = rulemorph_output(|cmd| {
         cmd.arg("-i")

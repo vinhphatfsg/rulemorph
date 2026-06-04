@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use rulemorph::{
-    InputData, RuleFormat, parse_rule_file_with_format,
+    InputData, RuleFormat, parse_rule_file_with_format, serde_guard::parse_json_value_strict,
     transform_input_with_warnings_with_base_dir_and_options,
 };
 
@@ -88,7 +88,7 @@ fn build_direct_rule(
         FormatOverride::Csv => "csv",
         FormatOverride::Json => "json",
     };
-    let expr = parse_inline_expr(inline_rule);
+    let expr = parse_inline_expr(inline_rule)?;
     let rule_json = serde_json::json!({
         "version": 2,
         "input": {
@@ -108,18 +108,29 @@ fn build_direct_rule(
         .map_err(|err| format!("failed to parse inline rule: {}", err))
 }
 
-fn parse_inline_expr(inline_rule: &str) -> serde_json::Value {
-    serde_json::from_str(inline_rule)
-        .unwrap_or_else(|_| serde_json::Value::String(inline_rule.to_string()))
+fn parse_inline_expr(inline_rule: &str) -> Result<serde_json::Value, String> {
+    match parse_json_value_strict(inline_rule) {
+        Ok(value) => Ok(value),
+        Err(err) if serde_json::from_str::<serde_json::Value>(inline_rule).is_ok() => {
+            Err(format!("failed to parse inline JSON rule: {}", err))
+        }
+        Err(_) => Ok(serde_json::Value::String(inline_rule.to_string())),
+    }
 }
 
 fn should_unwrap_single_output(input: &[u8], format: Option<FormatOverride>) -> bool {
     match format.unwrap_or(FormatOverride::Json) {
         FormatOverride::Csv => false,
-        FormatOverride::Json => serde_json::from_slice::<serde_json::Value>(input)
+        FormatOverride::Json => std::str::from_utf8(strip_utf8_bom(input))
+            .ok()
+            .and_then(|text| parse_json_value_strict(text).ok())
             .map(|value| matches!(value, serde_json::Value::Object(_)))
             .unwrap_or(false),
     }
+}
+
+fn strip_utf8_bom(input: &[u8]) -> &[u8] {
+    input.strip_prefix(b"\xef\xbb\xbf").unwrap_or(input)
 }
 
 fn unwrap_direct_output(
