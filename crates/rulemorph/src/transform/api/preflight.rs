@@ -119,6 +119,7 @@ fn preflight_validate_input_with_warnings_inner(
                 base_dir,
                 &mut branch_context,
                 limits,
+                None,
             )? {
                 output_records.push(output);
             }

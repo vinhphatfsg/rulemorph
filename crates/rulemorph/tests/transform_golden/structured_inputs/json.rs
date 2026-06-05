@@ -53,3 +53,28 @@ mappings:
     .expect_err("single object should still honor max_records");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
+
+#[test]
+fn json_records_path_rejects_scalar_value() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json:
+    records_path: user.id
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text(r#"{ "user": { "id": 1 } }"#),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("scalar records_path should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "records_path must point to an array or object");
+}

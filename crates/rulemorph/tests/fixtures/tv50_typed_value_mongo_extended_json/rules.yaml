@@ -1,0 +1,17 @@
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: document
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: mongo_extended_json
+          mode: relaxed
+          field_types:
+            _id: object_id
+            created_at: date
+            avatar:
+              type: binary_base64
+              subtype: "00"

@@ -18,6 +18,8 @@ include!("cli/preflight.rs");
 
 include!("cli/transform_command.rs");
 
+include!("cli/direct_rule.rs");
+
 include!("cli/context.rs");
 
 include!("cli/validate.rs");

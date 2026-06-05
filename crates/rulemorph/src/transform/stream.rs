@@ -25,6 +25,7 @@ pub struct TransformStream<'a> {
     records: InputRecordsIter<'a>,
     base_dir: Option<&'a Path>,
     limits: EvalLimits,
+    compiled_rule: Option<super::CompiledRule>,
     done: bool,
 }
 
@@ -68,6 +69,7 @@ impl<'a> TransformStream<'a> {
             records,
             base_dir,
             limits: EvalLimits::from(options),
+            compiled_rule: None,
             done: false,
         })
     }
@@ -94,6 +96,9 @@ impl<'a> Iterator for TransformStream<'a> {
                 }
             };
 
+            let compiled_rule = self
+                .compiled_rule
+                .get_or_insert_with(|| super::CompiledRule::new(self.rule));
             let mut warnings = Vec::new();
             let mut branch_context = BranchContext::default();
             match apply_rule_to_record(
@@ -104,6 +109,7 @@ impl<'a> Iterator for TransformStream<'a> {
                 self.base_dir,
                 &mut branch_context,
                 self.limits,
+                Some(compiled_rule),
             ) {
                 Ok(output) => {
                     if output.is_none() && warnings.is_empty() {

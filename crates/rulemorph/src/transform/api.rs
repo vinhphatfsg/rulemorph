@@ -9,7 +9,7 @@ use super::records::input_records_iter_with_options;
 use super::stream::{
     transform_stream_input_with_base_dir_and_options, transform_stream_input_with_options,
 };
-use super::{BranchContext, EvalLimits, apply_finalize, apply_rule_to_record};
+use super::{BranchContext, CompiledRule, EvalLimits, apply_finalize, apply_rule_to_record};
 
 mod input;
 mod preflight;

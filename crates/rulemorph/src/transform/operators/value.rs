@@ -134,12 +134,22 @@ pub(super) fn to_radix_string(value: i64, base: u32, path: &str) -> Result<Strin
     Ok(buf.iter().collect())
 }
 
-pub(super) fn value_to_string_optional(value: &JsonValue) -> Option<String> {
+pub(in crate::transform) fn value_to_string_optional(value: &JsonValue) -> Option<String> {
     match value {
         JsonValue::String(s) => Some(s.clone()),
         JsonValue::Number(n) => Some(number_to_string(n)),
         JsonValue::Bool(b) => Some(b.to_string()),
         _ => None,
+    }
+}
+
+pub(in crate::transform) fn value_matches_string_key(value: &JsonValue, key: &str) -> bool {
+    match value {
+        JsonValue::String(s) => s == key,
+        JsonValue::Number(n) => number_to_string(n) == key,
+        JsonValue::Bool(false) => key == "false",
+        JsonValue::Bool(true) => key == "true",
+        _ => false,
     }
 }
 

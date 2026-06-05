@@ -29,10 +29,9 @@ fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
 }
 
 fn cached_regex(pattern: &str, path: &str) -> Result<Regex, TransformError> {
-    let key = pattern.to_string();
     if let Some(regex) = {
         let mut cache = regex_cache().lock().unwrap_or_else(|err| err.into_inner());
-        cache.get_cloned(&key)
+        cache.get_cloned_by(pattern)
     } {
         return Ok(regex);
     }
@@ -43,13 +42,14 @@ fn cached_regex(pattern: &str, path: &str) -> Result<Regex, TransformError> {
     })?;
     {
         let mut cache = regex_cache().lock().unwrap_or_else(|err| err.into_inner());
-        cache.insert(key, regex.clone());
+        cache.insert(pattern.to_string(), regex.clone());
     }
     Ok(regex)
 }
 
 mod api;
 mod branch;
+mod compiled;
 mod custom_ops;
 mod finalize;
 mod mapping;
@@ -66,6 +66,7 @@ mod v2_trace;
 
 use self::api::transform_record_with_warnings_inner;
 use self::branch::{BranchContext, load_rule_from_path, merge_branch_output};
+pub(crate) use self::compiled::{CompiledLookup, CompiledMapping, CompiledRule, LookupMatches};
 pub(crate) use self::custom_ops::{
     eval_custom_call_step, eval_custom_call_step_traced, eval_custom_op_step,
     eval_custom_op_step_traced, parse_known_custom_call_literal_start,
@@ -77,12 +78,13 @@ use self::mapping::{
 };
 pub(crate) use self::operators::eval_op;
 use self::operators::{
-    SortKey, arg_expr_at, args_len, cast_value, compare_sort_keys, locals_with_item,
-    locals_with_precomputed_args, value_as_bool, value_to_string,
+    SortKey, arg_expr_at, args_len, cast_value, compare_sort_keys, eval_lookup, locals_with_item,
+    locals_with_precomputed_args, value_as_bool, value_to_string, value_to_string_optional,
 };
 use self::path_ops::{
     flatten_object, has_duplicate_path, has_path_conflict, merge_object, parse_path_tokens,
-    parse_ref, parse_source, remove_path, set_path, set_path_object_only, set_path_with_indexes,
+    parse_ref, parse_source, remove_path, set_path, set_path_object_only, set_path_tokens,
+    set_path_with_indexes,
 };
 use self::record::apply_rule_to_record;
 use self::record_trace::apply_rule_to_record_traced;

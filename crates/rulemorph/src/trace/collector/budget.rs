@@ -29,8 +29,14 @@ impl TraceCollector {
                 return false;
             }
         }
-        let event_bytes =
-            value_size_bytes(&serde_json::to_value(&event).unwrap_or(JsonValue::Null));
+        let needs_event_bytes = self.options.max_trace_bytes.is_some()
+            || self.options.max_events.is_some()
+            || self.options.max_snapshot_bytes.is_some();
+        let event_bytes = if needs_event_bytes {
+            value_size_bytes(&serde_json::to_value(&event).unwrap_or(JsonValue::Null))
+        } else {
+            0
+        };
         if let Some(max_trace_bytes) = self.options.max_trace_bytes
             && self.emitted_bytes.saturating_add(event_bytes) > max_trace_bytes
         {

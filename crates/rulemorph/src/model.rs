@@ -26,6 +26,8 @@ pub struct RuleFile {
     #[serde(default)]
     pub defs: BTreeMap<String, CustomOpDef>,
     #[serde(default)]
+    pub codecs: BTreeMap<String, JsonValue>,
+    #[serde(default)]
     pub record_when: Option<Expr>,
     #[serde(default)]
     pub mappings: Vec<Mapping>,

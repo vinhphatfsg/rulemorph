@@ -22,7 +22,10 @@ use crate::error::TransformErrorKind;
 use crate::model::{InputFormat, RuleFile};
 
 use input::text_input;
-pub(crate) use limits::{enforce_json_limits, enforce_records_limit, select_records_from_document};
+pub(crate) use limits::{
+    enforce_json_limits, enforce_records_limit, select_records_from_document,
+    select_records_from_owned_document,
+};
 
 pub fn normalize_records<'a>(
     rule: &RuleFile,

@@ -1,0 +1,12 @@
+[
+  {
+    "document": {
+      "fields": {
+        "age": { "integerValue": "31" },
+        "avatar": { "bytesValue": "AQID" },
+        "created_at": { "timestampValue": "2026-06-03T00:00:00.000000Z" },
+        "name": { "stringValue": "Ada" }
+      }
+    }
+  }
+]

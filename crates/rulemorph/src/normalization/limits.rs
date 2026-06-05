@@ -104,3 +104,58 @@ pub(crate) fn select_records_from_document(
         )),
     }
 }
+
+pub(crate) fn select_records_from_owned_document(
+    value: JsonValue,
+    records_path: Option<&str>,
+    path_for_error: &'static str,
+    options: &NormalizationOptions,
+) -> Result<Vec<JsonValue>, TransformError> {
+    let records_value = match records_path {
+        Some(path) => {
+            let tokens = parse_path(path).map_err(|err| {
+                TransformError::new(TransformErrorKind::InvalidRecordsPath, err.message())
+                    .with_path(path_for_error)
+            })?;
+            take_path(value, &tokens).ok_or_else(|| {
+                TransformError::new(
+                    TransformErrorKind::InvalidRecordsPath,
+                    "records_path does not exist",
+                )
+                .with_path(path_for_error)
+            })?
+        }
+        None => value,
+    };
+
+    match records_value {
+        JsonValue::Array(items) => {
+            enforce_records_limit(items.len(), options)?;
+            Ok(items)
+        }
+        JsonValue::Object(_) => {
+            enforce_records_limit(1, options)?;
+            Ok(vec![records_value])
+        }
+        _ => Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "records_path must point to an array or object",
+        )),
+    }
+}
+
+fn take_path(mut value: JsonValue, tokens: &[crate::path::PathToken]) -> Option<JsonValue> {
+    for token in tokens {
+        value = match (value, token) {
+            (JsonValue::Object(mut map), crate::path::PathToken::Key(key)) => map.remove(key)?,
+            (JsonValue::Array(mut items), crate::path::PathToken::Index(index)) => {
+                if *index >= items.len() {
+                    return None;
+                }
+                items.remove(*index)
+            }
+            _ => return None,
+        };
+    }
+    Some(value)
+}

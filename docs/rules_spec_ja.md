@@ -38,6 +38,7 @@ raw input
 | 出力生成 | 1 record から 1 output object を作る | `mappings` |
 | 段階実行 | mapping、filter、assert、branch を順序付きで実行する | `steps` |
 | 再利用可能な式 | v2 pipe / mappings に名前を付けて再利用する | `defs` |
+| provider typed value 変換 | JSON value と DynamoDB / Firestore / MongoDB の型付き表現を相互変換する | `codecs`, `to_typed_value`, `from_typed_value` |
 | 配列全体の後処理 | filter/sort/limit/wrap を出力配列へ適用する | `finalize` |
 | 参照と式 | 入力、context、途中出力を参照し、値を加工する | `@input`, `@context`, `@out`, `expr` |
 
@@ -106,6 +107,7 @@ mappings:
 - `input`（必須）: 入力形式とオプション
 - `mappings`（必須）: 変換ルール（上から順に評価）
 - `defs`（任意）: v2 pipe / mappings を名前付き関数OPとして定義
+- `codecs`（任意）: provider typed value 変換の named profile と field type contract
 - `output`（任意）: メタデータ（DTO 名など）
 - `record_when`（任意）: レコードの採用/除外条件
 - `steps`（任意）: 段階実行（`mappings` / `record_when` と併用不可）
@@ -292,6 +294,280 @@ validation は unknown custom OP、built-in shadowing、invalid identifier、`ex
 
 semantic trace では custom OP call が `kind=custom_op` の span として出ます。span には `name`、`def_path`、`call_path`、`input_type`、`output_type`、`with_adapter`、`body_truncated` が入ります。値 snapshot は既存の `TraceValueMode` に従います。
 `with` args は body より先に caller scope で評価され、body の `expr` / `mappings` は custom OP span の子として展開されます。body 内で error が起きた場合も custom OP span の内側に記録されます。`MetadataOnly` / `Redacted` mode でも、この span/event 構造は保ち、raw value だけを出さないようにします。
+
+## typed value codec
+
+Rulemorph の通常値は JSON です。一方、DynamoDB AttributeValue、Firestore REST `Value`、MongoDB Extended JSON は、値の型を JSON の wrapper で表します。typed value codec は、この 2 つの表現をつなぐための v2 OP です。
+
+```text
+raw JSON
+  -> to_typed_value
+  -> provider typed value
+
+provider typed value
+  -> from_typed_value
+  -> raw JSON
+```
+
+| 目的 | OP | 例 |
+| --- | --- | --- |
+| JSON から provider 向け payload を作る | `to_typed_value` | `{ "age": 31 }` -> `{ "age": { "N": "31" } }` |
+| provider の typed value payload を JSON に戻す | `from_typed_value` | `{ "age": { "N": "31" } }` -> `{ "age": "31" }` |
+
+`profile` は provider ごとの組み込み変換ルールです。単純な変換では profile を直接指定し、field ごとの型指定を繰り返す場合は top-level `codecs` に名前を付けて共有します。
+
+| profile | root の意味 | 主な用途 |
+| --- | --- | --- |
+| `dynamodb_attribute_value` | 単一 DynamoDB AttributeValue | 1 つの属性値を `{ "S": ... }` / `{ "N": ... }` などへ変換 |
+| `dynamodb_item` | DynamoDB Item の属性 map | put item / update item の `Item` 相当を作る |
+| `firestore_value` | 単一 Firestore REST `Value` | 1 つの値を `stringValue` / `integerValue` などへ変換 |
+| `firestore_fields` | Firestore `Document.fields` | fields map だけを作る |
+| `firestore_document` | Firestore REST `Document` body | `{ fields: ... }` を持つ document body を作る |
+| `mongo_extended_json` | MongoDB Extended JSON v2 | `$oid` / `$date` / `$numberLong` などを含む JSON を作る |
+
+`to_typed_value: dynamodb_item` は `profile: dynamodb_item` の短縮形です。この短縮形は JSON の型だけで決まる `S` / `N` / `BOOL` / `NULL` / `L` / `M` を変換します。`SS` / `NS` / `B` / timestamp / ObjectId のような domain intent は推測しないため、必要な場合は `field_types` または `codec` を使います。
+
+### DynamoDB Item を作る例
+
+入力:
+
+```json
+{ "id": "u1", "age": "31", "tags": ["admin", "paid"] }
+```
+
+ルール:
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+codecs:
+  ddb_user:
+    profile: dynamodb_item
+    field_types:
+      age: number_string
+      tags: string_set
+
+mappings:
+  - target: Item
+    expr:
+      - "@input"
+      - to_typed_value:
+          codec: ddb_user
+```
+
+出力イメージ:
+
+```json
+{
+  "Item": {
+    "id": { "S": "u1" },
+    "age": { "N": "31" },
+    "tags": { "SS": ["admin", "paid"] }
+  }
+}
+```
+
+`age` は JSON string ですが、`number_string` を明示しているため DynamoDB の `N` になります。`tags` は普通の JSON array からは DynamoDB の `L` と区別できないため、`string_set` を明示して `SS` にします。
+
+### DynamoDB Item を戻す例
+
+入力:
+
+```json
+{
+  "id": { "S": "u1" },
+  "age": { "N": "31" },
+  "tags": { "SS": ["admin", "paid"] }
+}
+```
+
+ルール:
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: user
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: dynamodb_item
+```
+
+出力イメージ:
+
+```json
+{
+  "user": {
+    "id": "u1",
+    "age": "31",
+    "tags": ["admin", "paid"]
+  }
+}
+```
+
+DynamoDB の `N` / `NS` は wire 上は string です。既定の decode は安全側に倒し、`N` を JSON number に自動変換しません。安全に parse できる数値だけ JSON number に戻したい場合は `number_policy: parse_json_number_if_safe` を明示します。
+
+### Firestore document を作る例
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: document
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: firestore_document
+          field_types:
+            age: integer
+            created_at:
+              type: timestamp
+              on_missing: ignore
+```
+
+入力:
+
+```json
+{ "name": "Ada", "age": 31, "created_at": "2026-06-03T00:00:00Z" }
+```
+
+出力イメージ:
+
+```json
+{
+  "document": {
+    "fields": {
+      "name": { "stringValue": "Ada" },
+      "age": { "integerValue": "31" },
+      "created_at": { "timestampValue": "2026-06-03T00:00:00.000000Z" }
+    }
+  }
+}
+```
+
+Firestore REST `Value` は oneof 形式なので、decode 時に `stringValue` と `integerValue` が同時にある payload は error になります。Firestore の direct nested array 制約も検証します。
+
+### MongoDB Extended JSON を作る例
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+mappings:
+  - target: document
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: mongo_extended_json
+          mode: relaxed
+          field_types:
+            _id:
+              type: object_id
+              on_missing: ignore
+            created_at:
+              type: date
+              on_missing: ignore
+```
+
+入力:
+
+```json
+{ "_id": "0123456789abcdef01234567", "created_at": "2026-06-03T00:00:00Z", "name": "Ada" }
+```
+
+出力イメージ:
+
+```json
+{
+  "document": {
+    "_id": { "$oid": "0123456789abcdef01234567" },
+    "created_at": { "$date": "2026-06-03T00:00:00.000Z" },
+    "name": "Ada"
+  }
+}
+```
+
+MongoDB Extended JSON は通常の JSON object と `$date` / `$oid` などの wrapper が混在します。意図しない wrapper injection を避けるため、hint されていない wrapper 形の object は既定で拒否します。
+
+### codec binding と逆変換
+
+同じ provider type intent を encode / decode で共有したい場合は、`codecs` を使います。
+
+```yaml
+version: 2
+input:
+  format: json
+  json: {}
+
+codecs:
+  ddb_user:
+    profile: dynamodb_item
+    field_types:
+      age: number_string
+      tags: string_set
+
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          codec: ddb_user
+  - target: raw_again
+    expr:
+      - "@out.item"
+      - from_typed_value:
+          codec: ddb_user
+```
+
+`from_typed_value` は provider typed value を使いやすい JSON に戻す OP であり、既定では完全な逆関数ではありません。例えば DynamoDB の `{ "N": "31" }` は安全側の既定では `"31"` に戻るため、そのまま再 encode すると `S` になり得ます。再 encode でも `N` / `SS` / `B` などの意図を保ちたい場合は、同じ `codec` と `field_types` を使ってください。
+
+`decode.mode: json_shape_roundtrip` は JSON number shape の復元を狙う mode です。`number_string` のように decimal string を `N` として再 encode したい field では、既定の `safe_json` decode で string を保持する方が適しています。
+
+### 主な option
+
+| option | 説明 |
+| --- | --- |
+| `profile` | 組み込み profile 名。`codec` と同時指定不可 |
+| `codec` | top-level `codecs` で定義した binding 名。`profile` と同時指定不可 |
+| `type` | current value 自体の provider domain type。例: `object_id`, `timestamp`, `binary_base64` |
+| `field_types` | logical path ごとの provider domain type。provider wrapper key は path に含めない |
+| `hints` | `field_types` の詳細版。通常は `field_types` を推奨 |
+| `on_missing` | root value が missing の場合の扱い。`error` / `propagate` / `ignore` |
+| `decode.mode` | `safe_json` または `json_shape_roundtrip` |
+| `number_policy` | decode 時の number 扱い。`string` / `parse_json_number_if_safe` |
+| `mode` | MongoDB encode の `relaxed` / `canonical` |
+
+`field_types` の path は provider wrapper 適用前後で変わらない logical raw path です。例えば `dynamodb_item` では `age` と書き、`M.age` や `Item.age.N` とは書きません。Firestore document でも `fields.age` ではなく `age` と書きます。
+
+`field_types` の各 path は既定で必須です。optional field は `{ type: ..., on_missing: ignore }` または `{ type: ..., on_missing: propagate }` を明示します。
+
+よく使う field type は次の通りです。
+
+| field type | 主な profile | 意味 |
+| --- | --- | --- |
+| `number_string` | DynamoDB | decimal string を `N` として扱う |
+| `string_set` / `number_set` / `number_string_set` | DynamoDB | set wrapper（`SS` / `NS`）として扱う |
+| `binary_base64` | DynamoDB / MongoDB | base64 string を binary として扱う |
+| `integer` | Firestore | `integerValue` として扱う |
+| `timestamp` | Firestore | RFC3339 timestamp を `timestampValue` として扱う |
+| `bytes_base64` | Firestore | base64 string を `bytesValue` として扱う |
+| `object_id` | MongoDB | 24 桁 hex string を `$oid` として扱う |
+| `date` | MongoDB | timestamp string を `$date` として扱う |
+| `int32` / `int64` / `double` / `decimal128` | MongoDB | Extended JSON numeric wrapper として扱う |
+
+安全のため、typed value codec は unknown profile、unknown option、未有効の inline codec（`style` / `types`）を validation / transform error にします。provider 形式として壊れている wrapper、DynamoDB set の空配列や重複、Firestore oneof の重複、MongoDB の malformed wrapper も silent に通しません。
 
 ## Input
 
@@ -524,6 +800,112 @@ input:
 - 出力は JSON 配列が既定
 - CLI `transform --ndjson` は 1 行 1 JSON（ストリーミング）
 - `records_path` がオブジェクトを指す場合は単一レコード
+
+## CLI input
+
+`rulemorph transform` は `-i/--input` で入力ファイルを指定します。`-i` を省略して stdin が pipe されている場合、stdin を入力として読み込みます。明示的に stdin を使う場合は `-i -` を指定します。
+
+```sh
+rulemorph transform -r rules.yaml -i input.json
+cat input.json | rulemorph transform -r rules.yaml
+cat input.json | rulemorph transform -r rules.yaml -i -
+```
+
+rule file を作らずに 1 つの式だけを試す場合は direct mode を使えます。標準形は `--rule` です。jq 風の短縮形として `-rule` と `-rule=...` も受け付けます。
+
+```sh
+echo '{ "test": 1 }' | rulemorph --rule '@input.test'
+echo '{ "test": 1 }' | rulemorph -rule '@input.test'
+echo '{ "test": 1 }' | rulemorph -rule=@input.test
+```
+
+direct mode は通常の v2 `expr` 構文を使います。operator を連結する場合は pipe 配列で書きます。
+
+```sh
+echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
+```
+
+direct mode の入力形式は、`-f/--format`、`-i` の拡張子、stdin の先頭 token の順で決まります。stdin は UTF-8 BOM と ASCII whitespace を除いた先頭が `{` または `[` なら JSON、それ以外なら CSV として扱います。`-i` の未知拡張子 / 拡張子なしは既存互換のため JSON です。CSV が `{` または `[` で始まる場合は `-f csv` を明示してください。
+
+CSV direct input では、header 行がある `.csv` file はそのまま field 名で参照できます。headerless CSV は `@input.0` のような numeric field 参照から列数を推定するか、`-H/--headers` で field 名を与えます。`-h` は help 用のため、headers の short option は `-H` です。
+
+```sh
+echo 'a,test,1' | rulemorph -rule '@input.0'
+echo 'a,test,1' | rulemorph -H 'id,name,age' -rule '@input.id'
+rulemorph -H 'id,name,age' -rule '@input.id' -i non_header.csv
+rulemorph -rule '@input.id' -i with_header.csv
+```
+
+direct mode でも通常の `expr` と同じ pipe operator を使えます。
+
+```sh
+echo 'a,test,1' | rulemorph -rule '["@input.0", {"concat": ["-", "@input.1"]}]'
+# => "a-test"
+
+echo 'u1, Alice ,42' | rulemorph -H 'id,name,age' -rule '["@input.name", "trim", "uppercase"]'
+# => "ALICE"
+```
+
+direct mode で複数 field を出力する場合は、`-F/--field <TARGET=EXPR>` を複数指定するか、`--output-map <JSON_OBJECT>` を使います。どちらも通常の `mappings` に寄せた sugar です。target は出力先 path、expr は既存 v2 `expr` と同じ値です。`--rule`、`-F/--field`、`--output-map` は同時指定できません。
+
+```sh
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  -F id='@input.id' \
+  -F name='["@input.name","uppercase"]' \
+  -F kind='lit:user'
+# => {"id":"u1","kind":"user","name":"ALICE"}
+
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  --output-map '{"user.id":"@input.id","user.name":["@input.name","uppercase"],"kind":"lit:user"}'
+# => {"kind":"user","user":{"id":"u1","name":"ALICE"}}
+```
+
+複数 record を処理する場合、通常出力は JSON 配列になります。
+
+```sh
+echo '[{"id":"u1"},{"id":"u2"}]' | rulemorph --rule '@input.id'
+# => ["u1","u2"]
+
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+# => [{"age":42,"id":"u1"},{"age":7,"id":"u2"}]
+```
+
+1 record ずつ扱いたい場合は `--ndjson` を指定します。`--rule` は direct value を、`-F/--field` / `--output-map` は object を 1 行ずつ出力します。
+
+```sh
+echo '[{"id":"u1"},{"id":"u2"}]' | rulemorph --ndjson --rule '@input.id'
+# => "u1"
+# => "u2"
+
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph --ndjson -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+# => {"age":42,"id":"u1"}
+# => {"age":7,"id":"u2"}
+```
+
+`-F/--field` は CLI 指定順を mapping の評価順として維持するため、後続 field から先行 field を `@out.*` で参照できます。`--output-map` は JSON object の key order に意味を持たせないため、評価される `@out.*` 参照を拒否します。`--output-map` は recursive template ではありません。key が target、value が expr です。したがって `--output-map '{"user":{"id":"@input.id"}}'` は `user` field に object literal expr を入れる指定であり、`user.id` target への mapping ではありません。
+
+direct mode でも `-c/--context <JSON_FILE>` を指定でき、`--rule`、`-F/--field`、`--output-map` の expr から `@context.*` を参照できます。
+
+```sh
+echo '{"tenant_id":"t1"}' > context.json
+echo 'u1,Alice' | rulemorph -H 'id,name' -c context.json \
+  -F id='@input.id' \
+  -F tenant='@context.tenant_id'
+# => {"id":"u1","tenant":"t1"}
+```
+
+Excel direct input は `.xlsx` file または `-f excel` で扱います。Excel では `--excel-header-row` と、header 行を含まない data range としての `--excel-data-range` が必須です。`--excel-sheet <NAME>` または `--excel-sheet-index <INDEX>` で sheet を選べますが、同時指定はできません。
+
+```sh
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
+rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D3
+rulemorph -rule '["@input.score", {"+": [7.5]}, "round"]' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
+# => 50
+```
+
+CSV / Excel direct convenience mode は、`--rule` では 0 record なら `[]`、1 record なら direct value、2 record 以上なら direct value の配列を出力します。`-F/--field` / `--output-map` では 1 record なら object、2 record 以上なら object array を出力します。`--ndjson` 指定時は record ごとに 1 行の JSON を出力し、配列には包みません。既存互換のため、`-f csv` だけを明示して新しい tabular option を使わない場合は、1 record でも従来どおり配列を維持します。`--limit` / `--limits-profile` / `--limits-file` は `transform` と同じ resource limit として適用されます。`--rule` / `-F/--field` / `--output-map` は subcommand と同時には使えず、direct mode 用の top-level option を subcommand 前に置くとエラーになります。
 
 ## Resource limits
 
@@ -876,6 +1258,7 @@ when:
 - 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - 数値系: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
+- provider typed value: `to_typed_value`, `from_typed_value`
 - 論理演算: `and`, `or`, `not`
 - 比較演算: `==`, `!=`, `<`, `<=`, `>`, `>=`, `~=`（エイリアス: `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `match`）
 - 型変換: `string`, `int`, `float`, `bool`
@@ -942,6 +1325,8 @@ expr:
 | `to_base` | `1` | 整数を指定進数の文字列に変換（2-36）。 | `runtime` |
 | `date_format` | `1-3` | 日時文字列をフォーマット変換。 | `runtime` |
 | `to_unixtime` | `0-2` | 日時文字列を unix time へ。 | `runtime` |
+| `to_typed_value` | `1` | JSON value を DynamoDB / Firestore / MongoDB の provider typed value へ変換。 | `runtime` |
+| `from_typed_value` | `1` | provider typed value を JSON value へ decode。 | `runtime` |
 | `and` | `>=1` | boolean AND。条件は `all` を推奨。 | `runtime` |
 | `or` | `>=1` | boolean OR。条件は `any` を推奨。 | `runtime` |
 | `not` | `0` | boolean NOT。 | `runtime` |

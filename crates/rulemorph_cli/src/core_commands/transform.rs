@@ -10,8 +10,8 @@ use rulemorph::{
 
 use super::super::emit::{emit_transform_error, emit_transform_warnings, emit_validation_errors};
 use super::super::input::{
-    apply_format_override, load_context, load_input_bytes_with_limit, load_normalization_options,
-    load_rule, rule_base_dir,
+    apply_format_override, load_context, load_input_bytes_from_path_or_stdin,
+    load_normalization_options, load_rule, rule_base_dir,
 };
 use super::super::output::{
     create_output_writer, emit_text_output, serialize_json_output, write_json_line,
@@ -25,7 +25,7 @@ pub(crate) struct TransformArgs {
     #[arg(long)]
     rules_format: Option<RulesFormatArg>,
     #[arg(short = 'i', long)]
-    input: PathBuf,
+    input: Option<PathBuf>,
     #[arg(short = 'f', long)]
     format: Option<FormatOverride>,
     #[arg(short = 'c', long)]
@@ -76,10 +76,11 @@ pub(crate) fn run_transform(args: TransformArgs) -> i32 {
         }
     };
 
-    let input = match load_input_bytes_with_limit(&args.input, options.max_input_bytes) {
-        Ok(value) => value,
-        Err(code) => return code,
-    };
+    let input =
+        match load_input_bytes_from_path_or_stdin(args.input.as_ref(), options.max_input_bytes) {
+            Ok(value) => value,
+            Err(code) => return code,
+        };
 
     let context_value = match load_context(&args.context) {
         Ok(value) => value,

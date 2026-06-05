@@ -7,6 +7,7 @@ fn apply_mappings(
     warnings: &mut Vec<TransformWarning>,
     limits: EvalLimits,
     base_v2_ctx: &V2EvalContext<'_>,
+    compiled_rule: Option<&CompiledRule>,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
     apply_mappings_into(
@@ -20,6 +21,7 @@ fn apply_mappings(
         "mappings",
         limits,
         base_v2_ctx,
+        compiled_rule,
     )?;
     Ok(out)
 }
@@ -35,9 +37,17 @@ fn apply_mappings_into(
     base_path: &str,
     limits: EvalLimits,
     base_v2_ctx: &V2EvalContext<'_>,
+    compiled_rule: Option<&CompiledRule>,
 ) -> Result<(), TransformError> {
     for (index, mapping) in mappings.iter().enumerate() {
-        let mapping_path = format!("{}[{}]", base_path, index);
+        let compiled_mapping = compiled_rule.and_then(|compiled| compiled.mapping(index));
+        let mapping_path_storage;
+        let mapping_path = if let Some(compiled) = compiled_mapping {
+            compiled.mapping_path()
+        } else {
+            mapping_path_storage = format!("{}[{}]", base_path, index);
+            &mapping_path_storage
+        };
         if !eval_when(
             mapping,
             record,
@@ -61,9 +71,16 @@ fn apply_mappings_into(
             rule_version,
             limits,
             base_v2_ctx,
+            compiled_mapping,
         )?;
         if let Some(value) = value {
-            set_path(out, &mapping.target, value, &mapping_path)?;
+            match compiled_mapping {
+                Some(compiled) => {
+                    let tokens = compiled.target_tokens(mapping)?;
+                    set_path_tokens(out, tokens, value, &mapping_path)?;
+                }
+                None => set_path(out, &mapping.target, value, &mapping_path)?,
+            }
         }
     }
     Ok(())
@@ -77,6 +94,7 @@ pub(super) fn apply_rule_to_record(
     base_dir: Option<&Path>,
     branch_context: &mut BranchContext,
     limits: EvalLimits,
+    compiled_rule: Option<&CompiledRule>,
 ) -> Result<Option<JsonValue>, TransformError> {
     let base_v2_ctx = V2EvalContext::new()
         .with_limits(limits)
@@ -101,7 +119,15 @@ pub(super) fn apply_rule_to_record(
         return Ok(None);
     }
 
-    let output = apply_mappings(rule, record, context, warnings, limits, &base_v2_ctx)?;
+    let output = apply_mappings(
+        rule,
+        record,
+        context,
+        warnings,
+        limits,
+        &base_v2_ctx,
+        compiled_rule,
+    )?;
     Ok(Some(output))
 }
 
@@ -134,6 +160,7 @@ fn apply_steps(
                 &format!("{}.mappings", base_path),
                 limits,
                 base_v2_ctx,
+                None,
             )?;
             continue;
         }
@@ -277,6 +304,7 @@ mappings:
             None,
             &mut branch_context,
             limits,
+            None,
         )
         .expect_err("four calls across two mappings exceed shared per-record limit");
 

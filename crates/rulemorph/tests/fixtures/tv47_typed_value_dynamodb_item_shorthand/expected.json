@@ -1,0 +1,21 @@
+[
+  {
+    "Item": {
+      "active": { "BOOL": true },
+      "age": { "N": "31" },
+      "id": { "S": "u1" },
+      "none": { "NULL": true },
+      "profile": {
+        "M": {
+          "tier": { "S": "gold" }
+        }
+      },
+      "tags": {
+        "L": [
+          { "S": "admin" },
+          { "S": "paid" }
+        ]
+      }
+    }
+  }
+]

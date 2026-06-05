@@ -4,7 +4,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-use rulemorph::{parse_rule_file, transform, transform_record, transform_stream};
+use rulemorph::{
+    InputData, normalize_records, parse_rule_file, transform, transform_record, transform_stream,
+};
 use serde_json::json;
 
 struct CountingAlloc;
@@ -186,6 +188,299 @@ mappings:
     assert!(
         allocs_per_record < 40,
         "allocations per record should stay bounded: stats={:?}",
+        stats
+    );
+}
+
+#[test]
+fn v2_collection_transform_allocation_per_record_stays_bounded() {
+    let _test_guard = TEST_LOCK.lock().expect("allocation test lock poisoned");
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "input.id"
+  - target: "active_total"
+    expr:
+      - "@input.items"
+      - filter: ["@item.active"]
+      - map:
+          - "@item.amount"
+      - sum
+"#,
+    )
+    .expect("rule should parse");
+    let records: Vec<_> = (0..500)
+        .map(|i| {
+            let items: Vec<_> = (0..4)
+                .map(|j| json!({ "active": j % 2 == 0, "amount": ((i + j) % 10) }))
+                .collect();
+            json!({ "id": i, "items": items })
+        })
+        .collect();
+    let input = serde_json::to_string(&records).expect("input should serialize");
+
+    let (_, stats) = measure(|| transform(&rule, &input, None).expect("transform should pass"));
+    let bytes_per_record = stats.bytes / 500;
+    let allocs_per_record = stats.allocs / 500;
+
+    eprintln!(
+        "v2 collection allocation baseline: stats={:?} bytes_per_record={} allocs_per_record={}",
+        stats, bytes_per_record, allocs_per_record
+    );
+
+    assert!(
+        allocs_per_record < 380,
+        "v2 collection allocations per record should stay bounded: stats={:?}",
+        stats
+    );
+}
+
+#[test]
+fn json_normalization_allocation_per_record_stays_bounded() {
+    let _test_guard = TEST_LOCK.lock().expect("allocation test lock poisoned");
+    let rule = parse_rule_file(
+        r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "id"
+    source: "input.id"
+"#,
+    )
+    .expect("rule should parse");
+    let records: Vec<_> = (0..2_000)
+        .map(|i| json!({ "id": i, "name": format!("item-{}", i), "price": i % 100 }))
+        .collect();
+    let input = serde_json::to_string(&records).expect("input should serialize");
+
+    let (_, stats) = measure(|| {
+        normalize_records(&rule, InputData::Text(&input))
+            .expect("json should normalize")
+            .map(|record| record.expect("record should normalize"))
+            .count()
+    });
+    let bytes_per_record = stats.bytes / 2_000;
+
+    eprintln!(
+        "json normalization allocation baseline: stats={:?} bytes_per_record={}",
+        stats, bytes_per_record
+    );
+
+    assert!(
+        bytes_per_record < 900,
+        "json normalization bytes per record should stay bounded: stats={:?}",
+        stats
+    );
+}
+
+#[test]
+fn indexed_lookup_miss_does_not_clone_all_selected_context_values() {
+    let _test_guard = TEST_LOCK.lock().expect("allocation test lock poisoned");
+    let rule = parse_rule_file(
+        r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "payload"
+    expr:
+      op: "lookup_first"
+      args:
+        - { ref: "context.items" }
+        - "id"
+        - { ref: "input.id" }
+        - "payload"
+"#,
+    )
+    .expect("rule should parse");
+    let input =
+        serde_json::to_string(&[json!({ "id": "missing" })]).expect("input should serialize");
+    let payload = "x".repeat(4_096);
+    let items: Vec<_> = (0..2_000)
+        .map(|i| json!({ "id": format!("item-{}", i), "payload": payload }))
+        .collect();
+    let context = json!({ "items": items });
+
+    let (output, stats) = measure(|| transform(&rule, &input, Some(&context)));
+    let output = output.expect("transform should pass");
+
+    eprintln!("indexed lookup miss allocation baseline: stats={:?}", stats);
+
+    assert_eq!(output, json!([{}]));
+    assert!(
+        stats.bytes < 2_000_000,
+        "lookup miss should not clone all selected context payloads: stats={:?}",
+        stats
+    );
+}
+
+#[test]
+fn indexed_lookup_miss_does_not_retain_all_large_context_keys() {
+    let _test_guard = TEST_LOCK.lock().expect("allocation test lock poisoned");
+    let rule = parse_rule_file(
+        r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+  - target: "payload"
+    expr:
+      op: "lookup_first"
+      args:
+        - { ref: "context.items" }
+        - "id"
+        - { ref: "input.id" }
+        - "value"
+"#,
+    )
+    .expect("rule should parse");
+    let input =
+        serde_json::to_string(&[json!({ "id": "missing" })]).expect("input should serialize");
+    let key_prefix = "k".repeat(4_096);
+    let items: Vec<_> = (0..2_000)
+        .map(|i| json!({ "id": format!("{}-{}", key_prefix, i), "value": "x" }))
+        .collect();
+    let context = json!({ "items": items });
+
+    let (output, stats) = measure(|| transform(&rule, &input, Some(&context)));
+    let output = output.expect("transform should pass");
+
+    eprintln!(
+        "indexed lookup large-key miss allocation baseline: stats={:?}",
+        stats
+    );
+
+    assert_eq!(output, json!([{}]));
+    assert!(
+        stats.bytes < 2_000_000,
+        "lookup miss should not allocate all context keys: stats={:?}",
+        stats
+    );
+    assert!(
+        stats.peak_bytes < 1_000_000,
+        "lookup miss should not retain all context keys: stats={:?}",
+        stats
+    );
+}
+
+#[test]
+fn indexed_lookup_miss_does_not_retain_indexes_for_unbounded_mapping_count() {
+    let _test_guard = TEST_LOCK.lock().expect("allocation test lock poisoned");
+    let mut rule_yaml = String::from(
+        r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+"#,
+    );
+    for index in 0..128 {
+        rule_yaml.push_str(&format!(
+            r#"
+  - target: "payload_{}"
+    expr:
+      op: "lookup_first"
+      args:
+        - {{ ref: "context.items" }}
+        - "id"
+        - {{ ref: "input.id" }}
+        - "value"
+"#,
+            index
+        ));
+    }
+    let rule = parse_rule_file(&rule_yaml).expect("rule should parse");
+    let input =
+        serde_json::to_string(&[json!({ "id": "missing" })]).expect("input should serialize");
+    let items: Vec<_> = (0..2_000)
+        .map(|i| json!({ "id": format!("item-{}", i), "value": "x" }))
+        .collect();
+    let context = json!({ "items": items });
+
+    let (output, stats) = measure(|| transform(&rule, &input, Some(&context)));
+    let output = output.expect("transform should pass");
+
+    eprintln!(
+        "indexed lookup many-mapping miss allocation baseline: stats={:?}",
+        stats
+    );
+
+    assert_eq!(output, json!([{}]));
+    assert!(
+        stats.bytes < 8_000_000,
+        "lookup indexes should not scale retained allocations with mapping count: stats={:?}",
+        stats
+    );
+    assert!(
+        stats.peak_bytes < 5_000_000,
+        "lookup indexes should not retain memory linearly with mapping count: stats={:?}",
+        stats
+    );
+}
+
+#[test]
+fn failed_lookup_index_builds_are_capped_for_many_large_key_mappings() {
+    let _test_guard = TEST_LOCK.lock().expect("allocation test lock poisoned");
+    let mut rule_yaml = String::from(
+        r#"
+version: 1
+input:
+  format: json
+  json: {}
+mappings:
+"#,
+    );
+    for index in 0..128 {
+        rule_yaml.push_str(&format!(
+            r#"
+  - target: "payload_{}"
+    expr:
+      op: "lookup_first"
+      args:
+        - {{ ref: "context.items" }}
+        - "id"
+        - {{ ref: "input.id" }}
+        - "value"
+"#,
+            index
+        ));
+    }
+    let rule = parse_rule_file(&rule_yaml).expect("rule should parse");
+    let input =
+        serde_json::to_string(&[json!({ "id": "missing" })]).expect("input should serialize");
+    let key_prefix = "k".repeat(4_096);
+    let items: Vec<_> = (0..2_000)
+        .map(|i| json!({ "id": format!("{}-{}", key_prefix, i), "value": "x" }))
+        .collect();
+    let context = json!({ "items": items });
+
+    let (output, stats) = measure(|| transform(&rule, &input, Some(&context)));
+    let output = output.expect("transform should pass");
+
+    eprintln!(
+        "failed indexed lookup large-key allocation baseline: stats={:?}",
+        stats
+    );
+
+    assert_eq!(output, json!([{}]));
+    assert!(
+        stats.bytes < 12_000_000,
+        "failed lookup index builds should be capped per rule: stats={:?}",
+        stats
+    );
+    assert!(
+        stats.peak_bytes < 4_000_000,
+        "failed lookup index builds should not retain memory linearly: stats={:?}",
         stats
     );
 }
