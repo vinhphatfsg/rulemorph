@@ -1,15 +1,19 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use csv::ReaderBuilder;
 use rulemorph::{
-    InputData, RuleFormat, parse_rule_file_with_format,
+    InputData, NormalizationOptions, RuleFile, RuleFormat, parse_rule_file_with_format,
     transform_input_with_warnings_with_base_dir_and_options,
+    transform_stream_input_with_base_dir_and_options,
 };
 
 use super::emit::{emit_transform_error, emit_transform_warnings};
 use super::input::{load_context, load_input_bytes_from_path_or_stdin, load_normalization_options};
-use super::output::{emit_text_output, serialize_json_output};
+use super::output::{
+    create_output_writer, emit_text_output, serialize_json_output, write_json_line,
+};
 use super::{DirectFormatArg, ErrorFormat, LimitsProfileArg};
 
 mod output_spec;
@@ -35,6 +39,7 @@ pub(crate) struct DirectArgs {
     pub(crate) excel_sheet: Option<String>,
     pub(crate) excel_sheet_index: Option<usize>,
     pub(crate) output: Option<PathBuf>,
+    pub(crate) ndjson: bool,
     pub(crate) error_format: Option<ErrorFormat>,
     pub(crate) limits: Vec<String>,
     pub(crate) limits_profile: Option<LimitsProfileArg>,
@@ -97,6 +102,18 @@ pub(crate) fn run(args: DirectArgs) -> i32 {
         Err(code) => return code,
     };
 
+    if args.ndjson {
+        return run_direct_ndjson(
+            &rule,
+            &input,
+            context.as_ref(),
+            args.output,
+            args.error_format.unwrap_or(ErrorFormat::Text),
+            &options,
+            output_spec.output_mode(),
+        );
+    }
+
     let (output, warnings) = match transform_input_with_warnings_with_base_dir_and_options(
         &rule,
         InputData::Bytes(&input),
@@ -124,6 +141,63 @@ pub(crate) fn run(args: DirectArgs) -> i32 {
     emit_transform_warnings(&warnings, args.error_format.unwrap_or(ErrorFormat::Text));
 
     if emit_text_output(&output_text, args.output.as_ref()).is_err() {
+        return 1;
+    }
+
+    0
+}
+
+fn run_direct_ndjson(
+    rule: &RuleFile,
+    input: &[u8],
+    context: Option<&serde_json::Value>,
+    output: Option<PathBuf>,
+    error_format: ErrorFormat,
+    options: &NormalizationOptions,
+    output_mode: DirectOutputMode,
+) -> i32 {
+    let stream = match transform_stream_input_with_base_dir_and_options(
+        rule,
+        InputData::Bytes(input),
+        context,
+        Path::new("."),
+        options,
+    ) {
+        Ok(stream) => stream,
+        Err(err) => {
+            emit_transform_error(&err, error_format);
+            return 3;
+        }
+    };
+
+    let mut writer = match create_output_writer(output.as_ref()) {
+        Ok(writer) => writer,
+        Err(()) => return 1,
+    };
+
+    for item in stream {
+        let item = match item {
+            Ok(item) => item,
+            Err(err) => {
+                emit_transform_error(&err, error_format);
+                return 3;
+            }
+        };
+
+        emit_transform_warnings(&item.warnings, error_format);
+
+        let output = match item.output {
+            Some(output) => output,
+            None => continue,
+        };
+        let output = unwrap_direct_record(output, output_mode);
+        if write_json_line(&mut writer, &output).is_err() {
+            return 1;
+        }
+    }
+
+    if let Err(err) = writer.flush() {
+        eprintln!("failed to write output: {}", err);
         return 1;
     }
 

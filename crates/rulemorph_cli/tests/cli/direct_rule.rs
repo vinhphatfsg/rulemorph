@@ -179,6 +179,19 @@ fn direct_rule_outputs_multi_row_inferred_csv_as_array() {
 }
 
 #[test]
+fn direct_rule_outputs_ndjson_for_json_array_input() {
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("--ndjson")
+            .arg("--rule")
+            .arg("@input.id")
+            .write_stdin(r#"[{ "id": "u1" }, { "id": "u2" }]"#);
+    });
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(stdout_string(output), "\"u1\"\n\"u2\"\n");
+}
+
+#[test]
 fn direct_rule_supports_pipe_expr_for_headerless_csv_numeric_fields() {
     let output = rulemorph_output(|cmd| {
         cmd.arg("--rule")
@@ -329,6 +342,24 @@ fn direct_output_map_outputs_object_array_for_json_array_input() {
             { "id": "u1", "age": 42 },
             { "id": "u2", "age": 7 }
         ])
+    );
+}
+
+#[test]
+fn direct_output_map_outputs_ndjson_for_multi_row_csv() {
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("--ndjson")
+            .arg("-H")
+            .arg("id,name,age")
+            .arg("--output-map")
+            .arg(r#"{"id":"@input.id","age":["@input.age","int"]}"#)
+            .write_stdin("u1,Alice,42\nu2,Bob,7\n");
+    });
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        stdout_string(output),
+        "{\"age\":42,\"id\":\"u1\"}\n{\"age\":7,\"id\":\"u2\"}\n"
     );
 }
 
