@@ -66,23 +66,111 @@ cat input.json | rulemorph transform -r rules.yaml
 cat input.json | rulemorph transform -r rules.yaml -i -
 ```
 
-For a quick one-off expression without a rule file, use direct mode:
+**Output**
+
+<details>
+<summary>Show output</summary>
+
+```json
+[{ "id": 1, "name": "Alice", "email": "alice@example.com" }]
+```
+
+</details>
+
+For quick one-off transformations without a rule file, use direct mode.
+
+Evaluate a single expression against JSON or ad-hoc CSV:
 
 ```sh
 echo '{ "test": 1 }' | rulemorph -rule '@input.test'
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
 echo 'a,test,1' | rulemorph -rule '@input.0'
 echo 'a,test,1' | rulemorph -H 'id,name,age' -rule '@input.id'
-echo 'u1,Alice,42' | rulemorph -H 'id,name,age' -F id='@input.id' -F age='["@input.age","int"]'
-echo 'u1,Alice,42' | rulemorph -H 'id,name,age' --output-map '{"user.id":"@input.id","age":["@input.age","int"]}'
-rulemorph -rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D2
 ```
 
-**Output**
+<details>
+<summary>Show output</summary>
+
+```text
+1
+3
+"a"
+"a"
+```
+
+</details>
+
+Use `-F/--field` when you want a small output object and field order matters:
+
+```sh
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  -F id='@input.id' \
+  -F name='["@input.name","trim","uppercase"]' \
+  -F age='["@input.age","int"]'
+```
+
+<details>
+<summary>Show output</summary>
 
 ```json
-[{ "id": 1, "name": "Alice", "email": "alice@example.com" }]
+{ "id": "u1", "name": "ALICE", "age": 42 }
 ```
+
+</details>
+
+Use `--output-map` when a compact nested target map is easier to read:
+
+```sh
+echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
+  --output-map '{"user.id":"@input.id","user.name":["@input.name","trim"],"age":["@input.age","int"]}'
+```
+
+<details>
+<summary>Show output</summary>
+
+```json
+{ "user": { "id": "u1", "name": "Alice" }, "age": 42 }
+```
+
+</details>
+
+For multi-record direct input, add `--ndjson` to emit one JSON value per line:
+
+```sh
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph --ndjson -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+```
+
+<details>
+<summary>Show output</summary>
+
+```jsonl
+{"age":42,"id":"u1"}
+{"age":7,"id":"u2"}
+```
+
+</details>
+
+Direct mode can also read CSV or Excel files. CSV headers are inferred from `.csv`
+files; use `-H/--headers` for headerless CSV. For Excel, select the header row
+and data range explicitly:
+
+```sh
+rulemorph --rule '@input.id' -i users.csv
+rulemorph -H 'id,name,age' --rule '@input.id' -i headerless-users.csv
+rulemorph --rule '@input.id' -i users.xlsx --excel-header-row 1 --excel-data-range A2:D20
+```
+
+<details>
+<summary>Show output</summary>
+
+```text
+"u1"
+"u1"
+["u1","u2"]
+```
+
+</details>
 
 <p align="center">
   <img src="assets/transform-scene.gif" alt="Rulemorph Demo" width="800">
@@ -195,7 +283,7 @@ DTO generation uses explicit mapping types first, then infers simple scalar, arr
 
 ```toml
 [dependencies]
-rulemorph = "0.3.2"
+rulemorph = "0.3.3"
 ```
 
 The `html` and `excel` input parsers are enabled by default. Library users that only need
@@ -203,7 +291,7 @@ CSV, JSON, YAML, TOML, and XML can disable them to reduce optional parser depend
 
 ```toml
 [dependencies]
-rulemorph = { version = "0.3.2", default-features = false }
+rulemorph = { version = "0.3.3", default-features = false }
 ```
 
 Re-enable one parser explicitly with `features = ["html"]` or `features = ["excel"]`.
