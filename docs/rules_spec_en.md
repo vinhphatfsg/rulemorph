@@ -856,6 +856,30 @@ echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
 # => {"kind":"user","user":{"id":"u1","name":"ALICE"}}
 ```
 
+When processing multiple records, the default output is a JSON array.
+
+```sh
+echo '[{"id":"u1"},{"id":"u2"}]' | rulemorph --rule '@input.id'
+# => ["u1","u2"]
+
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+# => [{"age":42,"id":"u1"},{"age":7,"id":"u2"}]
+```
+
+Use `--ndjson` when each record should be emitted as one line. `--rule` emits the direct value, while `-F/--field` and `--output-map` emit one object per line.
+
+```sh
+echo '[{"id":"u1"},{"id":"u2"}]' | rulemorph --ndjson --rule '@input.id'
+# => "u1"
+# => "u2"
+
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph --ndjson -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+# => {"age":42,"id":"u1"}
+# => {"age":7,"id":"u2"}
+```
+
 `-F/--field` preserves CLI argument order as mapping order, so a later field can reference an earlier field through `@out.*`. `--output-map` does not assign meaning to JSON object key order, so evaluated `@out.*` references are rejected there. `--output-map` is not a recursive template. The key is the target and the value is the expr. Therefore `--output-map '{"user":{"id":"@input.id"}}'` assigns an object literal expr to the `user` field; it does not create a mapping for the `user.id` target.
 
 Direct mode also accepts `-c/--context <JSON_FILE>`. `--rule`, `-F/--field`, and `--output-map` expressions can reference `@context.*`.
@@ -877,7 +901,7 @@ rulemorph -rule '["@input.score", {"+": [7.5]}, "round"]' -i users.xlsx --excel-
 # => 50
 ```
 
-For `--rule`, CSV / Excel direct convenience mode outputs `[]` for zero records, the direct value for one record, and an array of direct values for multiple records. For `-F/--field` and `--output-map`, it outputs an object for one record and an object array for multiple records. For compatibility, explicit `-f csv` without the new tabular options keeps the legacy array output even for one record. `--limit`, `--limits-profile`, and `--limits-file` apply the same resource limits as `transform`. `--rule` / `-F/--field` / `--output-map` cannot be used with a subcommand, and direct-mode top-level options placed before a subcommand are rejected.
+For `--rule`, CSV / Excel direct convenience mode outputs `[]` for zero records, the direct value for one record, and an array of direct values for multiple records. For `-F/--field` and `--output-map`, it outputs an object for one record and an object array for multiple records. With `--ndjson`, direct mode emits one JSON line per record and does not wrap records in an array. For compatibility, explicit `-f csv` without the new tabular options keeps the legacy array output even for one record. `--limit`, `--limits-profile`, and `--limits-file` apply the same resource limits as `transform`. `--rule` / `-F/--field` / `--output-map` cannot be used with a subcommand, and direct-mode top-level options placed before a subcommand are rejected.
 
 ## Resource limits
 

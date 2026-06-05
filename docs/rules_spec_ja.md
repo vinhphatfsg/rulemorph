@@ -860,6 +860,30 @@ echo 'u1,Alice,42' | rulemorph -H 'id,name,age' \
 # => {"kind":"user","user":{"id":"u1","name":"ALICE"}}
 ```
 
+複数 record を処理する場合、通常出力は JSON 配列になります。
+
+```sh
+echo '[{"id":"u1"},{"id":"u2"}]' | rulemorph --rule '@input.id'
+# => ["u1","u2"]
+
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+# => [{"age":42,"id":"u1"},{"age":7,"id":"u2"}]
+```
+
+1 record ずつ扱いたい場合は `--ndjson` を指定します。`--rule` は direct value を、`-F/--field` / `--output-map` は object を 1 行ずつ出力します。
+
+```sh
+echo '[{"id":"u1"},{"id":"u2"}]' | rulemorph --ndjson --rule '@input.id'
+# => "u1"
+# => "u2"
+
+printf 'u1,Alice,42\nu2,Bob,7\n' | rulemorph --ndjson -H 'id,name,age' \
+  --output-map '{"id":"@input.id","age":["@input.age","int"]}'
+# => {"age":42,"id":"u1"}
+# => {"age":7,"id":"u2"}
+```
+
 `-F/--field` は CLI 指定順を mapping の評価順として維持するため、後続 field から先行 field を `@out.*` で参照できます。`--output-map` は JSON object の key order に意味を持たせないため、評価される `@out.*` 参照を拒否します。`--output-map` は recursive template ではありません。key が target、value が expr です。したがって `--output-map '{"user":{"id":"@input.id"}}'` は `user` field に object literal expr を入れる指定であり、`user.id` target への mapping ではありません。
 
 direct mode でも `-c/--context <JSON_FILE>` を指定でき、`--rule`、`-F/--field`、`--output-map` の expr から `@context.*` を参照できます。
@@ -881,7 +905,7 @@ rulemorph -rule '["@input.score", {"+": [7.5]}, "round"]' -i users.xlsx --excel-
 # => 50
 ```
 
-CSV / Excel direct convenience mode は、`--rule` では 0 record なら `[]`、1 record なら direct value、2 record 以上なら direct value の配列を出力します。`-F/--field` / `--output-map` では 1 record なら object、2 record 以上なら object array を出力します。既存互換のため、`-f csv` だけを明示して新しい tabular option を使わない場合は、1 record でも従来どおり配列を維持します。`--limit` / `--limits-profile` / `--limits-file` は `transform` と同じ resource limit として適用されます。`--rule` / `-F/--field` / `--output-map` は subcommand と同時には使えず、direct mode 用の top-level option を subcommand 前に置くとエラーになります。
+CSV / Excel direct convenience mode は、`--rule` では 0 record なら `[]`、1 record なら direct value、2 record 以上なら direct value の配列を出力します。`-F/--field` / `--output-map` では 1 record なら object、2 record 以上なら object array を出力します。`--ndjson` 指定時は record ごとに 1 行の JSON を出力し、配列には包みません。既存互換のため、`-f csv` だけを明示して新しい tabular option を使わない場合は、1 record でも従来どおり配列を維持します。`--limit` / `--limits-profile` / `--limits-file` は `transform` と同じ resource limit として適用されます。`--rule` / `-F/--field` / `--output-map` は subcommand と同時には使えず、direct mode 用の top-level option を subcommand 前に置くとエラーになります。
 
 ## Resource limits
 

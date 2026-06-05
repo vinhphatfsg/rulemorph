@@ -40,6 +40,11 @@ struct Cli {
     excel_sheet_index: Option<usize>,
     #[arg(short = 'o', long)]
     output: Option<PathBuf>,
+    #[arg(
+        long,
+        help = "Emit one JSON value per line in direct mode. Each input record produces one line."
+    )]
+    ndjson: bool,
     #[arg(short = 'e', long)]
     error_format: Option<ErrorFormat>,
     #[arg(long = "limit")]
@@ -115,6 +120,7 @@ fn main() {
         excel_sheet,
         excel_sheet_index,
         output,
+        ndjson,
         error_format,
         limits,
         limits_profile,
@@ -138,6 +144,7 @@ fn main() {
             excel_sheet,
             excel_sheet_index,
             output,
+            ndjson,
             error_format,
             limits,
             limits_profile,
@@ -158,6 +165,7 @@ fn main() {
                 &excel_sheet,
                 &excel_sheet_index,
                 &output,
+                &ndjson,
                 &error_format,
                 &limits,
                 &limits_profile,
@@ -223,6 +231,7 @@ fn has_direct_options(
     excel_sheet: &Option<String>,
     excel_sheet_index: &Option<usize>,
     output: &Option<PathBuf>,
+    ndjson: &bool,
     error_format: &Option<ErrorFormat>,
     limits: &[String],
     limits_profile: &Option<LimitsProfileArg>,
@@ -237,6 +246,7 @@ fn has_direct_options(
         || excel_sheet.is_some()
         || excel_sheet_index.is_some()
         || output.is_some()
+        || *ndjson
         || error_format.is_some()
         || !limits.is_empty()
         || limits_profile.is_some()
