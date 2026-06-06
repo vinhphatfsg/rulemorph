@@ -70,6 +70,10 @@ const OPERATOR_CASES: &[OperatorCase] = &[
         "deep_merge",
         r#"["@input.deep_left", {"deep_merge": "@input.deep_right"}]"#,
     ),
+    (
+        "object",
+        r#"["@input", {"object": {"name": ["@input.s", "uppercase"], "age": "@input.n"}}]"#,
+    ),
     ("get", r#"["@input.obj", {"get": "a"}]"#),
     ("pick", r#"["@input.obj", {"pick": "a"}]"#),
     ("omit", r#"["@input.obj", {"omit": "b"}]"#),

@@ -15,6 +15,7 @@ pub(super) fn ops_json(category_docs: Value) -> Value {
             "pad_end",
             "lookup",
             "lookup_first",
+            "object",
             "merge",
             "deep_merge",
             "get",
@@ -86,6 +87,7 @@ pub(super) fn ops_json(category_docs: Value) -> Value {
                 "pad_end"
             ],
             "json_ops": [
+                "object",
                 "merge",
                 "deep_merge",
                 "get",

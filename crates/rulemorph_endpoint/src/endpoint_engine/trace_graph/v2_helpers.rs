@@ -71,7 +71,7 @@ pub(super) fn build_pipe_steps(
                 &step_path,
                 &current_ctx,
             ),
-            V2Step::CustomCall(_) => {
+            V2Step::Object(_) | V2Step::CustomCall(_) => {
                 let single_step_pipe = V2Pipe {
                     start: V2Start::PipeValue,
                     steps: vec![step.clone()],

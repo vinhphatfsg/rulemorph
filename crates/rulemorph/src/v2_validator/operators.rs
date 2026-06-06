@@ -31,6 +31,15 @@ pub(super) fn validate_v2_op_step(
         return;
     }
 
+    if op_step.op == "object" {
+        ctx.push_error(
+            ErrorCode::InvalidExprShape,
+            "object must use the object step form",
+            base_path,
+        );
+        return;
+    }
+
     // Check if op is known
     if !is_valid_op(&op_step.op) {
         ctx.push_error(

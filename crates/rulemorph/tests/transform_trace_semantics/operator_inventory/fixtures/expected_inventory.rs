@@ -50,6 +50,7 @@ const EXPECTED_INVENTORY: &[&str] = &[
     "gt",
     "gte",
     "match",
+    "object",
     "merge",
     "deep_merge",
     "get",
