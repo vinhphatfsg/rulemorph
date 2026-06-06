@@ -136,20 +136,12 @@ fn validate_v2_object_step(
     scope: &V2Scope,
     ctx: &mut V2ValidationCtx<'_>,
 ) {
-    let max_key_bytes = crate::normalization::NormalizationOptions::default().max_object_key_bytes;
     for field in &object_step.fields {
         let field_path = object_field_rule_path(base_path, &field.key);
         if field.key.is_empty() {
             ctx.push_error(
                 crate::error::ErrorCode::InvalidExprShape,
                 "object field key must not be empty",
-                &field_path,
-            );
-        }
-        if field.key.len() > max_key_bytes {
-            ctx.push_error(
-                crate::error::ErrorCode::InvalidExprShape,
-                "object key bytes exceed configured limit",
                 &field_path,
             );
         }

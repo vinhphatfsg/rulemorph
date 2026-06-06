@@ -106,7 +106,7 @@ impl EvalLimits {
         value: &JsonValue,
         path: &str,
     ) -> Result<(), TransformError> {
-        let stats = generated_json_stats(value, path)?;
+        let stats = generated_json_stats(value, self, path)?;
         if stats.nodes > self.max_generated_json_nodes {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -160,7 +160,7 @@ impl GeneratedObjectBudget {
         limits: EvalLimits,
         path: &str,
     ) -> Result<(), TransformError> {
-        let stats = generated_json_stats(value, path)?;
+        let stats = generated_json_stats(value, limits, path)?;
         let key_bytes = serialized_json_str_bytes(key, path)?;
         let value_bytes = serialized_json_bytes(value, path)?;
         let separator_bytes = usize::from(self.fields > 0);
@@ -225,6 +225,82 @@ impl GeneratedObjectBudget {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct GeneratedArrayBudget {
+    values: usize,
+    nodes: usize,
+    object_depth: usize,
+    bytes: usize,
+}
+
+impl GeneratedArrayBudget {
+    pub(crate) fn new(limits: EvalLimits, path: &str) -> Result<Self, TransformError> {
+        let budget = Self {
+            values: 0,
+            nodes: 1,
+            object_depth: 0,
+            bytes: 2,
+        };
+        budget.check(limits, path)?;
+        Ok(budget)
+    }
+
+    pub(crate) fn try_push_value(
+        &mut self,
+        value: &JsonValue,
+        limits: EvalLimits,
+        path: &str,
+    ) -> Result<(), TransformError> {
+        let stats = generated_json_stats(value, limits, path)?;
+        let value_bytes = serialized_json_bytes(value, path)?;
+        let separator_bytes = usize::from(self.values > 0);
+        let next = Self {
+            values: self
+                .values
+                .checked_add(1)
+                .ok_or_else(|| generated_json_overflow(path))?,
+            nodes: self
+                .nodes
+                .checked_add(stats.nodes)
+                .ok_or_else(|| generated_json_overflow(path))?,
+            object_depth: self.object_depth.max(stats.object_depth),
+            bytes: self
+                .bytes
+                .checked_add(separator_bytes)
+                .and_then(|bytes| bytes.checked_add(value_bytes))
+                .ok_or_else(|| generated_json_overflow(path))?,
+        };
+        next.check(limits, path)?;
+        *self = next;
+        Ok(())
+    }
+
+    fn check(self, limits: EvalLimits, path: &str) -> Result<(), TransformError> {
+        if self.nodes > limits.max_generated_json_nodes {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "generated JSON node count exceeds configured limit",
+            )
+            .with_path(path));
+        }
+        if self.object_depth > limits.max_object_depth {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "object depth exceeds configured limit",
+            )
+            .with_path(path));
+        }
+        if self.bytes > limits.max_generated_json_bytes {
+            return Err(TransformError::new(
+                TransformErrorKind::ExprError,
+                "generated JSON bytes exceed configured limit",
+            )
+            .with_path(path));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct GeneratedJsonStats {
     nodes: usize,
@@ -233,10 +309,11 @@ struct GeneratedJsonStats {
 
 fn generated_json_stats(
     value: &JsonValue,
+    limits: EvalLimits,
     path: &str,
 ) -> Result<GeneratedJsonStats, TransformError> {
     let mut stats = GeneratedJsonStats::default();
-    collect_generated_json_stats(value, 0, &mut stats, path)?;
+    collect_generated_json_stats(value, 0, &mut stats, limits, path)?;
     Ok(stats)
 }
 
@@ -244,6 +321,7 @@ fn collect_generated_json_stats(
     value: &JsonValue,
     object_depth: usize,
     stats: &mut GeneratedJsonStats,
+    limits: EvalLimits,
     path: &str,
 ) -> Result<(), TransformError> {
     stats.nodes = stats
@@ -252,17 +330,21 @@ fn collect_generated_json_stats(
         .ok_or_else(|| generated_json_overflow(path))?;
     match value {
         JsonValue::Object(map) => {
+            limits.check_object_field_count(map.len(), path)?;
+            for key in map.keys() {
+                limits.check_object_key(key, path)?;
+            }
             let next_depth = object_depth
                 .checked_add(1)
                 .ok_or_else(|| generated_json_overflow(path))?;
             stats.object_depth = stats.object_depth.max(next_depth);
             for value in map.values() {
-                collect_generated_json_stats(value, next_depth, stats, path)?;
+                collect_generated_json_stats(value, next_depth, stats, limits, path)?;
             }
         }
         JsonValue::Array(items) => {
             for value in items {
-                collect_generated_json_stats(value, object_depth, stats, path)?;
+                collect_generated_json_stats(value, object_depth, stats, limits, path)?;
             }
         }
         _ => {}

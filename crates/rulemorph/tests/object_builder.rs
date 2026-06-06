@@ -224,6 +224,116 @@ mappings:
 }
 
 #[test]
+fn object_builder_static_validation_does_not_freeze_configurable_key_limit() {
+    let long_key = "k".repeat(NormalizationOptions::default().max_object_key_bytes + 1);
+    let yaml = format!(
+        r#"
+version: 2
+input:
+  format: json
+  json: {{}}
+mappings:
+  - target: value
+    expr:
+      - object:
+          ? "{}"
+          : 1
+"#,
+        long_key
+    );
+    let rule = parse_rule_file(&yaml).expect("parse rule with long static key");
+
+    validate_rule_file(&rule).expect("static validation should not hard-code runtime key limit");
+
+    let mut options = NormalizationOptions::default();
+    options.max_object_key_bytes = long_key.len();
+    transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
+        .expect("raised runtime key limit should allow long static key");
+
+    let mut options = NormalizationOptions::default();
+    options.max_object_key_bytes = 4;
+    let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
+        .expect_err("runtime key limit should remain fail-closed");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("object key bytes"));
+}
+
+#[test]
+fn object_builder_rejects_nested_generated_object_limits() {
+    let nested_key_limit = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: value
+    expr:
+      - object:
+          payload:
+            value:
+              too_long: 1
+"#;
+    let rule = parse_rule_file(nested_key_limit).expect("parse nested key rule");
+    let mut options = NormalizationOptions::default();
+    options.max_object_key_bytes = 4;
+    let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
+        .expect_err("nested generated key should respect key limit");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("object key bytes"));
+
+    let nested_field_limit = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: value
+    expr:
+      - object:
+          payload:
+            value:
+              a: 1
+              b: 2
+"#;
+    let rule = parse_rule_file(nested_field_limit).expect("parse nested field rule");
+    let mut options = NormalizationOptions::default();
+    options.max_object_fields = 1;
+    let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
+        .expect_err("nested generated object should respect field limit");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("object field count"));
+}
+
+#[test]
+fn object_builder_map_accumulates_generated_json_budget() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: value
+    expr:
+      - "@input.items"
+      - map:
+        - object:
+            payload: "@item"
+"#;
+    let rule = parse_rule_file(yaml).expect("parse map object rule");
+    let mut options = NormalizationOptions::default();
+    options.max_generated_json_bytes = 30;
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text(r#"{"items":["abcdef","abcdef"]}"#),
+        None,
+        &options,
+    )
+    .expect_err("map should enforce generated JSON bytes across the full output array");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("generated JSON bytes"));
+}
+
+#[test]
 fn object_builder_trace_records_fields_and_sanitizes_field_key_metadata() {
     let yaml = r#"
 version: 2

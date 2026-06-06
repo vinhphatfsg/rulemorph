@@ -90,7 +90,7 @@ use self::record::apply_rule_to_record;
 use self::record_trace::apply_rule_to_record_traced;
 use self::types::Namespace;
 pub(crate) use self::types::{
-    EvalItem, EvalLimits, EvalLocals, EvalValue, GeneratedObjectBudget,
+    EvalItem, EvalLimits, EvalLocals, EvalValue, GeneratedArrayBudget, GeneratedObjectBudget,
     extend_generated_array_items, push_generated_array_item,
 };
 use self::v1_expr::{

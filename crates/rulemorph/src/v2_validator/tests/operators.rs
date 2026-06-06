@@ -168,6 +168,32 @@ fn test_validate_zip_with_item_scope_allowed() {
 }
 
 #[test]
+fn test_validate_v2_expr_rejects_object_as_plain_op_step() {
+    let expr = V2Expr::Pipe(V2Pipe {
+        start: V2Start::Literal(json!({})),
+        steps: vec![V2Step::Op(V2OpStep {
+            op: "object".to_string(),
+            args: vec![V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!({"id": 1})),
+                steps: vec![],
+            })],
+        })],
+    });
+    let scope = V2Scope::new();
+    let mut ctx = V2ValidationCtx::new(None);
+
+    validate_v2_expr(&expr, "test", &scope, &mut ctx);
+
+    assert!(
+        ctx.errors()
+            .iter()
+            .any(|err| err.code == ErrorCode::InvalidExprShape),
+        "expected object plain op to fail validation, got: {:?}",
+        ctx.errors()
+    );
+}
+
+#[test]
 fn test_validate_v2_expr_rejects_unimplemented_op() {
     let expr = V2Expr::Pipe(V2Pipe {
         start: V2Start::Literal(json!("hello")),
