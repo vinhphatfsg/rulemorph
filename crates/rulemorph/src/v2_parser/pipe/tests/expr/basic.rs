@@ -51,6 +51,35 @@ fn test_parse_v2_expr_literal_object_with_op_key_start_pipe() {
 }
 
 #[test]
+fn test_parse_v2_expr_literal_object_with_object_key_start_pipe() {
+        // Multi-step pipe keeps the first object as a literal start even if it has an object key.
+        let value = json!([{"object": {"name": "alice"}}, "keys"]);
+        let expr = parse_v2_expr(&value).unwrap();
+
+        if let V2Expr::Pipe(pipe) = expr {
+            assert_eq!(pipe.start, V2Start::Literal(json!({"object": {"name": "alice"}})));
+            assert_eq!(pipe.steps.len(), 1);
+            assert!(matches!(&pipe.steps[0], V2Step::Op(op) if op.op == "keys"));
+        } else {
+            panic!("Expected Pipe expression");
+        }
+}
+
+#[test]
+fn test_parse_v2_expr_single_object_step_uses_implicit_pipe_start() {
+        let value = json!([{"object": {"name": "$.name"}}]);
+        let expr = parse_v2_expr(&value).unwrap();
+
+        if let V2Expr::Pipe(pipe) = expr {
+            assert_eq!(pipe.start, V2Start::ImplicitPipeValue);
+            assert_eq!(pipe.steps.len(), 1);
+            assert!(matches!(&pipe.steps[0], V2Step::Object(_)));
+        } else {
+            panic!("Expected Pipe expression");
+        }
+}
+
+#[test]
 fn test_parse_v2_expr_single_ref() {
         // Single reference without steps
         let value = json!("@input.name");

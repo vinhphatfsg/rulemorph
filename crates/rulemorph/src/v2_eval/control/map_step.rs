@@ -3,8 +3,8 @@ use serde_json::Value as JsonValue;
 use crate::error::{TransformError, TransformErrorKind};
 use crate::transform::{eval_custom_call_step, push_generated_array_item};
 use crate::v2_eval::{
-    EvalItem, EvalValue, V2EvalContext, eval_v2_if_step, eval_v2_let_step, eval_v2_op_step,
-    eval_v2_ref,
+    EvalItem, EvalValue, V2EvalContext, eval_v2_if_step, eval_v2_let_step, eval_v2_object_step,
+    eval_v2_op_step, eval_v2_ref,
 };
 use crate::v2_model::{V2MapStep, V2Step};
 
@@ -61,6 +61,17 @@ pub fn eval_v2_map_step<'a>(
                 V2Step::Op(op_step) => {
                     current = eval_v2_op_step(
                         op_step, current, record, context, out, &step_path, &step_ctx,
+                    )?;
+                }
+                V2Step::Object(object_step) => {
+                    current = eval_v2_object_step(
+                        object_step,
+                        current,
+                        record,
+                        context,
+                        out,
+                        &step_path,
+                        &step_ctx,
                     )?;
                 }
                 V2Step::CustomCall(call_step) => {

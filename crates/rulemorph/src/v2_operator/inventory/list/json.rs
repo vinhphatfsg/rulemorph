@@ -3,6 +3,14 @@ use crate::v2_operator::types::{V2OperatorMetadata, V2OperatorTrace};
 
 pub(super) const JSON_OPERATORS: &[V2OperatorMetadata] = &[
     op(
+        "object",
+        range(1, Some(1)),
+        V2OperatorTrace::Delegated,
+        false,
+        false,
+        NO_SCOPE,
+    ),
+    op(
         "merge",
         range(1, None),
         V2OperatorTrace::EagerArgs,

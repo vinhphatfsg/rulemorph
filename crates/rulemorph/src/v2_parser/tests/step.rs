@@ -96,6 +96,73 @@ mod v2_step_parser_tests {
     }
 
     #[test]
+    fn test_parse_object_step_shorthand() {
+        let value = json!({
+            "object": {
+                "name": ["$.name", "uppercase"],
+                "tags": { "value": ["new", "vip"] },
+                "meta": { "source": "literal" }
+            }
+        });
+
+        let step = parse_v2_step(&value).unwrap();
+        if let V2Step::Object(object) = step {
+            assert_eq!(object.fields.len(), 3);
+            let name = object
+                .fields
+                .iter()
+                .find(|field| field.key == "name")
+                .expect("name field");
+            assert!(matches!(name.value, V2ObjectFieldValue::Expr(_)));
+            let tags = object
+                .fields
+                .iter()
+                .find(|field| field.key == "tags")
+                .expect("tags field");
+            assert!(matches!(tags.value, V2ObjectFieldValue::Value(_)));
+            let meta = object
+                .fields
+                .iter()
+                .find(|field| field.key == "meta")
+                .expect("meta field");
+            assert!(matches!(meta.value, V2ObjectFieldValue::Expr(_)));
+        } else {
+            panic!("Expected Object step");
+        }
+    }
+
+    #[test]
+    fn test_parse_object_step_explicit_op_form() {
+        let value = json!({
+            "op": "object",
+            "args": [
+                {
+                    "id": "@input.id"
+                }
+            ]
+        });
+
+        let step = parse_v2_step(&value).unwrap();
+        if let V2Step::Object(object) = step {
+            assert_eq!(object.fields.len(), 1);
+            assert_eq!(object.fields[0].key, "id");
+        } else {
+            panic!("Expected Object step");
+        }
+    }
+
+    #[test]
+    fn test_parse_object_step_rejects_invalid_args() {
+        let value = json!({
+            "op": "object",
+            "args": []
+        });
+
+        let err = parse_v2_step(&value).unwrap_err();
+        assert!(err.to_string().contains("object step expects exactly one object argument"));
+    }
+
+    #[test]
     fn test_parse_complex_pipe_with_steps() {
         // Complex pipe with multiple step types
         let arr = vec![

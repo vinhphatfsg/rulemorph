@@ -18,7 +18,8 @@ use crate::trace::{
 };
 use crate::v2_eval::{EvalValue as V2EvalValue, V2EvalContext, eval_v2_expr, eval_v2_pipe};
 use crate::v2_model::{
-    V2CallArg, V2Condition, V2CustomCallStep, V2Expr, V2OpStep, V2Pipe, V2Ref, V2Start, V2Step,
+    V2CallArg, V2Condition, V2CustomCallStep, V2Expr, V2ObjectFieldValue, V2OpStep, V2Pipe, V2Ref,
+    V2Start, V2Step,
 };
 use crate::v2_parser::{
     custom_call_step_candidate, parse_custom_call_step, parse_v2_pipe_from_value,
@@ -1147,6 +1148,19 @@ fn collect_v2_step_redaction_hints(
             }
             for arg in &op.args {
                 collect_v2_expr_redaction_hints(arg, hint, input_redaction_hints);
+            }
+        }
+        V2Step::Object(object) => {
+            hint.unknown_provenance = true;
+            for field in &object.fields {
+                match &field.value {
+                    V2ObjectFieldValue::Expr(expr) => {
+                        collect_v2_expr_redaction_hints(expr, hint, input_redaction_hints);
+                    }
+                    V2ObjectFieldValue::Value(value) => {
+                        collect_json_redaction_hints(value, hint, input_redaction_hints);
+                    }
+                }
             }
         }
         V2Step::CustomCall(call) => {

@@ -170,6 +170,40 @@ mappings:
 }
 
 #[test]
+fn dto_infers_object_builder_static_shape() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: payload
+    expr:
+      - object:
+          name: ["@input.name", uppercase]
+          age: ["@input.age", int]
+          nested:
+            - object:
+                active: true
+    required: true
+"#;
+
+    let rust = render(yaml, DtoLanguage::Rust);
+    assert!(rust.contains("pub payload: RecordPayload,"));
+    assert!(rust.contains("pub name: Option<String>,"));
+    assert!(rust.contains("pub age: Option<i64>,"));
+    assert!(rust.contains("pub nested: Option<RecordPayloadNested>,"));
+    assert!(rust.contains("pub active: Option<bool>,"));
+
+    let typescript = render(yaml, DtoLanguage::TypeScript);
+    assert!(typescript.contains("payload: RecordPayload;"));
+    assert!(typescript.contains("name?: string;"));
+    assert!(typescript.contains("age?: number;"));
+    assert!(typescript.contains("nested?: RecordPayloadNested;"));
+    assert!(typescript.contains("active?: boolean;"));
+}
+
+#[test]
 fn dto_reuses_synthetic_parent_out_shapes() {
     let yaml = r#"
 version: 2

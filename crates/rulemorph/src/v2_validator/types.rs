@@ -90,6 +90,7 @@ fn infer_json_type(value: &JsonValue) -> V2Type {
 fn infer_step_result_type(step: &V2Step, _input_type: &V2Type) -> V2Type {
     match step {
         V2Step::Op(op_step) => infer_op_result_type(&op_step.op),
+        V2Step::Object(_) => V2Type::Object,
         V2Step::CustomCall(_) => V2Type::Unknown,
         V2Step::Let(_) => V2Type::Unknown, // Let returns last expression or input
         V2Step::If(_) => V2Type::Unknown,  // Could be either branch

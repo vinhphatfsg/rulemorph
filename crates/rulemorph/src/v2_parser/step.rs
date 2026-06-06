@@ -1,5 +1,6 @@
 use crate::v2_model::{
-    V2CallArg, V2CustomCallStep, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Step,
+    V2CallArg, V2CustomCallStep, V2IfStep, V2LetStep, V2MapStep, V2ObjectField, V2ObjectFieldValue,
+    V2ObjectStep, V2OpStep, V2Step,
 };
 use crate::v2_operator::is_valid_operator;
 use serde_json::Value as JsonValue;
@@ -15,6 +16,9 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
         JsonValue::Object(obj) => {
             // Check for op step: { op: "name", args: [...] }
             if let Some(op_name) = obj.get("op").and_then(|v| v.as_str()) {
+                if op_name == "object" {
+                    return parse_object_step_explicit(obj.get("args"));
+                }
                 let args = if let Some(args_val) = obj.get("args") {
                     parse_v2_expr_args(args_val)?
                 } else {
@@ -45,6 +49,9 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
             // This handles cases like { multiply: [1.1] }, { concat: ["@out.name"] }, etc.
             if obj.len() == 1 {
                 let (op_name, args_val) = obj.iter().next().unwrap();
+                if op_name == "object" {
+                    return parse_object_step(args_val);
+                }
                 // Skip reserved keywords
                 if !["op", "let", "if", "map", "then", "else", "cond"].contains(&op_name.as_str()) {
                     if !is_valid_operator(op_name)
@@ -92,6 +99,52 @@ pub fn parse_v2_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
             "step must be object or string".to_string(),
         )),
     }
+}
+
+fn parse_object_step_explicit(args: Option<&JsonValue>) -> Result<V2Step, V2ParseError> {
+    let Some(JsonValue::Array(args)) = args else {
+        return Err(V2ParseError::InvalidStep(
+            "object step expects exactly one object argument".to_string(),
+        ));
+    };
+    if args.len() != 1 || !matches!(args.first(), Some(JsonValue::Object(_))) {
+        return Err(V2ParseError::InvalidStep(
+            "object step expects exactly one object argument".to_string(),
+        ));
+    }
+    parse_object_step(&args[0])
+}
+
+fn parse_object_step(value: &JsonValue) -> Result<V2Step, V2ParseError> {
+    let JsonValue::Object(map) = value else {
+        return Err(V2ParseError::InvalidStep(
+            "object step argument must be an object".to_string(),
+        ));
+    };
+    let fields = map
+        .iter()
+        .map(|(key, value)| {
+            Ok(V2ObjectField {
+                key: key.clone(),
+                value: parse_object_field_value(value)?,
+            })
+        })
+        .collect::<Result<Vec<_>, V2ParseError>>()?;
+    Ok(V2Step::Object(V2ObjectStep { fields }))
+}
+
+fn parse_object_field_value(value: &JsonValue) -> Result<V2ObjectFieldValue, V2ParseError> {
+    if let JsonValue::Object(map) = value
+        && map.len() == 1
+    {
+        if let Some(expr) = map.get("expr") {
+            return Ok(V2ObjectFieldValue::Expr(parse_v2_expr(expr)?));
+        }
+        if let Some(value) = map.get("value") {
+            return Ok(V2ObjectFieldValue::Value(value.clone()));
+        }
+    }
+    Ok(V2ObjectFieldValue::Expr(parse_v2_expr(value)?))
 }
 
 pub(crate) fn parse_custom_call_step(
