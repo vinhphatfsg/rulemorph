@@ -2,6 +2,7 @@ mod cache;
 mod custom_ops;
 mod dto;
 mod error;
+mod excel_ref;
 mod expr_json;
 mod locator;
 mod model;
@@ -65,4 +66,7 @@ pub use transform::{
     transform_with_warnings_with_base_dir, transform_with_warnings_with_base_dir_and_options,
     transform_with_warnings_with_options,
 };
-pub use validator::{validate_rule_file, validate_rule_file_with_source};
+pub use validator::{
+    validate_rule_file, validate_rule_file_with_base_dir, validate_rule_file_with_source,
+    validate_rule_file_with_source_and_base_dir,
+};

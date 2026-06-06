@@ -590,7 +590,7 @@ mappings:
 ### 入力正規化の共通契約
 
 - record は JSON object として扱います。
-- `records_path` が配列を指す場合は、各要素が record になります。
+- `records_path` が配列を指す場合は、各要素が record になります。配列要素も JSON object である必要があります。
 - `records_path` が object を指す場合は、単一 record として扱います。
 - scalar を record として扱うことはできません。
 - 参照先が存在しない場合は `missing` として扱います。`null` とは区別されます。
@@ -630,7 +630,7 @@ input:
 | --- | --- | --- | --- |
 | `records_path` | 任意 | ルート | レコード配列または単一 record object を指すドットパス。 |
 
-- root / `records_path` が配列の場合、各要素を record として扱います。
+- root / `records_path` が配列の場合、各要素を record として扱います。配列要素も JSON object である必要があります。
 - root / `records_path` が object の場合、単一 record として扱います。
 - scalar は record として扱えません。
 - `records_path` は通常の Rulemorph path と同じ構文です。存在しない path、または scalar を指す path はエラーです。
@@ -651,6 +651,7 @@ input:
 | `records_path` | 任意 | ルート | レコード配列または単一 record object を指すドットパス。 |
 
 - YAML/TOML は JSON record に正規化されてから mapping / steps / finalize に渡されます。
+- root / `records_path` が配列の場合、各要素を record として扱います。配列要素も JSON object である必要があります。
 - `records_path` は通常の Rulemorph path と同じ構文です。存在しない path、または scalar を指す path はエラーです。
 - YAML stream は 1 document のみ受け付けます。duplicate key、string 以外の mapping key、custom tag は拒否されます。
 - YAML alias / anchor は展開できますが、alias 数と展開後 node 数は resource limit の対象です。
@@ -1337,6 +1338,7 @@ expr:
 | `>` | `1` | 数値比較。条件は `gt` を推奨。 | `runtime` |
 | `>=` | `1` | 数値比較。条件は `gte` を推奨。 | `runtime` |
 | `~=` | `1` | 正規表現マッチ。条件は `match` を推奨。 | `runtime` |
+| `eq` / `ne` / `lt` / `lte` / `gt` / `gte` / `match` | `1` | 上記比較 op のエイリアス。 | `runtime` |
 
 `range` は pipe-first ではなく explicit form で使います。現在のパイプ値を境界値に使う場合は `$` を明示してください。
 
@@ -1376,9 +1378,9 @@ expr:
 | `values` | `0` | 値の配列。 | `runtime` |
 | `entries` | `0` | `{key, value}` の配列。 | `runtime` |
 | `len` | `0` | string/array/object の長さを返す。 | `runtime` |
-| `from_entries` | `>=1` | ペア配列や key/value から object を生成。 | `runtime` |
-| `object_flatten` | `1` | オブジェクトを path キーで平坦化。 | `runtime` |
-| `object_unflatten` | `1` | path キーからオブジェクトを再構成。 | `runtime` |
+| `from_entries` | `0-1` | pipe のペア配列、または pipe の key と `value` 引数から object を生成。 | `runtime` |
+| `object_flatten` | `0` | pipe のオブジェクトを path キーで平坦化。 | `runtime` |
+| `object_unflatten` | `0` | pipe の path キーからオブジェクトを再構成。 | `runtime` |
 
 ### 配列オペレーション
 
@@ -1420,7 +1422,7 @@ expr:
 | `partition` | `1` | 条件で 2 配列に分割する。 | `runtime` |
 | `unique` | `0` | 等価な要素を除去する。 | `runtime` |
 | `distinct_by` | `1` | キーで重複を除去する。 | `runtime` |
-| `sort_by` | `1` | キーでソートする。 | `runtime` |
+| `sort_by` | `1-2` | キーでソートする。第2引数は `asc` / `desc`、省略時は `asc`。 | `runtime` |
 | `find` | `1` | 最初の一致要素を返す。 | `runtime` |
 | `find_index` | `1` | 最初の一致インデックスを返す。 | `runtime` |
 | `index_of` | `1` | 最初の一致インデックスを返す。 | `runtime` |

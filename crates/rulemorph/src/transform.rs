@@ -21,7 +21,7 @@ use crate::v2_model::{V2ComparisonOp, V2Condition, V2Pipe, V2Ref, V2Start, V2Ste
 use crate::v2_parser::{parse_v2_condition, parse_v2_expr};
 
 const REGEX_CACHE_CAPACITY: usize = 128;
-const BRANCH_MAX_DEPTH: usize = 64;
+pub(crate) const BRANCH_MAX_DEPTH: usize = 64;
 
 fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
     static REGEX_CACHE: OnceLock<Mutex<LruCache<String, Regex>>> = OnceLock::new();

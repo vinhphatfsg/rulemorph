@@ -4,7 +4,7 @@ use serde_json::Value as JsonValue;
 
 use crate::error::ErrorCode;
 use crate::model::Expr;
-use crate::path::PathToken;
+use crate::path::{PathToken, parse_path};
 use crate::v2_parser::{
     is_literal_escape, is_pipe_value, is_v2_ref, parse_v2_condition, parse_v2_expr,
 };
@@ -13,6 +13,7 @@ use crate::v2_validator::{
 };
 
 use super::ValidationCtx;
+use super::refs::out_ref_resolves_in_targets;
 
 /// Convert Expr to JsonValue for v2 validation
 /// Also handles the case where a single-element v2 pipe array gets deserialized as ExprRef
@@ -98,13 +99,12 @@ pub(super) fn validate_v2_mapping_expr(
         }
     };
 
-    // Create v2 validation context with produced targets
-    let mut v2_ctx = V2ValidationCtx::with_produced_targets(
-        ctx.locator,
-        produced_targets.clone(),
-        ctx.allow_any_out_ref,
-    )
-    .with_custom_op_names(ctx.custom_op_names.clone());
+    // Create v2 validation context with parent outputs plus branch-child
+    // outputs that are visible through @out after return:false branches.
+    let ref_targets = out_ref_targets(produced_targets, ctx);
+    let mut v2_ctx =
+        V2ValidationCtx::with_produced_targets(ctx.locator, ref_targets, ctx.allow_any_out_ref)
+            .with_custom_op_names(ctx.custom_op_names.clone());
     let scope = V2Scope::new();
 
     // Validate the v2 expression
@@ -113,7 +113,10 @@ pub(super) fn validate_v2_mapping_expr(
     // When branch(return=false) is present, @out can be a forward ref, so the
     // dependency graph is not reliable for cycle detection.
     if !ctx.allow_any_out_ref {
-        let deps = collect_out_references(&v2_expr);
+        let deps: HashSet<String> = collect_out_references(&v2_expr)
+            .into_iter()
+            .filter(|dep| !out_dep_resolves_only_in_branch_outputs(dep, produced_targets, ctx))
+            .collect();
         if !deps.is_empty() {
             v2_targets_with_deps.push((target.to_string(), deps));
         }
@@ -161,7 +164,7 @@ pub(super) fn validate_v2_condition_expr_with_scope(
 
     let mut v2_ctx = V2ValidationCtx::with_produced_targets(
         ctx.locator,
-        produced_targets.clone(),
+        out_ref_targets(produced_targets, ctx),
         ctx.allow_any_out_ref,
     )
     .with_custom_op_names(ctx.custom_op_names.clone());
@@ -170,6 +173,27 @@ pub(super) fn validate_v2_condition_expr_with_scope(
     for err in v2_ctx.errors() {
         ctx.errors.push(err.clone());
     }
+}
+
+fn out_ref_targets(
+    produced_targets: &HashSet<Vec<PathToken>>,
+    ctx: &ValidationCtx<'_>,
+) -> HashSet<Vec<PathToken>> {
+    let mut targets = produced_targets.clone();
+    targets.extend(ctx.branch_out_ref_targets.iter().cloned());
+    targets
+}
+
+fn out_dep_resolves_only_in_branch_outputs(
+    dep: &str,
+    produced_targets: &HashSet<Vec<PathToken>>,
+    ctx: &ValidationCtx<'_>,
+) -> bool {
+    let Ok(tokens) = parse_path(dep) else {
+        return false;
+    };
+    !out_ref_resolves_in_targets(&tokens, produced_targets)
+        && out_ref_resolves_in_targets(&tokens, &ctx.branch_out_ref_targets)
 }
 
 pub(super) fn validate_finalize_wrap_value(

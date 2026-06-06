@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use rulemorph::{
     RuleFile, transform_input_with_warnings, transform_input_with_warnings_with_base_dir,
-    validate_rule_file_with_source,
+    validate_rule_file_with_source, validate_rule_file_with_source_and_base_dir,
 };
 use serde_json::{Map, Value, json};
 
@@ -36,7 +36,15 @@ pub(crate) fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, Cal
     let prepared = prepare_transform(args)?;
 
     if prepared.validate {
-        if let Err(errors) = validate_rule_file_with_source(&prepared.rule, &prepared.yaml) {
+        let validation_result = match prepared.base_dir.as_deref() {
+            Some(base_dir) => validate_rule_file_with_source_and_base_dir(
+                &prepared.rule,
+                &prepared.yaml,
+                base_dir,
+            ),
+            None => validate_rule_file_with_source(&prepared.rule, &prepared.yaml),
+        };
+        if let Err(errors) = validation_result {
             let error_text = validation_errors_to_text(&errors);
             let error_values = validation_errors_to_values(&errors);
             return Err(CallError::Tool {

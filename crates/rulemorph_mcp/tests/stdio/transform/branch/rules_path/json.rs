@@ -74,3 +74,55 @@ mappings:
 
     server.shutdown();
 }
+
+#[test]
+fn transform_validate_rules_path_rejects_missing_unselected_branch_child() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dir = tempdir().expect("temp dir");
+    let rules_path = dir.path().join("rules.yaml");
+
+    fs::write(
+        &rules_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: ["@input.kind", "take"] }
+      then: ./missing.yaml
+      return: false
+  - mappings:
+      - target: ok
+        value: true
+"#,
+    )
+    .expect("write rules");
+
+    let response = call_tool(
+        &mut server,
+        27,
+        "transform",
+        json!({
+            "rules_path": rules_path.to_string_lossy(),
+            "input_json": { "kind": "skip" },
+            "validate": true
+        }),
+    );
+    assert_eq!(response["result"]["isError"], true);
+    let errors = response["result"]["meta"]["errors"]
+        .as_array()
+        .expect("validation errors");
+    assert!(
+        errors.iter().any(|err| err["code"] == "InvalidStep"
+            && err["message"]
+                .as_str()
+                .expect("error message")
+                .contains("failed to resolve branch rule")),
+        "validate=true should reject missing branch child before transform: {errors:?}"
+    );
+
+    server.shutdown();
+}

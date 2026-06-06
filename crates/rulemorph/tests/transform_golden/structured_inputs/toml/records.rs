@@ -25,3 +25,28 @@ mappings:
     .expect_err("record limit should fail before TOML records are materialized");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
 }
+
+#[test]
+fn toml_records_path_rejects_scalar_array_element() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: toml
+  toml:
+    records_path: users
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text("users = [1, { id = 2 }]\n"),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("records_path array elements must be objects");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "records_path array elements must be objects");
+}

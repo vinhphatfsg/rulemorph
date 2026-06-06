@@ -90,3 +90,52 @@ mappings: []
 
     server.shutdown();
 }
+
+#[test]
+fn validate_rules_path_rejects_missing_branch_child() {
+    let mut server = McpServer::start();
+    initialize(&mut server);
+
+    let dir = tempdir().expect("temp dir");
+    let rules_path = dir.path().join("rules.yaml");
+    fs::write(
+        &rules_path,
+        r#"version: 2
+input:
+  format: json
+  json: {}
+steps:
+  - branch:
+      when: { eq: [1, 1] }
+      then: ./missing.yaml
+      return: false
+  - mappings:
+      - target: after
+        expr: "@out.branch_value"
+"#,
+    )
+    .expect("write rules");
+
+    let response = call_tool(
+        &mut server,
+        10,
+        "validate_rules",
+        json!({
+            "rules_path": rules_path.to_string_lossy()
+        }),
+    );
+    assert_eq!(response["result"]["isError"], true);
+    let errors = response["result"]["meta"]["errors"]
+        .as_array()
+        .expect("validation errors");
+    assert!(
+        errors.iter().any(|err| err["code"] == "InvalidStep"
+            && err["message"]
+                .as_str()
+                .expect("error message")
+                .contains("failed to resolve branch rule")),
+        "missing branch child should be reported by path-based validation: {errors:?}"
+    );
+
+    server.shutdown();
+}
