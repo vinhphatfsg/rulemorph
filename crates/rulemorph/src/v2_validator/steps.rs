@@ -1,4 +1,7 @@
-use crate::v2_model::{V2Expr, V2IfStep, V2LetStep, V2MapStep, V2Pipe, V2Start, V2Step};
+use crate::v2_model::{
+    V2Expr, V2IfStep, V2LetStep, V2MapStep, V2ObjectFieldValue, V2ObjectStep, V2Pipe, V2Start,
+    V2Step, object_field_rule_path,
+};
 use crate::v2_parser::{custom_call_step_candidate, parse_custom_call_step};
 
 use super::conditions::validate_v2_condition;
@@ -115,6 +118,7 @@ fn validate_v2_step(
 ) {
     match step {
         V2Step::Op(op_step) => operators::validate_v2_op_step(op_step, base_path, scope, ctx),
+        V2Step::Object(object_step) => validate_v2_object_step(object_step, base_path, scope, ctx),
         V2Step::CustomCall(call_step) => {
             let call_scope = scope.clone().with_pipe();
             validate_custom_call_args(call_step, base_path, &call_scope, ctx);
@@ -123,6 +127,27 @@ fn validate_v2_step(
         V2Step::If(if_step) => validate_v2_if_step(if_step, base_path, scope, ctx),
         V2Step::Map(map_step) => validate_v2_map_step(map_step, base_path, scope, ctx),
         V2Step::Ref(v2_ref) => validate_v2_ref(v2_ref, base_path, scope, ctx),
+    }
+}
+
+fn validate_v2_object_step(
+    object_step: &V2ObjectStep,
+    base_path: &str,
+    scope: &V2Scope,
+    ctx: &mut V2ValidationCtx<'_>,
+) {
+    for field in &object_step.fields {
+        let field_path = object_field_rule_path(base_path, &field.key);
+        if field.key.is_empty() {
+            ctx.push_error(
+                crate::error::ErrorCode::InvalidExprShape,
+                "object field key must not be empty",
+                &field_path,
+            );
+        }
+        if let V2ObjectFieldValue::Expr(expr) = &field.value {
+            validate_v2_expr(expr, &field_path, scope, ctx);
+        }
     }
 }
 

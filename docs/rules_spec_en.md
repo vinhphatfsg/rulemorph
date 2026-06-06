@@ -121,6 +121,7 @@ Huge or dynamic paths used by `get` / `pick` / `omit` also fall back to JSON.
 `default` / `coalesce` do not narrow dynamic or unknown input into a concrete type by themselves.
 
 `optional` means a field may be omitted. `nullable` means a present field may contain `null`.
+Fields built by the `object` OP are inferred as optional because each field expression may evaluate to `missing`.
 JSON integer literals that do not fit in a signed 64-bit integer are treated as JSON fallback types, because Rust / Go / JVM DTO integer outputs use `i64` / `int64` / `Long`.
 
 `defs.*.returns` also participates in DTO inference. Object `returns` become nested DTO shapes. For custom OPs with a `mappings` body and no explicit `returns`, the object shape is synthesized from the body targets. Fields that cannot be narrowed use the language's JSON fallback type.
@@ -918,6 +919,8 @@ rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 
 `range` emits at most 10,000 items by default. Use `range-items=<integer>` to change that cap. `range-items=unlimited` removes the per-range cap for trusted local input/rules. In `--limits-file`, write it as a string, for example `range-items = "unlimited"`. Even with `range-items=unlimited`, generated arrays from `range`, `map`, `flat_map`, `flatten`, and similar operators are still bounded by `array-len`.
 
+The `object` OP can generate JSON objects from a rule, so it has dedicated limits as well. Defaults are `object-fields=10000`, `object-key-bytes=4096`, `object-depth=64`, `generated-json-nodes=100000`, and `generated-json-bytes=10485760`. Override them with names such as `--limit object-fields=...` or `--limit generated-json-bytes=...`; `--limits-file` uses the same names. `array-len` remains the array-generation cap and is not reused as the object safety boundary.
+
 These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, and MCP pathless branch guard are not configurable.
 
 ## Record filter (`record_when`)
@@ -1190,7 +1193,7 @@ Support status:
 ### Operation categories
 
 - String ops: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
-- JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
+- JSON ops: `object`, `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - Numeric ops: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
@@ -1203,6 +1206,7 @@ Support status:
 
 - `to_*`: conversions (e.g., `to_string`, `to_base`, `to_unixtime`)
 - `*_by`: key-based variants (`group_by`, `key_by`, `distinct_by`, `sort_by`)
+- `object`: builder that creates objects from v2 expressions
 - `object_*`: object-specific structural ops (`object_flatten`, `object_unflatten`)
 
 ### Core operations
@@ -1290,6 +1294,29 @@ expr:
 
 ### JSON operations
 
+`object` evaluates multiple v2 expressions and builds one JSON object.
+When a field value evaluates to `missing`, that field is omitted. `null` remains `null`.
+Keys are literal field names; `user.name` is one key named `"user.name"`, not a nested path.
+Use nested `object` when nested output is needed.
+
+```yaml
+expr:
+  - "@input"
+  - object:
+      name: ["$.name", uppercase]
+      age: ["$.age", int]
+      tags:
+        value: ["new", "vip"]
+      profile:
+        - object:
+            label: ["$.name", lowercase]
+      missing: "$.missing"
+```
+
+In this example, the current pipe value before `object` is `@input`, so `$` inside field expressions points at the input record.
+Use the `value` wrapper for literal array field values. Use the `expr` wrapper when an object-shaped field value must be interpreted as an expression.
+When piping the `object` output to another OP in a multi-step pipe, put an explicit start value as shown above. To return only the object, use a single-step pipe such as `expr: [{ object: { id: "@input.id" } }]`.
+
 Path arguments:
 - `pick`/`omit` accept one or more path strings as separate args.
 - A single arg may also be an array of strings (e.g., `@context.paths`).
@@ -1304,6 +1331,7 @@ Example:
 
 | op | args | description | support |
 | --- | --- | --- | --- |
+| `object` | `1` | Build a JSON object from a field map of v2 expressions. Omit `missing` fields. | `runtime` |
 | `merge` | `>=1` | Shallow merge (rightmost wins). | `runtime` |
 | `deep_merge` | `>=1` | Recursive merge for objects; arrays are replaced. | `runtime` |
 | `get` | `1` | Get value at path; missing if path is absent. | `runtime` |

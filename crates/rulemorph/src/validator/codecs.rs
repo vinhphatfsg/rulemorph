@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 
 use crate::error::ErrorCode;
 use crate::model::{Expr, Mapping, RuleFile, V2RuleStep};
-use crate::v2_model::{V2CallArg, V2Condition, V2Expr, V2OpStep, V2Pipe, V2Start, V2Step};
+use crate::v2_model::{
+    V2CallArg, V2Condition, V2Expr, V2ObjectFieldValue, V2OpStep, V2Pipe, V2Start, V2Step,
+    object_field_rule_path,
+};
 use crate::v2_parser::{parse_v2_condition, parse_v2_expr};
 
 use super::ValidationCtx;
@@ -206,6 +209,17 @@ fn validate_pipe_codec_refs(pipe: &V2Pipe, base_path: &str, ctx: &mut Validation
         let step_path = format!("{}[{}]", base_path, index + 1);
         match step {
             V2Step::Op(op) => validate_op_codec_refs(op, &step_path, ctx),
+            V2Step::Object(object) => {
+                for field in &object.fields {
+                    if let V2ObjectFieldValue::Expr(expr) = &field.value {
+                        validate_v2_expr_codec_refs(
+                            expr,
+                            &object_field_rule_path(&step_path, &field.key),
+                            ctx,
+                        );
+                    }
+                }
+            }
             V2Step::If(if_step) => {
                 validate_condition_codec_refs(&if_step.cond, &format!("{}.cond", step_path), ctx);
                 validate_pipe_codec_refs(&if_step.then_branch, &format!("{}.then", step_path), ctx);
@@ -248,6 +262,17 @@ fn validate_pipe_codec_refs(pipe: &V2Pipe, base_path: &str, ctx: &mut Validation
 fn validate_v2_step_codec_refs(step: &V2Step, base_path: &str, ctx: &mut ValidationCtx<'_>) {
     match step {
         V2Step::Op(op) => validate_op_codec_refs(op, base_path, ctx),
+        V2Step::Object(object) => {
+            for field in &object.fields {
+                if let V2ObjectFieldValue::Expr(expr) = &field.value {
+                    validate_v2_expr_codec_refs(
+                        expr,
+                        &object_field_rule_path(base_path, &field.key),
+                        ctx,
+                    );
+                }
+            }
+        }
         V2Step::If(if_step) => {
             validate_condition_codec_refs(&if_step.cond, &format!("{}.cond", base_path), ctx);
             validate_pipe_codec_refs(&if_step.then_branch, &format!("{}.then", base_path), ctx);

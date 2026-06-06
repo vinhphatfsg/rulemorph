@@ -51,6 +51,7 @@ fn list_ops_success() {
             "pad_end",
             "lookup",
             "lookup_first",
+            "object",
             "merge",
             "deep_merge",
             "get",

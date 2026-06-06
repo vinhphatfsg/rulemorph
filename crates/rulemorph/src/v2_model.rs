@@ -52,6 +52,7 @@ pub enum V2Ref {
 #[derive(Debug, Clone, PartialEq)]
 pub enum V2Step {
     Op(V2OpStep),
+    Object(V2ObjectStep),
     CustomCall(V2CustomCallStep),
     Let(V2LetStep),
     If(V2IfStep),
@@ -65,6 +66,23 @@ pub enum V2Step {
 pub struct V2OpStep {
     pub op: String,
     pub args: Vec<V2Expr>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct V2ObjectStep {
+    pub fields: Vec<V2ObjectField>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct V2ObjectField {
+    pub key: String,
+    pub value: V2ObjectFieldValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum V2ObjectFieldValue {
+    Expr(V2Expr),
+    Value(JsonValue),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -125,6 +143,24 @@ pub enum V2ComparisonOp {
     Lt,
     Lte,
     Match,
+}
+
+pub(crate) fn object_field_rule_path(base_path: &str, key: &str) -> String {
+    if is_simple_object_field_key(key) {
+        format!("{}.object.{}", base_path, key)
+    } else {
+        let quoted = serde_json::to_string(key).unwrap_or_else(|_| "\"<invalid>\"".to_string());
+        format!("{}.object[{}]", base_path, quoted)
+    }
+}
+
+fn is_simple_object_field_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
 // =============================================================================

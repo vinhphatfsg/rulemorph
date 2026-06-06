@@ -127,6 +127,7 @@ mappings:
 `default` / `coalesce` は dynamic/unknown input を具体型へ狭める根拠には使いません。
 
 `optional` は field が省略される可能性、`nullable` は field 値が `null` になり得る可能性を表します。
+`object` OP で生成する field は field expr が `missing` になり得るため、DTO 推論では optional field として扱います。
 JSON integer literal が signed 64-bit integer に収まらない場合は、Rust / Go / JVM 系 DTO の `i64` / `int64` / `Long` で安全に表現できないため JSON fallback 型として扱います。
 
 `defs` の `returns` は DTO 推論にも使われます。`returns` が object の場合は nested DTO shape として伝播します。`mappings` body の関数OPで `returns` を省略した場合は、body の `target` から object shape を合成します。推論できない field は JSON fallback 型になります。
@@ -922,6 +923,8 @@ rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 
 `range` OP の生成数は既定で 10,000 要素までです。`range-items=<integer>` で上限を変更できます。`range-items=unlimited` は trusted なローカル入力/ルール向けに `range` 単体の上限制約を外します。`--limits-file` で指定する場合は `range-items = "unlimited"` のように文字列で書きます。`range-items=unlimited` の場合でも、`range`/`map`/`flat_map`/`flatten` などが生成する配列の総量は `array-len` で制限されます。
 
+`object` OP は rule ごとに JSON object を生成できるため、専用 limit でも制限されます。既定値は `object-fields=10000`、`object-key-bytes=4096`、`object-depth=64`、`generated-json-nodes=100000`、`generated-json-bytes=10485760` です。これらは `--limit object-fields=...`、`--limit generated-json-bytes=...` のように変更でき、`--limits-file` でも同じ名前を使います。`array-len` は配列生成の上限であり、object 生成の安全境界には流用されません。
+
 これらは処理量の上限を広げるだけです。duplicate key rejection、XML DTD/entity rejection、HTML no-network/no-JS、Excel no-macro/no-formula-evaluation、MCP pathless branch guard などの安全性 invariant は変更できません。
 
 ## Record filter（`record_when`）
@@ -1255,7 +1258,7 @@ when:
 ### カテゴリ
 
 - 文字列系: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
-- JSON 操作: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
+- JSON 操作: `object`, `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - 配列 op: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - 数値系: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - 日付系: `date_format`, `to_unixtime`
@@ -1268,6 +1271,7 @@ when:
 
 - `to_*`: 変換系（`to_string`, `to_base`, `to_unixtime`）
 - `*_by`: キー指定の派生（`group_by`, `key_by`, `distinct_by`, `sort_by`）
+- `object`: v2 expr から object を組み立てる builder
 - `object_*`: object 構造専用（`object_flatten`, `object_unflatten`）
 
 ### コアオペレーション
@@ -1355,6 +1359,29 @@ expr:
 
 ### JSON 操作
 
+`object` は複数の v2 expr を評価して 1 つの JSON object を生成します。
+field value が `missing` の場合、その field は出力されません。`null` は `null` として残ります。
+key は literal field 名であり、`user.name` は nested path ではなく `"user.name"` という 1 key です。
+nested object が必要な場合は nested `object` を使います。
+
+```yaml
+expr:
+  - "@input"
+  - object:
+      name: ["$.name", uppercase]
+      age: ["$.age", int]
+      tags:
+        value: ["new", "vip"]
+      profile:
+        - object:
+            label: ["$.name", lowercase]
+      missing: "$.missing"
+```
+
+上の例では `object` 実行前の current pipe value が `@input` なので、field expr 内の `$` は入力 record を指します。
+literal array を field value にしたい場合は `value` wrapper を使います。object value を明示的に expr として扱いたい場合は `expr` wrapper を使えます。
+multi-step pipe で `object` の出力を次の OP へ渡す場合は、上のように明示的な start value を置いてください。単独で object を返す場合は `expr: [{ object: { id: "@input.id" } }]` のように single-step pipe として書けます。
+
 パス引数:
 - `pick`/`omit` はパス文字列を複数引数で指定できます。
 - 1 つの引数で文字列配列（例: `@context.paths`）も指定可能です。
@@ -1369,6 +1396,7 @@ expr:
 
 | op | args | 説明 | 対応 |
 | --- | --- | --- | --- |
+| `object` | `1` | v2 expr の field map から JSON object を生成。`missing` field は省略。 | `runtime` |
 | `merge` | `>=1` | 浅い merge（右勝ち）。 | `runtime` |
 | `deep_merge` | `>=1` | object は再帰 merge、配列は置換。 | `runtime` |
 | `get` | `1` | パスの値を取得。存在しない場合は `missing`。 | `runtime` |

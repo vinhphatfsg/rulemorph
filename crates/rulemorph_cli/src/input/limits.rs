@@ -100,6 +100,11 @@ fn apply_limit_override(
         "excel-shared-string-bytes" => options.max_excel_shared_string_bytes = value,
         "excel-styles" => options.max_excel_styles = value,
         "range-items" => options.max_range_items = Some(value),
+        "object-fields" => options.max_object_fields = value,
+        "object-key-bytes" => options.max_object_key_bytes = value,
+        "object-depth" => options.max_object_depth = value,
+        "generated-json-nodes" => options.max_generated_json_nodes = value,
+        "generated-json-bytes" => options.max_generated_json_bytes = value,
         _ => return Err(format!("unknown limit `{}`", name)),
     }
     Ok(())
