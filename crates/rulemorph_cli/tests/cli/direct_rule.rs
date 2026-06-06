@@ -80,6 +80,20 @@ fn direct_rule_rejects_duplicate_keys_in_inline_json() {
 }
 
 #[test]
+fn direct_rule_validates_inline_synthetic_rule_before_transform() {
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("--rule")
+            .arg(r#"["@input.name", {"trim":"ignored"}]"#)
+            .write_stdin(r#"{ "name": " Ada " }"#);
+    });
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = stderr_string(output);
+    assert!(stderr.contains("InvalidArgs"));
+    assert!(stderr.contains("trim accepts at most 0 argument(s), got 1"));
+}
+
+#[test]
 fn direct_rule_unwraps_bom_prefixed_json_object() {
     let output = rulemorph_output(|cmd| {
         cmd.arg("--rule")

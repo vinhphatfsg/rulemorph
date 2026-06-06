@@ -18,6 +18,26 @@ fn test_eval_op_replace() {
 }
 
 #[test]
+fn test_eval_op_concat_requires_explicit_operand() {
+    let op = V2OpStep {
+        op: "concat".to_string(),
+        args: vec![],
+    };
+    let ctx = V2EvalContext::new();
+    let result = eval_v2_op_step(
+        &op,
+        EvalValue::Value(json!("Ada")),
+        &json!({}),
+        None,
+        &json!({}),
+        "test",
+        &ctx,
+    );
+
+    assert!(matches!(result, Err(err) if err.to_string().contains("concat requires at least 1 argument(s), got 0")));
+}
+
+#[test]
 fn test_eval_op_split_and_pad() {
     let split = V2OpStep {
         op: "split".to_string(),

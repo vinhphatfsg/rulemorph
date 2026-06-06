@@ -12,6 +12,7 @@ pub(super) enum ArgCountRule {
     ThreeOrFour,
     OneToThree,
     TwoToFour,
+    AtLeastOne,
     AtLeastTwo,
     AtLeastThree,
 }
@@ -38,6 +39,7 @@ impl ArgCountRule {
             ArgCountRule::ThreeOrFour => (3..=4).contains(&actual),
             ArgCountRule::OneToThree => (1..=3).contains(&actual),
             ArgCountRule::TwoToFour => (2..=4).contains(&actual),
+            ArgCountRule::AtLeastOne => actual >= 1,
             ArgCountRule::AtLeastTwo => actual >= 2,
             ArgCountRule::AtLeastThree => actual >= 3,
         }
@@ -53,6 +55,7 @@ impl ArgCountRule {
             ArgCountRule::ThreeOrFour => "expr.args must contain three or four items",
             ArgCountRule::OneToThree => "expr.args must contain one to three items",
             ArgCountRule::TwoToFour => "expr.args must contain two to four items",
+            ArgCountRule::AtLeastOne => "expr.args must contain at least one item",
             ArgCountRule::AtLeastTwo => "expr.args must contain at least two items",
             ArgCountRule::AtLeastThree => "expr.args must contain at least three items",
         }

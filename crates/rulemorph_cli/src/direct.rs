@@ -6,10 +6,10 @@ use csv::ReaderBuilder;
 use rulemorph::{
     InputData, NormalizationOptions, RuleFile, RuleFormat, parse_rule_file_with_format,
     transform_input_with_warnings_with_base_dir_and_options,
-    transform_stream_input_with_base_dir_and_options,
+    transform_stream_input_with_base_dir_and_options, validate_rule_file,
 };
 
-use super::emit::{emit_transform_error, emit_transform_warnings};
+use super::emit::{emit_transform_error, emit_transform_warnings, emit_validation_errors};
 use super::input::{load_context, load_input_bytes_from_path_or_stdin, load_normalization_options};
 use super::output::{
     create_output_writer, emit_text_output, serialize_json_output, write_json_line,
@@ -96,6 +96,10 @@ pub(crate) fn run(args: DirectArgs) -> i32 {
             return 1;
         }
     };
+    if let Err(errors) = validate_rule_file(&rule) {
+        emit_validation_errors(&errors, args.error_format.unwrap_or(ErrorFormat::Text));
+        return 2;
+    }
 
     let context = match load_context(&args.context) {
         Ok(context) => context,

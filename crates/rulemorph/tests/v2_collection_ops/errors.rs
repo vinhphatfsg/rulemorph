@@ -15,7 +15,7 @@ mappings:
     let err = run_err(arity_yaml, r#"[{"items":[]}]"#);
     assert_eq!(err.kind, TransformErrorKind::ExprError);
     assert_eq!(err.path.as_deref(), Some("mappings[0].expr[1]"));
-    assert_eq!(err.message, "filter requires exactly one argument");
+    assert_eq!(err.message, "filter requires at least 1 argument(s), got 0");
 
     let non_array_yaml = r#"
 version: 2

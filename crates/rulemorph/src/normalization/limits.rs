@@ -92,6 +92,12 @@ pub(crate) fn select_records_from_document(
     match records_value {
         JsonValue::Array(items) => {
             enforce_records_limit(items.len(), options)?;
+            if items.iter().any(|item| !item.is_object()) {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    "records_path array elements must be objects",
+                ));
+            }
             Ok(items.clone())
         }
         JsonValue::Object(_) => {
@@ -131,6 +137,12 @@ pub(crate) fn select_records_from_owned_document(
     match records_value {
         JsonValue::Array(items) => {
             enforce_records_limit(items.len(), options)?;
+            if items.iter().any(|item| !item.is_object()) {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    "records_path array elements must be objects",
+                ));
+            }
             Ok(items)
         }
         JsonValue::Object(_) => {
