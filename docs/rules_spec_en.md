@@ -586,7 +586,7 @@ For safety, typed value codecs fail closed on unknown profiles, unknown options,
 ### Normalization contract
 
 - Records are JSON objects.
-- If `records_path` points to an array, each element becomes a record.
+- If `records_path` points to an array, each element becomes a record. Array elements must also be JSON objects.
 - If `records_path` points to an object, it becomes a single record.
 - Scalars cannot be records.
 - A missing reference is `missing`, which is distinct from `null`.
@@ -626,7 +626,7 @@ input:
 | --- | --- | --- | --- |
 | `records_path` | Optional | Root | Dot path to a record array or single record object. |
 
-- If the root or `records_path` is an array, each element becomes a record.
+- If the root or `records_path` is an array, each element becomes a record. Array elements must also be JSON objects.
 - If the root or `records_path` is an object, it becomes a single record.
 - Scalars cannot be records.
 - `records_path` uses the normal Rulemorph path syntax. A missing path, or a path that points to a scalar, is an error.
@@ -647,6 +647,7 @@ input:
 | `records_path` | Optional | Root | Dot path to a record array or single record object. |
 
 - YAML/TOML input is normalized to JSON records before mappings, steps, and finalize run.
+- If the root or `records_path` is an array, each element becomes a record. Array elements must also be JSON objects.
 - `records_path` uses the normal Rulemorph path syntax. A missing path, or a path that points to a scalar, is an error.
 - A YAML stream must contain exactly one document. Duplicate keys, non-string mapping keys, and custom tags are rejected.
 - YAML aliases/anchors can be expanded, but alias count and expanded node count are bounded by resource limits.
@@ -1272,6 +1273,7 @@ Numeric operators use the same pipe style. `range` is different: it generates an
 | `>` | `1` | Numeric comparison. Prefer `gt` conditions. | `runtime` |
 | `>=` | `1` | Numeric comparison. Prefer `gte` conditions. | `runtime` |
 | `~=` | `1` | Regex match. Prefer `match` conditions. | `runtime` |
+| `eq` / `ne` / `lt` / `lte` / `gt` / `gte` / `match` | `1` | Aliases for the comparison ops above. | `runtime` |
 
 Use `range` in explicit form, not as pipe-first shorthand. If the current pipe value is a boundary, pass `$` explicitly.
 
@@ -1311,9 +1313,9 @@ Example:
 | `values` | `0` | Array of values. | `runtime` |
 | `entries` | `0` | Array of `{key, value}` entries. | `runtime` |
 | `len` | `0` | Length of string/array/object. | `runtime` |
-| `from_entries` | `>=1` | Build object from pairs or key/value. | `runtime` |
-| `object_flatten` | `1` | Flatten object keys into path strings. | `runtime` |
-| `object_unflatten` | `1` | Expand path keys into nested objects. | `runtime` |
+| `from_entries` | `0-1` | Build object from pipe pairs, or from pipe key plus a `value` arg. | `runtime` |
+| `object_flatten` | `0` | Flatten pipe object keys into path strings. | `runtime` |
+| `object_unflatten` | `0` | Expand pipe path keys into nested objects. | `runtime` |
 
 ### Array operations
 
@@ -1355,7 +1357,7 @@ Another example (partition):
 | `partition` | `1` | Split into `[matched, unmatched]`. | `runtime` |
 | `unique` | `0` | Remove duplicates by equality. | `runtime` |
 | `distinct_by` | `1` | Remove duplicates by key. | `runtime` |
-| `sort_by` | `1` | Sort by key. | `runtime` |
+| `sort_by` | `1-2` | Sort by key. The second arg is `asc` / `desc`; default is `asc`. | `runtime` |
 | `find` | `1` | First matching element. | `runtime` |
 | `find_index` | `1` | Index of first match. | `runtime` |
 | `index_of` | `1` | Index of first equal element. | `runtime` |

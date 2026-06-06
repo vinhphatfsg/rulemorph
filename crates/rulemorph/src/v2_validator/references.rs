@@ -104,16 +104,10 @@ fn validate_out_not_forward(path: &str, base_path: &str, ctx: &mut V2ValidationC
         Err(_) => return, // Path syntax error handled elsewhere
     };
 
-    // Extract key tokens (ignore array indices for forward reference check)
-    let key_tokens: Vec<PathToken> = tokens
+    if !tokens
         .iter()
-        .filter_map(|t| match t {
-            PathToken::Key(k) => Some(PathToken::Key(k.clone())),
-            PathToken::Index(_) => None,
-        })
-        .collect();
-
-    if key_tokens.is_empty() {
+        .any(|token| matches!(token, PathToken::Key(_)))
+    {
         ctx.push_error(
             ErrorCode::ForwardOutReference,
             "out reference must have at least one key",
@@ -122,13 +116,10 @@ fn validate_out_not_forward(path: &str, base_path: &str, ctx: &mut V2ValidationC
         return;
     }
 
-    // Check if any prefix of the path has been produced
-    let mut candidate = key_tokens;
-    while !candidate.is_empty() {
-        if ctx.produced_targets.contains(&candidate) {
-            return; // Found a matching prefix
+    for produced in &ctx.produced_targets {
+        if is_path_prefix(produced, &tokens) || is_path_prefix(&tokens, produced) {
+            return;
         }
-        candidate.pop();
     }
 
     ctx.push_error(
@@ -136,6 +127,10 @@ fn validate_out_not_forward(path: &str, base_path: &str, ctx: &mut V2ValidationC
         "out reference must point to previous mappings",
         base_path,
     );
+}
+
+fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
+    prefix.len() <= tokens.len() && prefix.iter().zip(tokens).all(|(left, right)| left == right)
 }
 
 #[cfg(test)]

@@ -2923,6 +2923,39 @@ mappings:
 }
 
 #[test]
+fn custom_op_body_out_ref_index_requires_produced_array_parent_not_nested_object() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+defs:
+  expose:
+    input: { value: string }
+    mappings:
+      - target: tmp.value
+        source: value
+      - target: first
+        source: out.tmp[0]
+mappings:
+  - target: result
+    expr:
+      - "@input"
+      - expose:
+          - with: { value: "@input.name" }
+"#;
+    let rule = parse(yaml);
+    let errors =
+        validate_rule_file(&rule).expect_err("custom op out refs should not ignore index tokens");
+    assert!(
+        errors
+            .iter()
+            .any(|err| err.code == ErrorCode::ForwardOutReference),
+        "expected ForwardOutReference, got {errors:?}"
+    );
+}
+
+#[test]
 fn custom_op_trace_keeps_body_error_inside_custom_op_error_span() {
     let yaml = r#"
 version: 2

@@ -56,6 +56,90 @@ mappings:
 }
 
 #[test]
+fn typed_value_inline_literal_options_are_validated_statically() {
+    let cases = [
+        (
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: raw
+    expr:
+      - "@input"
+      - from_typed_value:
+          profile: dynamodb_item
+          decode: safe_json
+"#,
+            "decode must be an object",
+        ),
+        (
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: item
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: dynamodb_item
+          field_types:
+            id: object_id
+"#,
+            "field type is not supported by dynamodb_item profile",
+        ),
+        (
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: value
+    expr:
+      - "@input.id"
+      - to_typed_value:
+          profile: dynamodb_item
+          type: object_id
+"#,
+            "type is not supported by dynamodb_item profile",
+        ),
+        (
+            r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: doc
+    expr:
+      - "@input"
+      - to_typed_value:
+          profile: mongo_extended_json
+          field_types:
+            created_at: timestamp
+"#,
+            "field type is not supported by mongo_extended_json profile",
+        ),
+    ];
+
+    for (yaml, expected_message) in cases {
+        let rule = parse_rule_file(yaml).expect("parse rule");
+        let errors =
+            validate_rule_file(&rule).expect_err("inline typed-value options should validate");
+        assert!(
+            errors
+                .iter()
+                .any(|err| err.message.contains(expected_message)),
+            "expected message containing {expected_message:?}, got {errors:?}"
+        );
+    }
+}
+
+#[test]
 fn typed_value_runtime_rejects_shadowed_decode_policy_values() {
     let yaml = r#"
 version: 2

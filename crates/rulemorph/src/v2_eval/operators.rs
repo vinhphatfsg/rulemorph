@@ -18,6 +18,7 @@ use super::{
 use crate::error::{TransformError, TransformErrorKind};
 use crate::transform::eval_custom_op_step;
 use crate::v2_model::V2OpStep;
+use crate::v2_operator::{operator, operator_arg_range};
 
 /// Evaluate a v2 op step with a pipe value as implicit first argument
 pub fn eval_v2_op_step<'a>(
@@ -56,6 +57,8 @@ pub fn eval_v2_op_step<'a>(
     )? {
         return Ok(value);
     }
+
+    validate_v2_op_runtime_args(op_step, path)?;
 
     match op_step.op.as_str() {
         // String operations
@@ -101,4 +104,40 @@ pub fn eval_v2_op_step<'a>(
             eval_v2_op_with_v1_fallback(op_step, pipe_value, record, context, out, path, &step_ctx)
         }
     }
+}
+
+fn validate_v2_op_runtime_args(op_step: &V2OpStep, path: &str) -> Result<(), TransformError> {
+    if op_step.op == "range" {
+        return Ok(());
+    }
+    if operator(&op_step.op).is_none() {
+        return Ok(());
+    }
+
+    let count = op_step.args.len();
+    let (min, max) = operator_arg_range(&op_step.op);
+    if count < min {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            format!(
+                "{} requires at least {} argument(s), got {}",
+                op_step.op, min, count
+            ),
+        )
+        .with_path(path));
+    }
+    if let Some(max) = max
+        && count > max
+    {
+        return Err(TransformError::new(
+            TransformErrorKind::ExprError,
+            format!(
+                "{} accepts at most {} argument(s), got {}",
+                op_step.op, max, count
+            ),
+        )
+        .with_path(path));
+    }
+
+    Ok(())
 }

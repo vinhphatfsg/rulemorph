@@ -539,23 +539,23 @@ fn parse_mapping_source_ref(value: &str) -> Option<(CustomSourceNamespace, &str)
 }
 
 fn out_ref_resolves(tokens: &[PathToken], produced_targets: &HashSet<Vec<PathToken>>) -> bool {
-    let key_tokens: Vec<PathToken> = tokens
+    if !tokens
         .iter()
-        .filter_map(|token| match token {
-            PathToken::Key(key) => Some(PathToken::Key(key.clone())),
-            PathToken::Index(_) => None,
-        })
-        .collect();
-    if key_tokens.is_empty() {
+        .any(|token| matches!(token, PathToken::Key(_)))
+    {
         return false;
     }
 
-    for end in (1..=key_tokens.len()).rev() {
-        if produced_targets.contains(&key_tokens[..end].to_vec()) {
+    for produced in produced_targets {
+        if is_path_prefix(produced, tokens) || is_path_prefix(tokens, produced) {
             return true;
         }
     }
     false
+}
+
+fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
+    prefix.len() <= tokens.len() && prefix.iter().zip(tokens).all(|(left, right)| left == right)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -55,3 +55,39 @@ mappings:
             .any(|err| err.code == ErrorCode::InvalidRefNamespace)
     );
 }
+
+#[test]
+fn v2_json_pipe_input_ops_should_reject_extra_explicit_operands() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: flattened
+    expr: ["@input.nested", { object_flatten: "@input.extra" }]
+  - target: unflattened
+    expr: ["@input.flat", { object_unflatten: "@input.extra" }]
+  - target: from_entries_too_many
+    expr: ["@input.key", { from_entries: ["@input.value", "@input.extra"] }]
+"#,
+    )
+    .expect("rule parses");
+
+    let errors = validate_rule_file(&rule).expect_err("extra operands should fail validation");
+    let invalid_arg_paths = errors
+        .iter()
+        .filter(|err| err.code == ErrorCode::InvalidArgs)
+        .filter_map(|err| err.path.as_deref())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        invalid_arg_paths,
+        vec![
+            "mappings[0].expr[1]",
+            "mappings[1].expr[1]",
+            "mappings[2].expr[1]",
+        ]
+    );
+}

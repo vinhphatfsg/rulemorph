@@ -38,9 +38,12 @@ fn detect_rule_format(path: &PathBuf, override_format: Option<RulesFormatArg>) -
 }
 
 pub(crate) fn rule_base_dir(path: &PathBuf) -> PathBuf {
-    path.parent()
-        .unwrap_or_else(|| std::path::Path::new("."))
-        .to_path_buf()
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    if parent.as_os_str().is_empty() {
+        std::path::Path::new(".").to_path_buf()
+    } else {
+        parent.to_path_buf()
+    }
 }
 
 pub(crate) fn apply_format_override(rule: &mut RuleFile, format: Option<FormatOverride>) {

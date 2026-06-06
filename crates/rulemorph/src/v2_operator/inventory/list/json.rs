@@ -76,7 +76,7 @@ pub(super) const JSON_OPERATORS: &[V2OperatorMetadata] = &[
     ),
     op(
         "from_entries",
-        range(1, None),
+        range(0, Some(1)),
         V2OperatorTrace::EagerArgs,
         true,
         false,
@@ -84,7 +84,7 @@ pub(super) const JSON_OPERATORS: &[V2OperatorMetadata] = &[
     ),
     op(
         "object_flatten",
-        range(1, Some(1)),
+        range(0, Some(0)),
         V2OperatorTrace::EagerArgs,
         true,
         false,
@@ -92,7 +92,7 @@ pub(super) const JSON_OPERATORS: &[V2OperatorMetadata] = &[
     ),
     op(
         "object_unflatten",
-        range(1, Some(1)),
+        range(0, Some(0)),
         V2OperatorTrace::EagerArgs,
         true,
         false,

@@ -7,6 +7,7 @@ use crate::v2_validator::{V2ValidationCtx, validate_no_cyclic_dependencies};
 
 use super::ValidationCtx;
 use super::bool_expr::validate_when_expr;
+use super::branch_graph::collect_branch_contract;
 use super::expr::validate_expr;
 use super::mapping::validate_mappings_list;
 use super::scope::LocalScope;
@@ -160,7 +161,11 @@ pub(super) fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
                     );
                 }
             }
-            if !branch.return_ {
+            if let Some(contract) = collect_branch_contract(ctx, branch, &branch_path)
+                && !branch.return_
+            {
+                ctx.branch_out_ref_targets.extend(contract.possible_outputs);
+            } else if !branch.return_ && ctx.branch_graph.is_none() {
                 ctx.allow_any_out_ref = true;
             }
         }

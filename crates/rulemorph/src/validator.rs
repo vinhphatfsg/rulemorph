@@ -1,5 +1,6 @@
 use serde_json::Value as JsonValue;
 use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
 
 use crate::error::{ErrorCode, RuleError, ValidationResult};
 use crate::locator::YamlLocator;
@@ -8,6 +9,7 @@ use crate::path::parse_path;
 use crate::v2_validator::{V2Scope, V2ValidationCtx};
 
 mod bool_expr;
+mod branch_graph;
 mod codecs;
 mod expr;
 mod expr_args;
@@ -36,31 +38,77 @@ pub fn validate_rule_file_with_source(rule: &RuleFile, source: &str) -> Validati
     validate_rule_file_with_locator(rule, Some(&locator))
 }
 
+pub fn validate_rule_file_with_base_dir(rule: &RuleFile, base_dir: &Path) -> ValidationResult {
+    validate_rule_file_with_locator_and_base_dir(rule, None, Some(base_dir))
+}
+
+pub fn validate_rule_file_with_source_and_base_dir(
+    rule: &RuleFile,
+    source: &str,
+    base_dir: &Path,
+) -> ValidationResult {
+    let locator = YamlLocator::from_str(source);
+    validate_rule_file_with_locator_and_base_dir(rule, Some(&locator), Some(base_dir))
+}
+
 fn validate_rule_file_with_locator(
     rule: &RuleFile,
     locator: Option<&YamlLocator>,
+) -> ValidationResult {
+    validate_rule_file_with_locator_and_base_dir(rule, locator, None)
+}
+
+fn validate_rule_file_with_locator_and_base_dir(
+    rule: &RuleFile,
+    locator: Option<&YamlLocator>,
+    base_dir: Option<&Path>,
 ) -> ValidationResult {
     let mut ctx = ValidationCtx::new(
         locator,
         rule.defs.keys().cloned().collect(),
         rule.codecs.clone(),
+        base_dir,
     );
 
-    validate_version(rule, &mut ctx);
-    validate_input(rule, &mut ctx);
-    if let Err(errors) = crate::custom_ops::validate_defs(rule, locator) {
+    validate_rule_file_with_ctx(rule, &mut ctx);
+    ctx.finish()
+}
+
+fn validate_rule_file_with_ctx(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
+    validate_version(rule, ctx);
+    validate_input(rule, ctx);
+    if let Err(errors) = crate::custom_ops::validate_defs(rule, ctx.locator) {
         ctx.errors.extend(errors);
     }
-    validate_steps(rule, &mut ctx);
-    validate_record_when(rule, &mut ctx);
-    validate_mappings(rule, &mut ctx);
-    validate_finalize(rule, &mut ctx);
-    validate_codecs(rule, &mut ctx);
+    validate_steps(rule, ctx);
+    validate_record_when(rule, ctx);
+    validate_mappings(rule, ctx);
+    validate_finalize(rule, ctx);
+    validate_codecs(rule, ctx);
     if rule.version == 2 {
         ctx.errors
-            .extend(crate::custom_ops::validate_custom_call_sites(rule, locator));
+            .extend(crate::custom_ops::validate_custom_call_sites(
+                rule,
+                ctx.locator,
+            ));
     }
+}
 
+fn validate_branch_rule_file_with_source_and_graph(
+    rule: &RuleFile,
+    source: &str,
+    base_dir: &Path,
+    graph: &branch_graph::BranchGraphState,
+) -> ValidationResult {
+    let locator = YamlLocator::from_str(source);
+    let mut ctx = ValidationCtx::new(
+        Some(&locator),
+        rule.defs.keys().cloned().collect(),
+        rule.codecs.clone(),
+        Some(base_dir),
+    );
+    ctx.branch_graph = Some(graph.clone());
+    validate_rule_file_with_ctx(rule, &mut ctx);
     ctx.finish()
 }
 
@@ -142,6 +190,9 @@ struct ValidationCtx<'a> {
     allow_any_out_ref: bool,
     custom_op_names: HashSet<String>,
     codec_bindings: BTreeMap<String, JsonValue>,
+    base_dir: Option<std::path::PathBuf>,
+    branch_graph: Option<branch_graph::BranchGraphState>,
+    branch_out_ref_targets: HashSet<Vec<crate::path::PathToken>>,
 }
 
 impl<'a> ValidationCtx<'a> {
@@ -149,6 +200,7 @@ impl<'a> ValidationCtx<'a> {
         locator: Option<&'a YamlLocator>,
         custom_op_names: HashSet<String>,
         codec_bindings: BTreeMap<String, JsonValue>,
+        base_dir: Option<&Path>,
     ) -> Self {
         Self {
             locator,
@@ -156,6 +208,9 @@ impl<'a> ValidationCtx<'a> {
             allow_any_out_ref: false,
             custom_op_names,
             codec_bindings,
+            base_dir: base_dir.map(Path::to_path_buf),
+            branch_graph: base_dir.map(branch_graph::BranchGraphState::new),
+            branch_out_ref_targets: HashSet::new(),
         }
     }
 

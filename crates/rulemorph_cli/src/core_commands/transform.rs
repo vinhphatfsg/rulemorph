@@ -5,7 +5,7 @@ use clap::Args;
 use rulemorph::{
     InputData, NormalizationOptions, RuleFile,
     transform_input_with_warnings_with_base_dir_and_options,
-    transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source,
+    transform_stream_input_with_base_dir_and_options, validate_rule_file_with_source_and_base_dir,
 };
 
 use super::super::emit::{emit_transform_error, emit_transform_warnings, emit_validation_errors};
@@ -58,7 +58,8 @@ pub(crate) fn run_transform(args: TransformArgs) -> i32 {
     apply_format_override(&mut rule, args.format);
 
     if args.validate {
-        if let Err(errors) = validate_rule_file_with_source(&rule, &yaml) {
+        let base_dir = rule_base_dir(&args.rules);
+        if let Err(errors) = validate_rule_file_with_source_and_base_dir(&rule, &yaml, &base_dir) {
             emit_validation_errors(&errors, args.error_format);
             return 2;
         }

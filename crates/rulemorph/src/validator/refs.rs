@@ -36,7 +36,7 @@ pub(super) fn validate_source(
 
     if namespace == Namespace::Out
         && !ctx.allow_any_out_ref
-        && !out_ref_resolves(&tokens, produced_targets)
+        && !out_ref_resolves(&tokens, produced_targets, ctx)
     {
         ctx.push(
             ErrorCode::ForwardOutReference,
@@ -99,7 +99,7 @@ pub(super) fn validate_ref(
 
     match namespace {
         Namespace::Out => {
-            if !ctx.allow_any_out_ref && !out_ref_resolves(&tokens, produced_targets) {
+            if !ctx.allow_any_out_ref && !out_ref_resolves(&tokens, produced_targets, ctx) {
                 ctx.push(
                     ErrorCode::ForwardOutReference,
                     "out reference must point to previous mappings",
@@ -131,24 +131,36 @@ pub(super) fn validate_ref(
     }
 }
 
-fn out_ref_resolves(tokens: &[PathToken], produced_targets: &HashSet<Vec<PathToken>>) -> bool {
-    let key_tokens: Vec<PathToken> = tokens
+fn out_ref_resolves(
+    tokens: &[PathToken],
+    produced_targets: &HashSet<Vec<PathToken>>,
+    ctx: &ValidationCtx<'_>,
+) -> bool {
+    out_ref_resolves_in_targets(tokens, produced_targets)
+        || out_ref_resolves_in_targets(tokens, &ctx.branch_out_ref_targets)
+}
+
+pub(super) fn out_ref_resolves_in_targets(
+    tokens: &[PathToken],
+    produced_targets: &HashSet<Vec<PathToken>>,
+) -> bool {
+    if !tokens
         .iter()
-        .filter_map(|token| match token {
-            PathToken::Key(key) => Some(PathToken::Key(key.clone())),
-            PathToken::Index(_) => None,
-        })
-        .collect();
-    if key_tokens.is_empty() {
+        .any(|token| matches!(token, PathToken::Key(_)))
+    {
         return false;
     }
 
-    for end in (1..=key_tokens.len()).rev() {
-        if produced_targets.contains(&key_tokens[..end].to_vec()) {
+    for produced in produced_targets {
+        if is_path_prefix(produced, tokens) || is_path_prefix(tokens, produced) {
             return true;
         }
     }
     false
+}
+
+fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
+    prefix.len() <= tokens.len() && prefix.iter().zip(tokens).all(|(left, right)| left == right)
 }
 
 fn parse_ref(value: &str) -> Option<(Namespace, &str)> {
