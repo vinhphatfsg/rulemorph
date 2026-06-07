@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use serde_json::{Map, Value as JsonValue, json};
 
 use crate::error::{TransformError, TransformErrorKind};
@@ -18,9 +20,18 @@ pub(super) fn project_sections(
         .section_levels
         .clone()
         .unwrap_or_else(|| vec![1, 2, 3, 4, 5, 6]);
+    let block_index = BlockProjectionIndex::new(&document.blocks);
     let mut out = Vec::new();
     for section in &document.sections {
-        collect_projected_sections(section, document, &selected, markdown, options, &mut out)?;
+        collect_projected_sections(
+            section,
+            document,
+            &block_index,
+            &selected,
+            markdown,
+            options,
+            &mut out,
+        )?;
     }
     Ok(out)
 }
@@ -28,6 +39,7 @@ pub(super) fn project_sections(
 fn collect_projected_sections(
     section: &Section,
     document: &MarkdownDocument,
+    block_index: &BlockProjectionIndex<'_>,
     selected: &[u8],
     markdown: &MarkdownInput,
     options: &NormalizationOptions,
@@ -35,10 +47,23 @@ fn collect_projected_sections(
 ) -> Result<(), TransformError> {
     if selected.contains(&section.level) {
         enforce_records_limit(out.len().saturating_add(1), options)?;
-        out.push(project_section_record(section, document, markdown));
+        out.push(project_section_record(
+            section,
+            document,
+            block_index,
+            markdown,
+        ));
     }
     for child in &section.children {
-        collect_projected_sections(child, document, selected, markdown, options, out)?;
+        collect_projected_sections(
+            child,
+            document,
+            block_index,
+            selected,
+            markdown,
+            options,
+            out,
+        )?;
     }
     Ok(())
 }
@@ -46,6 +71,7 @@ fn collect_projected_sections(
 fn project_section_record(
     section: &Section,
     document: &MarkdownDocument,
+    block_index: &BlockProjectionIndex<'_>,
     markdown: &MarkdownInput,
 ) -> JsonValue {
     let mut record = Map::new();
@@ -71,7 +97,7 @@ fn project_section_record(
     if markdown.include.body_text {
         record.insert(
             "body_text".to_string(),
-            JsonValue::String(section_body_text(section, document, markdown)),
+            JsonValue::String(section_body_text(section, block_index, markdown)),
         );
     }
     record.insert(
@@ -88,7 +114,7 @@ fn project_section_record(
     if markdown.include.blocks {
         record.insert(
             "blocks".to_string(),
-            JsonValue::Array(section_blocks(section, document)),
+            JsonValue::Array(section_blocks(section, block_index)),
         );
     }
     record.insert(
@@ -223,7 +249,7 @@ fn table_keys(headers: &[String], markdown: &MarkdownInput) -> Result<Vec<String
             .map(|index| format!("col_{}", index))
             .collect()),
         MarkdownTableHeaderPolicy::Strict => {
-            let mut seen = std::collections::HashSet::new();
+            let mut seen = HashSet::new();
             let mut keys = Vec::with_capacity(headers.len());
             for header in headers {
                 let key = header.clone();
@@ -242,17 +268,17 @@ fn table_keys(headers: &[String], markdown: &MarkdownInput) -> Result<Vec<String
 
 fn section_body_text(
     section: &Section,
-    document: &MarkdownDocument,
+    block_index: &BlockProjectionIndex<'_>,
     markdown: &MarkdownInput,
 ) -> String {
     let mut out = String::new();
-    append_section_body_text(section, document, markdown, &mut out, false);
+    append_section_body_text(section, block_index, markdown, &mut out, false);
     normalize_text(&out, markdown)
 }
 
 fn append_section_body_text(
     section: &Section,
-    document: &MarkdownDocument,
+    block_index: &BlockProjectionIndex<'_>,
     markdown: &MarkdownInput,
     out: &mut String,
     include_heading: bool,
@@ -261,83 +287,100 @@ fn append_section_body_text(
         push_body_text(out, &section.heading, markdown);
     }
     for block_id in &section.content_block_ids {
-        if let Some(block) = block_by_id(document, block_id)
+        if let Some(block) = block_index.block_by_id(block_id)
             && let Some(text) = block.get("text").and_then(JsonValue::as_str)
         {
             push_body_text(out, text, markdown);
         }
     }
     for child in &section.children {
-        append_section_body_text(child, document, markdown, out, true);
+        append_section_body_text(child, block_index, markdown, out, true);
     }
 }
 
-fn section_blocks(section: &Section, document: &MarkdownDocument) -> Vec<JsonValue> {
-    let mut block_ids = std::collections::HashSet::<String>::new();
-    collect_section_block_ids(section, document, &mut block_ids);
-    document
-        .blocks
-        .iter()
-        .filter(|block| {
-            block
-                .get("id")
-                .and_then(JsonValue::as_str)
-                .is_some_and(|id| block_ids.contains(id))
-        })
+fn section_blocks(section: &Section, block_index: &BlockProjectionIndex<'_>) -> Vec<JsonValue> {
+    let mut block_indexes = HashSet::<usize>::new();
+    collect_section_block_indexes(section, block_index, &mut block_indexes);
+    let mut block_indexes = block_indexes.into_iter().collect::<Vec<_>>();
+    block_indexes.sort_unstable();
+    block_indexes
+        .into_iter()
+        .filter_map(|index| block_index.block_at(index))
         .cloned()
         .map(JsonValue::Object)
         .collect()
 }
 
-fn collect_section_block_ids(
+fn collect_section_block_indexes(
     section: &Section,
-    document: &MarkdownDocument,
-    block_ids: &mut std::collections::HashSet<String>,
+    block_index: &BlockProjectionIndex<'_>,
+    block_indexes: &mut HashSet<usize>,
 ) {
     if let Some(heading_block_id) = &section.heading_block_id {
-        collect_block_tree_ids(document, heading_block_id, block_ids);
+        collect_block_tree_indexes(block_index, heading_block_id, block_indexes);
     }
     for block_id in &section.content_block_ids {
-        collect_block_tree_ids(document, block_id, block_ids);
+        collect_block_tree_indexes(block_index, block_id, block_indexes);
     }
     for child in &section.children {
         if let Some(heading_block_id) = &child.heading_block_id {
-            collect_block_tree_ids(document, heading_block_id, block_ids);
+            collect_block_tree_indexes(block_index, heading_block_id, block_indexes);
         }
-        collect_section_block_ids(child, document, block_ids);
+        collect_section_block_indexes(child, block_index, block_indexes);
     }
 }
 
-fn collect_block_tree_ids(
-    document: &MarkdownDocument,
+fn collect_block_tree_indexes(
+    block_index: &BlockProjectionIndex<'_>,
     block_id: &str,
-    block_ids: &mut std::collections::HashSet<String>,
+    block_indexes: &mut HashSet<usize>,
 ) {
-    if !block_ids.insert(block_id.to_string()) {
+    let Some(index) = block_index.index_of(block_id) else {
         return;
-    }
-    let Some(block) = block_by_id(document, block_id) else {
+    };
+    if !block_indexes.insert(index) {
+        return;
+    };
+    let Some(block) = block_index.block_at(index) else {
         return;
     };
     for field in ["item_ids", "child_block_ids"] {
         if let Some(children) = block.get(field).and_then(JsonValue::as_array) {
             for child in children {
                 if let Some(child_id) = child.as_str() {
-                    collect_block_tree_ids(document, child_id, block_ids);
+                    collect_block_tree_indexes(block_index, child_id, block_indexes);
                 }
             }
         }
     }
 }
 
-fn block_by_id<'a>(
-    document: &'a MarkdownDocument,
-    block_id: &str,
-) -> Option<&'a Map<String, JsonValue>> {
-    document.blocks.iter().find(|block| {
-        block
-            .get("id")
-            .and_then(JsonValue::as_str)
-            .is_some_and(|id| id == block_id)
-    })
+struct BlockProjectionIndex<'a> {
+    blocks: &'a [Map<String, JsonValue>],
+    by_id: HashMap<&'a str, usize>,
+}
+
+impl<'a> BlockProjectionIndex<'a> {
+    fn new(blocks: &'a [Map<String, JsonValue>]) -> Self {
+        let mut by_id = HashMap::with_capacity(blocks.len());
+        for (index, block) in blocks.iter().enumerate() {
+            if let Some(id) = block.get("id").and_then(JsonValue::as_str) {
+                by_id.insert(id, index);
+            }
+        }
+        Self { blocks, by_id }
+    }
+
+    fn index_of(&self, block_id: &str) -> Option<usize> {
+        self.by_id.get(block_id).copied()
+    }
+
+    fn block_by_id(&self, block_id: &str) -> Option<&'a Map<String, JsonValue>> {
+        self.index_of(block_id)
+            .and_then(|index| self.block_at(index))
+    }
+
+    fn block_at(&self, index: usize) -> Option<&'a Map<String, JsonValue>> {
+        self.blocks.get(index)
+    }
 }
