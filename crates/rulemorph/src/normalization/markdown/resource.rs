@@ -17,21 +17,25 @@ pub(super) fn enforce_markdown_structural_preflight(
     for line in input.lines() {
         let trimmed = line.trim_start();
         if let Some(fence) = active_fence {
-            if is_closing_fence(trimmed, fence) {
+            if let Some(fence_line) = fence_line_content(line)
+                && is_closing_fence(fence_line, fence)
+            {
                 active_fence = None;
             }
             enforce_markdown_node_count(estimated_nodes, options)?;
             enforce_markdown_table_cell_count(estimated_table_cells, options)?;
             continue;
         }
-        if let Some(fence) = opening_fence(trimmed) {
-            estimated_nodes = estimated_nodes.saturating_add(1);
-            active_fence = Some(fence);
-            pending_table_header_cells = None;
-            in_table = false;
-            enforce_markdown_node_count(estimated_nodes, options)?;
-            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
-            continue;
+        if let Some(fence_line) = fence_line_content(line) {
+            if let Some(fence) = opening_fence(fence_line) {
+                estimated_nodes = estimated_nodes.saturating_add(1);
+                active_fence = Some(fence);
+                pending_table_header_cells = None;
+                in_table = false;
+                enforce_markdown_node_count(estimated_nodes, options)?;
+                enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+                continue;
+            }
         }
         estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
         estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(trimmed));
@@ -39,6 +43,9 @@ pub(super) fn enforce_markdown_structural_preflight(
             let pipe_cells = pipe_table_cell_count(trimmed);
             if is_table_separator_line(trimmed) {
                 if let Some(header_cells) = pending_table_header_cells.take() {
+                    estimated_nodes = estimated_nodes
+                        .saturating_add(1)
+                        .saturating_add(estimate_table_row_nodes(header_cells));
                     estimated_table_cells = estimated_table_cells.saturating_add(header_cells);
                     in_table = true;
                 } else {
@@ -46,6 +53,8 @@ pub(super) fn enforce_markdown_structural_preflight(
                 }
             } else if let Some(cells) = pipe_cells {
                 if in_table {
+                    estimated_nodes =
+                        estimated_nodes.saturating_add(estimate_table_row_nodes(cells));
                     estimated_table_cells = estimated_table_cells.saturating_add(cells);
                 } else {
                     pending_table_header_cells = Some(cells);
@@ -82,6 +91,15 @@ fn opening_fence(trimmed: &str) -> Option<Fence> {
         .take_while(|byte| **byte == marker)
         .count();
     (len >= 3).then_some(Fence { marker, len })
+}
+
+fn fence_line_content(line: &str) -> Option<&str> {
+    let spaces = line
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b' ')
+        .count();
+    (spaces <= 3).then_some(&line[spaces..])
 }
 
 fn is_closing_fence(trimmed: &str, fence: Fence) -> bool {
@@ -129,6 +147,8 @@ fn estimate_structural_nodes(trimmed: &str) -> usize {
         2
     } else if is_structural_line(trimmed) {
         1
+    } else if !trimmed.is_empty() {
+        2
     } else {
         0
     }
@@ -180,28 +200,85 @@ fn estimate_inline_html_nodes(line: &str) -> usize {
 }
 
 fn pipe_table_cell_count(line: &str) -> Option<usize> {
-    let trimmed = line.trim();
-    if !trimmed.contains('|') {
-        return None;
-    }
-    let inner = trimmed.trim_matches('|');
-    if inner.trim().is_empty() {
-        return None;
-    }
-    if !(inner.contains('|') || trimmed.starts_with('|') || trimmed.ends_with('|')) {
-        return None;
-    }
-    Some(inner.split('|').count())
+    split_table_cells(line).map(|cells| cells.len())
 }
 
 fn is_table_separator_line(line: &str) -> bool {
-    let Some(_) = pipe_table_cell_count(line) else {
+    let Some(cells) = split_table_cells(line) else {
         return false;
     };
-    line.trim()
-        .trim_matches('|')
-        .split('|')
-        .all(is_table_separator_cell)
+    cells.into_iter().all(is_table_separator_cell)
+}
+
+fn split_table_cells(line: &str) -> Option<Vec<&str>> {
+    let trimmed = line.trim();
+    let positions = table_pipe_positions(trimmed);
+    if positions.is_empty() {
+        return None;
+    }
+
+    let mut start = 0usize;
+    let mut end = trimmed.len();
+    let mut first_delimiter = 0usize;
+    let mut last_delimiter = positions.len();
+    if positions.first().copied() == Some(0) {
+        start = 1;
+        first_delimiter = 1;
+    }
+    if positions.last().copied() == trimmed.len().checked_sub(1) {
+        end -= 1;
+        last_delimiter -= 1;
+    }
+    if start > end || trimmed[start..end].trim().is_empty() {
+        return None;
+    }
+
+    let mut cells = Vec::new();
+    let mut cell_start = start;
+    for position in &positions[first_delimiter..last_delimiter] {
+        cells.push(&trimmed[cell_start..*position]);
+        cell_start = *position + 1;
+    }
+    cells.push(&trimmed[cell_start..end]);
+    Some(cells)
+}
+
+fn table_pipe_positions(line: &str) -> Vec<usize> {
+    let bytes = line.as_bytes();
+    let mut positions = Vec::new();
+    let mut active_code_span_len = None;
+    let mut index = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => {
+                index = (index + 2).min(bytes.len());
+            }
+            b'`' => {
+                let len = bytes[index..]
+                    .iter()
+                    .take_while(|byte| **byte == b'`')
+                    .count();
+                if active_code_span_len == Some(len) {
+                    active_code_span_len = None;
+                } else if active_code_span_len.is_none() {
+                    active_code_span_len = Some(len);
+                }
+                index += len;
+            }
+            b'|' if active_code_span_len.is_none() => {
+                positions.push(index);
+                index += 1;
+            }
+            _ => {
+                index += 1;
+            }
+        }
+    }
+    positions
+}
+
+fn estimate_table_row_nodes(cells: usize) -> usize {
+    1usize.saturating_add(cells.saturating_mul(2))
 }
 
 fn is_table_separator_cell(cell: &str) -> bool {
@@ -281,6 +358,21 @@ mod tests {
     }
 
     #[test]
+    fn preflight_rejects_content_after_four_space_indented_fence() {
+        let input = format!("    ```\n{}", "[x](https://example.com)\n".repeat(4));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("four-space indented fence marker should not hide later content");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
     fn preflight_rejects_list_heavy_input_before_parsing() {
         let input = "- x\n".repeat(4);
         let options = NormalizationOptions {
@@ -323,6 +415,18 @@ mod tests {
     }
 
     #[test]
+    fn preflight_ignores_escaped_and_code_span_pipes_in_table_cells() {
+        let input = "| Field | Value |\n| --- | --- |\n| a \\| b | `c | d` |";
+        let options = NormalizationOptions {
+            max_markdown_table_cells: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("escaped and code-span pipes should stay inside their table cells");
+    }
+
+    #[test]
     fn preflight_rejects_gfm_table_cells_before_parsing() {
         let input = "| Field | Type |\n| --- | --- |\n| id | string |";
         let options = NormalizationOptions {
@@ -335,5 +439,39 @@ mod tests {
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
         assert!(err.message.contains("max_markdown_table_cells"));
+    }
+
+    #[test]
+    fn preflight_counts_gfm_table_rows_toward_nodes() {
+        let input = format!(
+            "| Field | Type |\n| --- | --- |\n{}",
+            "| id | string |\n".repeat(4)
+        );
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            max_markdown_table_cells: 100,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("table rows should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_plain_paragraphs_toward_nodes() {
+        let input = "plain\n\n".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("plain paragraphs should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
     }
 }

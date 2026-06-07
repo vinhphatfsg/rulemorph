@@ -3,6 +3,7 @@ use serde_yaml::Value as YamlValue;
 
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::MarkdownFrontmatter;
+use crate::normalization::yaml::aliases::enforce_yaml_alias_limit;
 use crate::serde_guard::parse_yaml_value_strict_with_limits;
 
 use super::super::NormalizationOptions;
@@ -122,6 +123,7 @@ fn parse_yaml_frontmatter(
     input: &str,
     options: &NormalizationOptions,
 ) -> Result<Map<String, JsonValue>, TransformError> {
+    enforce_yaml_alias_limit(input, options)?;
     let value = parse_yaml_value_strict_with_limits(
         input,
         options.max_depth,

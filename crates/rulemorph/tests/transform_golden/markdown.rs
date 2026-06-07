@@ -407,6 +407,36 @@ mappings:
 }
 
 #[test]
+fn markdown_yaml_frontmatter_obeys_alias_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "frontmatter"
+    source: "input.frontmatter"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_yaml_aliases: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text("---\nbase: &base value\none: *base\ntwo: *base\n---\n# Guide"),
+        None,
+        &options,
+    )
+    .expect_err("yaml frontmatter should obey alias limits");
+
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("max_yaml_aliases"));
+}
+
+#[test]
 fn markdown_frontmatter_accepts_crlf_delimiters_in_auto_mode() {
     let rule = parse_rule_file(
         r#"
