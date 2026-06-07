@@ -767,14 +767,14 @@ mappings:
 | `section_levels` | 任意 | `[1,2,3,4,5,6]` | `records=sections` で record 化する heading level。`records=document` は全 heading level を保持します。 |
 | `table_header_policy` | 任意 | `strict` | `strict` / `index`。`strict` は空・重複 header を拒否し、`index` は `col_0`、`col_1` を使います。 |
 | `include.body_text` | 任意 | `true` | plain text を `body_text` に入れます。 |
-| `include.body_markdown` | 任意 | `false` | source span が安定して取れる場合、原文 Markdown slice を入れます。 |
+| `include.body_markdown` | 任意 | `false` | 現在は `true` を指定すると error です。 |
 | `include.blocks` | 任意 | `true` | 文書順の block list を `blocks[]` に入れます。 |
 | `include.links` | 任意 | `true` | 抽出済み link index を `links[]` に入れます。 |
 | `include.images` | 任意 | `true` | 抽出済み image index を `images[]` に入れます。 |
 | `include.code_blocks` | 任意 | `true` | 抽出済み code block index を `code_blocks[]` に入れます。 |
 | `include.tables` | 任意 | `true` | 抽出済み table index を `tables[]` に入れます。 |
 | `include.raw_html` | 任意 | `true` | raw HTML block / inline HTML を文字列として保持します。 |
-| `include.sourcepos` | 任意 | `false` | parser adapter が安定提供できる場合、source position を入れます。 |
+| `include.sourcepos` | 任意 | `false` | 現在は `true` を指定すると error です。 |
 | `trim_text` | 任意 | `true` | 抽出 text の前後空白を取り除きます。 |
 | `collapse_whitespace` | 任意 | `true` | 抽出 text の連続空白を 1 space に畳みます。 |
 
@@ -789,7 +789,7 @@ mappings:
     "body_text": "Guide Install Rulemorph.",
     "sections": [
       {
-        "id": "s1",
+        "id": "s1-1",
         "level": 1,
         "heading": "Guide",
         "heading_block_id": "b1",
@@ -801,13 +801,13 @@ mappings:
       }
     ],
     "section_index": [
-      { "id": "s1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
+      { "id": "s1-1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
     ],
     "blocks": [
       {
         "id": "b1",
         "type": "heading",
-        "section_id": "s1",
+        "section_id": "s1-1",
         "parent_block_id": null,
         "level": 1,
         "text": "Guide",
@@ -816,7 +816,7 @@ mappings:
       {
         "id": "b2",
         "type": "paragraph",
-        "section_id": "s1",
+        "section_id": "s1-1",
         "parent_block_id": null,
         "text": "Install Rulemorph.",
         "inlines": [{ "type": "text", "text": "Install Rulemorph." }]

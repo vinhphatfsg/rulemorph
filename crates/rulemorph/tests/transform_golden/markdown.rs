@@ -125,7 +125,7 @@ mappings:
             "blocks": [{
                 "id": "b1",
                 "type": "heading",
-                "section_id": "s1",
+                "section_id": "s1-1",
                 "parent_block_id": null,
                 "level": 1,
                 "text": "Guide",
@@ -133,7 +133,7 @@ mappings:
             }, {
                 "id": "b2",
                 "type": "paragraph",
-                "section_id": "s1",
+                "section_id": "s1-1",
                 "parent_block_id": null,
                 "text": "raw",
                 "inlines": [{ "type": "text", "text": "raw" }]
@@ -164,6 +164,30 @@ mappings:
         None,
     )
     .expect_err("duplicate strict headers should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("table headers"));
+}
+
+#[test]
+fn markdown_blank_table_headers_fail_in_strict_mode_even_when_text_is_not_trimmed() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+    table_header_policy: strict
+    trim_text: false
+    collapse_whitespace: false
+mappings:
+  - target: "object"
+    source: "input.object"
+"#,
+    )
+    .expect("parse markdown rule");
+    let err = transform(&rule, "| `   ` | Type |\n| --- | --- |\n| id | string |", None)
+        .expect_err("blank strict headers should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
     assert!(err.message.contains("table headers"));
 }
@@ -216,4 +240,186 @@ mappings:
         .expect_err("array frontmatter should fail");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
     assert!(err.message.contains("frontmatter must be an object"));
+}
+
+#[test]
+fn markdown_frontmatter_accepts_crlf_delimiters_in_auto_mode() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "owner"
+    source: "input.frontmatter.owner"
+  - target: "title"
+    source: "input.title"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "---\r\nowner: docs\r\n---\r\n# Guide", None)
+        .expect("crlf frontmatter should parse");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "owner": "docs", "title": "Guide" }])
+    );
+}
+
+#[test]
+fn markdown_frontmatter_accepts_eof_closing_delimiter() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    frontmatter: toml
+mappings:
+  - target: "owner"
+    source: "input.frontmatter.owner"
+  - target: "title"
+    source: "input.title"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "+++\nowner = \"docs\"\ntitle = \"Guide\"\n+++", None)
+        .expect("eof frontmatter closing delimiter should parse");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "owner": "docs", "title": "Guide" }])
+    );
+}
+
+#[test]
+fn markdown_table_rows_projection_ignores_document_table_output_flag() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+    include:
+      tables: false
+mappings:
+  - target: "field"
+    source: "input.object.Field"
+  - target: "type"
+    source: "input.object.Type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(
+        &rule,
+        "| Field | Type |\n| --- | --- |\n| id | string |",
+        None,
+    )
+    .expect("table_rows projection should not depend on include.tables");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "field": "id", "type": "string" }])
+    );
+}
+
+#[test]
+fn markdown_strict_table_keys_match_headers_when_text_is_not_trimmed() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+    table_header_policy: strict
+    trim_text: false
+    collapse_whitespace: false
+mappings:
+  - target: "headers"
+    source: "input.headers"
+  - target: "object"
+    source: "input.object"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(
+        &rule,
+        "| `  Field  ` | Type |\n| --- | --- |\n| id | string |",
+        None,
+    )
+        .expect("strict header keys should match headers");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "headers": [" Field ", "Type"],
+            "object": {
+                " Field ": "id",
+                "Type": "string"
+            }
+        }])
+    );
+}
+
+#[test]
+fn markdown_section_ids_include_heading_levels_to_avoid_collisions() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "section_index"
+    source: "input.section_index"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(
+        &rule,
+        "## First\n\n# Second\n\n# Third\n\n### Deep\n\n## Shallow",
+        None,
+    )
+    .expect("transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "section_index": [
+                { "id": "s2-1", "level": 2, "heading": "First", "path": ["First"], "ordinal_path": [1] },
+                { "id": "s1-1", "level": 1, "heading": "Second", "path": ["Second"], "ordinal_path": [1] },
+                { "id": "s1-2", "level": 1, "heading": "Third", "path": ["Third"], "ordinal_path": [2] },
+                { "id": "s1-2.s3-1", "level": 3, "heading": "Deep", "path": ["Third", "Deep"], "ordinal_path": [2, 1] },
+                { "id": "s1-2.s2-1", "level": 2, "heading": "Shallow", "path": ["Third", "Shallow"], "ordinal_path": [2, 1] }
+            ]
+        }])
+    );
+}
+
+#[test]
+fn markdown_toml_frontmatter_obeys_text_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    frontmatter: toml
+mappings:
+  - target: "frontmatter"
+    source: "input.frontmatter"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 4,
+        ..NormalizationOptions::default()
+    };
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text("+++\nowner = \"docs-team\"\n+++\n# Guide"),
+        None,
+        &options,
+    )
+    .expect_err("toml frontmatter should obey text limits");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("max_text_bytes"));
 }

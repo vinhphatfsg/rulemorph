@@ -665,16 +665,14 @@ impl<'a> DocumentBuilder<'a> {
         block.insert("header_row".to_string(), header_row.clone());
         block.insert("rows".to_string(), JsonValue::Array(rows.clone()));
         self.push_block(block, top_level_content);
-        if self.markdown.include.tables {
-            self.tables.push(json!({
-                "block_id": id,
-                "section_id": section_id,
-                "table_index": table_index,
-                "alignments": alignments,
-                "header_row": header_row,
-                "rows": rows,
-            }));
-        }
+        self.tables.push(json!({
+            "block_id": id,
+            "section_id": section_id,
+            "table_index": table_index,
+            "alignments": alignments,
+            "header_row": header_row,
+            "rows": rows,
+        }));
         id
     }
 
@@ -935,14 +933,7 @@ impl<'a> DocumentBuilder<'a> {
             .map(|item| item.ordinal)
             .collect::<Vec<_>>();
         ordinal_path.push(self.counters[level_index]);
-        let id = format!(
-            "s{}",
-            ordinal_path
-                .iter()
-                .map(usize::to_string)
-                .collect::<Vec<_>>()
-                .join(".")
-        );
+        let id = self.section_id(level, self.counters[level_index]);
         let parent_id = self.section_stack.last().map(|item| item.id.clone());
         if let Some(parent_id) = &parent_id
             && let Some(parent) = self.section_mut(parent_id)
@@ -971,6 +962,16 @@ impl<'a> DocumentBuilder<'a> {
         });
         self.active_section_id = Some(id.clone());
         id
+    }
+
+    fn section_id(&self, level: u8, ordinal: usize) -> String {
+        let mut parts = self
+            .section_stack
+            .iter()
+            .map(|item| format!("s{}-{}", item.level, item.ordinal))
+            .collect::<Vec<_>>();
+        parts.push(format!("s{}-{}", level, ordinal));
+        parts.join(".")
     }
 
     fn push_content_block_id(&mut self, block_id: &str) {

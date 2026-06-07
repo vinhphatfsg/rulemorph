@@ -163,7 +163,7 @@ struct MarkdownSection {
 
 `content_block_ids` はその section の直下にある本文 block を指す。見出し block は `heading_block_id`、子見出し以下の block は `children` から辿る。
 
-`id` は document 内で安定した deterministic id とする。初期案は ordinal path ベースで、`s1`, `s1.2`, `s1.2.1` のように生成する。heading text から slug を作ると duplicate heading や unicode normalization の扱いが増えるため、`id` には slug を使わない。
+`id` は document 内で安定した deterministic id とする。heading level と sibling ordinal を組み合わせ、`s1-1`, `s1-1.s2-2`, `s1-1.s2-2.s3-1` のように生成する。heading text から slug を作ると duplicate heading や unicode normalization の扱いが増えるため、`id` には slug を使わない。heading level を含めることで、`## A` のあとに `# B` が出るような level skip 文書でも id が衝突しない。
 
 `title` は最初の level 1 heading を優先する。存在しない場合は frontmatter の `title` が string ならそれを使う。どちらもなければ empty string とする。
 
@@ -173,17 +173,17 @@ struct MarkdownSection {
 
 ```json
 {
-  "id": "s1.1",
+  "id": "s1-1.s2-1",
   "level": 2,
   "heading": "Install",
   "heading_block_id": "b3",
   "path": ["Guide", "Install"],
   "ordinal_path": [1, 1],
   "content_block_ids": ["b4", "b5"],
-  "child_ids": ["s1.1.1"],
+  "child_ids": ["s1-1.s2-1.s3-1"],
   "children": [
     {
-      "id": "s1.1.1",
+      "id": "s1-1.s2-1.s3-1",
       "level": 3,
       "heading": "macOS",
       "heading_block_id": "b6",
@@ -201,8 +201,8 @@ struct MarkdownSection {
 
 ```json
 [
-  { "id": "s1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] },
-  { "id": "s1.1", "level": 2, "heading": "Install", "path": ["Guide", "Install"], "ordinal_path": [1, 1] }
+  { "id": "s1-1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] },
+  { "id": "s1-1.s2-1", "level": 2, "heading": "Install", "path": ["Guide", "Install"], "ordinal_path": [1, 1] }
 ]
 ```
 
@@ -260,7 +260,7 @@ Ordered list は `ordered: true`、`start`、`list_item.ordinal` を保持する
   {
     "id": "b1",
     "type": "list",
-    "section_id": "s1",
+    "section_id": "s1-1",
     "parent_block_id": null,
     "text": "Install Rust Add rulemorph Enable markdown Run tests",
     "ordered": true,
@@ -271,7 +271,7 @@ Ordered list は `ordered: true`、`start`、`list_item.ordinal` を保持する
   {
     "id": "b2",
     "type": "list_item",
-    "section_id": "s1",
+    "section_id": "s1-1",
     "parent_block_id": "b1",
     "text": "Install Rust",
     "ordinal": 1,
@@ -281,7 +281,7 @@ Ordered list は `ordered: true`、`start`、`list_item.ordinal` を保持する
   {
     "id": "b3",
     "type": "paragraph",
-    "section_id": "s1",
+    "section_id": "s1-1",
     "parent_block_id": "b2",
     "text": "Install Rust",
     "inlines": [{ "type": "text", "text": "Install Rust" }]
@@ -316,7 +316,7 @@ Table block は Markdown table の構造を保持する。`table_rows` projectio
 {
   "id": "b10",
   "type": "table",
-  "section_id": "s2",
+  "section_id": "s1-1.s2-1",
   "table_index": 0,
   "alignments": ["left", "center", "right"],
   "header_row": {
@@ -373,7 +373,7 @@ Table cell values are strings. 自動型推論はしない。
     "title": "Guide",
     "frontmatter": {}
   },
-  "id": "s1.1",
+  "id": "s1-1.s2-1",
   "level": 2,
   "heading": "Install",
   "path": ["Guide", "Install"],
@@ -399,7 +399,7 @@ Markdown table の各 data row を 1 record にする。table row record は tab
     "frontmatter": {}
   },
   "section": {
-    "id": "s2",
+    "id": "s1-1.s2-1",
     "heading": "Parameters",
     "path": ["API", "Parameters"]
   },

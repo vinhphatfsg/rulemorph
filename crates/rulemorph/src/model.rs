@@ -6,12 +6,15 @@ use crate::custom_ops::{MAX_TYPE_DEPTH, MAX_TYPE_FIELDS};
 
 mod input;
 
-#[allow(unused_imports)]
+#[cfg_attr(
+    not(all(feature = "html", feature = "excel", feature = "markdown")),
+    allow(unused_imports)
+)]
 pub use self::input::{
     Column, ExcelCellErrorPolicy, ExcelColumn, ExcelDatePolicy, ExcelEmptyCellPolicy,
     ExcelFormulaPolicy, ExcelInput, ExcelSheetRef, HtmlInput, HtmlValueKind, InputFormat,
-    InputSpec, MarkdownFlavor, MarkdownFrontmatter, MarkdownInclude, MarkdownInput,
-    MarkdownRecordsMode, MarkdownTableHeaderPolicy, XmlInput, XmlNamespacePolicy,
+    InputSpec, MarkdownFlavor, MarkdownFrontmatter, MarkdownInput, MarkdownRecordsMode,
+    MarkdownTableHeaderPolicy, XmlInput, XmlNamespacePolicy,
 };
 
 #[derive(Debug, Deserialize, Clone)]

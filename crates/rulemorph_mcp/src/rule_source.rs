@@ -60,12 +60,12 @@ pub(crate) fn validate_transform_format(value: Option<&str>) -> Result<(), CallE
     };
     if matches!(
         value.to_ascii_lowercase().as_str(),
-        "csv" | "json" | "yaml" | "toml" | "xml" | "html" | "excel"
+        "csv" | "json" | "yaml" | "toml" | "xml" | "html" | "excel" | "markdown"
     ) {
         return Ok(());
     }
     Err(CallError::InvalidParams(
-        "format must be csv, json, yaml, toml, xml, html, or excel".to_string(),
+        "format must be csv, json, yaml, toml, xml, html, excel, or markdown".to_string(),
     ))
 }
 
@@ -87,4 +87,15 @@ pub(crate) fn rule_has_file_branch(rule: &RuleFile) -> bool {
     rule.steps
         .as_ref()
         .is_some_and(|steps| steps.iter().any(|step| step.branch.is_some()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_transform_format_accepts_markdown() {
+        assert!(validate_transform_format(Some("markdown")).is_ok());
+        assert!(validate_transform_format(Some("MARKDOWN")).is_ok());
+    }
 }

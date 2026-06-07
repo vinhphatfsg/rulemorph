@@ -10,11 +10,28 @@ pub(super) fn enforce_markdown_structural_preflight(
 ) -> Result<(), TransformError> {
     let mut estimated_nodes = 1usize;
     let mut estimated_table_cells = 0usize;
+    let mut active_fence = None;
     for line in input.lines() {
         let trimmed = line.trim_start();
+        if let Some(fence) = active_fence {
+            if is_closing_fence(trimmed, fence) {
+                active_fence = None;
+            }
+            enforce_markdown_node_count(estimated_nodes, options)?;
+            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+            continue;
+        }
+        if let Some(fence) = opening_fence(trimmed) {
+            estimated_nodes = estimated_nodes.saturating_add(1);
+            active_fence = Some(fence);
+            enforce_markdown_node_count(estimated_nodes, options)?;
+            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+            continue;
+        }
         if is_structural_line(trimmed) {
             estimated_nodes = estimated_nodes.saturating_add(1);
         }
+        estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(trimmed));
         if trimmed.contains('|') {
             estimated_table_cells = estimated_table_cells
                 .saturating_add(trimmed.matches('|').count().saturating_sub(1));
@@ -23,6 +40,35 @@ pub(super) fn enforce_markdown_structural_preflight(
         enforce_markdown_table_cell_count(estimated_table_cells, options)?;
     }
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct Fence {
+    marker: u8,
+    len: usize,
+}
+
+fn opening_fence(trimmed: &str) -> Option<Fence> {
+    let marker = match trimmed.as_bytes().first()? {
+        b'`' => b'`',
+        b'~' => b'~',
+        _ => return None,
+    };
+    let len = trimmed
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == marker)
+        .count();
+    (len >= 3).then_some(Fence { marker, len })
+}
+
+fn is_closing_fence(trimmed: &str, fence: Fence) -> bool {
+    let Some(candidate) = opening_fence(trimmed) else {
+        return false;
+    };
+    candidate.marker == fence.marker
+        && candidate.len >= fence.len
+        && trimmed[candidate.len..].trim().is_empty()
 }
 
 pub(super) fn count_parsed_markdown_nodes(
@@ -55,6 +101,24 @@ fn is_structural_line(trimmed: &str) -> bool {
         || trimmed.contains('|')
 }
 
+fn estimate_inline_nodes(line: &str) -> usize {
+    line.matches("](")
+        .count()
+        .saturating_mul(2)
+        .saturating_add(line.matches("![").count())
+        .saturating_add(line.matches("**").count() / 2)
+        .saturating_add(line.matches("__").count() / 2)
+        .saturating_add(line.matches('`').count() / 2)
+        .saturating_add(estimate_inline_html_nodes(line))
+}
+
+fn estimate_inline_html_nodes(line: &str) -> usize {
+    line.as_bytes()
+        .windows(2)
+        .filter(|window| window[0] == b'<' && window[1].is_ascii_alphabetic())
+        .count()
+}
+
 fn enforce_markdown_node_count(
     count: usize,
     options: &NormalizationOptions,
@@ -79,4 +143,36 @@ fn enforce_markdown_table_cell_count(
 
 fn invalid(message: impl Into<String>) -> TransformError {
     TransformError::new(TransformErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preflight_rejects_inline_heavy_input_before_parsing() {
+        let input = "[x](https://example.com)".repeat(16);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, &options)
+            .expect_err("inline-heavy input should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_skips_inline_estimate_inside_fenced_code() {
+        let input = format!("```\n{}\n```", "[x](https://example.com)".repeat(16));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, &options)
+            .expect("link-like code text should not count as inline nodes");
+    }
 }

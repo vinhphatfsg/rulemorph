@@ -763,14 +763,14 @@ mappings:
 | `section_levels` | Optional | `[1,2,3,4,5,6]` | Heading levels emitted by `records=sections`. `records=document` keeps every heading level. |
 | `table_header_policy` | Optional | `strict` | `strict` / `index`. `strict` rejects empty or duplicate headers; `index` uses `col_0`, `col_1`. |
 | `include.body_text` | Optional | `true` | Emits plain text as `body_text`. |
-| `include.body_markdown` | Optional | `false` | Emits original Markdown slices when stable source spans are available. |
+| `include.body_markdown` | Optional | `false` | Setting this to `true` is currently an error. |
 | `include.blocks` | Optional | `true` | Emits the document-order block list as `blocks[]`. |
 | `include.links` | Optional | `true` | Emits the extracted link index as `links[]`. |
 | `include.images` | Optional | `true` | Emits the extracted image index as `images[]`. |
 | `include.code_blocks` | Optional | `true` | Emits the extracted code block index as `code_blocks[]`. |
 | `include.tables` | Optional | `true` | Emits the extracted table index as `tables[]`. |
 | `include.raw_html` | Optional | `true` | Preserves raw HTML blocks and inline HTML as strings. |
-| `include.sourcepos` | Optional | `false` | Emits source positions when the parser adapter can provide them stably. |
+| `include.sourcepos` | Optional | `false` | Setting this to `true` is currently an error. |
 | `trim_text` | Optional | `true` | Trims extracted text. |
 | `collapse_whitespace` | Optional | `true` | Collapses consecutive whitespace in extracted text to one space. |
 
@@ -785,7 +785,7 @@ mappings:
     "body_text": "Guide Install Rulemorph.",
     "sections": [
       {
-        "id": "s1",
+        "id": "s1-1",
         "level": 1,
         "heading": "Guide",
         "heading_block_id": "b1",
@@ -797,13 +797,13 @@ mappings:
       }
     ],
     "section_index": [
-      { "id": "s1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
+      { "id": "s1-1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
     ],
     "blocks": [
       {
         "id": "b1",
         "type": "heading",
-        "section_id": "s1",
+        "section_id": "s1-1",
         "parent_block_id": null,
         "level": 1,
         "text": "Guide",
@@ -812,7 +812,7 @@ mappings:
       {
         "id": "b2",
         "type": "paragraph",
-        "section_id": "s1",
+        "section_id": "s1-1",
         "parent_block_id": null,
         "text": "Install Rulemorph.",
         "inlines": [{ "type": "text", "text": "Install Rulemorph." }]

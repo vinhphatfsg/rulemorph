@@ -224,8 +224,8 @@ fn table_keys(headers: &[String], markdown: &MarkdownInput) -> Result<Vec<String
             let mut seen = std::collections::HashSet::new();
             let mut keys = Vec::with_capacity(headers.len());
             for header in headers {
-                let key = header.trim().to_string();
-                if key.is_empty() || !seen.insert(key.clone()) {
+                let key = header.clone();
+                if key.trim().is_empty() || !seen.insert(key.clone()) {
                     return Err(TransformError::new(
                         TransformErrorKind::InvalidInput,
                         "markdown table headers must be non-empty and unique when table_header_policy=strict",

@@ -29,9 +29,9 @@ pub(super) fn split_frontmatter<'a>(
             split_delimited_frontmatter(input, "+++", parse_toml_frontmatter, options)
         }
         MarkdownFrontmatter::Auto => {
-            if input.starts_with("---\n") {
+            if has_opening_delimiter(input, "---") {
                 split_delimited_frontmatter(input, "---", parse_yaml_frontmatter, options)
-            } else if input.starts_with("+++\n") {
+            } else if has_opening_delimiter(input, "+++") {
                 split_delimited_frontmatter(input, "+++", parse_toml_frontmatter, options)
             } else {
                 Ok(SplitMarkdown {
@@ -49,24 +49,56 @@ fn split_delimited_frontmatter<'a>(
     parser: fn(&str, &NormalizationOptions) -> Result<Map<String, JsonValue>, TransformError>,
     options: &NormalizationOptions,
 ) -> Result<SplitMarkdown<'a>, TransformError> {
-    let prefix = format!("{}\n", delimiter);
-    if !input.starts_with(&prefix) {
+    let Some(rest) = strip_opening_delimiter(input, delimiter) else {
         return Ok(SplitMarkdown {
             frontmatter: Map::new(),
             body: input,
         });
-    }
-    let rest = &input[prefix.len()..];
-    let end_marker = format!("\n{}\n", delimiter);
-    let Some(end) = rest.find(&end_marker) else {
+    };
+    let Some((frontmatter_end, body_start)) = find_closing_delimiter(rest, delimiter) else {
         return Err(TransformError::new(
             TransformErrorKind::InvalidInput,
             "markdown frontmatter closing delimiter is missing",
         ));
     };
-    let frontmatter = parser(&rest[..end], options)?;
-    let body = &rest[end + end_marker.len()..];
+    let frontmatter = parser(&rest[..frontmatter_end], options)?;
+    let body = &rest[body_start..];
     Ok(SplitMarkdown { frontmatter, body })
+}
+
+fn has_opening_delimiter(input: &str, delimiter: &str) -> bool {
+    strip_opening_delimiter(input, delimiter).is_some()
+}
+
+fn strip_opening_delimiter<'a>(input: &'a str, delimiter: &str) -> Option<&'a str> {
+    input
+        .strip_prefix(delimiter)
+        .and_then(strip_required_line_ending)
+}
+
+fn strip_required_line_ending(input: &str) -> Option<&str> {
+    input
+        .strip_prefix("\r\n")
+        .or_else(|| input.strip_prefix('\n'))
+}
+
+fn find_closing_delimiter(input: &str, delimiter: &str) -> Option<(usize, usize)> {
+    let mut line_start = 0usize;
+    loop {
+        let tail = &input[line_start..];
+        let Some(newline_offset) = tail.find('\n') else {
+            return delimiter_line_matches(tail, delimiter).then_some((line_start, input.len()));
+        };
+        let line_end = line_start + newline_offset;
+        if delimiter_line_matches(&input[line_start..line_end], delimiter) {
+            return Some((line_start, line_end + 1));
+        }
+        line_start = line_end + 1;
+    }
+}
+
+fn delimiter_line_matches(line: &str, delimiter: &str) -> bool {
+    line.strip_suffix('\r').unwrap_or(line) == delimiter
 }
 
 fn parse_yaml_frontmatter(
@@ -93,18 +125,12 @@ fn parse_yaml_frontmatter(
 
 fn parse_toml_frontmatter(
     input: &str,
-    _options: &NormalizationOptions,
+    options: &NormalizationOptions,
 ) -> Result<Map<String, JsonValue>, TransformError> {
-    let value: ::toml::Value = ::toml::from_str(input).map_err(|err| {
+    let value = super::super::toml::parse_toml_json_with_limits(input, options).map_err(|err| {
         TransformError::new(
             TransformErrorKind::InvalidInput,
             format!("failed to parse TOML frontmatter: {}", err),
-        )
-    })?;
-    let value = serde_json::to_value(value).map_err(|err| {
-        TransformError::new(
-            TransformErrorKind::InvalidInput,
-            format!("failed to convert TOML frontmatter: {}", err),
         )
     })?;
     object_frontmatter(value)
@@ -207,4 +233,29 @@ fn yaml_frontmatter_number_to_json(
         TransformErrorKind::InvalidInput,
         "YAML frontmatter number is not JSON-compatible",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toml_frontmatter_split_applies_text_limits() {
+        let options = NormalizationOptions {
+            max_text_bytes: 4,
+            ..NormalizationOptions::default()
+        };
+
+        let err = match split_frontmatter(
+            MarkdownFrontmatter::Toml,
+            "+++\nowner = \"docs-team\"\n+++\n# Guide",
+            &options,
+        ) {
+            Ok(_) => panic!("toml frontmatter should enforce text limits during conversion"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_text_bytes"));
+    }
 }
