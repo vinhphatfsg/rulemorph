@@ -36,7 +36,7 @@ pub fn normalize_markdown_records(
     let parser_options = parser_options(markdown);
     let root = parse_document(&arena, split.body, &parser_options);
     resource::count_parsed_markdown_nodes(root, options)?;
-    let mut builder = DocumentBuilder::new(markdown, split.frontmatter);
+    let mut builder = DocumentBuilder::new(markdown, options, split.frontmatter);
     builder.collect(root)?;
     let document = builder.finish();
 
@@ -114,6 +114,7 @@ struct StackSection {
 
 struct DocumentBuilder<'a> {
     markdown: &'a MarkdownInput,
+    options: &'a NormalizationOptions,
     frontmatter: Map<String, JsonValue>,
     title: Option<String>,
     body_text: String,
@@ -183,6 +184,10 @@ fn validate_markdown_runtime_options(markdown: &MarkdownInput) -> Result<(), Tra
     Ok(())
 }
 
+fn invalid(message: impl Into<String>) -> TransformError {
+    TransformError::new(TransformErrorKind::InvalidInput, message)
+}
+
 fn document_record(document: MarkdownDocument, markdown: &MarkdownInput) -> JsonValue {
     let mut record = Map::new();
     record.insert(
@@ -242,9 +247,14 @@ fn document_record(document: MarkdownDocument, markdown: &MarkdownInput) -> Json
 }
 
 impl<'a> DocumentBuilder<'a> {
-    fn new(markdown: &'a MarkdownInput, frontmatter: Map<String, JsonValue>) -> Self {
+    fn new(
+        markdown: &'a MarkdownInput,
+        options: &'a NormalizationOptions,
+        frontmatter: Map<String, JsonValue>,
+    ) -> Self {
         Self {
             markdown,
+            options,
             frontmatter,
             title: None,
             body_text: String::new(),
@@ -350,39 +360,28 @@ impl<'a> DocumentBuilder<'a> {
         };
 
         match kind {
-            BlockKind::Heading(level) => Ok(Some(self.add_heading(
-                node,
-                level,
-                parent_block_id,
-                top_level_content,
-            ))),
-            BlockKind::Paragraph => Ok(Some(self.add_paragraph(
-                node,
-                parent_block_id,
-                top_level_content,
-            ))),
+            BlockKind::Heading(level) => self
+                .add_heading(node, level, parent_block_id, top_level_content)
+                .map(Some),
+            BlockKind::Paragraph => self
+                .add_paragraph(node, parent_block_id, top_level_content)
+                .map(Some),
             BlockKind::List => self.add_list(node, parent_block_id, top_level_content),
             BlockKind::ListItem => self.add_list_item(node, parent_block_id, None, None),
             BlockKind::TaskItem(symbol) => {
                 self.add_list_item(node, parent_block_id, None, Some(symbol.is_some()))
             }
             BlockKind::BlockQuote => self.add_blockquote(node, parent_block_id, top_level_content),
-            BlockKind::CodeBlock => Ok(Some(self.add_code_block(
-                node,
-                parent_block_id,
-                top_level_content,
-            ))),
-            BlockKind::HtmlBlock => {
-                Ok(self.add_html_block(node, parent_block_id, top_level_content))
-            }
+            BlockKind::CodeBlock => self
+                .add_code_block(node, parent_block_id, top_level_content)
+                .map(Some),
+            BlockKind::HtmlBlock => self.add_html_block(node, parent_block_id, top_level_content),
             BlockKind::ThematicBreak => Ok(Some(
                 self.add_thematic_break(parent_block_id, top_level_content),
             )),
-            BlockKind::Table => Ok(Some(self.add_table(
-                node,
-                parent_block_id,
-                top_level_content,
-            ))),
+            BlockKind::Table => self
+                .add_table(node, parent_block_id, top_level_content)
+                .map(Some),
             BlockKind::Skip => Ok(None),
             BlockKind::Recurse => {
                 let mut last = None;
@@ -400,9 +399,9 @@ impl<'a> DocumentBuilder<'a> {
         level: u8,
         parent_block_id: Option<String>,
         top_level_content: bool,
-    ) -> String {
+    ) -> Result<String, TransformError> {
         let id = self.next_block_id();
-        let text = normalize_text(&plain_text(node), self.markdown);
+        let text = self.normalized_text(&plain_text(node))?;
         let section_id = if top_level_content {
             self.open_heading_section(level, text.clone(), id.clone())
         } else {
@@ -411,8 +410,8 @@ impl<'a> DocumentBuilder<'a> {
         if top_level_content && level == 1 && self.title.is_none() && !text.is_empty() {
             self.title = Some(text.clone());
         }
-        push_body_text(&mut self.body_text, &text, self.markdown);
-        let inlines = self.collect_inlines(node, &id);
+        self.push_body_text(&text)?;
+        let inlines = self.collect_inlines(node, &id)?;
         let mut block = self.common_block(
             id.clone(),
             "heading",
@@ -423,7 +422,7 @@ impl<'a> DocumentBuilder<'a> {
         );
         block.insert("level".to_string(), json!(level));
         self.push_block(block, false);
-        id
+        Ok(id)
     }
 
     fn add_paragraph(
@@ -431,12 +430,12 @@ impl<'a> DocumentBuilder<'a> {
         node: Node<'_>,
         parent_block_id: Option<String>,
         top_level_content: bool,
-    ) -> String {
+    ) -> Result<String, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
-        let text = normalize_text(&plain_text(node), self.markdown);
-        push_body_text(&mut self.body_text, &text, self.markdown);
-        let inlines = self.collect_inlines(node, &id);
+        let text = self.normalized_text(&plain_text(node))?;
+        self.push_body_text(&text)?;
+        let inlines = self.collect_inlines(node, &id)?;
         let block = self.common_block(
             id.clone(),
             "paragraph",
@@ -446,7 +445,7 @@ impl<'a> DocumentBuilder<'a> {
             inlines,
         );
         self.push_block(block, top_level_content);
-        id
+        Ok(id)
     }
 
     fn add_list(
@@ -466,7 +465,7 @@ impl<'a> DocumentBuilder<'a> {
                 _ => (false, 0, false),
             }
         };
-        let text = normalize_text(&plain_text(node), self.markdown);
+        let text = self.normalized_text(&plain_text(node))?;
         let mut block = self.common_block(
             id.clone(),
             "list",
@@ -536,7 +535,7 @@ impl<'a> DocumentBuilder<'a> {
     ) -> Result<Option<String>, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
-        let text = normalize_text(&plain_text(node), self.markdown);
+        let text = self.normalized_text(&plain_text(node))?;
         let mut block = self.common_block(
             id.clone(),
             "list_item",
@@ -574,7 +573,7 @@ impl<'a> DocumentBuilder<'a> {
     ) -> Result<Option<String>, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
-        let text = normalize_text(&plain_text(node), self.markdown);
+        let text = self.normalized_text(&plain_text(node))?;
         let mut block = self.common_block(
             id.clone(),
             "blockquote",
@@ -601,7 +600,7 @@ impl<'a> DocumentBuilder<'a> {
         node: Node<'_>,
         parent_block_id: Option<String>,
         top_level_content: bool,
-    ) -> String {
+    ) -> Result<String, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
         let (info, literal) = {
@@ -611,9 +610,10 @@ impl<'a> DocumentBuilder<'a> {
                 _ => (String::new(), String::new()),
             }
         };
+        self.check_text_bytes(&info)?;
         let language = info.split_whitespace().next().unwrap_or("").to_string();
-        let text = literal.trim_end_matches('\n').to_string();
-        push_body_text(&mut self.body_text, &text, self.markdown);
+        let text = self.checked_text(literal.trim_end_matches('\n').to_string())?;
+        self.push_body_text(&text)?;
         let mut block = self.common_block(
             id.clone(),
             "code_block",
@@ -634,7 +634,7 @@ impl<'a> DocumentBuilder<'a> {
                 "text": text,
             }));
         }
-        id
+        Ok(id)
     }
 
     fn add_html_block(
@@ -642,16 +642,16 @@ impl<'a> DocumentBuilder<'a> {
         node: Node<'_>,
         parent_block_id: Option<String>,
         top_level_content: bool,
-    ) -> Option<String> {
+    ) -> Result<Option<String>, TransformError> {
         let html = {
             let data = node.data.borrow();
             match &data.value {
-                NodeValue::HtmlBlock(html) => normalize_raw_html(&html.literal, self.markdown),
+                NodeValue::HtmlBlock(html) => self.raw_html(&html.literal)?,
                 _ => String::new(),
             }
         };
-        let text = normalize_text(&html_to_text(&html), self.markdown);
-        push_body_text(&mut self.body_text, &text, self.markdown);
+        let text = self.normalized_text(&html_to_text(&html))?;
+        self.push_body_text(&text)?;
         let id = self.next_block_id();
         let section_id = self.current_section_id();
         let mut block = self.common_block(
@@ -673,7 +673,7 @@ impl<'a> DocumentBuilder<'a> {
                 "html": html,
             }));
         }
-        Some(id)
+        Ok(Some(id))
     }
 
     fn add_thematic_break(
@@ -700,15 +700,15 @@ impl<'a> DocumentBuilder<'a> {
         node: Node<'_>,
         parent_block_id: Option<String>,
         top_level_content: bool,
-    ) -> String {
+    ) -> Result<String, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
         let table_index = self.next_table_index;
         self.next_table_index += 1;
         let alignments = table_alignments(node);
-        let (header_row, rows) = self.table_rows(node, &id);
-        let text = normalize_text(&plain_text(node), self.markdown);
-        push_body_text(&mut self.body_text, &text, self.markdown);
+        let (header_row, rows) = self.table_rows(node, &id)?;
+        let text = self.normalized_text(&plain_text(node))?;
+        self.push_body_text(&text)?;
         let mut block = self.common_block(
             id.clone(),
             "table",
@@ -730,26 +730,30 @@ impl<'a> DocumentBuilder<'a> {
             "header_row": header_row,
             "rows": rows,
         }));
-        id
+        Ok(id)
     }
 
-    fn table_rows(&mut self, node: Node<'_>, block_id: &str) -> (JsonValue, Vec<JsonValue>) {
+    fn table_rows(
+        &mut self,
+        node: Node<'_>,
+        block_id: &str,
+    ) -> Result<(JsonValue, Vec<JsonValue>), TransformError> {
         let mut header_row = json!({ "cells": [] });
         let mut rows = Vec::new();
         for row in node.children() {
             let is_header = matches!(row.data.borrow().value, NodeValue::TableRow(true));
-            let cells = row
+            let mut cells = Vec::new();
+            for (column_index, cell) in row
                 .children()
                 .filter(|cell| matches!(cell.data.borrow().value, NodeValue::TableCell))
                 .enumerate()
-                .map(|(column_index, cell)| {
-                    json!({
-                        "column_index": column_index,
-                        "text": normalize_text(&plain_text(cell), self.markdown),
-                        "inlines": self.collect_inlines(cell, block_id),
-                    })
-                })
-                .collect::<Vec<_>>();
+            {
+                cells.push(json!({
+                    "column_index": column_index,
+                    "text": self.normalized_text(&plain_text(cell))?,
+                    "inlines": self.collect_inlines(cell, block_id)?,
+                }));
+            }
             if is_header {
                 header_row = json!({ "cells": cells });
             } else {
@@ -759,18 +763,27 @@ impl<'a> DocumentBuilder<'a> {
                 }));
             }
         }
-        (header_row, rows)
+        Ok((header_row, rows))
     }
 
-    fn collect_inlines(&mut self, node: Node<'_>, block_id: &str) -> Vec<JsonValue> {
+    fn collect_inlines(
+        &mut self,
+        node: Node<'_>,
+        block_id: &str,
+    ) -> Result<Vec<JsonValue>, TransformError> {
         let mut out = Vec::new();
         for child in node.children() {
-            self.collect_inline_node(child, block_id, &mut out);
+            self.collect_inline_node(child, block_id, &mut out)?;
         }
-        out
+        Ok(out)
     }
 
-    fn collect_inline_node(&mut self, node: Node<'_>, block_id: &str, out: &mut Vec<JsonValue>) {
+    fn collect_inline_node(
+        &mut self,
+        node: Node<'_>,
+        block_id: &str,
+        out: &mut Vec<JsonValue>,
+    ) -> Result<(), TransformError> {
         enum InlineKind {
             Text(String),
             SoftBreak,
@@ -793,9 +806,7 @@ impl<'a> DocumentBuilder<'a> {
                 NodeValue::SoftBreak => InlineKind::SoftBreak,
                 NodeValue::LineBreak => InlineKind::LineBreak,
                 NodeValue::Code(code) => InlineKind::Code(code.literal.clone()),
-                NodeValue::HtmlInline(html) => {
-                    InlineKind::Html(normalize_raw_html(html, self.markdown))
-                }
+                NodeValue::HtmlInline(html) => InlineKind::Html(self.raw_html(html)?),
                 NodeValue::Emph => InlineKind::Emphasis,
                 NodeValue::Strong => InlineKind::Strong,
                 NodeValue::Strikethrough => InlineKind::Strikethrough,
@@ -817,10 +828,16 @@ impl<'a> DocumentBuilder<'a> {
         };
 
         match kind {
-            InlineKind::Text(text) => out.push(json!({ "type": "text", "text": text })),
+            InlineKind::Text(text) => {
+                self.check_text_bytes(&text)?;
+                out.push(json!({ "type": "text", "text": text }));
+            }
             InlineKind::SoftBreak => out.push(json!({ "type": "soft_break" })),
             InlineKind::LineBreak => out.push(json!({ "type": "line_break" })),
-            InlineKind::Code(text) => out.push(json!({ "type": "code", "text": text })),
+            InlineKind::Code(text) => {
+                self.check_text_bytes(&text)?;
+                out.push(json!({ "type": "code", "text": text }));
+            }
             InlineKind::Html(html) => {
                 if self.markdown.include.raw_html {
                     self.raw_html.push(json!({
@@ -832,21 +849,28 @@ impl<'a> DocumentBuilder<'a> {
                 }
             }
             InlineKind::Emphasis => {
-                out.push(
-                    json!({ "type": "emphasis", "children": self.collect_inlines(node, block_id) }),
-                );
+                out.push(json!({
+                    "type": "emphasis",
+                    "children": self.collect_inlines(node, block_id)?,
+                }));
             }
             InlineKind::Strong => {
-                out.push(
-                    json!({ "type": "strong", "children": self.collect_inlines(node, block_id) }),
-                );
+                out.push(json!({
+                    "type": "strong",
+                    "children": self.collect_inlines(node, block_id)?,
+                }));
             }
             InlineKind::Strikethrough => {
-                out.push(json!({ "type": "strikethrough", "children": self.collect_inlines(node, block_id) }));
+                out.push(json!({
+                    "type": "strikethrough",
+                    "children": self.collect_inlines(node, block_id)?,
+                }));
             }
             InlineKind::Link { url, title } => {
-                let children = self.collect_inlines(node, block_id);
-                let text = normalize_text(&plain_text(node), self.markdown);
+                self.check_text_bytes(&url)?;
+                self.check_text_bytes(&title)?;
+                let children = self.collect_inlines(node, block_id)?;
+                let text = self.normalized_text(&plain_text(node))?;
                 if self.markdown.include.links {
                     self.links.push(json!({
                         "block_id": block_id,
@@ -864,8 +888,10 @@ impl<'a> DocumentBuilder<'a> {
                 }));
             }
             InlineKind::Image { url, title } => {
-                let children = self.collect_inlines(node, block_id);
-                let alt = normalize_text(&plain_text(node), self.markdown);
+                self.check_text_bytes(&url)?;
+                self.check_text_bytes(&title)?;
+                let children = self.collect_inlines(node, block_id)?;
+                let alt = self.normalized_text(&plain_text(node))?;
                 if self.markdown.include.images {
                     self.images.push(json!({
                         "block_id": block_id,
@@ -884,11 +910,56 @@ impl<'a> DocumentBuilder<'a> {
             }
             InlineKind::Recurse => {
                 for child in node.children() {
-                    self.collect_inline_node(child, block_id, out);
+                    self.collect_inline_node(child, block_id, out)?;
                 }
             }
             InlineKind::Skip => {}
         }
+        Ok(())
+    }
+
+    fn normalized_text(&self, value: &str) -> Result<String, TransformError> {
+        self.checked_text(normalize_text(value, self.markdown))
+    }
+
+    fn raw_html(&self, value: &str) -> Result<String, TransformError> {
+        self.checked_text(normalize_raw_html(value, self.markdown))
+    }
+
+    fn checked_text(&self, value: String) -> Result<String, TransformError> {
+        self.check_text_bytes(&value)?;
+        Ok(value)
+    }
+
+    fn check_text_bytes(&self, value: &str) -> Result<(), TransformError> {
+        if value.len() > self.options.max_text_bytes {
+            Err(invalid("input exceeds max_text_bytes"))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn push_body_text(&mut self, value: &str) -> Result<(), TransformError> {
+        let value = normalize_text(value, self.markdown);
+        if value.is_empty() {
+            return Ok(());
+        }
+        let needs_space = !self.body_text.is_empty()
+            && !self.body_text.ends_with(char::is_whitespace)
+            && !value.starts_with(no_space_before);
+        let next_len = self
+            .body_text
+            .len()
+            .saturating_add(usize::from(needs_space))
+            .saturating_add(value.len());
+        if next_len > self.options.max_text_bytes {
+            return Err(invalid("input exceeds max_text_bytes"));
+        }
+        if needs_space {
+            self.body_text.push(' ');
+        }
+        self.body_text.push_str(&value);
+        Ok(())
     }
 
     fn common_block(

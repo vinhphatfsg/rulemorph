@@ -98,6 +98,84 @@ mappings:
 }
 
 #[test]
+fn markdown_rejects_oversized_paragraph_text_during_collection() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      body_text: false
+      blocks: false
+      links: false
+      images: false
+      code_blocks: false
+      tables: false
+      raw_html: false
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text("oversized"),
+        None,
+        &options,
+    )
+    .expect_err("oversized markdown paragraph text should fail during collection");
+
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("max_text_bytes"));
+}
+
+#[test]
+fn markdown_rejects_oversized_code_block_text_during_collection() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      body_text: false
+      blocks: false
+      links: false
+      images: false
+      code_blocks: false
+      tables: false
+      raw_html: false
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text("```\noversized\n```"),
+        None,
+        &options,
+    )
+    .expect_err("oversized markdown code block text should fail during collection");
+
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("max_text_bytes"));
+}
+
+#[test]
 fn markdown_commonmark_pipe_text_does_not_count_as_table_cells() {
     let rule = parse_rule_file(
         r#"

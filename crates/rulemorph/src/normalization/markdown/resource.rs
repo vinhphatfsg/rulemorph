@@ -210,8 +210,7 @@ pub(super) fn count_parsed_markdown_nodes(
 }
 
 fn is_structural_line(trimmed: &str) -> bool {
-    trimmed.is_empty()
-        || trimmed.starts_with('#')
+    is_atx_heading_line(trimmed)
         || trimmed.starts_with('>')
         || is_list_item_line(trimmed)
         || trimmed.starts_with("```")
@@ -220,18 +219,55 @@ fn is_structural_line(trimmed: &str) -> bool {
         || is_table_separator_line(trimmed)
 }
 
+fn is_atx_heading_line(trimmed: &str) -> bool {
+    let bytes = trimmed.as_bytes();
+    let marker_count = bytes.iter().take_while(|byte| **byte == b'#').count();
+    (1..=6).contains(&marker_count)
+        && (bytes.len() == marker_count || matches!(bytes[marker_count], b' ' | b'\t'))
+}
+
 fn estimate_structural_nodes(trimmed: &str) -> usize {
     if is_list_item_line(trimmed) {
         // A compact list item typically expands to list + item + paragraph + text nodes.
         4
     } else if trimmed.starts_with('>') {
         estimate_blockquote_nodes(trimmed)
+    } else if is_atx_heading_line(trimmed) {
+        estimate_atx_heading_nodes(trimmed)
     } else if is_structural_line(trimmed) {
         1
     } else if !trimmed.is_empty() {
         2
     } else {
         0
+    }
+}
+
+fn estimate_atx_heading_nodes(trimmed: &str) -> usize {
+    let marker_count = trimmed
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b'#')
+        .count();
+    let content = strip_atx_closing_sequence(trimmed[marker_count..].trim_end());
+    if content.trim().is_empty() { 1 } else { 2 }
+}
+
+fn strip_atx_closing_sequence(content: &str) -> &str {
+    let closing_count = content
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'#')
+        .count();
+    if closing_count == 0 || closing_count == content.len() {
+        return content;
+    }
+    let closing_start = content.len() - closing_count;
+    if content.as_bytes()[closing_start - 1].is_ascii_whitespace() {
+        &content[..closing_start]
+    } else {
+        content
     }
 }
 
@@ -550,6 +586,60 @@ mod tests {
 
         enforce_markdown_structural_preflight(&input, true, &options)
             .expect("indented code markers should not count as active Markdown structure");
+    }
+
+    #[test]
+    fn preflight_allows_blank_lines_without_node_growth() {
+        let input = "\n".repeat(20);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 1,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("blank lines should not count as parsed Markdown nodes");
+    }
+
+    #[test]
+    fn preflight_counts_non_heading_hash_lines_as_paragraphs() {
+        let input = "#tag\n".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("non-heading hash lines should count as paragraph/text nodes");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_atx_heading_text_nodes_before_parsing() {
+        let input = "# title\n".repeat(5);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("heading text nodes should count toward the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_allows_empty_atx_headings_with_closing_markers() {
+        let input = "# #\n".repeat(2);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 3,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("closing markers without heading content should not add text nodes");
     }
 
     #[test]
