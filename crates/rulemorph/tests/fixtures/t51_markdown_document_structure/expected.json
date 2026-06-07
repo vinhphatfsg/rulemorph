@@ -1,0 +1,151 @@
+[
+  {
+    "record_type": "document",
+    "title": "Guide",
+    "body_text": "Intro paragraph before heading. Guide Opening text. Install Install body. macOS Use brew. Configure Set options.",
+    "sections": [
+      {
+        "id": "preamble",
+        "level": 0,
+        "heading": "",
+        "heading_block_id": null,
+        "path": [],
+        "ordinal_path": [],
+        "content_block_ids": ["b1"],
+        "child_ids": [],
+        "children": []
+      },
+      {
+        "id": "s1",
+        "level": 1,
+        "heading": "Guide",
+        "heading_block_id": "b2",
+        "path": ["Guide"],
+        "ordinal_path": [1],
+        "content_block_ids": ["b3"],
+        "child_ids": ["s1.1", "s1.2"],
+        "children": [
+          {
+            "id": "s1.1",
+            "level": 2,
+            "heading": "Install",
+            "heading_block_id": "b4",
+            "path": ["Guide", "Install"],
+            "ordinal_path": [1, 1],
+            "content_block_ids": ["b5"],
+            "child_ids": ["s1.1.1"],
+            "children": [
+              {
+                "id": "s1.1.1",
+                "level": 3,
+                "heading": "macOS",
+                "heading_block_id": "b6",
+                "path": ["Guide", "Install", "macOS"],
+                "ordinal_path": [1, 1, 1],
+                "content_block_ids": ["b7"],
+                "child_ids": [],
+                "children": []
+              }
+            ]
+          },
+          {
+            "id": "s1.2",
+            "level": 2,
+            "heading": "Configure",
+            "heading_block_id": "b8",
+            "path": ["Guide", "Configure"],
+            "ordinal_path": [1, 2],
+            "content_block_ids": ["b9"],
+            "child_ids": [],
+            "children": []
+          }
+        ]
+      }
+    ],
+    "section_index": [
+      { "id": "preamble", "level": 0, "heading": "", "path": [], "ordinal_path": [] },
+      { "id": "s1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] },
+      { "id": "s1.1", "level": 2, "heading": "Install", "path": ["Guide", "Install"], "ordinal_path": [1, 1] },
+      { "id": "s1.1.1", "level": 3, "heading": "macOS", "path": ["Guide", "Install", "macOS"], "ordinal_path": [1, 1, 1] },
+      { "id": "s1.2", "level": 2, "heading": "Configure", "path": ["Guide", "Configure"], "ordinal_path": [1, 2] }
+    ],
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "paragraph",
+        "section_id": "preamble",
+        "parent_block_id": null,
+        "text": "Intro paragraph before heading.",
+        "inlines": [{ "type": "text", "text": "Intro paragraph before heading." }]
+      },
+      {
+        "id": "b2",
+        "type": "heading",
+        "section_id": "s1",
+        "parent_block_id": null,
+        "level": 1,
+        "text": "Guide",
+        "inlines": [{ "type": "text", "text": "Guide" }]
+      },
+      {
+        "id": "b3",
+        "type": "paragraph",
+        "section_id": "s1",
+        "parent_block_id": null,
+        "text": "Opening text.",
+        "inlines": [{ "type": "text", "text": "Opening text." }]
+      },
+      {
+        "id": "b4",
+        "type": "heading",
+        "section_id": "s1.1",
+        "parent_block_id": null,
+        "level": 2,
+        "text": "Install",
+        "inlines": [{ "type": "text", "text": "Install" }]
+      },
+      {
+        "id": "b5",
+        "type": "paragraph",
+        "section_id": "s1.1",
+        "parent_block_id": null,
+        "text": "Install body.",
+        "inlines": [{ "type": "text", "text": "Install body." }]
+      },
+      {
+        "id": "b6",
+        "type": "heading",
+        "section_id": "s1.1.1",
+        "parent_block_id": null,
+        "level": 3,
+        "text": "macOS",
+        "inlines": [{ "type": "text", "text": "macOS" }]
+      },
+      {
+        "id": "b7",
+        "type": "paragraph",
+        "section_id": "s1.1.1",
+        "parent_block_id": null,
+        "text": "Use brew.",
+        "inlines": [{ "type": "text", "text": "Use brew." }]
+      },
+      {
+        "id": "b8",
+        "type": "heading",
+        "section_id": "s1.2",
+        "parent_block_id": null,
+        "level": 2,
+        "text": "Configure",
+        "inlines": [{ "type": "text", "text": "Configure" }]
+      },
+      {
+        "id": "b9",
+        "type": "paragraph",
+        "section_id": "s1.2",
+        "parent_block_id": null,
+        "text": "Set options.",
+        "inlines": [{ "type": "text", "text": "Set options." }]
+      }
+    ]
+  }
+]

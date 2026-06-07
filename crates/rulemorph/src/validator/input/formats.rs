@@ -4,7 +4,7 @@ use crate::error::ErrorCode;
 use crate::excel_ref::{column_letters_to_index, parse_cell_window};
 use crate::model::{
     Column, ExcelCellErrorPolicy, ExcelColumn, ExcelEmptyCellPolicy, ExcelInput, HtmlInput,
-    HtmlValueKind, XmlInput,
+    HtmlValueKind, MarkdownInput, XmlInput,
 };
 use crate::xml_name::is_xml_name;
 
@@ -204,6 +204,51 @@ pub(super) fn validate_excel_input(excel: &ExcelInput, ctx: &mut ValidationCtx<'
             ErrorCode::InvalidInputOption,
             "excel.cell_error must be error",
             "input.excel.cell_error",
+        );
+    }
+}
+
+pub(super) fn validate_markdown_input(markdown: &MarkdownInput, ctx: &mut ValidationCtx<'_>) {
+    if let Some(levels) = markdown.section_levels.as_deref() {
+        if levels.is_empty() {
+            ctx.push(
+                ErrorCode::InvalidInputOption,
+                "markdown.section_levels must not be empty",
+                "input.markdown.section_levels",
+            );
+        }
+        let mut seen = HashSet::new();
+        for (index, level) in levels.iter().enumerate() {
+            let path = format!("input.markdown.section_levels[{}]", index);
+            if !(1..=6).contains(level) {
+                ctx.push(
+                    ErrorCode::InvalidInputOption,
+                    "markdown.section_levels entries must be 1..=6",
+                    path,
+                );
+                continue;
+            }
+            if !seen.insert(*level) {
+                ctx.push(
+                    ErrorCode::DuplicateInputField,
+                    "markdown.section_levels entries must be unique",
+                    path,
+                );
+            }
+        }
+    }
+    if markdown.include.body_markdown {
+        ctx.push(
+            ErrorCode::InvalidInputOption,
+            "markdown.include.body_markdown is not currently supported",
+            "input.markdown.include.body_markdown",
+        );
+    }
+    if markdown.include.sourcepos {
+        ctx.push(
+            ErrorCode::InvalidInputOption,
+            "markdown.include.sourcepos is not currently supported",
+            "input.markdown.include.sourcepos",
         );
     }
 }

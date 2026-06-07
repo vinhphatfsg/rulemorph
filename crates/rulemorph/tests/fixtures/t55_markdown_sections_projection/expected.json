@@ -1,0 +1,66 @@
+[
+  {
+    "record_type": "section",
+    "document": {
+      "title": "Guide",
+      "frontmatter": {}
+    },
+    "id": "s1.1",
+    "level": 2,
+    "heading": "Install",
+    "path": ["Guide", "Install"],
+    "ordinal_path": [1, 1],
+    "body_text": "Run installer. macOS brew install rulemorph",
+    "heading_block_id": "b3",
+    "content_block_ids": ["b4"],
+    "blocks": [
+      {
+        "id": "b4",
+        "type": "paragraph",
+        "section_id": "s1.1",
+        "parent_block_id": null,
+        "text": "Run installer.",
+        "inlines": [{ "type": "text", "text": "Run installer." }]
+      }
+    ],
+    "children": [
+      {
+        "id": "s1.1.1",
+        "level": 3,
+        "heading": "macOS",
+        "heading_block_id": "b5",
+        "path": ["Guide", "Install", "macOS"],
+        "ordinal_path": [1, 1, 1],
+        "content_block_ids": ["b6"],
+        "child_ids": [],
+        "children": []
+      }
+    ]
+  },
+  {
+    "record_type": "section",
+    "document": {
+      "title": "Guide",
+      "frontmatter": {}
+    },
+    "id": "s1.2",
+    "level": 2,
+    "heading": "Usage",
+    "path": ["Guide", "Usage"],
+    "ordinal_path": [1, 2],
+    "body_text": "Transform data.",
+    "heading_block_id": "b7",
+    "content_block_ids": ["b8"],
+    "blocks": [
+      {
+        "id": "b8",
+        "type": "paragraph",
+        "section_id": "s1.2",
+        "parent_block_id": null,
+        "text": "Transform data.",
+        "inlines": [{ "type": "text", "text": "Transform data." }]
+      }
+    ],
+    "children": []
+  }
+]

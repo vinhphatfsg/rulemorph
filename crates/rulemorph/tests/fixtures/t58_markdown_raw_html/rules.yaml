@@ -1,0 +1,12 @@
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: document
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "blocks"
+    source: "input.blocks"
+  - target: "raw_html"
+    source: "input.raw_html"

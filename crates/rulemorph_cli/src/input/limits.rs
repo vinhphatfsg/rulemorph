@@ -90,6 +90,8 @@ fn apply_limit_override(
         "yaml-expanded-nodes" => options.max_yaml_expanded_nodes = value,
         "xml-nodes" => options.max_xml_nodes = value,
         "html-nodes" => options.max_html_nodes = value,
+        "markdown-nodes" => options.max_markdown_nodes = value,
+        "markdown-table-cells" => options.max_markdown_table_cells = value,
         "excel-zip-entries" => options.max_excel_zip_entries = value,
         "excel-uncompressed-bytes" => options.max_excel_uncompressed_bytes = value,
         "excel-entry-uncompressed-bytes" => options.max_excel_entry_uncompressed_bytes = value,

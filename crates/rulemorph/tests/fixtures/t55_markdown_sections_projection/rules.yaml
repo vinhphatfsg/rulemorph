@@ -1,0 +1,31 @@
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [2]
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+  - target: "document"
+    source: "input.document"
+  - target: "id"
+    source: "input.id"
+  - target: "level"
+    source: "input.level"
+  - target: "heading"
+    source: "input.heading"
+  - target: "path"
+    source: "input.path"
+  - target: "ordinal_path"
+    source: "input.ordinal_path"
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "heading_block_id"
+    source: "input.heading_block_id"
+  - target: "content_block_ids"
+    source: "input.content_block_ids"
+  - target: "blocks"
+    source: "input.blocks"
+  - target: "children"
+    source: "input.children"

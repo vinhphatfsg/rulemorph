@@ -1,6 +1,6 @@
-# Endpoint ルール仕様（v2・MVP）
+# Endpoint ルール仕様（v2）
 
-このドキュメントは v2 の `endpoint` ルールの最小仕様（MVP）を定義します。
+このドキュメントは v2 の `endpoint` ルール仕様を定義します。
 共通仕様（参照/条件/expr など）は `docs/rules_spec_ja.md` を参照してください。
 
 ## 概要
@@ -44,7 +44,7 @@ endpoints:
       body: "@input"
 ```
 
-## フィールド一覧（MVP）
+## フィールド一覧
 
 ### 必須
 - `version`: `2` 固定
@@ -58,12 +58,12 @@ endpoints:
 ### 任意
 - `input`: リクエスト整形用の mapping（v2 `mappings` と同形式）
 - `catch`: エラー分岐
-- `reply.headers`: 固定ヘッダ（MVPではリテラルのみ）
+- `reply.headers`: 固定ヘッダ（現在はリテラルのみ）
 - `steps[].with`: ルール呼び出し時のパラメータ
 - `steps[].when`: v2条件（falseならそのステップをスキップ）
 - `steps[].catch`: そのステップ専用のエラー分岐
 
-### 保留（MVP外）
+### 現在未対応
 - inline ルール
 - 高度な認証/認可
 - レート制限、キャッシュ、監査ログ
@@ -72,7 +72,7 @@ endpoints:
 `input` は v2 `mappings` と同じ構文でリクエストを整形します。
 `@input` は HTTP リクエストから構成される仮想入力です。
 
-### @input の構造（MVP固定）
+### @input の構造
 - `@input.method`: HTTP method（例: `"GET"`）
 - `@input.path`: パスパラメータのマップ（`/users/{id}` → `@input.path.id`）
 - `@input.query`: クエリパラメータのマップ（値は文字列）
@@ -82,7 +82,7 @@ endpoints:
 `input` の評価後は **`input` の出力が新しい `@input` になります**。
 元のリクエストは自動保持されないため、必要なら `input` で明示的に写してください。
 
-### クエリ/ヘッダの扱い（MVP）
+### クエリ/ヘッダの扱い
 - `@input.query` は **単一値のみ**。同一キーの複数指定はエラーとして `catch` に渡します。
 - `@input.headers` はキーを小文字化して格納します。同名ヘッダが複数ある場合は **カンマ連結** します。
 
@@ -154,7 +154,7 @@ catch:
 マッチしなければ `endpoint` の `catch` にフォールバックします。
 
 ## reply
-MVPでは `status` / `headers` / `body` を定義できます。
+現在は `status` / `headers` / `body` を定義できます。
 `status` と `body` は **v2 expr** として扱います（リテラルも可）。
 `@` をリテラル文字列として扱いたい場合は `lit:` を使用します。
 
@@ -163,9 +163,9 @@ MVPでは `status` / `headers` / `body` を定義できます。
 - `body`: v2 expr（省略可）
 
 `body` が存在し、`headers` に `content-type` が無い場合は
-`application/json` を自動付与します（MVP）。
+`application/json` を自動付与します。
 
-### status / body の評価ルール（MVP）
+### status / body の評価ルール
 - `status` の評価結果は **100〜599 の整数** である必要があります。それ以外はエラーです。
 - `body` の評価結果が `missing` の場合は `null` として扱います。
 - `status` / `body` の評価エラーは `catch` に渡されます。
@@ -220,8 +220,8 @@ finalize:
   `catch` または該当ステップの `catch` で分岐します。
 - マッチがなければエラー応答を返します。
 
-## MVPでの制約
+## 現在の制約
 - `status` / `body` は v2 expr（リテラルも expr として許可）
 - `headers` は固定値のみ
 - 元リクエストは `input` 実行後に自動保持されない
-- `inline` / `auth` / `rate_limit` などは後続フェーズ
+- `inline` / `auth` / `rate_limit` などは現在未対応

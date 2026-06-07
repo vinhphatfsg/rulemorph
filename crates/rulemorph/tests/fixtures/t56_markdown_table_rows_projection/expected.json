@@ -1,0 +1,56 @@
+[
+  {
+    "record_type": "table_row",
+    "document": {
+      "title": "Spec",
+      "frontmatter": {}
+    },
+    "section": {
+      "id": "s1",
+      "heading": "Spec",
+      "path": ["Spec"]
+    },
+    "table": {
+      "block_id": "b2",
+      "table_index": 0,
+      "alignments": ["left", "left"]
+    },
+    "row_index": 0,
+    "headers": ["Field", "Type"],
+    "cells": [
+      { "column_index": 0, "text": "id", "inlines": [{ "type": "text", "text": "id" }] },
+      { "column_index": 1, "text": "string", "inlines": [{ "type": "text", "text": "string" }] }
+    ],
+    "object": {
+      "Field": "id",
+      "Type": "string"
+    }
+  },
+  {
+    "record_type": "table_row",
+    "document": {
+      "title": "Spec",
+      "frontmatter": {}
+    },
+    "section": {
+      "id": "s1",
+      "heading": "Spec",
+      "path": ["Spec"]
+    },
+    "table": {
+      "block_id": "b2",
+      "table_index": 0,
+      "alignments": ["left", "left"]
+    },
+    "row_index": 1,
+    "headers": ["Field", "Type"],
+    "cells": [
+      { "column_index": 0, "text": "count", "inlines": [{ "type": "text", "text": "count" }] },
+      { "column_index": 1, "text": "int", "inlines": [{ "type": "text", "text": "int" }] }
+    ],
+    "object": {
+      "Field": "count",
+      "Type": "int"
+    }
+  }
+]

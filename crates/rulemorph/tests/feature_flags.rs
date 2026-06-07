@@ -58,3 +58,29 @@ mappings:
         "input format excel is not enabled in this build"
     );
 }
+
+#[cfg(not(feature = "markdown"))]
+#[test]
+fn markdown_input_returns_invalid_input_when_feature_is_disabled() {
+    let rule = rulemorph::parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "title"
+    source: "title"
+"#,
+    )
+    .expect("parse markdown rule");
+
+    let err = rulemorph::transform(&rule, "# Guide", None)
+        .expect_err("markdown input should fail when markdown feature is disabled");
+
+    assert_eq!(err.kind, rulemorph::TransformErrorKind::InvalidInput);
+    assert_eq!(
+        err.message,
+        "input format markdown is not enabled in this build"
+    );
+}
