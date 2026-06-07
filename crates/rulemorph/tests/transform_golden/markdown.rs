@@ -143,6 +143,54 @@ mappings:
 }
 
 #[test]
+fn markdown_unsupported_body_markdown_is_rejected_during_transform() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      body_markdown: true
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+
+    let err = transform(&rule, "# Guide", None)
+        .expect_err("unsupported body_markdown should fail during transform");
+
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("body_markdown"));
+}
+
+#[test]
+fn markdown_unsupported_sourcepos_is_rejected_during_transform() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      sourcepos: true
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+
+    let err =
+        transform(&rule, "# Guide", None).expect_err("unsupported sourcepos should fail during transform");
+
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("sourcepos"));
+}
+
+#[test]
 fn markdown_duplicate_table_headers_fail_in_strict_mode() {
     let rule = parse_rule_file(
         r#"
@@ -477,6 +525,81 @@ mappings:
                     "parent_block_id": "b5",
                     "section_id": "s1-1",
                     "text": "Keep notes",
+                    "type": "paragraph"
+                }
+            ]
+        }])
+    );
+}
+
+#[test]
+fn markdown_nested_headings_do_not_open_document_sections() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      blocks: true
+mappings:
+  - target: "section_index"
+    source: "input.section_index"
+  - target: "blocks"
+    source: "input.blocks"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Top\n\n> # Quoted\n> inside\n\nAfter", None)
+        .expect("nested headings should transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "section_index": [
+                { "id": "s1-1", "level": 1, "heading": "Top", "path": ["Top"], "ordinal_path": [1] }
+            ],
+            "blocks": [
+                {
+                    "id": "b1",
+                    "inlines": [{ "type": "text", "text": "Top" }],
+                    "level": 1,
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "text": "Top",
+                    "type": "heading"
+                },
+                {
+                    "child_block_ids": ["b3", "b4"],
+                    "id": "b2",
+                    "inlines": [],
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "text": "Quoted inside",
+                    "type": "blockquote"
+                },
+                {
+                    "id": "b3",
+                    "inlines": [{ "type": "text", "text": "Quoted" }],
+                    "level": 1,
+                    "parent_block_id": "b2",
+                    "section_id": "s1-1",
+                    "text": "Quoted",
+                    "type": "heading"
+                },
+                {
+                    "id": "b4",
+                    "inlines": [{ "type": "text", "text": "inside" }],
+                    "parent_block_id": "b2",
+                    "section_id": "s1-1",
+                    "text": "inside",
+                    "type": "paragraph"
+                },
+                {
+                    "id": "b5",
+                    "inlines": [{ "type": "text", "text": "After" }],
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "text": "After",
                     "type": "paragraph"
                 }
             ]

@@ -24,6 +24,7 @@ pub fn normalize_markdown_records(
             "input.markdown is required when format=markdown",
         )
     })?;
+    reject_unsupported_markdown_options(markdown)?;
 
     let split = frontmatter::split_frontmatter(markdown.frontmatter, input, options)?;
     resource::enforce_markdown_structural_preflight(split.body, options)?;
@@ -137,6 +138,22 @@ fn parser_options(markdown: &MarkdownInput) -> Options<'static> {
         options.extension.tasklist = true;
     }
     options
+}
+
+fn reject_unsupported_markdown_options(markdown: &MarkdownInput) -> Result<(), TransformError> {
+    if markdown.include.body_markdown {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "markdown.include.body_markdown is not currently supported",
+        ));
+    }
+    if markdown.include.sourcepos {
+        return Err(TransformError::new(
+            TransformErrorKind::InvalidInput,
+            "markdown.include.sourcepos is not currently supported",
+        ));
+    }
+    Ok(())
 }
 
 fn document_record(document: MarkdownDocument, markdown: &MarkdownInput) -> JsonValue {
@@ -306,7 +323,12 @@ impl<'a> DocumentBuilder<'a> {
         };
 
         match kind {
-            BlockKind::Heading(level) => Ok(Some(self.add_heading(node, level, parent_block_id))),
+            BlockKind::Heading(level) => Ok(Some(self.add_heading(
+                node,
+                level,
+                parent_block_id,
+                top_level_content,
+            ))),
             BlockKind::Paragraph => Ok(Some(self.add_paragraph(
                 node,
                 parent_block_id,
@@ -350,11 +372,16 @@ impl<'a> DocumentBuilder<'a> {
         node: Node<'_>,
         level: u8,
         parent_block_id: Option<String>,
+        top_level_content: bool,
     ) -> String {
         let id = self.next_block_id();
         let text = normalize_text(&plain_text(node), self.markdown);
-        let section_id = self.open_heading_section(level, text.clone(), id.clone());
-        if level == 1 && self.title.is_none() && !text.is_empty() {
+        let section_id = if top_level_content {
+            self.open_heading_section(level, text.clone(), id.clone())
+        } else {
+            self.current_section_id()
+        };
+        if top_level_content && level == 1 && self.title.is_none() && !text.is_empty() {
             self.title = Some(text.clone());
         }
         push_body_text(&mut self.body_text, &text, self.markdown);
