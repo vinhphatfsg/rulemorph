@@ -385,7 +385,7 @@ Table cell values are strings. 自動型推論はしない。
 }
 ```
 
-`records=sections` の `blocks` はその section に属する content block object を含める。`heading_block_id` と `content_block_ids` は document record の block id と同じ id を使う。`section_levels` に含まれない descendant heading は独立 record にせず、直近の selected ancestor の `children` または `blocks` から辿れるようにする。
+`records=sections` の `blocks` はその section の直下 block に加え、子孫 section の heading / content block object も文書順で含める。section 自身の heading block は `heading_block_id` で参照する。`heading_block_id` と `content_block_ids` は document record の block id と同じ id を使う。`section_levels` に含まれない descendant heading は独立 record にせず、直近の selected ancestor の `children` と `blocks` から辿れるようにする。
 
 ### `records: table_rows`
 
@@ -444,7 +444,7 @@ TOML
 +++
 ```
 
-`frontmatter: auto` では delimiter から YAML / TOML を判定する。`frontmatter: yaml` / `toml` では対応 delimiter だけを受け付ける。`frontmatter: none` では frontmatter extraction を行わない。
+`frontmatter: auto` では開き delimiter と対応する閉じ delimiter がそろった場合だけ YAML / TOML を判定する。`auto` で閉じ delimiter がない先頭 `---` / `+++` は frontmatter として扱わず、本文に残す。`frontmatter: yaml` / `toml` では対応 delimiter だけを受け付け、開き delimiter があり閉じ delimiter がない場合は error にする。`frontmatter: none` では frontmatter extraction を行わない。
 
 YAML frontmatter は既存 YAML normalization と同じ安全方針に合わせる。
 

@@ -271,13 +271,35 @@ fn append_section_body_text(
 }
 
 fn section_blocks(section: &Section, document: &MarkdownDocument) -> Vec<JsonValue> {
-    section
-        .content_block_ids
+    let mut block_ids = std::collections::HashSet::new();
+    collect_section_block_ids(section, &mut block_ids);
+    document
+        .blocks
         .iter()
-        .filter_map(|id| block_by_id(document, id))
+        .filter(|block| {
+            block
+                .get("id")
+                .and_then(JsonValue::as_str)
+                .is_some_and(|id| block_ids.contains(id))
+        })
         .cloned()
         .map(JsonValue::Object)
         .collect()
+}
+
+fn collect_section_block_ids<'a>(
+    section: &'a Section,
+    block_ids: &mut std::collections::HashSet<&'a str>,
+) {
+    for block_id in &section.content_block_ids {
+        block_ids.insert(block_id.as_str());
+    }
+    for child in &section.children {
+        if let Some(heading_block_id) = &child.heading_block_id {
+            block_ids.insert(heading_block_id.as_str());
+        }
+        collect_section_block_ids(child, block_ids);
+    }
 }
 
 fn block_by_id<'a>(

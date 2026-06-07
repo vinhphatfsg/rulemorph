@@ -29,10 +29,14 @@ pub(super) fn split_frontmatter<'a>(
             split_delimited_frontmatter(input, "+++", parse_toml_frontmatter, options)
         }
         MarkdownFrontmatter::Auto => {
-            if has_opening_delimiter(input, "---") {
-                split_delimited_frontmatter(input, "---", parse_yaml_frontmatter, options)
-            } else if has_opening_delimiter(input, "+++") {
-                split_delimited_frontmatter(input, "+++", parse_toml_frontmatter, options)
+            if let Some(split) =
+                split_auto_delimited_frontmatter(input, "---", parse_yaml_frontmatter, options)?
+            {
+                Ok(split)
+            } else if let Some(split) =
+                split_auto_delimited_frontmatter(input, "+++", parse_toml_frontmatter, options)?
+            {
+                Ok(split)
             } else {
                 Ok(SplitMarkdown {
                     frontmatter: Map::new(),
@@ -66,8 +70,21 @@ fn split_delimited_frontmatter<'a>(
     Ok(SplitMarkdown { frontmatter, body })
 }
 
-fn has_opening_delimiter(input: &str, delimiter: &str) -> bool {
-    strip_opening_delimiter(input, delimiter).is_some()
+fn split_auto_delimited_frontmatter<'a>(
+    input: &'a str,
+    delimiter: &str,
+    parser: fn(&str, &NormalizationOptions) -> Result<Map<String, JsonValue>, TransformError>,
+    options: &NormalizationOptions,
+) -> Result<Option<SplitMarkdown<'a>>, TransformError> {
+    let Some(rest) = strip_opening_delimiter(input, delimiter) else {
+        return Ok(None);
+    };
+    let Some((frontmatter_end, body_start)) = find_closing_delimiter(rest, delimiter) else {
+        return Ok(None);
+    };
+    let frontmatter = parser(&rest[..frontmatter_end], options)?;
+    let body = &rest[body_start..];
+    Ok(Some(SplitMarkdown { frontmatter, body }))
 }
 
 fn strip_opening_delimiter<'a>(input: &'a str, delimiter: &str) -> Option<&'a str> {

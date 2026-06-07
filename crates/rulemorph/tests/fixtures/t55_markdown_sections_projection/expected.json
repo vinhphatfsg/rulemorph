@@ -13,6 +13,33 @@
         "section_id": "s1-1.s2-1",
         "text": "Run installer.",
         "type": "paragraph"
+      },
+      {
+        "id": "b5",
+        "inlines": [
+          {
+            "text": "macOS",
+            "type": "text"
+          }
+        ],
+        "level": 3,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1.s3-1",
+        "text": "macOS",
+        "type": "heading"
+      },
+      {
+        "id": "b6",
+        "inlines": [
+          {
+            "text": "brew install rulemorph",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1.s3-1",
+        "text": "brew install rulemorph",
+        "type": "paragraph"
       }
     ],
     "body_text": "Run installer. macOS brew install rulemorph",

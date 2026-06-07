@@ -292,6 +292,32 @@ mappings:
 }
 
 #[test]
+fn markdown_frontmatter_auto_treats_unclosed_delimiter_as_body() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "frontmatter"
+    source: "input.frontmatter"
+  - target: "title"
+    source: "input.title"
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output =
+        transform(&rule, "---\n# Guide", None).expect("unclosed auto delimiter should be body");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "frontmatter": {}, "title": "Guide", "body_text": "Guide" }])
+    );
+}
+
+#[test]
 fn markdown_table_rows_projection_ignores_document_table_output_flag() {
     let rule = parse_rule_file(
         r#"
