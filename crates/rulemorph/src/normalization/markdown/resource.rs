@@ -14,8 +14,8 @@ pub(super) fn enforce_markdown_structural_preflight(
     let mut active_fence = None;
     let mut pending_table_header_cells = None;
     let mut in_table = false;
+    let mut in_indented_code = false;
     for line in input.lines() {
-        let trimmed = line.trim_start();
         if let Some(fence) = active_fence {
             if let Some(fence_line) = fence_line_content(line)
                 && is_closing_fence(fence_line, fence)
@@ -26,16 +26,28 @@ pub(super) fn enforce_markdown_structural_preflight(
             enforce_markdown_table_cell_count(estimated_table_cells, options)?;
             continue;
         }
-        if let Some(fence_line) = fence_line_content(line) {
-            if let Some(fence) = opening_fence(fence_line) {
+
+        let Some(trimmed) = active_markdown_line(line) else {
+            if !in_indented_code {
                 estimated_nodes = estimated_nodes.saturating_add(1);
-                active_fence = Some(fence);
-                pending_table_header_cells = None;
-                in_table = false;
-                enforce_markdown_node_count(estimated_nodes, options)?;
-                enforce_markdown_table_cell_count(estimated_table_cells, options)?;
-                continue;
+                in_indented_code = true;
             }
+            pending_table_header_cells = None;
+            in_table = false;
+            enforce_markdown_node_count(estimated_nodes, options)?;
+            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+            continue;
+        };
+        in_indented_code = false;
+
+        if let Some(fence) = opening_fence(trimmed) {
+            estimated_nodes = estimated_nodes.saturating_add(1);
+            active_fence = Some(fence);
+            pending_table_header_cells = None;
+            in_table = false;
+            enforce_markdown_node_count(estimated_nodes, options)?;
+            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+            continue;
         }
         estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
         estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(trimmed));
@@ -90,7 +102,29 @@ fn opening_fence(trimmed: &str) -> Option<Fence> {
         .iter()
         .take_while(|byte| **byte == marker)
         .count();
-    (len >= 3).then_some(Fence { marker, len })
+    if len < 3 {
+        return None;
+    }
+    if marker == b'`' && trimmed[len..].contains('`') {
+        return None;
+    }
+    Some(Fence { marker, len })
+}
+
+fn active_markdown_line(line: &str) -> Option<&str> {
+    if line.trim().is_empty() {
+        return Some("");
+    }
+    let spaces = line
+        .as_bytes()
+        .iter()
+        .take_while(|byte| **byte == b' ')
+        .count();
+    if spaces >= 4 || line.as_bytes().get(spaces).copied() == Some(b'\t') {
+        None
+    } else {
+        Some(&line[spaces..])
+    }
 }
 
 fn fence_line_content(line: &str) -> Option<&str> {
@@ -144,7 +178,7 @@ fn estimate_structural_nodes(trimmed: &str) -> usize {
         // A compact list item typically expands to list + item + paragraph + text nodes.
         4
     } else if trimmed.starts_with('>') {
-        2
+        estimate_blockquote_nodes(trimmed)
     } else if is_structural_line(trimmed) {
         1
     } else if !trimmed.is_empty() {
@@ -152,6 +186,33 @@ fn estimate_structural_nodes(trimmed: &str) -> usize {
     } else {
         0
     }
+}
+
+fn estimate_blockquote_nodes(trimmed: &str) -> usize {
+    let (quote_nodes, content) = strip_blockquote_markers(trimmed);
+    if quote_nodes == 0 {
+        return 0;
+    }
+    let content_nodes = active_markdown_line(content)
+        .filter(|content| !content.is_empty())
+        .map(estimate_structural_nodes)
+        .unwrap_or(0);
+    quote_nodes.saturating_add(content_nodes)
+}
+
+fn strip_blockquote_markers(mut line: &str) -> (usize, &str) {
+    let mut quote_nodes = 0usize;
+    while let Some(rest) = line.strip_prefix('>') {
+        quote_nodes = quote_nodes.saturating_add(1);
+        line = strip_optional_space_or_tab(rest);
+    }
+    (quote_nodes, line)
+}
+
+fn strip_optional_space_or_tab(line: &str) -> &str {
+    line.strip_prefix(' ')
+        .or_else(|| line.strip_prefix('\t'))
+        .unwrap_or(line)
 }
 
 fn is_list_item_line(trimmed: &str) -> bool {
@@ -358,6 +419,24 @@ mod tests {
     }
 
     #[test]
+    fn preflight_does_not_skip_content_after_invalid_backtick_fence_info() {
+        let input = format!(
+            "``` invalid ` info\n{}",
+            "[x](https://example.com)\n".repeat(4)
+        );
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("invalid backtick fence info should not hide later content");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
     fn preflight_rejects_content_after_four_space_indented_fence() {
         let input = format!("    ```\n{}", "[x](https://example.com)\n".repeat(4));
         let options = NormalizationOptions {
@@ -373,6 +452,18 @@ mod tests {
     }
 
     #[test]
+    fn preflight_allows_markdown_markers_inside_indented_code() {
+        let input = format!("{}{}", "    - x\n".repeat(8), "    # title\n".repeat(8));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("indented code markers should not count as active Markdown structure");
+    }
+
+    #[test]
     fn preflight_rejects_list_heavy_input_before_parsing() {
         let input = "- x\n".repeat(4);
         let options = NormalizationOptions {
@@ -382,6 +473,21 @@ mod tests {
 
         let err = enforce_markdown_structural_preflight(&input, true, &options)
             .expect_err("compact list-heavy input should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_blockquote_list_items_before_parsing() {
+        let input = "> - x\n".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 12,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("blockquote list items should exceed the preflight node estimate");
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
         assert!(err.message.contains("max_markdown_nodes"));
