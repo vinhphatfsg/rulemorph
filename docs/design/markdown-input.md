@@ -385,7 +385,7 @@ Table cell values are strings. 自動型推論はしない。
 }
 ```
 
-`records=sections` の `blocks` はその section の直下 block に加え、子孫 section の heading / content block object も文書順で含める。section 自身の heading block は `heading_block_id` で参照する。`heading_block_id` と `content_block_ids` は document record の block id と同じ id を使う。`section_levels` に含まれない descendant heading は独立 record にせず、直近の selected ancestor の `children` と `blocks` から辿れるようにする。
+`records=sections` の `blocks` はその section の直下 block に加え、`item_ids` / `child_block_ids` が参照する nested container child block と、子孫 section の heading / content block object も文書順で含める。section 自身の heading block は `heading_block_id` で参照する。`heading_block_id` と `content_block_ids` は document record の block id と同じ id を使う。`section_levels` に含まれない descendant heading は独立 record にせず、直近の selected ancestor の `children` と `blocks` から辿れるようにする。
 
 ### `records: table_rows`
 
@@ -485,7 +485,7 @@ pub struct NormalizationOptions {
 
 `large()` では 10,000,000 まで広げる。
 
-Node count は parser adapter が Document IR を構築するときに加算する。post-parse node limit だけに依存してはいけない。採用 parser が full AST を先に構築する場合は、parse 前の lightweight preflight で block / table delimiter / approximate node budget を確認するか、parse 中に budget を消費できる adapter を使う。`max_input_bytes` は最後の防衛線であり、Markdown 専用 node / table-cell budget の代替にはしない。
+Node count は parser adapter が Document IR を構築するときに加算する。post-parse node limit だけに依存してはいけない。採用 parser が full AST を先に構築する場合は、parse 前の lightweight preflight で block / list / container / table delimiter / approximate node budget を確認するか、parse 中に budget を消費できる adapter を使う。`max_input_bytes` は最後の防衛線であり、Markdown 専用 node / table-cell budget の代替にはしない。
 
 `table_rows` は table cell count と record count の両方を確認する。巨大 table で `max_records` を超えた場合は `input exceeds max_records` とする。
 

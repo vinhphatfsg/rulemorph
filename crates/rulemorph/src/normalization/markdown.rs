@@ -37,8 +37,10 @@ pub fn normalize_markdown_records(
 
     let records = match markdown.records {
         MarkdownRecordsMode::Document => vec![document_record(document, markdown)],
-        MarkdownRecordsMode::Sections => project::project_sections(&document, markdown),
-        MarkdownRecordsMode::TableRows => project::project_table_rows(&document, markdown)?,
+        MarkdownRecordsMode::Sections => project::project_sections(&document, markdown, options)?,
+        MarkdownRecordsMode::TableRows => {
+            project::project_table_rows(&document, markdown, options)?
+        }
     };
     enforce_records_limit(records.len(), options)?;
     for record in &records {

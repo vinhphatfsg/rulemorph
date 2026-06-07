@@ -349,6 +349,142 @@ mappings:
 }
 
 #[test]
+fn markdown_table_rows_projection_obeys_record_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+mappings:
+  - target: "field"
+    source: "input.object.Field"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_records: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text("| Field |\n| --- |\n| id |\n| name |"),
+        None,
+        &options,
+    )
+    .expect_err("table_rows projection should obey max_records");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("max_records"));
+}
+
+#[test]
+fn markdown_sections_projection_obeys_record_limit() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [1]
+mappings:
+  - target: "heading"
+    source: "input.heading"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_records: 1,
+        ..NormalizationOptions::default()
+    };
+    let err = transform_input_with_options(
+        &rule,
+        InputData::Text("# One\n\n# Two"),
+        None,
+        &options,
+    )
+    .expect_err("sections projection should obey max_records");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("max_records"));
+}
+
+#[test]
+fn markdown_section_blocks_include_nested_container_children() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [1]
+mappings:
+  - target: "blocks"
+    source: "input.blocks"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Tasks\n\n- Write tests\n\n> Keep notes", None)
+        .expect("section projection should include resolvable nested container blocks");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "blocks": [
+                {
+                    "id": "b2",
+                    "inlines": [],
+                    "item_ids": ["b3"],
+                    "ordered": false,
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "start": null,
+                    "text": "Write tests",
+                    "tight": true,
+                    "type": "list"
+                },
+                {
+                    "checked": null,
+                    "child_block_ids": ["b4"],
+                    "id": "b3",
+                    "inlines": [],
+                    "ordinal": null,
+                    "parent_block_id": "b2",
+                    "section_id": "s1-1",
+                    "text": "Write tests",
+                    "type": "list_item"
+                },
+                {
+                    "id": "b4",
+                    "inlines": [{ "type": "text", "text": "Write tests" }],
+                    "parent_block_id": "b3",
+                    "section_id": "s1-1",
+                    "text": "Write tests",
+                    "type": "paragraph"
+                },
+                {
+                    "child_block_ids": ["b6"],
+                    "id": "b5",
+                    "inlines": [],
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "text": "Keep notes",
+                    "type": "blockquote"
+                },
+                {
+                    "id": "b6",
+                    "inlines": [{ "type": "text", "text": "Keep notes" }],
+                    "parent_block_id": "b5",
+                    "section_id": "s1-1",
+                    "text": "Keep notes",
+                    "type": "paragraph"
+                }
+            ]
+        }])
+    );
+}
+
+#[test]
 fn markdown_strict_table_keys_match_headers_when_text_is_not_trimmed() {
     let rule = parse_rule_file(
         r#"

@@ -828,7 +828,7 @@ mappings:
 
 `sections` は nested tree、`section_index` は flat index です。`blocks[]` が文書順序の正本で、`sections[].heading_block_id`、`sections[].content_block_ids`、`blocks[].section_id` で section と block を対応づけます。`body_text` は使いやすくするための補助 field であり、構造処理では `sections`、`section_index`、`blocks`、`inlines` を使います。
 
-`content_block_ids` はその section の直下にある本文 block を指します。見出し block は `heading_block_id`、子見出し以下の block は `children` から辿ります。`records: sections` の section record では、`blocks[]` はその section の直下 block に加え、子孫 section の heading / content block も文書順で含みます。section 自身の heading block は `heading_block_id` で参照します。
+`content_block_ids` はその section の直下にある本文 block を指します。見出し block は `heading_block_id`、子見出し以下の block は `children` から辿ります。`records: sections` の section record では、`blocks[]` はその section の直下 block、`item_ids` / `child_block_ids` が参照する nested container child block、子孫 section の heading / content block を文書順で含みます。section 自身の heading block は `heading_block_id` で参照します。
 
 `blocks[]` の主な `type` は `heading`、`paragraph`、`list`、`list_item`、`blockquote`、`code_block`、`table`、`html_block`、`thematic_break` です。Ordered list は `ordered: true`、`start`、`list_item.ordinal` を保持します。Task list item は `checked: true` / `false`、通常 item は `checked: null` です。
 

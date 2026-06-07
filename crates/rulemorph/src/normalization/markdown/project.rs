@@ -3,6 +3,7 @@ use serde_json::{Map, Value as JsonValue, json};
 use crate::error::{TransformError, TransformErrorKind};
 use crate::model::{MarkdownInput, MarkdownTableHeaderPolicy};
 
+use super::super::{NormalizationOptions, enforce_records_limit};
 use super::{
     MarkdownDocument, Section, block_section_to_json, normalize_text, push_body_text,
     section_to_json, strings_to_value,
@@ -11,16 +12,17 @@ use super::{
 pub(super) fn project_sections(
     document: &MarkdownDocument,
     markdown: &MarkdownInput,
-) -> Vec<JsonValue> {
+    options: &NormalizationOptions,
+) -> Result<Vec<JsonValue>, TransformError> {
     let selected = markdown
         .section_levels
         .clone()
         .unwrap_or_else(|| vec![1, 2, 3, 4, 5, 6]);
-    document
-        .sections
-        .iter()
-        .flat_map(|section| collect_projected_sections(section, document, &selected, markdown))
-        .collect()
+    let mut out = Vec::new();
+    for section in &document.sections {
+        collect_projected_sections(section, document, &selected, markdown, options, &mut out)?;
+    }
+    Ok(out)
 }
 
 fn collect_projected_sections(
@@ -28,17 +30,17 @@ fn collect_projected_sections(
     document: &MarkdownDocument,
     selected: &[u8],
     markdown: &MarkdownInput,
-) -> Vec<JsonValue> {
-    let mut out = Vec::new();
+    options: &NormalizationOptions,
+    out: &mut Vec<JsonValue>,
+) -> Result<(), TransformError> {
     if selected.contains(&section.level) {
+        enforce_records_limit(out.len().saturating_add(1), options)?;
         out.push(project_section_record(section, document, markdown));
     }
     for child in &section.children {
-        out.extend(collect_projected_sections(
-            child, document, selected, markdown,
-        ));
+        collect_projected_sections(child, document, selected, markdown, options, out)?;
     }
-    out
+    Ok(())
 }
 
 fn project_section_record(
@@ -99,6 +101,7 @@ fn project_section_record(
 pub(super) fn project_table_rows(
     document: &MarkdownDocument,
     markdown: &MarkdownInput,
+    options: &NormalizationOptions,
 ) -> Result<Vec<JsonValue>, TransformError> {
     let mut records = Vec::new();
     for table in &document.tables {
@@ -122,12 +125,11 @@ pub(super) fn project_table_rows(
             .unwrap_or_else(|| JsonValue::Array(Vec::new()));
         let headers = table_headers(table);
         let keys = table_keys(&headers, markdown)?;
-        let rows = table
-            .get("rows")
-            .and_then(JsonValue::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let Some(rows) = table.get("rows").and_then(JsonValue::as_array) else {
+            continue;
+        };
         for row in rows {
+            enforce_records_limit(records.len().saturating_add(1), options)?;
             let row_index = row
                 .get("row_index")
                 .and_then(JsonValue::as_u64)
@@ -271,8 +273,8 @@ fn append_section_body_text(
 }
 
 fn section_blocks(section: &Section, document: &MarkdownDocument) -> Vec<JsonValue> {
-    let mut block_ids = std::collections::HashSet::new();
-    collect_section_block_ids(section, &mut block_ids);
+    let mut block_ids = std::collections::HashSet::<String>::new();
+    collect_section_block_ids(section, document, &mut block_ids);
     document
         .blocks
         .iter()
@@ -287,18 +289,41 @@ fn section_blocks(section: &Section, document: &MarkdownDocument) -> Vec<JsonVal
         .collect()
 }
 
-fn collect_section_block_ids<'a>(
-    section: &'a Section,
-    block_ids: &mut std::collections::HashSet<&'a str>,
+fn collect_section_block_ids(
+    section: &Section,
+    document: &MarkdownDocument,
+    block_ids: &mut std::collections::HashSet<String>,
 ) {
     for block_id in &section.content_block_ids {
-        block_ids.insert(block_id.as_str());
+        collect_block_tree_ids(document, block_id, block_ids);
     }
     for child in &section.children {
         if let Some(heading_block_id) = &child.heading_block_id {
-            block_ids.insert(heading_block_id.as_str());
+            collect_block_tree_ids(document, heading_block_id, block_ids);
         }
-        collect_section_block_ids(child, block_ids);
+        collect_section_block_ids(child, document, block_ids);
+    }
+}
+
+fn collect_block_tree_ids(
+    document: &MarkdownDocument,
+    block_id: &str,
+    block_ids: &mut std::collections::HashSet<String>,
+) {
+    if !block_ids.insert(block_id.to_string()) {
+        return;
+    }
+    let Some(block) = block_by_id(document, block_id) else {
+        return;
+    };
+    for field in ["item_ids", "child_block_ids"] {
+        if let Some(children) = block.get(field).and_then(JsonValue::as_array) {
+            for child in children {
+                if let Some(child_id) = child.as_str() {
+                    collect_block_tree_ids(document, child_id, block_ids);
+                }
+            }
+        }
     }
 }
 

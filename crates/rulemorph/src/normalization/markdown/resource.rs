@@ -28,9 +28,7 @@ pub(super) fn enforce_markdown_structural_preflight(
             enforce_markdown_table_cell_count(estimated_table_cells, options)?;
             continue;
         }
-        if is_structural_line(trimmed) {
-            estimated_nodes = estimated_nodes.saturating_add(1);
-        }
+        estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
         estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(trimmed));
         if trimmed.contains('|') {
             estimated_table_cells = estimated_table_cells
@@ -92,13 +90,48 @@ fn is_structural_line(trimmed: &str) -> bool {
     trimmed.is_empty()
         || trimmed.starts_with('#')
         || trimmed.starts_with('>')
-        || trimmed.starts_with("- ")
-        || trimmed.starts_with("* ")
-        || trimmed.starts_with("+ ")
+        || is_list_item_line(trimmed)
         || trimmed.starts_with("```")
         || trimmed.starts_with("~~~")
         || trimmed.starts_with('<')
         || trimmed.contains('|')
+}
+
+fn estimate_structural_nodes(trimmed: &str) -> usize {
+    if is_list_item_line(trimmed) {
+        // A compact list item typically expands to list + item + paragraph + text nodes.
+        4
+    } else if trimmed.starts_with('>') {
+        2
+    } else if is_structural_line(trimmed) {
+        1
+    } else {
+        0
+    }
+}
+
+fn is_list_item_line(trimmed: &str) -> bool {
+    is_unordered_list_item_line(trimmed) || is_ordered_list_item_line(trimmed)
+}
+
+fn is_unordered_list_item_line(trimmed: &str) -> bool {
+    trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .or_else(|| trimmed.strip_prefix("+ "))
+        .is_some()
+}
+
+fn is_ordered_list_item_line(trimmed: &str) -> bool {
+    let bytes = trimmed.as_bytes();
+    let digit_count = bytes
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count();
+    if digit_count == 0 || digit_count > 9 || digit_count + 1 >= bytes.len() {
+        return false;
+    }
+    matches!(bytes[digit_count], b'.' | b')') && bytes[digit_count + 1].is_ascii_whitespace()
 }
 
 fn estimate_inline_nodes(line: &str) -> usize {
@@ -174,5 +207,20 @@ mod tests {
 
         enforce_markdown_structural_preflight(&input, &options)
             .expect("link-like code text should not count as inline nodes");
+    }
+
+    #[test]
+    fn preflight_rejects_list_heavy_input_before_parsing() {
+        let input = "- x\n".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, &options)
+            .expect_err("compact list-heavy input should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
     }
 }
