@@ -385,7 +385,7 @@ Table cell values are strings. 自動型推論はしない。
 }
 ```
 
-`records=sections` の `blocks` はその section の直下 block に加え、`item_ids` / `child_block_ids` が参照する nested container child block と、子孫 section の heading / content block object も文書順で含める。section 自身の heading block は `heading_block_id` で参照する。`heading_block_id` と `content_block_ids` は document record の block id と同じ id を使う。`section_levels` に含まれない descendant heading は独立 record にせず、直近の selected ancestor の `children` と `blocks` から辿れるようにする。
+`records=sections` の `blocks` は section 自身の heading block、その section の直下 block、`item_ids` / `child_block_ids` が参照する nested container child block、子孫 section の heading / content block object を文書順で含める。`heading_block_id` と `content_block_ids` は document record の block id と同じ id を使い、`heading_block_id` は同じ section record の `blocks` から解決できる。`section_levels` に含まれない descendant heading は独立 record にせず、直近の selected ancestor の `children` と `blocks` から辿れるようにする。
 
 ### `records: table_rows`
 
@@ -496,7 +496,7 @@ Node count は parser adapter が Document IR を構築するときに加算す�
 - raw HTML は parse / sanitize / render / execute / fetch しない。
 - raw HTML は default で Markdown 文書中の文字列として保持する。
 - 後段が Rulemorph output を HTML として描画する場合、escape / sanitize / trusted rendering policy は後段 system の責務とする。
-- `include.raw_html=false` のとき raw HTML は `raw_html[]` derived index と `html_block` / `html_inline` dedicated node には出さない。ただし `body_markdown=true` の原文 slice には含まれ得る。
+- `include.raw_html=false` のとき raw HTML 文字列は `raw_html[]` derived index に出さず、inline HTML node も出さない。block HTML は文書構造を保つため `blocks[]` に `type: "html_block"` として残し、`html` field は出さない。
 - Markdown text に自動型推論を追加しない。
 - frontmatter parser の duplicate key / custom tag / non-string key 制約を緩和しない。
 - Parser-specific unsafe render option は使わない。
@@ -513,7 +513,7 @@ Node count は parser adapter が Document IR を構築するときに加算す�
 - `section_levels` は 1..=6 の unique list。空 list は invalid。
 - `section_levels` は `records=sections` にだけ影響する。`records=document` は全 heading level を保持する。
 - `frontmatter` / `flavor` / `records` / `table_header_policy` は serde enum で unknown を拒否する。
-- raw HTML 入力自体は拒否しない。`include.raw_html=false` では dedicated raw HTML node と derived index を出さないだけで、`body_markdown=true` の原文 slice には含まれ得る。
+- raw HTML 入力自体は拒否しない。`include.raw_html=false` では raw HTML 文字列と inline HTML node を出さない。block HTML は `html` field なしの `html_block` として残す。
 - `body_markdown=true` かつ parser adapter が source slice を提供できない build では validation error にする。
 
 既存 pattern に合わせるなら `MissingMarkdownSection` error code を追加する。

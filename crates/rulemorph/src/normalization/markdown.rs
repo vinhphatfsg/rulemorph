@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use comrak::nodes::{ListType, Node, NodeValue, TableAlignment};
 use comrak::{Arena, Options, parse_document};
@@ -24,10 +24,14 @@ pub fn normalize_markdown_records(
             "input.markdown is required when format=markdown",
         )
     })?;
-    reject_unsupported_markdown_options(markdown)?;
+    validate_markdown_runtime_options(markdown)?;
 
     let split = frontmatter::split_frontmatter(markdown.frontmatter, input, options)?;
-    resource::enforce_markdown_structural_preflight(split.body, options)?;
+    resource::enforce_markdown_structural_preflight(
+        split.body,
+        markdown.flavor == MarkdownFlavor::Gfm,
+        options,
+    )?;
     let arena = Arena::new();
     let parser_options = parser_options(markdown);
     let root = parse_document(&arena, split.body, &parser_options);
@@ -140,7 +144,7 @@ fn parser_options(markdown: &MarkdownInput) -> Options<'static> {
     options
 }
 
-fn reject_unsupported_markdown_options(markdown: &MarkdownInput) -> Result<(), TransformError> {
+fn validate_markdown_runtime_options(markdown: &MarkdownInput) -> Result<(), TransformError> {
     if markdown.include.body_markdown {
         return Err(TransformError::new(
             TransformErrorKind::InvalidInput,
@@ -152,6 +156,29 @@ fn reject_unsupported_markdown_options(markdown: &MarkdownInput) -> Result<(), T
             TransformErrorKind::InvalidInput,
             "markdown.include.sourcepos is not currently supported",
         ));
+    }
+    if let Some(levels) = markdown.section_levels.as_deref() {
+        if levels.is_empty() {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "markdown.section_levels must not be empty",
+            ));
+        }
+        let mut seen = HashSet::new();
+        for level in levels {
+            if !(1..=6).contains(level) {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    "markdown.section_levels entries must be 1..=6",
+                ));
+            }
+            if !seen.insert(*level) {
+                return Err(TransformError::new(
+                    TransformErrorKind::InvalidInput,
+                    "markdown.section_levels entries must be unique",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -625,9 +652,6 @@ impl<'a> DocumentBuilder<'a> {
         };
         let text = normalize_text(&html_to_text(&html), self.markdown);
         push_body_text(&mut self.body_text, &text, self.markdown);
-        if !self.markdown.include.raw_html {
-            return None;
-        }
         let id = self.next_block_id();
         let section_id = self.current_section_id();
         let mut block = self.common_block(
@@ -638,13 +662,17 @@ impl<'a> DocumentBuilder<'a> {
             text,
             Vec::new(),
         );
-        block.insert("html".to_string(), JsonValue::String(html.clone()));
+        if self.markdown.include.raw_html {
+            block.insert("html".to_string(), JsonValue::String(html.clone()));
+        }
         self.push_block(block, top_level_content);
-        self.raw_html.push(json!({
-            "block_id": id,
-            "kind": "block",
-            "html": html,
-        }));
+        if self.markdown.include.raw_html {
+            self.raw_html.push(json!({
+                "block_id": id,
+                "kind": "block",
+                "html": html,
+            }));
+        }
         Some(id)
     }
 
@@ -1077,6 +1105,7 @@ fn collect_plain_text(node: Node<'_>, out: &mut String) {
         match &data.value {
             NodeValue::Text(text) => out.push_str(text),
             NodeValue::Code(code) => out.push_str(&code.literal),
+            NodeValue::CodeBlock(code) => out.push_str(code.literal.trim_end_matches('\n')),
             NodeValue::SoftBreak | NodeValue::LineBreak => out.push(' '),
             NodeValue::HtmlBlock(html) => out.push_str(&html_to_text(&html.literal)),
             NodeValue::HtmlInline(html) => out.push_str(&html_to_text(html)),

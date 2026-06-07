@@ -824,7 +824,7 @@ mappings:
 
 `sections` is a nested tree, and `section_index` is a flat index. `blocks[]` is the document-order source of truth. Use `sections[].heading_block_id`, `sections[].content_block_ids`, and `blocks[].section_id` to connect sections and blocks. `body_text` is a convenience field; structure-aware rules should use `sections`, `section_index`, `blocks`, and `inlines`.
 
-`content_block_ids` points to content blocks directly under that section. The heading block is referenced by `heading_block_id`, and blocks under child headings are reachable through `children`. In `records: sections`, each section record's `blocks[]` includes the section's direct blocks, nested container child blocks referenced by `item_ids` / `child_block_ids`, and descendant section heading and content blocks in document order. The section's own heading block is referenced by `heading_block_id`.
+`content_block_ids` points to content blocks directly under that section. The heading block is referenced by `heading_block_id`, and blocks under child headings are reachable through `children`. In `records: sections`, each section record's `blocks[]` includes the section's own heading block, the section's direct blocks, nested container child blocks referenced by `item_ids` / `child_block_ids`, and descendant section heading and content blocks in document order. `heading_block_id` resolves within the same record's `blocks[]`.
 
 The main `blocks[]` `type` values are `heading`, `paragraph`, `list`, `list_item`, `blockquote`, `code_block`, `table`, `html_block`, and `thematic_break`. Ordered lists keep `ordered: true`, `start`, and `list_item.ordinal`. Task list items use `checked: true` / `false`; ordinary items use `checked: null`.
 
@@ -837,6 +837,8 @@ Inline structure is kept in `inlines[]`. Main inline `type` values are `text`, `
 Frontmatter is recognized only at the start of the document with `---` for YAML or `+++` for TOML. `auto` chooses YAML/TOML only when the opening delimiter has a matching closing delimiter. In `auto`, leading `---` / `+++` without a closing delimiter remains ordinary Markdown body text instead of frontmatter. With `frontmatter: yaml` / `toml`, an opening delimiter without a closing delimiter is an error. The frontmatter root must be an object. YAML duplicate keys, non-string keys, and custom tags are rejected. TOML datetimes are normalized to strings during JSON conversion.
 
 Raw HTML is treated as ordinary Markdown source text. Rulemorph does not render it as HTML, sanitize it, fetch network resources, or execute JavaScript. If a downstream Web UI renders Rulemorph output as HTML, escaping, sanitization, and avoiding unsafe `innerHTML` usage are downstream responsibilities.
+
+`include.raw_html=false` omits raw HTML strings and inline HTML nodes. Block HTML remains in `blocks[]` as `type: "html_block"` so the document structure is preserved, but the `html` field is omitted.
 
 ### Excel
 - `input.excel` is required when `format=excel`

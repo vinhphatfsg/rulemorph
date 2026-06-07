@@ -828,7 +828,7 @@ mappings:
 
 `sections` は nested tree、`section_index` は flat index です。`blocks[]` が文書順序の正本で、`sections[].heading_block_id`、`sections[].content_block_ids`、`blocks[].section_id` で section と block を対応づけます。`body_text` は使いやすくするための補助 field であり、構造処理では `sections`、`section_index`、`blocks`、`inlines` を使います。
 
-`content_block_ids` はその section の直下にある本文 block を指します。見出し block は `heading_block_id`、子見出し以下の block は `children` から辿ります。`records: sections` の section record では、`blocks[]` はその section の直下 block、`item_ids` / `child_block_ids` が参照する nested container child block、子孫 section の heading / content block を文書順で含みます。section 自身の heading block は `heading_block_id` で参照します。
+`content_block_ids` はその section の直下にある本文 block を指します。見出し block は `heading_block_id`、子見出し以下の block は `children` から辿ります。`records: sections` の section record では、`blocks[]` は section 自身の heading block、その section の直下 block、`item_ids` / `child_block_ids` が参照する nested container child block、子孫 section の heading / content block を文書順で含みます。`heading_block_id` は同じ record の `blocks[]` から解決できます。
 
 `blocks[]` の主な `type` は `heading`、`paragraph`、`list`、`list_item`、`blockquote`、`code_block`、`table`、`html_block`、`thematic_break` です。Ordered list は `ordered: true`、`start`、`list_item.ordinal` を保持します。Task list item は `checked: true` / `false`、通常 item は `checked: null` です。
 
@@ -841,6 +841,8 @@ Inline structure は `inlines[]` に保持します。主な inline `type` は `
 frontmatter は文書先頭の `---` YAML または `+++` TOML だけを扱います。`auto` は開き delimiter と対応する閉じ delimiter がそろった場合だけ YAML/TOML を判定します。`auto` で閉じ delimiter がない先頭 `---` / `+++` は frontmatter として扱わず、本文に残します。`frontmatter: yaml` / `toml` で開き delimiter があり閉じ delimiter がない場合は error です。frontmatter root は object である必要があります。YAML frontmatter の duplicate key、string 以外の key、custom tag は安全上拒否されます。TOML datetime は JSON 変換時に文字列になります。
 
 raw HTML は Markdown 文書内の通常の記述として扱います。Rulemorph は HTML として描画せず、sanitize せず、network fetch も JavaScript 実行も行いません。Rulemorph の出力を後段の Web UI で HTML として描画する場合、escape / sanitize / `innerHTML` 禁止などの XSS 対策は後段 system の責務です。
+
+`include.raw_html=false` は raw HTML 文字列と inline HTML node を出力しません。block HTML は文書構造を保つため `blocks[]` に `type: "html_block"` として残し、`html` field は出しません。
 
 ### Excel
 - `input.excel` は `format=excel` のとき必須

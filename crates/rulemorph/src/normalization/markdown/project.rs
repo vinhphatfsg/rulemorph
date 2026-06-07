@@ -294,6 +294,9 @@ fn collect_section_block_ids(
     document: &MarkdownDocument,
     block_ids: &mut std::collections::HashSet<String>,
 ) {
+    if let Some(heading_block_id) = &section.heading_block_id {
+        collect_block_tree_ids(document, heading_block_id, block_ids);
+    }
     for block_id in &section.content_block_ids {
         collect_block_tree_ids(document, block_id, block_ids);
     }

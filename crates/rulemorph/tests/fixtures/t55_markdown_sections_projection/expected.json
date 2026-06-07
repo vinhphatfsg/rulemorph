@@ -2,6 +2,20 @@
   {
     "blocks": [
       {
+        "id": "b3",
+        "inlines": [
+          {
+            "text": "Install",
+            "type": "text"
+          }
+        ],
+        "level": 2,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1",
+        "text": "Install",
+        "type": "heading"
+      },
+      {
         "id": "b4",
         "inlines": [
           {
@@ -89,6 +103,20 @@
   },
   {
     "blocks": [
+      {
+        "id": "b7",
+        "inlines": [
+          {
+            "text": "Usage",
+            "type": "text"
+          }
+        ],
+        "level": 2,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-2",
+        "text": "Usage",
+        "type": "heading"
+      },
       {
         "id": "b8",
         "inlines": [

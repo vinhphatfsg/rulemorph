@@ -6,6 +6,7 @@ use super::super::NormalizationOptions;
 
 pub(super) fn enforce_markdown_structural_preflight(
     input: &str,
+    estimate_tables: bool,
     options: &NormalizationOptions,
 ) -> Result<(), TransformError> {
     let mut estimated_nodes = 1usize;
@@ -34,19 +35,24 @@ pub(super) fn enforce_markdown_structural_preflight(
         }
         estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
         estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(trimmed));
-        let pipe_cells = pipe_table_cell_count(trimmed);
-        if is_table_separator_line(trimmed) {
-            if let Some(header_cells) = pending_table_header_cells.take() {
-                estimated_table_cells = estimated_table_cells.saturating_add(header_cells);
-                in_table = true;
+        if estimate_tables {
+            let pipe_cells = pipe_table_cell_count(trimmed);
+            if is_table_separator_line(trimmed) {
+                if let Some(header_cells) = pending_table_header_cells.take() {
+                    estimated_table_cells = estimated_table_cells.saturating_add(header_cells);
+                    in_table = true;
+                } else {
+                    in_table = false;
+                }
+            } else if let Some(cells) = pipe_cells {
+                if in_table {
+                    estimated_table_cells = estimated_table_cells.saturating_add(cells);
+                } else {
+                    pending_table_header_cells = Some(cells);
+                }
             } else {
+                pending_table_header_cells = None;
                 in_table = false;
-            }
-        } else if let Some(cells) = pipe_cells {
-            if in_table {
-                estimated_table_cells = estimated_table_cells.saturating_add(cells);
-            } else {
-                pending_table_header_cells = Some(cells);
             }
         } else {
             pending_table_header_cells = None;
@@ -255,7 +261,7 @@ mod tests {
             ..NormalizationOptions::default()
         };
 
-        let err = enforce_markdown_structural_preflight(&input, &options)
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
             .expect_err("inline-heavy input should exceed the preflight node estimate");
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
@@ -270,7 +276,7 @@ mod tests {
             ..NormalizationOptions::default()
         };
 
-        enforce_markdown_structural_preflight(&input, &options)
+        enforce_markdown_structural_preflight(&input, true, &options)
             .expect("link-like code text should not count as inline nodes");
     }
 
@@ -282,7 +288,7 @@ mod tests {
             ..NormalizationOptions::default()
         };
 
-        let err = enforce_markdown_structural_preflight(&input, &options)
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
             .expect_err("compact list-heavy input should exceed the preflight node estimate");
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
@@ -297,7 +303,7 @@ mod tests {
             ..NormalizationOptions::default()
         };
 
-        let err = enforce_markdown_structural_preflight(&input, &options)
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
             .expect_err("tab-delimited list items should exceed the preflight node estimate");
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
@@ -312,7 +318,7 @@ mod tests {
             ..NormalizationOptions::default()
         };
 
-        enforce_markdown_structural_preflight(&input, &options)
+        enforce_markdown_structural_preflight(&input, true, &options)
             .expect("ordinary pipe text should not count as table cells before parsing");
     }
 
@@ -324,7 +330,7 @@ mod tests {
             ..NormalizationOptions::default()
         };
 
-        let err = enforce_markdown_structural_preflight(input, &options)
+        let err = enforce_markdown_structural_preflight(input, true, &options)
             .expect_err("table cells should exceed the preflight table-cell estimate");
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);

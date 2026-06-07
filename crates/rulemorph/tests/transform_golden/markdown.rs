@@ -98,6 +98,35 @@ mappings:
 }
 
 #[test]
+fn markdown_commonmark_pipe_text_does_not_count_as_table_cells() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    flavor: commonmark
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_markdown_table_cells: 1,
+        ..NormalizationOptions::default()
+    };
+
+    transform_input_with_options(
+        &rule,
+        InputData::Text("| Field | Type |\n| --- | --- |"),
+        None,
+        &options,
+    )
+    .expect("commonmark pipe text should not be counted as table cells");
+}
+
+#[test]
 fn markdown_raw_html_is_preserved_by_default_and_can_be_omitted() {
     let rule = parse_rule_file(
         r#"
@@ -137,6 +166,58 @@ mappings:
                 "parent_block_id": null,
                 "text": "raw",
                 "inlines": [{ "type": "text", "text": "raw" }]
+            }]
+        }])
+    );
+}
+
+#[test]
+fn markdown_raw_html_disabled_keeps_html_block_structure() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      raw_html: false
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "blocks"
+    source: "input.blocks"
+  - target: "raw_html"
+    source: "input.raw_html"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Guide\n\n<div>note</div>\n\nAfter", None).expect("transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "body_text": "Guide note After",
+            "blocks": [{
+                "id": "b1",
+                "type": "heading",
+                "section_id": "s1-1",
+                "parent_block_id": null,
+                "level": 1,
+                "text": "Guide",
+                "inlines": [{ "type": "text", "text": "Guide" }]
+            }, {
+                "id": "b2",
+                "type": "html_block",
+                "section_id": "s1-1",
+                "parent_block_id": null,
+                "text": "note",
+                "inlines": []
+            }, {
+                "id": "b3",
+                "type": "paragraph",
+                "section_id": "s1-1",
+                "parent_block_id": null,
+                "text": "After",
+                "inlines": [{ "type": "text", "text": "After" }]
             }]
         }])
     );
@@ -188,6 +269,41 @@ mappings:
 
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
     assert!(err.message.contains("sourcepos"));
+}
+
+#[test]
+fn markdown_section_levels_are_rejected_during_transform() {
+    for (section_levels, expected) in [
+        ("[]", "section_levels must not be empty"),
+        ("[0]", "section_levels entries must be 1..=6"),
+        ("[7]", "section_levels entries must be 1..=6"),
+        ("[2, 2]", "section_levels entries must be unique"),
+    ] {
+        let rule = parse_rule_file(&format!(
+            r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: {section_levels}
+mappings:
+  - target: "heading"
+    source: "input.heading"
+"#
+        ))
+        .expect("parse markdown rule");
+
+        let err = transform(&rule, "# Guide", None)
+            .expect_err("invalid section_levels should fail during transform");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(
+            err.message.contains(expected),
+            "expected {expected:?}, got {:?}",
+            err.message
+        );
+    }
 }
 
 #[test]
@@ -480,6 +596,15 @@ mappings:
         serde_json::json!([{
             "blocks": [
                 {
+                    "id": "b1",
+                    "inlines": [{ "type": "text", "text": "Tasks" }],
+                    "level": 1,
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "text": "Tasks",
+                    "type": "heading"
+                },
+                {
                     "id": "b2",
                     "inlines": [],
                     "item_ids": ["b3"],
@@ -528,6 +653,52 @@ mappings:
                     "type": "paragraph"
                 }
             ]
+        }])
+    );
+}
+
+#[test]
+fn markdown_section_blocks_include_own_heading_block() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [2]
+    include:
+      blocks: true
+mappings:
+  - target: "heading_block_id"
+    source: "input.heading_block_id"
+  - target: "blocks"
+    source: "input.blocks"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Guide\n\n## Usage\n\nBody", None)
+        .expect("section projection should include heading block");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "heading_block_id": "b2",
+            "blocks": [{
+                "id": "b2",
+                "inlines": [{ "type": "text", "text": "Usage" }],
+                "level": 2,
+                "parent_block_id": null,
+                "section_id": "s1-1.s2-1",
+                "text": "Usage",
+                "type": "heading"
+            }, {
+                "id": "b3",
+                "inlines": [{ "type": "text", "text": "Body" }],
+                "parent_block_id": null,
+                "section_id": "s1-1.s2-1",
+                "text": "Body",
+                "type": "paragraph"
+            }]
         }])
     );
 }
@@ -604,6 +775,30 @@ mappings:
                 }
             ]
         }])
+    );
+}
+
+#[test]
+fn markdown_section_body_text_includes_nested_code_blocks() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [1]
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Guide\n\n- Step\n\n  ```sh\n  cargo test\n  ```", None)
+        .expect("section projection should include code block text in container text");
+    assert_eq!(
+        output,
+        serde_json::json!([{ "body_text": "Step cargo test" }])
     );
 }
 
