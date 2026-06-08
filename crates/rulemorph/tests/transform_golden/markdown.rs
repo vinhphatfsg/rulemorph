@@ -175,6 +175,44 @@ mappings:
 }
 
 #[test]
+fn markdown_does_not_reject_hidden_list_text_aggregate() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      body_text: false
+      blocks: false
+      links: false
+      images: false
+      code_blocks: false
+      tables: false
+      raw_html: false
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("- aa\n- aa\n- aa\n- aa\n- aa"),
+        None,
+        &options,
+    )
+    .expect("hidden list aggregate text should not fail");
+
+    assert_eq!(output, serde_json::json!([{ "record_type": "document" }]));
+}
+
+#[test]
 fn markdown_rejects_oversized_code_block_text_during_collection() {
     let rule = parse_rule_file(
         r#"

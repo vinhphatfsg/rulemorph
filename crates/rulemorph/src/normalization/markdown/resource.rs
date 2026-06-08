@@ -108,8 +108,8 @@ pub(super) fn enforce_markdown_structural_preflight(
             reference_definition_quote_depth,
         )
         .map(|(quote_depth, _)| quote_depth);
-        estimated_nodes = estimated_nodes
-            .saturating_add(estimate_structural_nodes(trimmed, paragraph_quote_depth));
+        let fallback_nodes = estimate_structural_nodes(trimmed, paragraph_quote_depth);
+        estimated_nodes = estimated_nodes.saturating_add(fallback_nodes);
         estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(
             trimmed,
             &reference_labels,
@@ -125,6 +125,7 @@ pub(super) fn enforce_markdown_structural_preflight(
                 if let Some(table) = active_table {
                     match pipe_cells {
                         Some(cells) if quote_depth == table.quote_depth => {
+                            estimated_nodes = estimated_nodes.saturating_sub(fallback_nodes);
                             estimated_nodes = estimated_nodes
                                 .saturating_add(estimate_table_row_nodes(table.columns));
                             estimated_table_cells =
@@ -133,8 +134,11 @@ pub(super) fn enforce_markdown_structural_preflight(
                         }
                         Some(cells) => {
                             active_table = None;
-                            pending_table_header_cells =
-                                Some(TableHeaderCandidate { cells, quote_depth });
+                            pending_table_header_cells = Some(TableHeaderCandidate {
+                                cells,
+                                quote_depth,
+                                fallback_nodes,
+                            });
                         }
                         None => {
                             active_table = None;
@@ -147,6 +151,10 @@ pub(super) fn enforce_markdown_structural_preflight(
                         && header.quote_depth == quote_depth
                     {
                         estimated_nodes = estimated_nodes
+                            .saturating_sub(header.fallback_nodes)
+                            .saturating_sub(fallback_nodes);
+                        estimated_nodes = estimated_nodes
+                            .saturating_add(header.quote_depth)
                             .saturating_add(1)
                             .saturating_add(estimate_table_row_nodes(header.cells));
                         estimated_table_cells = estimated_table_cells.saturating_add(header.cells);
@@ -158,7 +166,11 @@ pub(super) fn enforce_markdown_structural_preflight(
                         active_table = None;
                     }
                 } else if let Some(cells) = pipe_cells {
-                    pending_table_header_cells = Some(TableHeaderCandidate { cells, quote_depth });
+                    pending_table_header_cells = Some(TableHeaderCandidate {
+                        cells,
+                        quote_depth,
+                        fallback_nodes,
+                    });
                 } else {
                     pending_table_header_cells = None;
                     active_table = None;
@@ -207,6 +219,7 @@ enum HtmlBlockEnd {
 struct TableHeaderCandidate {
     cells: usize,
     quote_depth: usize,
+    fallback_nodes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -1002,10 +1015,24 @@ fn normalize_reference_label(label: &str) -> Option<String> {
 }
 
 fn estimate_inline_html_nodes(line: &str) -> usize {
-    line.as_bytes()
-        .windows(2)
-        .filter(|window| window[0] == b'<' && window[1].is_ascii_alphabetic())
-        .count()
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    let mut count = 0usize;
+    while index < bytes.len() {
+        if bytes[index] == b'<'
+            && (bytes
+                .get(index + 1)
+                .is_some_and(|byte| byte.is_ascii_alphabetic())
+                || (bytes.get(index + 1).copied() == Some(b'/')
+                    && bytes
+                        .get(index + 2)
+                        .is_some_and(|byte| byte.is_ascii_alphabetic())))
+        {
+            count = count.saturating_add(1);
+        }
+        index += 1;
+    }
+    count
 }
 
 fn is_paragraph_content_line(trimmed: &str, paragraph_quote_depth: Option<usize>) -> bool {
@@ -1783,6 +1810,21 @@ mod tests {
     }
 
     #[test]
+    fn preflight_counts_closing_inline_html_before_parsing() {
+        let input = "x </span> ".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("closing inline HTML should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
     fn preflight_counts_reference_links_before_parsing() {
         let input = format!("{}\n\n[ref]: https://example.com", "[x][ref] ".repeat(5));
         let options = NormalizationOptions {
@@ -2239,6 +2281,64 @@ mod tests {
 
         enforce_markdown_structural_preflight(input, true, &options)
             .expect("extra table row cells should not overcount parsed table cells");
+    }
+
+    #[test]
+    fn preflight_does_not_double_count_gfm_table_header_nodes() {
+        let input = "| A | B |\n| --- | --- |";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            max_markdown_table_cells: 100,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("table header and delimiter fallback nodes should not be double-counted");
+    }
+
+    #[test]
+    fn preflight_does_not_double_count_gfm_table_body_row_nodes() {
+        let input = "| A | B |\n| --- | --- |\n| x | y |";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 12,
+            max_markdown_table_cells: 100,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("table body row fallback nodes should not be double-counted");
+    }
+
+    #[test]
+    fn preflight_counts_blockquote_gfm_table_container_node() {
+        let input = "> | A | B |\n> | --- | --- |";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            max_markdown_table_cells: 100,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("blockquote table container should count before parsing");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_blockquote_gfm_table_body_row_nodes() {
+        let input = "> | A | B |\n> | --- | --- |\n> | x | y |";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 12,
+            max_markdown_table_cells: 100,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("blockquote table body rows should count before parsing");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
     }
 
     #[test]

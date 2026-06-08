@@ -465,7 +465,7 @@ impl<'a> DocumentBuilder<'a> {
                 _ => (false, 0, false),
             }
         };
-        let text = self.normalized_text(&plain_text(node))?;
+        let text = self.normalized_container_text(node)?;
         let mut block = self.common_block(
             id.clone(),
             "list",
@@ -535,7 +535,7 @@ impl<'a> DocumentBuilder<'a> {
     ) -> Result<Option<String>, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
-        let text = self.normalized_text(&plain_text(node))?;
+        let text = self.normalized_container_text(node)?;
         let mut block = self.common_block(
             id.clone(),
             "list_item",
@@ -573,7 +573,7 @@ impl<'a> DocumentBuilder<'a> {
     ) -> Result<Option<String>, TransformError> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
-        let text = self.normalized_text(&plain_text(node))?;
+        let text = self.normalized_container_text(node)?;
         let mut block = self.common_block(
             id.clone(),
             "blockquote",
@@ -931,6 +931,20 @@ impl<'a> DocumentBuilder<'a> {
 
     fn normalized_text(&self, value: &str) -> Result<String, TransformError> {
         self.checked_text(normalize_text(value, self.markdown))
+    }
+
+    fn normalized_container_text(&self, node: Node<'_>) -> Result<String, TransformError> {
+        let text = normalize_text(&plain_text(node), self.markdown);
+        if self.container_text_needs_limit() {
+            self.check_text_bytes(&text)?;
+        }
+        Ok(text)
+    }
+
+    fn container_text_needs_limit(&self) -> bool {
+        self.markdown.include.blocks
+            || (self.markdown.records == MarkdownRecordsMode::Sections
+                && self.markdown.include.body_text)
     }
 
     fn raw_html(&self, value: &str) -> Result<String, TransformError> {
