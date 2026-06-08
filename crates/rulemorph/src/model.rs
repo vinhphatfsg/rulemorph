@@ -13,8 +13,8 @@ mod input;
 pub use self::input::{
     Column, ExcelCellErrorPolicy, ExcelColumn, ExcelDatePolicy, ExcelEmptyCellPolicy,
     ExcelFormulaPolicy, ExcelInput, ExcelSheetRef, HtmlInput, HtmlValueKind, InputFormat,
-    InputSpec, MarkdownFlavor, MarkdownFrontmatter, MarkdownInput, MarkdownRecordsMode,
-    MarkdownTableHeaderPolicy, XmlInput, XmlNamespacePolicy,
+    InputSpec, MarkdownFlavor, MarkdownFrontmatter, MarkdownInclude, MarkdownInput,
+    MarkdownRecordsMode, MarkdownTableHeaderPolicy, XmlInput, XmlNamespacePolicy,
 };
 
 #[derive(Debug, Deserialize, Clone)]

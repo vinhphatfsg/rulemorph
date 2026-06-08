@@ -29,8 +29,9 @@ pub use error::{
     YamlLocation,
 };
 pub use model::{
-    CustomOpDef, Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, RuleFile,
-    RuleType, RuleTypeField, RuleTypeKind,
+    CustomOpDef, Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, MarkdownFlavor,
+    MarkdownFrontmatter, MarkdownInclude, MarkdownInput, MarkdownRecordsMode,
+    MarkdownTableHeaderPolicy, RuleFile, RuleType, RuleTypeField, RuleTypeKind,
 };
 pub use normalization::{
     InputData, NormalizationOptions, NormalizedRecords, normalize_records,

@@ -10,7 +10,7 @@ pub use excel::{
     ExcelInput, ExcelSheetRef,
 };
 pub use markdown::{
-    MarkdownFlavor, MarkdownFrontmatter, MarkdownInput, MarkdownRecordsMode,
+    MarkdownFlavor, MarkdownFrontmatter, MarkdownInclude, MarkdownInput, MarkdownRecordsMode,
     MarkdownTableHeaderPolicy,
 };
 
