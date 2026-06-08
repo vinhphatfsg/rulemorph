@@ -402,11 +402,7 @@ impl<'a> DocumentBuilder<'a> {
     ) -> Result<String, TransformError> {
         let id = self.next_block_id();
         let text = self.normalized_text(&plain_text(node))?;
-        let section_id = if top_level_content {
-            self.open_heading_section(level, text.clone(), id.clone())
-        } else {
-            self.current_section_id()
-        };
+        let section_id = self.open_heading_section(level, text.clone(), id.clone());
         if top_level_content && level == 1 && self.title.is_none() && !text.is_empty() {
             self.title = Some(text.clone());
         }
@@ -436,6 +432,11 @@ impl<'a> DocumentBuilder<'a> {
         let text = self.normalized_text(&plain_text(node))?;
         self.push_body_text(&text)?;
         let inlines = self.collect_inlines(node, &id)?;
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let block = self.common_block(
             id.clone(),
             "paragraph",
@@ -444,7 +445,7 @@ impl<'a> DocumentBuilder<'a> {
             text,
             inlines,
         );
-        self.push_block(block, top_level_content);
+        self.push_block(block, section_content);
         Ok(id)
     }
 
@@ -466,6 +467,11 @@ impl<'a> DocumentBuilder<'a> {
             }
         };
         let text = self.normalized_container_text(node)?;
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let mut block = self.common_block(
             id.clone(),
             "list",
@@ -485,7 +491,7 @@ impl<'a> DocumentBuilder<'a> {
         );
         block.insert("tight".to_string(), json!(tight));
         block.insert("item_ids".to_string(), JsonValue::Array(Vec::new()));
-        let block_index = self.push_block(block, top_level_content);
+        let block_index = self.push_block(block, section_content);
 
         let mut item_ids = Vec::new();
         for (offset, child) in node.children().enumerate() {
@@ -574,6 +580,11 @@ impl<'a> DocumentBuilder<'a> {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
         let text = self.normalized_container_text(node)?;
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let mut block = self.common_block(
             id.clone(),
             "blockquote",
@@ -583,7 +594,7 @@ impl<'a> DocumentBuilder<'a> {
             Vec::new(),
         );
         block.insert("child_block_ids".to_string(), JsonValue::Array(Vec::new()));
-        let block_index = self.push_block(block, top_level_content);
+        let block_index = self.push_block(block, section_content);
 
         let mut child_ids = Vec::new();
         for child in node.children() {
@@ -614,6 +625,11 @@ impl<'a> DocumentBuilder<'a> {
         let language = info.split_whitespace().next().unwrap_or("").to_string();
         let text = self.checked_text(literal.trim_end_matches('\n').to_string())?;
         self.push_body_text(&text)?;
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let mut block = self.common_block(
             id.clone(),
             "code_block",
@@ -624,7 +640,7 @@ impl<'a> DocumentBuilder<'a> {
         );
         block.insert("language".to_string(), JsonValue::String(language.clone()));
         block.insert("info".to_string(), JsonValue::String(info.clone()));
-        self.push_block(block, top_level_content);
+        self.push_block(block, section_content);
         if self.markdown.include.code_blocks {
             self.code_blocks.push(json!({
                 "block_id": id,
@@ -659,6 +675,11 @@ impl<'a> DocumentBuilder<'a> {
         self.push_body_text(&text)?;
         let id = self.next_block_id();
         let section_id = self.current_section_id();
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let mut block = self.common_block(
             id.clone(),
             "html_block",
@@ -669,14 +690,14 @@ impl<'a> DocumentBuilder<'a> {
         );
         if let Some(html) = html {
             block.insert("html".to_string(), JsonValue::String(html.clone()));
-            self.push_block(block, top_level_content);
+            self.push_block(block, section_content);
             self.raw_html.push(json!({
                 "block_id": id,
                 "kind": "block",
                 "html": html,
             }));
         } else {
-            self.push_block(block, top_level_content);
+            self.push_block(block, section_content);
         }
         Ok(Some(id))
     }
@@ -688,6 +709,11 @@ impl<'a> DocumentBuilder<'a> {
     ) -> String {
         let id = self.next_block_id();
         let section_id = self.current_section_id();
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let block = self.common_block(
             id.clone(),
             "thematic_break",
@@ -696,7 +722,7 @@ impl<'a> DocumentBuilder<'a> {
             String::new(),
             Vec::new(),
         );
-        self.push_block(block, top_level_content);
+        self.push_block(block, section_content);
         id
     }
 
@@ -714,6 +740,11 @@ impl<'a> DocumentBuilder<'a> {
         let (header_row, rows) = self.table_rows(node, &id)?;
         let text = self.normalized_text(&plain_text(node))?;
         self.push_body_text(&text)?;
+        let section_content = self.is_section_content_block(
+            &section_id,
+            parent_block_id.as_deref(),
+            top_level_content,
+        );
         let mut block = self.common_block(
             id.clone(),
             "table",
@@ -726,7 +757,7 @@ impl<'a> DocumentBuilder<'a> {
         block.insert("alignments".to_string(), strings_to_value(&alignments));
         block.insert("header_row".to_string(), header_row.clone());
         block.insert("rows".to_string(), JsonValue::Array(rows.clone()));
-        self.push_block(block, top_level_content);
+        self.push_block(block, section_content);
         self.tables.push(json!({
             "block_id": id,
             "section_id": section_id,
@@ -878,8 +909,10 @@ impl<'a> DocumentBuilder<'a> {
                 }));
             }
             InlineKind::Link { url, title } => {
-                self.check_text_bytes(&url)?;
-                self.check_text_bytes(&title)?;
+                if self.markdown.include.blocks || self.markdown.include.links {
+                    self.check_text_bytes(&url)?;
+                    self.check_text_bytes(&title)?;
+                }
                 let children = self.collect_inlines(node, block_id)?;
                 let text = self.normalized_text(&plain_text(node))?;
                 if self.markdown.include.links {
@@ -1028,6 +1061,28 @@ impl<'a> DocumentBuilder<'a> {
         self.block_index_by_id.insert(id, index);
         self.blocks.push(block);
         index
+    }
+
+    fn is_section_content_block(
+        &self,
+        section_id: &str,
+        parent_block_id: Option<&str>,
+        top_level_content: bool,
+    ) -> bool {
+        if top_level_content {
+            return true;
+        }
+        parent_block_id
+            .and_then(|block_id| self.block_section_id(block_id))
+            .is_some_and(|parent_section_id| parent_section_id != section_id)
+    }
+
+    fn block_section_id(&self, block_id: &str) -> Option<&str> {
+        let index = self.block_index_by_id.get(block_id).copied()?;
+        self.blocks
+            .get(index)?
+            .get("section_id")
+            .and_then(JsonValue::as_str)
     }
 
     fn next_block_id(&mut self) -> String {

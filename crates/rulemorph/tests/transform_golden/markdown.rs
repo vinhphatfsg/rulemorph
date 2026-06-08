@@ -213,6 +213,39 @@ mappings:
 }
 
 #[test]
+fn markdown_does_not_reject_hidden_link_url() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      blocks: false
+      links: false
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("[ok](https://example.com/oversized-link-destination)"),
+        None,
+        &options,
+    )
+    .expect("hidden link URL should not fail text limits");
+
+    assert_eq!(output, serde_json::json!([{ "body_text": "ok" }]));
+}
+
+#[test]
 fn markdown_rejects_oversized_code_block_text_during_collection() {
     let rule = parse_rule_file(
         r#"
@@ -986,7 +1019,7 @@ mappings:
 }
 
 #[test]
-fn markdown_nested_headings_do_not_open_document_sections() {
+fn markdown_nested_headings_open_document_sections() {
     let rule = parse_rule_file(
         r#"
 version: 2
@@ -1003,13 +1036,14 @@ mappings:
 "#,
     )
     .expect("parse markdown rule");
-    let output = transform(&rule, "# Top\n\n> # Quoted\n> inside\n\nAfter", None)
+    let output = transform(&rule, "# Top\n\n> ## Quoted\n> inside\n\nAfter", None)
         .expect("nested headings should transform");
     assert_eq!(
         output,
         serde_json::json!([{
             "section_index": [
-                { "id": "s1-1", "level": 1, "heading": "Top", "path": ["Top"], "ordinal_path": [1] }
+                { "id": "s1-1", "level": 1, "heading": "Top", "path": ["Top"], "ordinal_path": [1] },
+                { "id": "s1-1.s2-1", "level": 2, "heading": "Quoted", "path": ["Top", "Quoted"], "ordinal_path": [1, 1] }
             ],
             "blocks": [
                 {
@@ -1033,9 +1067,9 @@ mappings:
                 {
                     "id": "b3",
                     "inlines": [{ "type": "text", "text": "Quoted" }],
-                    "level": 1,
+                    "level": 2,
                     "parent_block_id": "b2",
-                    "section_id": "s1-1",
+                    "section_id": "s1-1.s2-1",
                     "text": "Quoted",
                     "type": "heading"
                 },
@@ -1043,7 +1077,7 @@ mappings:
                     "id": "b4",
                     "inlines": [{ "type": "text", "text": "inside" }],
                     "parent_block_id": "b2",
-                    "section_id": "s1-1",
+                    "section_id": "s1-1.s2-1",
                     "text": "inside",
                     "type": "paragraph"
                 },
@@ -1051,8 +1085,149 @@ mappings:
                     "id": "b5",
                     "inlines": [{ "type": "text", "text": "After" }],
                     "parent_block_id": null,
-                    "section_id": "s1-1",
+                    "section_id": "s1-1.s2-1",
                     "text": "After",
+                    "type": "paragraph"
+                }
+            ]
+        }])
+    );
+}
+
+#[test]
+fn markdown_nested_heading_section_projection_keeps_nested_body() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [2]
+    include:
+      blocks: true
+mappings:
+  - target: "heading"
+    source: "input.heading"
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "content_block_ids"
+    source: "input.content_block_ids"
+  - target: "blocks"
+    source: "input.blocks"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Top\n\n> ## Quoted\n> inside\n\nAfter", None)
+        .expect("nested heading sections should transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "heading": "Quoted",
+            "body_text": "inside After",
+            "content_block_ids": ["b4", "b5"],
+            "blocks": [
+                {
+                    "child_block_ids": ["b3", "b4"],
+                    "id": "b2",
+                    "inlines": [],
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "text": "Quoted inside",
+                    "type": "blockquote"
+                },
+                {
+                    "id": "b3",
+                    "inlines": [{ "type": "text", "text": "Quoted" }],
+                    "level": 2,
+                    "parent_block_id": "b2",
+                    "section_id": "s1-1.s2-1",
+                    "text": "Quoted",
+                    "type": "heading"
+                },
+                {
+                    "id": "b4",
+                    "inlines": [{ "type": "text", "text": "inside" }],
+                    "parent_block_id": "b2",
+                    "section_id": "s1-1.s2-1",
+                    "text": "inside",
+                    "type": "paragraph"
+                },
+                {
+                    "id": "b5",
+                    "inlines": [{ "type": "text", "text": "After" }],
+                    "parent_block_id": null,
+                    "section_id": "s1-1.s2-1",
+                    "text": "After",
+                    "type": "paragraph"
+                }
+            ]
+        }])
+    );
+}
+
+#[test]
+fn markdown_section_projection_filters_container_refs_to_projected_blocks() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [2]
+    include:
+      blocks: true
+mappings:
+  - target: "blocks"
+    source: "input.blocks"
+"#,
+    )
+    .expect("parse markdown rule");
+    let output = transform(&rule, "# Top\n\n- Before\n- ## Nested\n  Inside", None)
+        .expect("nested list heading section should transform");
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "blocks": [
+                {
+                    "id": "b2",
+                    "inlines": [],
+                    "item_ids": ["b5"],
+                    "ordered": false,
+                    "parent_block_id": null,
+                    "section_id": "s1-1",
+                    "start": null,
+                    "text": "Before Nested Inside",
+                    "tight": true,
+                    "type": "list"
+                },
+                {
+                    "checked": null,
+                    "child_block_ids": ["b6", "b7"],
+                    "id": "b5",
+                    "inlines": [],
+                    "ordinal": null,
+                    "parent_block_id": "b2",
+                    "section_id": "s1-1",
+                    "text": "Nested Inside",
+                    "type": "list_item"
+                },
+                {
+                    "id": "b6",
+                    "inlines": [{ "type": "text", "text": "Nested" }],
+                    "level": 2,
+                    "parent_block_id": "b5",
+                    "section_id": "s1-1.s2-1",
+                    "text": "Nested",
+                    "type": "heading"
+                },
+                {
+                    "id": "b7",
+                    "inlines": [{ "type": "text", "text": "Inside" }],
+                    "parent_block_id": "b5",
+                    "section_id": "s1-1.s2-1",
+                    "text": "Inside",
                     "type": "paragraph"
                 }
             ]

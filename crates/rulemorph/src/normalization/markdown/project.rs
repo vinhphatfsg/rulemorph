@@ -301,14 +301,36 @@ fn append_section_body_text(
 fn section_blocks(section: &Section, block_index: &BlockProjectionIndex<'_>) -> Vec<JsonValue> {
     let mut block_indexes = HashSet::<usize>::new();
     collect_section_block_indexes(section, block_index, &mut block_indexes);
+    let projected_ids = block_indexes
+        .iter()
+        .filter_map(|index| {
+            block_index
+                .block_at(*index)
+                .and_then(|block| block.get("id"))
+                .and_then(JsonValue::as_str)
+        })
+        .collect::<HashSet<_>>();
     let mut block_indexes = block_indexes.into_iter().collect::<Vec<_>>();
     block_indexes.sort_unstable();
     block_indexes
         .into_iter()
         .filter_map(|index| block_index.block_at(index))
         .cloned()
+        .map(|block| filter_projected_block_refs(block, &projected_ids))
         .map(JsonValue::Object)
         .collect()
+}
+
+fn filter_projected_block_refs<'a>(
+    mut block: Map<String, JsonValue>,
+    projected_ids: &HashSet<&'a str>,
+) -> Map<String, JsonValue> {
+    for field in ["item_ids", "child_block_ids"] {
+        if let Some(ids) = block.get_mut(field).and_then(JsonValue::as_array_mut) {
+            ids.retain(|id| id.as_str().is_some_and(|id| projected_ids.contains(id)));
+        }
+    }
+    block
 }
 
 fn collect_section_block_indexes(
@@ -317,16 +339,46 @@ fn collect_section_block_indexes(
     block_indexes: &mut HashSet<usize>,
 ) {
     if let Some(heading_block_id) = &section.heading_block_id {
-        collect_block_tree_indexes(block_index, heading_block_id, block_indexes);
+        collect_block_with_ancestors_and_tree_indexes(block_index, heading_block_id, block_indexes);
     }
     for block_id in &section.content_block_ids {
-        collect_block_tree_indexes(block_index, block_id, block_indexes);
+        collect_block_with_ancestors_and_tree_indexes(block_index, block_id, block_indexes);
     }
     for child in &section.children {
         if let Some(heading_block_id) = &child.heading_block_id {
-            collect_block_tree_indexes(block_index, heading_block_id, block_indexes);
+            collect_block_with_ancestors_and_tree_indexes(
+                block_index,
+                heading_block_id,
+                block_indexes,
+            );
         }
         collect_section_block_indexes(child, block_index, block_indexes);
+    }
+}
+
+fn collect_block_with_ancestors_and_tree_indexes(
+    block_index: &BlockProjectionIndex<'_>,
+    block_id: &str,
+    block_indexes: &mut HashSet<usize>,
+) {
+    collect_block_ancestor_indexes(block_index, block_id, block_indexes);
+    collect_block_tree_indexes(block_index, block_id, block_indexes);
+}
+
+fn collect_block_ancestor_indexes(
+    block_index: &BlockProjectionIndex<'_>,
+    block_id: &str,
+    block_indexes: &mut HashSet<usize>,
+) {
+    let Some(block) = block_index.block_by_id(block_id) else {
+        return;
+    };
+    let Some(parent_block_id) = block.get("parent_block_id").and_then(JsonValue::as_str) else {
+        return;
+    };
+    collect_block_ancestor_indexes(block_index, parent_block_id, block_indexes);
+    if let Some(parent_index) = block_index.index_of(parent_block_id) {
+        block_indexes.insert(parent_index);
     }
 }
 
