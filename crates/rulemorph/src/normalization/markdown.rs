@@ -738,7 +738,7 @@ impl<'a> DocumentBuilder<'a> {
         self.next_table_index += 1;
         let alignments = table_alignments(node);
         let (header_row, rows) = self.table_rows(node, &id)?;
-        let text = self.normalized_text(&plain_text(node))?;
+        let text = self.normalized_container_text(node)?;
         self.push_body_text(&text)?;
         let section_content = self.is_section_content_block(
             &section_id,
@@ -932,8 +932,10 @@ impl<'a> DocumentBuilder<'a> {
                 }));
             }
             InlineKind::Image { url, title } => {
-                self.check_text_bytes(&url)?;
-                self.check_text_bytes(&title)?;
+                if self.markdown.include.blocks || self.markdown.include.images {
+                    self.check_text_bytes(&url)?;
+                    self.check_text_bytes(&title)?;
+                }
                 let children = self.collect_inlines(node, block_id)?;
                 let alt = self.normalized_text(&plain_text(node))?;
                 if self.markdown.include.images {
@@ -975,7 +977,7 @@ impl<'a> DocumentBuilder<'a> {
     }
 
     fn container_text_needs_limit(&self) -> bool {
-        self.markdown.include.blocks
+        (self.markdown.include.blocks && self.markdown.records != MarkdownRecordsMode::TableRows)
             || (self.markdown.records == MarkdownRecordsMode::Sections
                 && self.markdown.include.body_text)
     }
@@ -997,8 +999,12 @@ impl<'a> DocumentBuilder<'a> {
         }
     }
 
+    fn collects_document_body_text(&self) -> bool {
+        self.markdown.records == MarkdownRecordsMode::Document && self.markdown.include.body_text
+    }
+
     fn push_body_text(&mut self, value: &str) -> Result<(), TransformError> {
-        if !self.markdown.include.body_text {
+        if !self.collects_document_body_text() {
             return Ok(());
         }
         let value = normalize_text(value, self.markdown);

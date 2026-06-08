@@ -21,6 +21,7 @@ pub(super) fn enforce_markdown_structural_preflight(
     let mut paragraph_quote_depth: Option<usize> = None;
     let mut reference_definition_quote_depth: Option<usize> = None;
     let mut reference_title_state: Option<ReferenceTitleState> = None;
+    let mut active_list: Option<ListState> = None;
     let reference_labels = collect_link_reference_labels(input);
     let lines = input.lines().collect::<Vec<_>>();
     for (line_index, line) in lines.iter().enumerate() {
@@ -57,6 +58,7 @@ pub(super) fn enforce_markdown_structural_preflight(
             }
             pending_table_header_cells = None;
             active_table = None;
+            active_list = None;
             paragraph_quote_depth = None;
             reference_definition_quote_depth = None;
             reference_title_state = None;
@@ -74,6 +76,7 @@ pub(super) fn enforce_markdown_structural_preflight(
         ) {
             pending_table_header_cells = None;
             active_table = None;
+            active_list = None;
             paragraph_quote_depth = None;
             reference_definition_quote_depth = None;
             reference_title_state = next_reference_title_state;
@@ -87,6 +90,7 @@ pub(super) fn enforce_markdown_structural_preflight(
             active_fence = Some(active);
             pending_table_header_cells = None;
             active_table = None;
+            active_list = None;
             paragraph_quote_depth = None;
             reference_definition_quote_depth = None;
             reference_title_state = None;
@@ -106,6 +110,7 @@ pub(super) fn enforce_markdown_structural_preflight(
             }
             pending_table_header_cells = None;
             active_table = None;
+            active_list = None;
             paragraph_quote_depth = None;
             reference_definition_quote_depth = None;
             reference_title_state = None;
@@ -118,6 +123,7 @@ pub(super) fn enforce_markdown_structural_preflight(
         {
             pending_table_header_cells = None;
             active_table = None;
+            active_list = None;
             paragraph_quote_depth = None;
             reference_definition_quote_depth = None;
             reference_title_state = None;
@@ -141,8 +147,14 @@ pub(super) fn enforce_markdown_structural_preflight(
         });
         let line_is_reference_definition = reference_definition_quote.is_some();
         let fallback_nodes = if line_is_reference_definition {
+            active_list = None;
             0
+        } else if let Some(list) = list_state_for_preflight_line(trimmed, paragraph_quote_depth) {
+            let nodes = if active_list == Some(list) { 3 } else { 4 };
+            active_list = Some(list);
+            nodes
         } else {
+            active_list = None;
             estimate_structural_nodes(trimmed, paragraph_quote_depth)
         };
         estimated_nodes = estimated_nodes.saturating_add(fallback_nodes);
@@ -262,6 +274,18 @@ struct TableHeaderCandidate {
 struct TableState {
     columns: usize,
     quote_depth: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ListState {
+    quote_depth: usize,
+    kind: ListKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ListKind {
+    Unordered,
+    Ordered,
 }
 
 fn opening_fence(trimmed: &str) -> Option<Fence> {
@@ -452,6 +476,29 @@ fn is_list_item_line_for_context(trimmed: &str, paragraph_quote_depth: Option<us
         || is_ordered_list_item_line_for_context(trimmed, paragraph_quote_depth)
 }
 
+fn list_state_for_preflight_line(
+    trimmed: &str,
+    paragraph_quote_depth: Option<usize>,
+) -> Option<ListState> {
+    let (quote_depth, content) = strip_blockquote_markers(trimmed);
+    if quote_depth != 0 {
+        return None;
+    }
+    if is_unordered_list_item_line(content) {
+        Some(ListState {
+            quote_depth,
+            kind: ListKind::Unordered,
+        })
+    } else if is_ordered_list_item_line_for_context(trimmed, paragraph_quote_depth) {
+        Some(ListState {
+            quote_depth,
+            kind: ListKind::Ordered,
+        })
+    } else {
+        None
+    }
+}
+
 fn is_unordered_list_item_line(trimmed: &str) -> bool {
     marker_followed_by_space_or_tab(trimmed, b'-')
         || marker_followed_by_space_or_tab(trimmed, b'*')
@@ -601,6 +648,7 @@ fn estimate_explicit_link_nodes(line: &str) -> usize {
     let bytes = line.as_bytes();
     let mut index = 0usize;
     let mut estimate = 0usize;
+    let mut bracket_stack = Vec::new();
     while index < bytes.len() {
         match bytes[index] {
             b'\\' => index = (index + 2).min(bytes.len()),
@@ -612,14 +660,40 @@ fn estimate_explicit_link_nodes(line: &str) -> usize {
                     index += len;
                 }
             }
+            b'[' => {
+                bracket_stack.push(is_unescaped_image_opener(bytes, index));
+                index += 1;
+            }
             b']' if bytes.get(index + 1).copied() == Some(b'(') => {
-                estimate = estimate.saturating_add(2);
+                if !bracket_stack.pop().unwrap_or(false) {
+                    estimate = estimate.saturating_add(2);
+                }
                 index = explicit_link_destination_end(bytes, index + 2).unwrap_or(index + 2);
+            }
+            b']' => {
+                bracket_stack.pop();
+                index += 1;
             }
             _ => index += 1,
         }
     }
     estimate
+}
+
+fn is_unescaped_image_opener(bytes: &[u8], bracket_index: usize) -> bool {
+    bracket_index > 0
+        && bytes[bracket_index - 1] == b'!'
+        && !is_escaped_byte(bytes, bracket_index - 1)
+}
+
+fn is_escaped_byte(bytes: &[u8], index: usize) -> bool {
+    let mut slash_count = 0usize;
+    let mut cursor = index;
+    while cursor > 0 && bytes[cursor - 1] == b'\\' {
+        slash_count += 1;
+        cursor -= 1;
+    }
+    slash_count % 2 == 1
 }
 
 fn estimate_image_nodes(line: &str) -> usize {
@@ -1992,6 +2066,18 @@ mod tests {
     }
 
     #[test]
+    fn preflight_shares_list_container_across_adjacent_items() {
+        let input = "- a\n- b\n- c";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 11,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("adjacent list items should share one list container estimate");
+    }
+
+    #[test]
     fn preflight_treats_non_one_ordered_marker_inside_paragraph_as_text() {
         let input = "intro\n2. not a list\n3. still paragraph\n";
         let options = NormalizationOptions {
@@ -2218,6 +2304,33 @@ mod tests {
 
         enforce_markdown_structural_preflight(&input, true, &options)
             .expect("image-like text inside code spans should not count as image nodes");
+    }
+
+    #[test]
+    fn preflight_does_not_count_explicit_images_as_links() {
+        let input = "![alt](image.png) ".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 10,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("explicit images should not also count as explicit links");
+    }
+
+    #[test]
+    fn preflight_counts_escaped_bang_explicit_links_as_links() {
+        let input = "\\![alt](image.png) ".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 10,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("escaped bang should leave an explicit link to count");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
     }
 
     #[test]

@@ -246,6 +246,194 @@ mappings:
 }
 
 #[test]
+fn markdown_does_not_reject_hidden_image_url() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      blocks: false
+      images: false
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("![ok](https://example.com/oversized-image-destination)"),
+        None,
+        &options,
+    )
+    .expect("hidden image URL should not fail text limits");
+
+    assert_eq!(output, serde_json::json!([{ "body_text": "ok" }]));
+}
+
+#[test]
+fn markdown_does_not_reject_hidden_image_title() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      blocks: false
+      images: false
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("![ok](x \"oversized-title\")"),
+        None,
+        &options,
+    )
+    .expect("hidden image title should not fail text limits");
+
+    assert_eq!(output, serde_json::json!([{ "body_text": "ok" }]));
+}
+
+#[test]
+fn markdown_sections_do_not_reject_hidden_document_body_text_aggregate() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: sections
+    section_levels: [2]
+mappings:
+  - target: "heading"
+    source: "input.heading"
+  - target: "body_text"
+    source: "input.body_text"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 16,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("# Top\n\n## A\nsmall\n\n## B\nsmall"),
+        None,
+        &options,
+    )
+    .expect("hidden document body_text aggregate should not fail section projection");
+
+    assert_eq!(
+        output,
+        serde_json::json!([
+            { "heading": "A", "body_text": "small" },
+            { "heading": "B", "body_text": "small" }
+        ])
+    );
+}
+
+#[test]
+fn markdown_table_rows_do_not_reject_hidden_document_body_text_aggregate() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+mappings:
+  - target: "field"
+    source: "input.object.Field"
+  - target: "type"
+    source: "input.object.Type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 16,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("| Field | Type |\n| --- | --- |\n| id | str |\n| nm | str |"),
+        None,
+        &options,
+    )
+    .expect("hidden document body_text aggregate should not fail table row projection");
+
+    assert_eq!(
+        output,
+        serde_json::json!([
+            { "field": "id", "type": "str" },
+            { "field": "nm", "type": "str" }
+        ])
+    );
+}
+
+#[test]
+fn markdown_does_not_reject_hidden_table_aggregate_text() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+    include:
+      body_text: false
+      blocks: false
+      tables: true
+mappings:
+  - target: "field"
+    source: "input.object.Field"
+  - target: "type"
+    source: "input.object.Type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 16,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("| Field | Type |\n| --- | --- |\n| id | string |\n| nm | string |"),
+        None,
+        &options,
+    )
+    .expect("hidden table aggregate text should not fail text limits");
+
+    assert_eq!(
+        output,
+        serde_json::json!([
+            { "field": "id", "type": "string" },
+            { "field": "nm", "type": "string" }
+        ])
+    );
+}
+
+#[test]
 fn markdown_rejects_oversized_code_block_text_during_collection() {
     let rule = parse_rule_file(
         r#"
