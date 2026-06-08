@@ -405,12 +405,6 @@ fn eval_v2_object_step_traced<'a>(
     }
 
     let output = V2EvalValue::Value(JsonValue::Object(output));
-    if let V2EvalValue::Value(value) = &output
-        && let Err(error) = limits.check_generated_json_value(value, step_path)
-    {
-        emit_object_op_error(&pipe_value, step_path, collector);
-        return Err(error);
-    }
     collector
         .end_span(TraceEventKind::OpEnd, TracePhase::End)
         .rule_path(step_path)

@@ -100,43 +100,13 @@ impl EvalLimits {
         }
         Ok(())
     }
-
-    pub(crate) fn check_generated_json_value(
-        self,
-        value: &JsonValue,
-        path: &str,
-    ) -> Result<(), TransformError> {
-        let stats = generated_json_stats(value, self, path)?;
-        if stats.nodes > self.max_generated_json_nodes {
-            return Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                "generated JSON node count exceeds configured limit",
-            )
-            .with_path(path));
-        }
-        if stats.object_depth > self.max_object_depth {
-            return Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                "object depth exceeds configured limit",
-            )
-            .with_path(path));
-        }
-        let bytes = serialized_json_bytes(value, path)?;
-        if bytes > self.max_generated_json_bytes {
-            return Err(TransformError::new(
-                TransformErrorKind::ExprError,
-                "generated JSON bytes exceed configured limit",
-            )
-            .with_path(path));
-        }
-        Ok(())
-    }
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct GeneratedObjectBudget {
     fields: usize,
     nodes: usize,
+    array_items: usize,
     object_depth: usize,
     bytes: usize,
 }
@@ -146,6 +116,7 @@ impl GeneratedObjectBudget {
         let budget = Self {
             fields: 0,
             nodes: 1,
+            array_items: 0,
             object_depth: 1,
             bytes: 2,
         };
@@ -173,6 +144,10 @@ impl GeneratedObjectBudget {
             .nodes
             .checked_add(stats.nodes)
             .ok_or_else(|| generated_json_overflow(path))?;
+        let next_array_items = self
+            .array_items
+            .checked_add(stats.array_items)
+            .ok_or_else(|| generated_array_items_overflow(path))?;
         let nested_object_depth = if stats.object_depth == 0 {
             1
         } else {
@@ -191,6 +166,7 @@ impl GeneratedObjectBudget {
                 .checked_add(1)
                 .ok_or_else(|| generated_json_overflow(path))?,
             nodes: next_nodes,
+            array_items: next_array_items,
             object_depth: self.object_depth.max(nested_object_depth),
             bytes: next_bytes,
         };
@@ -207,6 +183,7 @@ impl GeneratedObjectBudget {
             )
             .with_path(path));
         }
+        limits.check_generated_array_items(self.array_items, path)?;
         if self.object_depth > limits.max_object_depth {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -229,6 +206,7 @@ impl GeneratedObjectBudget {
 pub(crate) struct GeneratedArrayBudget {
     values: usize,
     nodes: usize,
+    array_items: usize,
     object_depth: usize,
     bytes: usize,
 }
@@ -238,6 +216,7 @@ impl GeneratedArrayBudget {
         let budget = Self {
             values: 0,
             nodes: 1,
+            array_items: 0,
             object_depth: 0,
             bytes: 2,
         };
@@ -263,6 +242,11 @@ impl GeneratedArrayBudget {
                 .nodes
                 .checked_add(stats.nodes)
                 .ok_or_else(|| generated_json_overflow(path))?,
+            array_items: self
+                .array_items
+                .checked_add(1)
+                .and_then(|items| items.checked_add(stats.array_items))
+                .ok_or_else(|| generated_array_items_overflow(path))?,
             object_depth: self.object_depth.max(stats.object_depth),
             bytes: self
                 .bytes
@@ -283,6 +267,7 @@ impl GeneratedArrayBudget {
             )
             .with_path(path));
         }
+        limits.check_generated_array_items(self.array_items, path)?;
         if self.object_depth > limits.max_object_depth {
             return Err(TransformError::new(
                 TransformErrorKind::ExprError,
@@ -304,6 +289,7 @@ impl GeneratedArrayBudget {
 #[derive(Default)]
 struct GeneratedJsonStats {
     nodes: usize,
+    array_items: usize,
     object_depth: usize,
 }
 
@@ -343,6 +329,10 @@ fn collect_generated_json_stats(
             }
         }
         JsonValue::Array(items) => {
+            stats.array_items = stats
+                .array_items
+                .checked_add(items.len())
+                .ok_or_else(|| generated_array_items_overflow(path))?;
             for value in items {
                 collect_generated_json_stats(value, object_depth, stats, limits, path)?;
             }

@@ -1,0 +1,8 @@
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: document
+mappings:
+  - target: "alignments"
+    source: "input.tables[0].alignments"

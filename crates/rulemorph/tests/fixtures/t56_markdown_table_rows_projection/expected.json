@@ -45,8 +45,8 @@
     },
     "table": {
       "alignments": [
-        "left",
-        "left"
+        "none",
+        "none"
       ],
       "block_id": "b2",
       "table_index": 0
@@ -98,8 +98,8 @@
     },
     "table": {
       "alignments": [
-        "left",
-        "left"
+        "none",
+        "none"
       ],
       "block_id": "b2",
       "table_index": 0

@@ -1379,7 +1379,7 @@ fn table_alignments(node: Node<'_>) -> Vec<String> {
                 TableAlignment::Left => "left",
                 TableAlignment::Center => "center",
                 TableAlignment::Right => "right",
-                TableAlignment::None => "left",
+                TableAlignment::None => "none",
             })
             .map(ToOwned::to_owned)
             .collect(),

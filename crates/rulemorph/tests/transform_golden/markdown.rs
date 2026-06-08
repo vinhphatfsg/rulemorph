@@ -39,6 +39,11 @@ fn t58_markdown_raw_html() {
 }
 
 #[test]
+fn t59_markdown_table_alignment_contract() {
+    assert_text_fixture("t59_markdown_table_alignment_contract", "input.md");
+}
+
+#[test]
 fn markdown_rejects_excessive_preflight_nodes() {
     let rule = parse_rule_file(
         r#"
@@ -875,6 +880,26 @@ mappings:
     .expect("parse markdown rule");
     let err = transform(&rule, "---\n- bad\n---\n# Guide", None)
         .expect_err("array frontmatter should fail");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert!(err.message.contains("frontmatter must be an object"));
+}
+
+#[test]
+fn markdown_frontmatter_auto_rejects_matched_non_object_separator() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "title"
+    source: "input.title"
+"#,
+    )
+    .expect("parse markdown rule");
+    let err = transform(&rule, "---\n# separator-like document\n---\n# Actual title", None)
+        .expect_err("matched auto frontmatter delimiter should require object frontmatter");
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
     assert!(err.message.contains("frontmatter must be an object"));
 }

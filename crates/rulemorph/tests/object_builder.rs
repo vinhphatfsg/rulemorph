@@ -305,6 +305,29 @@ mappings:
 }
 
 #[test]
+fn object_builder_rejects_nested_generated_array_items() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: value
+    expr:
+      - object:
+          payload:
+            value: [1, 2]
+"#;
+    let rule = parse_rule_file(yaml).expect("parse nested array rule");
+    let mut options = NormalizationOptions::default();
+    options.max_array_len = 1;
+    let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
+        .expect_err("nested generated array should respect array item limit");
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(err.message.contains("generated array items"));
+}
+
+#[test]
 fn object_builder_map_accumulates_generated_json_budget() {
     let yaml = r#"
 version: 2

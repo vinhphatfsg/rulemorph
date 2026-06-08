@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-Rulemorph transforms data from external APIs, CSV, JSON, YAML, TOML, XML, HTML, and Excel into predictable JSON using declarative YAML/JSON rules.
+Rulemorph transforms data from external APIs, CSV, JSON, YAML, TOML, XML, HTML, Markdown, and Excel into predictable JSON using declarative YAML/JSON rules.
 
 Instead of adding another custom script for every input source, you can keep transformation behavior in rule files. The same rules can be reused from the CLI, embedded in Rust, served through a local UI/API server, or exposed to AI assistants through MCP.
 

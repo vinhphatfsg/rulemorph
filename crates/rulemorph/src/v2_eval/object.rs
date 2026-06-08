@@ -37,7 +37,5 @@ pub(crate) fn eval_v2_object_step<'a>(
         }
     }
 
-    let value = JsonValue::Object(output);
-    limits.check_generated_json_value(&value, path)?;
-    Ok(EvalValue::Value(value))
+    Ok(EvalValue::Value(JsonValue::Object(output)))
 }
