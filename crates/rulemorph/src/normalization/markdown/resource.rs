@@ -8,7 +8,7 @@ use super::super::NormalizationOptions;
 
 pub(super) fn enforce_markdown_structural_preflight(
     input: &str,
-    estimate_tables: bool,
+    estimate_gfm_extensions: bool,
     options: &NormalizationOptions,
 ) -> Result<(), TransformError> {
     let mut estimated_nodes = 1usize;
@@ -76,12 +76,24 @@ pub(super) fn enforce_markdown_structural_preflight(
         if let Some(active) = opening_html_block_line(trimmed)
             && can_start_html_block(active, paragraph_quote_depth)
         {
-            estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
+            estimated_nodes =
+                estimated_nodes.saturating_add(estimate_structural_nodes(trimmed, None));
             if let Some(html_line) = html_block_content_line(trimmed, active.quote_depth)
                 && !html_block_ends_on_line(html_line, active.end)
             {
                 active_html_block = Some(active);
             }
+            pending_table_header_cells = None;
+            active_table = None;
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
+            enforce_markdown_node_count(estimated_nodes, options)?;
+            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+            continue;
+        }
+        if reference_definition_quote_depth.is_none()
+            && is_setext_underline_for_paragraph(trimmed, paragraph_quote_depth)
+        {
             pending_table_header_cells = None;
             active_table = None;
             paragraph_quote_depth = None;
@@ -96,16 +108,18 @@ pub(super) fn enforce_markdown_structural_preflight(
             reference_definition_quote_depth,
         )
         .map(|(quote_depth, _)| quote_depth);
-        estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
+        estimated_nodes = estimated_nodes
+            .saturating_add(estimate_structural_nodes(trimmed, paragraph_quote_depth));
         estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(
             trimmed,
             &reference_labels,
             reference_definition_quote.is_some(),
+            estimate_gfm_extensions,
         ));
-        paragraph_quote_depth =
-            reference_definition_quote.or_else(|| paragraph_quote_depth_for_line(trimmed));
+        paragraph_quote_depth = reference_definition_quote
+            .or_else(|| paragraph_quote_depth_for_line(trimmed, paragraph_quote_depth));
         reference_definition_quote_depth = reference_definition_quote;
-        if estimate_tables {
+        if estimate_gfm_extensions {
             if let Some((quote_depth, table_line)) = table_preflight_line(trimmed) {
                 let pipe_cells = pipe_table_cell_count(table_line);
                 if let Some(table) = active_table {
@@ -290,11 +304,11 @@ pub(super) fn count_parsed_markdown_nodes(
     Ok(())
 }
 
-fn is_structural_line(trimmed: &str) -> bool {
+fn is_structural_line(trimmed: &str, paragraph_quote_depth: Option<usize>) -> bool {
     is_atx_heading_line(trimmed)
         || is_thematic_break_line(trimmed)
         || trimmed.starts_with('>')
-        || is_list_item_line(trimmed)
+        || is_list_item_line_for_context(trimmed, paragraph_quote_depth)
         || trimmed.starts_with("```")
         || trimmed.starts_with("~~~")
         || trimmed.starts_with('<')
@@ -308,17 +322,17 @@ fn is_atx_heading_line(trimmed: &str) -> bool {
         && (bytes.len() == marker_count || matches!(bytes[marker_count], b' ' | b'\t'))
 }
 
-fn estimate_structural_nodes(trimmed: &str) -> usize {
+fn estimate_structural_nodes(trimmed: &str, paragraph_quote_depth: Option<usize>) -> usize {
     if is_thematic_break_line(trimmed) {
         1
-    } else if is_list_item_line(trimmed) {
+    } else if is_list_item_line_for_context(trimmed, paragraph_quote_depth) {
         // A compact list item typically expands to list + item + paragraph + text nodes.
         4
     } else if trimmed.starts_with('>') {
-        estimate_blockquote_nodes(trimmed)
+        estimate_blockquote_nodes(trimmed, paragraph_quote_depth)
     } else if is_atx_heading_line(trimmed) {
         estimate_atx_heading_nodes(trimmed)
-    } else if is_structural_line(trimmed) {
+    } else if is_structural_line(trimmed, paragraph_quote_depth) {
         1
     } else if !trimmed.is_empty() {
         2
@@ -355,14 +369,16 @@ fn strip_atx_closing_sequence(content: &str) -> &str {
     }
 }
 
-fn estimate_blockquote_nodes(trimmed: &str) -> usize {
+fn estimate_blockquote_nodes(trimmed: &str, paragraph_quote_depth: Option<usize>) -> usize {
     let (quote_nodes, content) = strip_blockquote_markers(trimmed);
     if quote_nodes == 0 {
         return 0;
     }
+    let content_paragraph_depth =
+        paragraph_quote_depth.and_then(|depth| depth.checked_sub(quote_nodes));
     let content_nodes = active_markdown_line(content)
         .filter(|content| !content.is_empty())
-        .map(estimate_structural_nodes)
+        .map(|content| estimate_structural_nodes(content, content_paragraph_depth))
         .unwrap_or(0);
     quote_nodes.saturating_add(content_nodes)
 }
@@ -382,8 +398,9 @@ fn strip_optional_space_or_tab(line: &str) -> &str {
         .unwrap_or(line)
 }
 
-fn is_list_item_line(trimmed: &str) -> bool {
-    is_unordered_list_item_line(trimmed) || is_ordered_list_item_line(trimmed)
+fn is_list_item_line_for_context(trimmed: &str, paragraph_quote_depth: Option<usize>) -> bool {
+    is_unordered_list_item_line(trimmed)
+        || is_ordered_list_item_line_for_context(trimmed, paragraph_quote_depth)
 }
 
 fn is_unordered_list_item_line(trimmed: &str) -> bool {
@@ -397,16 +414,40 @@ fn marker_followed_by_space_or_tab(trimmed: &str, marker: u8) -> bool {
     bytes.len() >= 2 && bytes[0] == marker && matches!(bytes[1], b' ' | b'\t')
 }
 
-fn is_ordered_list_item_line(trimmed: &str) -> bool {
-    let bytes = trimmed.as_bytes();
+fn is_ordered_list_item_line_for_context(
+    trimmed: &str,
+    paragraph_quote_depth: Option<usize>,
+) -> bool {
+    let Some(start) = ordered_list_marker_start(trimmed) else {
+        return false;
+    };
+    let (quote_depth, _) = strip_blockquote_markers(trimmed);
+    if paragraph_quote_depth.is_some_and(|depth| depth >= quote_depth) {
+        start == 1
+    } else {
+        true
+    }
+}
+
+fn ordered_list_marker_start(trimmed: &str) -> Option<u64> {
+    let (_, content) = strip_blockquote_markers(trimmed);
+    let content = active_markdown_line(content)?;
+    let bytes = content.as_bytes();
     let digit_count = bytes
         .iter()
         .take_while(|byte| byte.is_ascii_digit())
         .count();
     if digit_count == 0 || digit_count > 9 || digit_count + 1 >= bytes.len() {
-        return false;
+        return None;
     }
-    matches!(bytes[digit_count], b'.' | b')') && bytes[digit_count + 1].is_ascii_whitespace()
+    if matches!(bytes[digit_count], b'.' | b')') && bytes[digit_count + 1].is_ascii_whitespace() {
+        std::str::from_utf8(&bytes[..digit_count])
+            .ok()?
+            .parse()
+            .ok()
+    } else {
+        None
+    }
 }
 
 fn is_thematic_break_line(trimmed: &str) -> bool {
@@ -428,11 +469,45 @@ fn is_thematic_break_line(trimmed: &str) -> bool {
     marker_count >= 3
 }
 
+fn is_setext_underline_for_paragraph(trimmed: &str, paragraph_quote_depth: Option<usize>) -> bool {
+    let Some(paragraph_quote_depth) = paragraph_quote_depth else {
+        return false;
+    };
+    let (quote_depth, content) = strip_blockquote_markers(trimmed);
+    if quote_depth != paragraph_quote_depth {
+        return false;
+    }
+    let Some(content) = active_markdown_line(content) else {
+        return false;
+    };
+    is_setext_underline_line(content)
+}
+
+fn is_setext_underline_line(line: &str) -> bool {
+    let line = line.trim();
+    if line.is_empty() {
+        return false;
+    }
+    let Some(marker) = line.as_bytes().first().copied() else {
+        return false;
+    };
+    matches!(marker, b'=' | b'-') && line.as_bytes().iter().all(|byte| *byte == marker)
+}
+
 fn estimate_inline_nodes(
     line: &str,
     reference_labels: &HashSet<String>,
     line_is_reference_definition: bool,
+    estimate_gfm_extensions: bool,
 ) -> usize {
+    if line_is_reference_definition {
+        return 0;
+    }
+    let gfm_nodes = if estimate_gfm_extensions {
+        estimate_gfm_autolink_nodes(line).saturating_add(estimate_strikethrough_nodes(line))
+    } else {
+        0
+    };
     line.matches("](")
         .count()
         .saturating_mul(2)
@@ -444,8 +519,183 @@ fn estimate_inline_nodes(
         .saturating_add(line.matches("![").count())
         .saturating_add(line.matches("**").count() / 2)
         .saturating_add(line.matches("__").count() / 2)
+        .saturating_add(estimate_single_marker_emphasis_nodes(line))
         .saturating_add(line.matches('`').count() / 2)
         .saturating_add(estimate_inline_html_nodes(line))
+        .saturating_add(gfm_nodes)
+}
+
+fn estimate_gfm_autolink_nodes(line: &str) -> usize {
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    let mut estimate = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = (index + 2).min(bytes.len()),
+            b'`' => {
+                let len = backtick_run_len(bytes, index);
+                if let Some(closing_index) = matching_backtick_run(bytes, index + len, len) {
+                    index = closing_index + len;
+                } else {
+                    index += len;
+                }
+            }
+            b']' if bytes.get(index + 1).copied() == Some(b'(') => {
+                index = explicit_link_destination_end(bytes, index + 2).unwrap_or(index + 1);
+            }
+            _ if is_gfm_url_autolink_start(bytes, index) => {
+                estimate = estimate.saturating_add(2);
+                index = autolink_token_end(bytes, index);
+            }
+            _ if is_autolink_token_boundary(bytes, index) => {
+                let end = autolink_token_end(bytes, index);
+                if looks_like_email_autolink(&line[index..end]) {
+                    estimate = estimate.saturating_add(2);
+                    index = end;
+                } else {
+                    index += 1;
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    estimate
+}
+
+fn explicit_link_destination_end(bytes: &[u8], mut index: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = (index + 2).min(bytes.len()),
+            b'(' => {
+                depth = depth.saturating_add(1);
+                index += 1;
+            }
+            b')' => {
+                depth = depth.checked_sub(1)?;
+                index += 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn is_gfm_url_autolink_start(bytes: &[u8], index: usize) -> bool {
+    is_autolink_token_boundary(bytes, index)
+        && (starts_with_ascii(bytes, index, b"http://")
+            || starts_with_ascii(bytes, index, b"https://")
+            || starts_with_ascii(bytes, index, b"www."))
+}
+
+fn starts_with_ascii(bytes: &[u8], index: usize, prefix: &[u8]) -> bool {
+    bytes
+        .get(index..index.saturating_add(prefix.len()))
+        .is_some_and(|value| value.eq_ignore_ascii_case(prefix))
+}
+
+fn is_autolink_token_boundary(bytes: &[u8], index: usize) -> bool {
+    index == 0 || bytes[index - 1].is_ascii_whitespace() || matches!(bytes[index - 1], b'(' | b'[')
+}
+
+fn autolink_token_end(bytes: &[u8], mut index: usize) -> usize {
+    while index < bytes.len() {
+        if bytes[index].is_ascii_whitespace() || matches!(bytes[index], b'<' | b'>') {
+            break;
+        }
+        index += 1;
+    }
+    index
+}
+
+fn looks_like_email_autolink(token: &str) -> bool {
+    let token = token.trim_matches(|ch: char| matches!(ch, '.' | ',' | ';' | ':' | '!' | '?'));
+    let Some(at) = token.find('@') else {
+        return false;
+    };
+    at > 0
+        && token[at + 1..].contains('.')
+        && token[..at]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b'-'))
+        && token[at + 1..]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
+fn estimate_single_marker_emphasis_nodes(line: &str) -> usize {
+    estimate_delimited_inline_nodes(line, b'*', 1)
+        .saturating_add(estimate_delimited_inline_nodes(line, b'_', 1))
+}
+
+fn estimate_strikethrough_nodes(line: &str) -> usize {
+    estimate_delimited_inline_nodes(line, b'~', 2)
+}
+
+fn estimate_delimited_inline_nodes(line: &str, marker: u8, delimiter_len: usize) -> usize {
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    let mut delimiters = 0usize;
+    let mut single_marker_open = false;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = (index + 2).min(bytes.len()),
+            b'`' => {
+                let len = backtick_run_len(bytes, index);
+                if let Some(closing_index) = matching_backtick_run(bytes, index + len, len) {
+                    index = closing_index + len;
+                } else {
+                    index += len;
+                }
+            }
+            byte if byte == marker => {
+                let run_len = bytes[index..]
+                    .iter()
+                    .take_while(|byte| **byte == marker)
+                    .count();
+                if delimiter_len == 1 {
+                    if run_len == 1 {
+                        let (can_open, can_close) =
+                            single_emphasis_marker_sides(bytes, index, marker);
+                        if single_marker_open && can_close {
+                            delimiters = delimiters.saturating_add(2);
+                            single_marker_open = false;
+                        } else if can_open {
+                            single_marker_open = true;
+                        }
+                    }
+                } else {
+                    delimiters = delimiters.saturating_add(run_len / delimiter_len);
+                }
+                index += run_len;
+            }
+            _ => index += 1,
+        }
+    }
+    delimiters / 2
+}
+
+fn single_emphasis_marker_sides(bytes: &[u8], index: usize, marker: u8) -> (bool, bool) {
+    let prev_space = index > 0 && bytes[index - 1].is_ascii_whitespace();
+    let next_space = bytes
+        .get(index + 1)
+        .is_some_and(|byte| byte.is_ascii_whitespace());
+    let mut can_open = !next_space && index + 1 < bytes.len();
+    let mut can_close = !prev_space && index > 0;
+    if marker == b'_' {
+        let prev_alnum = index > 0 && bytes[index - 1].is_ascii_alphanumeric();
+        let next_alnum = bytes
+            .get(index + 1)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric());
+        if prev_alnum && next_alnum {
+            can_open = false;
+            can_close = false;
+        }
+    }
+    (can_open, can_close)
 }
 
 fn estimate_reference_link_nodes(
@@ -573,6 +823,13 @@ fn collect_link_reference_labels(input: &str) -> HashSet<String> {
             reference_definition_quote_depth = None;
             continue;
         }
+        if reference_definition_quote_depth.is_none()
+            && is_setext_underline_for_paragraph(trimmed, paragraph_quote_depth)
+        {
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
+            continue;
+        }
 
         if let Some((quote_depth, label)) = effective_link_reference_definition(
             trimmed,
@@ -584,8 +841,8 @@ fn collect_link_reference_labels(input: &str) -> HashSet<String> {
         } else {
             reference_definition_quote_depth = None;
         }
-        paragraph_quote_depth =
-            reference_definition_quote_depth.or_else(|| paragraph_quote_depth_for_line(trimmed));
+        paragraph_quote_depth = reference_definition_quote_depth
+            .or_else(|| paragraph_quote_depth_for_line(trimmed, paragraph_quote_depth));
     }
     labels
 }
@@ -751,21 +1008,26 @@ fn estimate_inline_html_nodes(line: &str) -> usize {
         .count()
 }
 
-fn is_paragraph_content_line(trimmed: &str) -> bool {
+fn is_paragraph_content_line(trimmed: &str, paragraph_quote_depth: Option<usize>) -> bool {
     !trimmed.is_empty()
         && !trimmed.starts_with('>')
         && !is_atx_heading_line(trimmed)
         && !is_thematic_break_line(trimmed)
-        && !is_list_item_line(trimmed)
+        && !is_list_item_line_for_context(trimmed, paragraph_quote_depth)
         && !trimmed.starts_with("```")
         && !trimmed.starts_with("~~~")
         && !is_table_separator_line(trimmed)
 }
 
-fn paragraph_quote_depth_for_line(trimmed: &str) -> Option<usize> {
+fn paragraph_quote_depth_for_line(
+    trimmed: &str,
+    paragraph_quote_depth: Option<usize>,
+) -> Option<usize> {
     let (quote_depth, content) = strip_blockquote_markers(trimmed);
     let content = active_markdown_line(content)?;
-    is_paragraph_content_line(content).then_some(quote_depth)
+    let content_paragraph_depth =
+        paragraph_quote_depth.and_then(|depth| depth.checked_sub(quote_depth));
+    is_paragraph_content_line(content, content_paragraph_depth).then_some(quote_depth)
 }
 
 fn opening_html_block_line(trimmed: &str) -> Option<ActiveHtmlBlock> {
@@ -1386,6 +1648,18 @@ mod tests {
     }
 
     #[test]
+    fn preflight_allows_setext_headings_without_underline_node_growth() {
+        let input = "Title\n===\nSubtitle\n---\n";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("setext underline lines should not add paragraph nodes");
+    }
+
+    #[test]
     fn preflight_allows_empty_atx_headings_with_closing_markers() {
         let input = "# #\n".repeat(2);
         let options = NormalizationOptions {
@@ -1407,6 +1681,102 @@ mod tests {
 
         let err = enforce_markdown_structural_preflight(&input, true, &options)
             .expect_err("compact list-heavy input should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_treats_non_one_ordered_marker_inside_paragraph_as_text() {
+        let input = "intro\n2. not a list\n3. still paragraph\n";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("ordered markers above one should not interrupt an active paragraph");
+    }
+
+    #[test]
+    fn preflight_keeps_one_ordered_marker_as_paragraph_interrupting_list() {
+        let input = "intro\n1. list\n";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("ordered marker one can interrupt an active paragraph");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_gfm_autolinks_before_parsing() {
+        let input = "https://example.com support@example.com ".repeat(3);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("GFM autolinks should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_ignores_gfm_autolinks_when_extensions_are_disabled() {
+        let input = "https://example.com support@example.com ".repeat(3);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, false, &options)
+            .expect("CommonMark mode should not count GFM bare URL autolinks");
+    }
+
+    #[test]
+    fn preflight_does_not_double_count_angle_bracket_autolinks_as_gfm_bare_links() {
+        let input = "<https://example.com> <user@example.com>";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("angle-bracket autolinks should not also count as GFM bare autolinks");
+    }
+
+    #[test]
+    fn preflight_counts_single_marker_emphasis_before_parsing() {
+        let input = "*x* _y_ ".repeat(4);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("single-marker emphasis should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_gfm_strikethrough_before_parsing() {
+        let input = "~~x~~ ".repeat(6);
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("GFM strikethrough should exceed the preflight node estimate");
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
         assert!(err.message.contains("max_markdown_nodes"));
@@ -1459,7 +1829,7 @@ mod tests {
 
     #[test]
     fn preflight_ignores_undefined_reference_labels() {
-        let input = "A [not-a-link]\n[real]: https://example.com";
+        let input = "A [not-a-link]\n[real]: not-url";
         let options = NormalizationOptions {
             max_markdown_nodes: 5,
             ..NormalizationOptions::default()
@@ -1638,7 +2008,7 @@ mod tests {
 
     #[test]
     fn preflight_ignores_reference_definition_inside_paragraph() {
-        let input = "intro\n[x]: https://example.com\nA [x] [x] [x] [x] [x]";
+        let input = "intro\n[x]: not-url\nA [x] [x] [x] [x] [x]";
         let options = NormalizationOptions {
             max_markdown_nodes: 7,
             ..NormalizationOptions::default()
@@ -1665,7 +2035,7 @@ mod tests {
 
     #[test]
     fn preflight_ignores_blockquote_reference_definition_inside_paragraph() {
-        let input = "> intro\n> [x]: https://example.com\n> A [x] [x] [x] [x] [x]";
+        let input = "> intro\n> [x]: not-url\n> A [x] [x] [x] [x] [x]";
         let options = NormalizationOptions {
             max_markdown_nodes: 10,
             ..NormalizationOptions::default()
@@ -1678,7 +2048,7 @@ mod tests {
 
     #[test]
     fn preflight_ignores_blockquote_lazy_continuation_reference_definition_inside_paragraph() {
-        let input = "> intro\n[x]: https://example.com\nA [x] [x] [x] [x] [x]";
+        let input = "> intro\n[x]: not-url\nA [x] [x] [x] [x] [x]";
         let options = NormalizationOptions {
             max_markdown_nodes: 8,
             ..NormalizationOptions::default()
