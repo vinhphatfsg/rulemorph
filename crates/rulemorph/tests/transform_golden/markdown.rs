@@ -137,6 +137,44 @@ mappings:
 }
 
 #[test]
+fn markdown_does_not_reject_hidden_body_text_aggregate() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      body_text: false
+      blocks: false
+      links: false
+      images: false
+      code_blocks: false
+      tables: false
+      raw_html: false
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 8,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("small\n\nsmall\n\nsmall"),
+        None,
+        &options,
+    )
+    .expect("hidden document body_text aggregate should not fail");
+
+    assert_eq!(output, serde_json::json!([{ "record_type": "document" }]));
+}
+
+#[test]
 fn markdown_rejects_oversized_code_block_text_during_collection() {
     let rule = parse_rule_file(
         r#"
@@ -173,6 +211,104 @@ mappings:
 
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
     assert!(err.message.contains("max_text_bytes"));
+}
+
+#[test]
+fn markdown_omits_oversized_inline_raw_html_when_disabled() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      raw_html: false
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "blocks"
+    source: "input.blocks"
+  - target: "raw_html"
+    source: "input.raw_html"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 16,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("ok <span data-x=\"oversized-raw-literal\"></span>"),
+        None,
+        &options,
+    )
+    .expect("disabled inline raw HTML should not fail on omitted literal size");
+
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "body_text": "ok",
+            "blocks": [{
+                "id": "b1",
+                "type": "paragraph",
+                "section_id": "preamble",
+                "parent_block_id": null,
+                "text": "ok",
+                "inlines": [{ "type": "text", "text": "ok " }]
+            }]
+        }])
+    );
+}
+
+#[test]
+fn markdown_omits_oversized_block_raw_html_when_disabled() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: markdown
+  markdown:
+    include:
+      raw_html: false
+mappings:
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "blocks"
+    source: "input.blocks"
+  - target: "raw_html"
+    source: "input.raw_html"
+"#,
+    )
+    .expect("parse markdown rule");
+    let options = NormalizationOptions {
+        max_text_bytes: 16,
+        ..NormalizationOptions::default()
+    };
+
+    let output = transform_input_with_options(
+        &rule,
+        InputData::Text("<div data-x=\"oversized-raw-literal\">ok</div>"),
+        None,
+        &options,
+    )
+    .expect("disabled block raw HTML should not fail on omitted literal size");
+
+    assert_eq!(
+        output,
+        serde_json::json!([{
+            "body_text": "ok",
+            "blocks": [{
+                "id": "b1",
+                "type": "html_block",
+                "section_id": "preamble",
+                "parent_block_id": null,
+                "text": "ok",
+                "inlines": []
+            }]
+        }])
+    );
 }
 
 #[test]

@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use comrak::nodes::{Node, NodeValue};
 
 use crate::error::{TransformError, TransformErrorKind};
@@ -12,9 +14,13 @@ pub(super) fn enforce_markdown_structural_preflight(
     let mut estimated_nodes = 1usize;
     let mut estimated_table_cells = 0usize;
     let mut active_fence: Option<ActiveFence> = None;
+    let mut active_html_block: Option<ActiveHtmlBlock> = None;
     let mut pending_table_header_cells: Option<TableHeaderCandidate> = None;
     let mut active_table: Option<TableState> = None;
     let mut in_indented_code = false;
+    let mut paragraph_quote_depth: Option<usize> = None;
+    let mut reference_definition_quote_depth: Option<usize> = None;
+    let reference_labels = collect_link_reference_labels(input);
     for line in input.lines() {
         if let Some(active) = active_fence {
             if let Some(fence_line) = fence_line_content(line, active.quote_depth)
@@ -27,6 +33,20 @@ pub(super) fn enforce_markdown_structural_preflight(
             continue;
         }
 
+        if let Some(active) = active_html_block {
+            if let Some(html_line) = html_block_content_line(line, active.quote_depth) {
+                if html_block_ends_on_line(html_line, active.end) {
+                    active_html_block = None;
+                }
+                pending_table_header_cells = None;
+                active_table = None;
+                enforce_markdown_node_count(estimated_nodes, options)?;
+                enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+                continue;
+            }
+            active_html_block = None;
+        }
+
         let Some(trimmed) = active_markdown_line(line) else {
             if !in_indented_code {
                 estimated_nodes = estimated_nodes.saturating_add(1);
@@ -34,6 +54,8 @@ pub(super) fn enforce_markdown_structural_preflight(
             }
             pending_table_header_cells = None;
             active_table = None;
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
             enforce_markdown_node_count(estimated_nodes, options)?;
             enforce_markdown_table_cell_count(estimated_table_cells, options)?;
             continue;
@@ -45,12 +67,44 @@ pub(super) fn enforce_markdown_structural_preflight(
             active_fence = Some(active);
             pending_table_header_cells = None;
             active_table = None;
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
             enforce_markdown_node_count(estimated_nodes, options)?;
             enforce_markdown_table_cell_count(estimated_table_cells, options)?;
             continue;
         }
+        if let Some(active) = opening_html_block_line(trimmed)
+            && can_start_html_block(active, paragraph_quote_depth)
+        {
+            estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
+            if let Some(html_line) = html_block_content_line(trimmed, active.quote_depth)
+                && !html_block_ends_on_line(html_line, active.end)
+            {
+                active_html_block = Some(active);
+            }
+            pending_table_header_cells = None;
+            active_table = None;
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
+            enforce_markdown_node_count(estimated_nodes, options)?;
+            enforce_markdown_table_cell_count(estimated_table_cells, options)?;
+            continue;
+        }
+        let reference_definition_quote = effective_link_reference_definition(
+            trimmed,
+            paragraph_quote_depth,
+            reference_definition_quote_depth,
+        )
+        .map(|(quote_depth, _)| quote_depth);
         estimated_nodes = estimated_nodes.saturating_add(estimate_structural_nodes(trimmed));
-        estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(trimmed));
+        estimated_nodes = estimated_nodes.saturating_add(estimate_inline_nodes(
+            trimmed,
+            &reference_labels,
+            reference_definition_quote.is_some(),
+        ));
+        paragraph_quote_depth =
+            reference_definition_quote.or_else(|| paragraph_quote_depth_for_line(trimmed));
+        reference_definition_quote_depth = reference_definition_quote;
         if estimate_tables {
             if let Some((quote_depth, table_line)) = table_preflight_line(trimmed) {
                 let pipe_cells = pipe_table_cell_count(table_line);
@@ -122,6 +176,20 @@ struct ActiveFence {
 }
 
 #[derive(Clone, Copy)]
+struct ActiveHtmlBlock {
+    end: HtmlBlockEnd,
+    quote_depth: usize,
+    can_interrupt_paragraph: bool,
+}
+
+#[derive(Clone, Copy)]
+enum HtmlBlockEnd {
+    ClosingTag(&'static str),
+    Contains(&'static str),
+    BlankLine,
+}
+
+#[derive(Clone, Copy)]
 struct TableHeaderCandidate {
     cells: usize,
     quote_depth: usize,
@@ -176,11 +244,24 @@ fn active_markdown_line(line: &str) -> Option<&str> {
 }
 
 fn fence_line_content(line: &str, quote_depth: usize) -> Option<&str> {
+    block_content_line(line, quote_depth)
+}
+
+fn block_content_line(line: &str, quote_depth: usize) -> Option<&str> {
     let active = active_markdown_line(line)?;
     let (line_quote_depth, content) = strip_blockquote_markers(active);
     (line_quote_depth == quote_depth)
         .then(|| active_markdown_line(content))
         .flatten()
+}
+
+fn html_block_content_line(line: &str, quote_depth: usize) -> Option<&str> {
+    if quote_depth == 0 {
+        return Some(line);
+    }
+    let active = active_markdown_line(line)?;
+    let (line_quote_depth, content) = strip_blockquote_markers(active);
+    (line_quote_depth == quote_depth).then_some(content)
 }
 
 fn is_closing_fence(trimmed: &str, fence: Fence) -> bool {
@@ -211,6 +292,7 @@ pub(super) fn count_parsed_markdown_nodes(
 
 fn is_structural_line(trimmed: &str) -> bool {
     is_atx_heading_line(trimmed)
+        || is_thematic_break_line(trimmed)
         || trimmed.starts_with('>')
         || is_list_item_line(trimmed)
         || trimmed.starts_with("```")
@@ -227,7 +309,9 @@ fn is_atx_heading_line(trimmed: &str) -> bool {
 }
 
 fn estimate_structural_nodes(trimmed: &str) -> usize {
-    if is_list_item_line(trimmed) {
+    if is_thematic_break_line(trimmed) {
+        1
+    } else if is_list_item_line(trimmed) {
         // A compact list item typically expands to list + item + paragraph + text nodes.
         4
     } else if trimmed.starts_with('>') {
@@ -325,15 +409,339 @@ fn is_ordered_list_item_line(trimmed: &str) -> bool {
     matches!(bytes[digit_count], b'.' | b')') && bytes[digit_count + 1].is_ascii_whitespace()
 }
 
-fn estimate_inline_nodes(line: &str) -> usize {
+fn is_thematic_break_line(trimmed: &str) -> bool {
+    let mut marker = None;
+    let mut marker_count = 0usize;
+    for byte in trimmed.bytes() {
+        if byte.is_ascii_whitespace() {
+            continue;
+        }
+        match marker {
+            None if matches!(byte, b'-' | b'*' | b'_') => {
+                marker = Some(byte);
+                marker_count += 1;
+            }
+            Some(active) if byte == active => marker_count += 1,
+            _ => return false,
+        }
+    }
+    marker_count >= 3
+}
+
+fn estimate_inline_nodes(
+    line: &str,
+    reference_labels: &HashSet<String>,
+    line_is_reference_definition: bool,
+) -> usize {
     line.matches("](")
         .count()
         .saturating_mul(2)
+        .saturating_add(estimate_reference_link_nodes(
+            line,
+            reference_labels,
+            line_is_reference_definition,
+        ))
         .saturating_add(line.matches("![").count())
         .saturating_add(line.matches("**").count() / 2)
         .saturating_add(line.matches("__").count() / 2)
         .saturating_add(line.matches('`').count() / 2)
         .saturating_add(estimate_inline_html_nodes(line))
+}
+
+fn estimate_reference_link_nodes(
+    line: &str,
+    reference_labels: &HashSet<String>,
+    line_is_reference_definition: bool,
+) -> usize {
+    if reference_labels.is_empty() || line_is_reference_definition {
+        return 0;
+    }
+
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    let mut estimate = 0usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = (index + 2).min(bytes.len()),
+            b'`' => {
+                let len = backtick_run_len(bytes, index);
+                if let Some(closing_index) = matching_backtick_run(bytes, index + len, len) {
+                    index = closing_index + len;
+                } else {
+                    index += len;
+                }
+            }
+            b'[' => {
+                if index > 0 && bytes[index - 1] == b'!' {
+                    index += 1;
+                    continue;
+                }
+                let Some(close_index) = matching_closing_bracket(bytes, index + 1) else {
+                    index += 1;
+                    continue;
+                };
+                let link_label = reference_label_from_bytes(bytes, index + 1, close_index);
+                match bytes.get(close_index + 1).copied() {
+                    Some(b'(') => index = close_index + 1,
+                    Some(b'[') => {
+                        let label_start = close_index + 2;
+                        let Some(label_close) = matching_closing_bracket(bytes, label_start) else {
+                            index = label_start;
+                            continue;
+                        };
+                        let label = reference_label_from_bytes(bytes, label_start, label_close)
+                            .or_else(|| link_label.clone());
+                        if label.is_some_and(|label| reference_labels.contains(&label)) {
+                            estimate = estimate.saturating_add(2);
+                        }
+                        index = label_close + 1;
+                    }
+                    _ => {
+                        if link_label
+                            .as_ref()
+                            .is_some_and(|label| reference_labels.contains(label))
+                        {
+                            estimate = estimate.saturating_add(2);
+                        }
+                        index = close_index + 1;
+                    }
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    estimate
+}
+
+fn matching_closing_bracket(bytes: &[u8], mut index: usize) -> Option<usize> {
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\\' => index = (index + 2).min(bytes.len()),
+            b']' => return Some(index),
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+fn collect_link_reference_labels(input: &str) -> HashSet<String> {
+    let mut active_fence: Option<ActiveFence> = None;
+    let mut active_html_block: Option<ActiveHtmlBlock> = None;
+    let mut paragraph_quote_depth: Option<usize> = None;
+    let mut reference_definition_quote_depth: Option<usize> = None;
+    let mut labels = HashSet::new();
+    for line in input.lines() {
+        if let Some(active) = active_fence {
+            if let Some(fence_line) = fence_line_content(line, active.quote_depth)
+                && is_closing_fence(fence_line, active.fence)
+            {
+                active_fence = None;
+            }
+            continue;
+        }
+
+        if let Some(active) = active_html_block {
+            if let Some(html_line) = html_block_content_line(line, active.quote_depth) {
+                if html_block_ends_on_line(html_line, active.end) {
+                    active_html_block = None;
+                }
+                continue;
+            }
+            active_html_block = None;
+        }
+
+        let Some(trimmed) = active_markdown_line(line) else {
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
+            continue;
+        };
+        if let Some(active) = opening_fence_line(trimmed) {
+            active_fence = Some(active);
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
+            continue;
+        }
+        if let Some(active) = opening_html_block_line(trimmed)
+            && can_start_html_block(active, paragraph_quote_depth)
+        {
+            if let Some(html_line) = html_block_content_line(trimmed, active.quote_depth)
+                && !html_block_ends_on_line(html_line, active.end)
+            {
+                active_html_block = Some(active);
+            }
+            paragraph_quote_depth = None;
+            reference_definition_quote_depth = None;
+            continue;
+        }
+
+        if let Some((quote_depth, label)) = effective_link_reference_definition(
+            trimmed,
+            paragraph_quote_depth,
+            reference_definition_quote_depth,
+        ) {
+            labels.insert(label);
+            reference_definition_quote_depth = Some(quote_depth);
+        } else {
+            reference_definition_quote_depth = None;
+        }
+        paragraph_quote_depth =
+            reference_definition_quote_depth.or_else(|| paragraph_quote_depth_for_line(trimmed));
+    }
+    labels
+}
+
+fn effective_link_reference_definition(
+    line: &str,
+    paragraph_quote_depth: Option<usize>,
+    reference_definition_quote_depth: Option<usize>,
+) -> Option<(usize, String)> {
+    let (quote_depth, label) = link_reference_definition_label_with_quote_depth(line)?;
+    if let Some(paragraph_quote_depth) = paragraph_quote_depth
+        && paragraph_quote_depth > quote_depth
+    {
+        return (reference_definition_quote_depth == Some(paragraph_quote_depth))
+            .then_some((paragraph_quote_depth, label));
+    }
+    (paragraph_quote_depth != Some(quote_depth)
+        || reference_definition_quote_depth == Some(quote_depth))
+    .then_some((quote_depth, label))
+}
+
+fn link_reference_definition_label_with_quote_depth(line: &str) -> Option<(usize, String)> {
+    let (quote_depth, content) = strip_blockquote_markers(line);
+    active_markdown_line(content)
+        .and_then(link_reference_definition_label)
+        .map(|label| (quote_depth, label))
+}
+
+fn link_reference_definition_label(line: &str) -> Option<String> {
+    let trimmed = line.trim_start();
+    let bytes = trimmed.as_bytes();
+    if bytes.first().copied() != Some(b'[') {
+        return None;
+    }
+    let close_index = matching_closing_bracket(bytes, 1)?;
+    if bytes.get(close_index + 1).copied() != Some(b':') {
+        return None;
+    }
+    if !has_link_reference_destination(&trimmed[close_index + 2..]) {
+        return None;
+    }
+    reference_label_from_bytes(bytes, 1, close_index)
+}
+
+fn has_link_reference_destination(rest: &str) -> bool {
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return false;
+    }
+    let rest = if let Some(destination) = rest.strip_prefix('<') {
+        let Some(tail) = bracketed_link_reference_destination_tail(destination) else {
+            return false;
+        };
+        tail
+    } else {
+        let Some(tail) = unbracketed_link_reference_destination_tail(rest) else {
+            return false;
+        };
+        tail
+    }
+    .trim_start();
+
+    rest.is_empty() || has_link_reference_title(rest)
+}
+
+fn bracketed_link_reference_destination_tail(destination: &str) -> Option<&str> {
+    let mut escaped = false;
+    for (index, value) in destination.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if value == '\\' {
+            escaped = true;
+            continue;
+        }
+        match value {
+            '<' => return None,
+            '>' => return Some(&destination[index + value.len_utf8()..]),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn unbracketed_link_reference_destination_tail(rest: &str) -> Option<&str> {
+    let mut escaped = false;
+    let mut paren_depth = 0usize;
+    let mut end = rest.len();
+    for (index, value) in rest.char_indices() {
+        if escaped {
+            escaped = false;
+            if value.is_whitespace() {
+                end = index;
+                break;
+            }
+            continue;
+        }
+        if value == '\\' {
+            escaped = true;
+            continue;
+        }
+        if value.is_whitespace() {
+            end = index;
+            break;
+        }
+        match value {
+            '(' => paren_depth = paren_depth.saturating_add(1),
+            ')' => paren_depth = paren_depth.checked_sub(1)?,
+            '<' => return None,
+            _ => {}
+        }
+    }
+    if end == 0 || paren_depth != 0 {
+        return None;
+    }
+    Some(&rest[end..])
+}
+
+fn has_link_reference_title(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    let Some(opener) = chars.next() else {
+        return true;
+    };
+    let closer = match opener {
+        '"' => '"',
+        '\'' => '\'',
+        '(' => ')',
+        _ => return false,
+    };
+    let mut escaped = false;
+    for (index, value) in rest.char_indices().skip(1) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if value == '\\' {
+            escaped = true;
+            continue;
+        }
+        if value == closer {
+            return rest[index + value.len_utf8()..].trim().is_empty();
+        }
+    }
+    false
+}
+
+fn reference_label_from_bytes(bytes: &[u8], start: usize, end: usize) -> Option<String> {
+    std::str::from_utf8(bytes.get(start..end)?)
+        .ok()
+        .and_then(normalize_reference_label)
+}
+
+fn normalize_reference_label(label: &str) -> Option<String> {
+    let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!label.is_empty()).then(|| label.to_lowercase())
 }
 
 fn estimate_inline_html_nodes(line: &str) -> usize {
@@ -342,6 +750,232 @@ fn estimate_inline_html_nodes(line: &str) -> usize {
         .filter(|window| window[0] == b'<' && window[1].is_ascii_alphabetic())
         .count()
 }
+
+fn is_paragraph_content_line(trimmed: &str) -> bool {
+    !trimmed.is_empty()
+        && !trimmed.starts_with('>')
+        && !is_atx_heading_line(trimmed)
+        && !is_thematic_break_line(trimmed)
+        && !is_list_item_line(trimmed)
+        && !trimmed.starts_with("```")
+        && !trimmed.starts_with("~~~")
+        && !is_table_separator_line(trimmed)
+}
+
+fn paragraph_quote_depth_for_line(trimmed: &str) -> Option<usize> {
+    let (quote_depth, content) = strip_blockquote_markers(trimmed);
+    let content = active_markdown_line(content)?;
+    is_paragraph_content_line(content).then_some(quote_depth)
+}
+
+fn opening_html_block_line(trimmed: &str) -> Option<ActiveHtmlBlock> {
+    let (quote_depth, content) = strip_blockquote_markers(trimmed);
+    let content = active_markdown_line(content)?;
+    opening_html_block_end(content).map(|(end, can_interrupt_paragraph)| ActiveHtmlBlock {
+        end,
+        quote_depth,
+        can_interrupt_paragraph,
+    })
+}
+
+fn opening_html_block_end(line: &str) -> Option<(HtmlBlockEnd, bool)> {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("<!--") {
+        return Some((HtmlBlockEnd::Contains("-->"), true));
+    }
+    if trimmed.starts_with("<?") {
+        return Some((HtmlBlockEnd::Contains("?>"), true));
+    }
+    if starts_with_ignore_ascii_case(trimmed, "<![CDATA[") {
+        return Some((HtmlBlockEnd::Contains("]]>"), true));
+    }
+    if starts_with_html_declaration(trimmed) {
+        return Some((HtmlBlockEnd::Contains(">"), true));
+    }
+    if let Some(tag) = ["script", "pre", "style", "textarea"]
+        .into_iter()
+        .find(|tag| starts_with_html_open_tag(trimmed, tag))
+    {
+        return Some((HtmlBlockEnd::ClosingTag(tag), true));
+    }
+    if let Some(_) = html_block_tag(trimmed) {
+        return Some((HtmlBlockEnd::BlankLine, true));
+    }
+    if starts_with_complete_html_tag_line(trimmed) {
+        return Some((HtmlBlockEnd::BlankLine, false));
+    }
+    None
+}
+
+fn can_start_html_block(active: ActiveHtmlBlock, paragraph_quote_depth: Option<usize>) -> bool {
+    active.can_interrupt_paragraph || paragraph_quote_depth != Some(active.quote_depth)
+}
+
+fn starts_with_html_open_tag(line: &str, tag: &str) -> bool {
+    starts_with_html_tag(line, tag, false)
+}
+
+fn html_block_tag(line: &str) -> Option<&'static str> {
+    HTML_BLOCK_TAGS
+        .into_iter()
+        .find(|tag| starts_with_html_tag(line, tag, true))
+        .copied()
+}
+
+fn starts_with_html_tag(line: &str, tag: &str, allow_closing: bool) -> bool {
+    let trimmed = line.trim_start();
+    let bytes = trimmed.as_bytes();
+    let tag_bytes = tag.as_bytes();
+    if bytes.first().copied() != Some(b'<') {
+        return false;
+    }
+    let tag_start = if allow_closing && bytes.get(1).copied() == Some(b'/') {
+        2
+    } else {
+        1
+    };
+    if bytes.len() < tag_start + tag_bytes.len() {
+        return false;
+    }
+    bytes[tag_start..tag_start + tag_bytes.len()].eq_ignore_ascii_case(tag_bytes)
+        && matches!(
+            bytes.get(tag_start + tag_bytes.len()).copied(),
+            None | Some(b' ' | b'\t' | b'>' | b'/')
+        )
+}
+
+fn starts_with_html_declaration(trimmed: &str) -> bool {
+    let bytes = trimmed.as_bytes();
+    bytes.len() >= 3 && bytes[0] == b'<' && bytes[1] == b'!' && bytes[2].is_ascii_alphabetic()
+}
+
+fn starts_with_complete_html_tag_line(line: &str) -> bool {
+    let bytes = line.trim_start().as_bytes();
+    if bytes.first().copied() != Some(b'<') {
+        return false;
+    }
+    let mut index = 1usize;
+    if bytes.get(index).copied() == Some(b'/') {
+        index += 1;
+    }
+    let Some(first) = bytes.get(index).copied() else {
+        return false;
+    };
+    if !first.is_ascii_alphabetic() {
+        return false;
+    }
+    index += 1;
+    while bytes
+        .get(index)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        index += 1;
+    }
+    if !matches!(
+        bytes.get(index).copied(),
+        None | Some(b' ' | b'\t' | b'>' | b'/')
+    ) {
+        return false;
+    }
+    let mut quote = None;
+    while index < bytes.len() {
+        match (quote, bytes[index]) {
+            (Some(active), byte) if byte == active => quote = None,
+            (None, b'"' | b'\'') => quote = Some(bytes[index]),
+            (None, b'>') => {
+                return bytes[index + 1..].iter().all(u8::is_ascii_whitespace);
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    false
+}
+
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    value.len() >= prefix.len()
+        && value.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+}
+
+fn html_block_ends_on_line(line: &str, end: HtmlBlockEnd) -> bool {
+    match end {
+        HtmlBlockEnd::ClosingTag(tag) => contains_html_closing_tag(line, tag),
+        HtmlBlockEnd::Contains(needle) => line.contains(needle),
+        HtmlBlockEnd::BlankLine => line.trim().is_empty(),
+    }
+}
+
+fn contains_html_closing_tag(line: &str, tag: &str) -> bool {
+    let needle = format!("</{tag}");
+    line.as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+const HTML_BLOCK_TAGS: &[&str] = &[
+    "address",
+    "article",
+    "aside",
+    "base",
+    "basefont",
+    "blockquote",
+    "body",
+    "caption",
+    "center",
+    "col",
+    "colgroup",
+    "dd",
+    "details",
+    "dialog",
+    "dir",
+    "div",
+    "dl",
+    "dt",
+    "fieldset",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "frame",
+    "frameset",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "head",
+    "header",
+    "hr",
+    "html",
+    "iframe",
+    "legend",
+    "li",
+    "link",
+    "main",
+    "menu",
+    "menuitem",
+    "nav",
+    "noframes",
+    "ol",
+    "optgroup",
+    "option",
+    "p",
+    "param",
+    "search",
+    "section",
+    "summary",
+    "table",
+    "tbody",
+    "td",
+    "tfoot",
+    "th",
+    "thead",
+    "title",
+    "tr",
+    "track",
+    "ul",
+];
 
 fn pipe_table_cell_count(line: &str) -> Option<usize> {
     split_table_cells(line).map(|cells| cells.len())
@@ -531,6 +1165,115 @@ mod tests {
     }
 
     #[test]
+    fn preflight_skips_inline_estimate_inside_html_block() {
+        let input = format!("<pre>\n{}\n</pre>", "[x](https://example.com)\n".repeat(8));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 2,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("link-like text inside an HTML block should not count as Markdown nodes");
+    }
+
+    #[test]
+    fn preflight_skips_inline_estimate_inside_block_html_tag() {
+        let input = format!("<div>\n{}</div>", "[x](https://example.com)\n".repeat(8));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 2,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("link-like text inside a block HTML tag should not count as Markdown nodes");
+    }
+
+    #[test]
+    fn preflight_skips_inline_estimate_inside_complete_html_tag_block() {
+        let input = format!(
+            "<custom-element>\n{}</custom-element>",
+            "[x](https://example.com)\n".repeat(8)
+        );
+        let options = NormalizationOptions {
+            max_markdown_nodes: 2,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options).expect(
+            "link-like text inside a complete HTML tag block should not count as Markdown nodes",
+        );
+    }
+
+    #[test]
+    fn preflight_does_not_start_complete_html_tag_block_inside_paragraph() {
+        let input = format!(
+            "paragraph\n<custom-element>\n{}</custom-element>",
+            "[x](https://example.com)\n".repeat(4)
+        );
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("type 7 HTML blocks should not hide Markdown while a paragraph is active");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_does_not_start_complete_html_tag_block_inside_blockquote_paragraph() {
+        let input = format!(
+            "> paragraph\n> <custom-element>\n> {}</custom-element>",
+            "[x](https://example.com)\n".repeat(4)
+        );
+        let options = NormalizationOptions {
+            max_markdown_nodes: 10,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options).expect_err(
+            "type 7 HTML blocks should not hide Markdown inside a blockquote paragraph",
+        );
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_does_not_start_complete_html_tag_block_after_reference_definition() {
+        let input = "[x]: https://example.com\n<custom-element>\n[x](https://example.com)\n</custom-element>";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 4,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options).expect_err(
+            "reference definitions should keep type 7 HTML tags inside the paragraph preflight",
+        );
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_does_not_start_complete_html_tag_block_after_blockquote_reference_definition() {
+        let input = "> [x]: https://example.com\n> <custom-element>\n> [x](https://example.com)\n> </custom-element>";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 6,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options).expect_err(
+            "blockquote reference definitions should keep type 7 HTML tags inside the paragraph preflight",
+        );
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
     fn preflight_skips_table_like_text_inside_blockquote_fenced_code() {
         let input = "> ```\n> | A | B |\n> | --- | --- |\n> | x | y |\n> ```";
         let options = NormalizationOptions {
@@ -631,6 +1374,18 @@ mod tests {
     }
 
     #[test]
+    fn preflight_counts_thematic_breaks_as_single_nodes() {
+        let input = "***\n---\n_ _ _\n";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 4,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("thematic breaks should count as one parsed block node each");
+    }
+
+    #[test]
     fn preflight_allows_empty_atx_headings_with_closing_markers() {
         let input = "# #\n".repeat(2);
         let options = NormalizationOptions {
@@ -652,6 +1407,315 @@ mod tests {
 
         let err = enforce_markdown_structural_preflight(&input, true, &options)
             .expect_err("compact list-heavy input should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_reference_links_before_parsing() {
+        let input = format!("{}\n\n[ref]: https://example.com", "[x][ref] ".repeat(5));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("reference links should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_shortcut_reference_links_before_parsing() {
+        let input = format!("{}\n\n[x]: https://example.com", "[x] ".repeat(5));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("shortcut reference links should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_collapsed_reference_links_before_parsing() {
+        let input = format!("{}\n\n[x]: https://example.com", "[x][] ".repeat(5));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(&input, true, &options)
+            .expect_err("collapsed reference links should exceed the preflight node estimate");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_ignores_undefined_reference_labels() {
+        let input = "A [not-a-link]\n[real]: https://example.com";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("undefined reference labels should not count as reference link nodes");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_text_inside_code_span() {
+        let input = format!("{}\n\n[x]: https://example.com", "`[x]` ".repeat(3));
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(&input, true, &options)
+            .expect("bracket text inside code spans should not count as reference link nodes");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definitions_inside_fenced_code() {
+        let input = "A [x]\n```\n[x]: https://example.com\n```";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 4,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("reference definitions inside fenced code should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definitions_inside_html_block() {
+        let input = "A [x]\n<div>\n[x]: https://example.com\n</div>";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 4,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("reference definitions inside HTML blocks should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definition_without_destination() {
+        let input = "A [x]\n[x]:";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("reference labels without destinations should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_ignores_blockquote_reference_definition_without_destination() {
+        let input = "> A [x]\n> [x]:";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options).expect(
+            "blockquote reference labels without destinations should not enable shortcut links",
+        );
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definition_with_trailing_text() {
+        let input = "A [x] [x] [x] [x] [x]\n[x]: foo bar";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("reference definitions with trailing text should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definition_with_unbalanced_destination_parens() {
+        let input = "[x]: foo(bar\nA [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("unbalanced destination parens should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definition_with_nested_bracketed_destination_start() {
+        let input = "[x]: <foo<bar>\nA [x] [x] [x] [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("nested bracketed destination starts should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definition_with_escaped_destination_space() {
+        let input = "[x]: foo\\ bar\nA [x] [x] [x] [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("escaped spaces should not make unbracketed destinations valid");
+    }
+
+    #[test]
+    fn preflight_counts_reference_definition_with_balanced_destination_parens() {
+        let input = "[x]: foo(bar)\nA [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("balanced destination parens should enable shortcut links");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_reference_definition_with_escaped_destination_parens() {
+        let input = "[x]: foo\\(bar\\)\nA [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("escaped destination parens should keep the reference definition valid");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_reference_definition_with_escaped_bracketed_destination_start() {
+        let input = "[x]: <foo\\<bar>\nA [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 5,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("escaped bracketed destination starts should keep the definition valid");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_ignores_blockquote_reference_definition_with_trailing_text() {
+        let input = "> A [x] [x] [x] [x] [x]\n> [x]: foo bar";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options).expect(
+            "blockquote reference definitions with trailing text should not enable shortcut links",
+        );
+    }
+
+    #[test]
+    fn preflight_ignores_reference_definition_inside_paragraph() {
+        let input = "intro\n[x]: https://example.com\nA [x] [x] [x] [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 7,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options)
+            .expect("reference-like text inside a paragraph should not enable shortcut links");
+    }
+
+    #[test]
+    fn preflight_counts_reference_links_on_reference_like_paragraph_line() {
+        let input = "intro\n[x]: https://example.com [y] [y]\n\n[y]: https://example.com";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options)
+            .expect_err("reference links on paragraph text should count before parsing");
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_ignores_blockquote_reference_definition_inside_paragraph() {
+        let input = "> intro\n> [x]: https://example.com\n> A [x] [x] [x] [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 10,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options).expect(
+            "reference-like text inside a blockquote paragraph should not enable shortcut links",
+        );
+    }
+
+    #[test]
+    fn preflight_ignores_blockquote_lazy_continuation_reference_definition_inside_paragraph() {
+        let input = "> intro\n[x]: https://example.com\nA [x] [x] [x] [x] [x]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        enforce_markdown_structural_preflight(input, true, &options).expect(
+            "lazy continuation text inside a blockquote paragraph should not enable shortcut links",
+        );
+    }
+
+    #[test]
+    fn preflight_counts_reference_links_after_blockquote_reference_lazy_continuation() {
+        let input = "> [x]: https://example.com\n[y]: https://example.com\nA [y] [y]";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 8,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options).expect_err(
+            "blockquote reference-definition-only continuation should enable shortcut links",
+        );
+
+        assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+        assert!(err.message.contains("max_markdown_nodes"));
+    }
+
+    #[test]
+    fn preflight_counts_reference_links_on_blockquote_lazy_continuation_line() {
+        let input = "> intro\n[x]: https://example.com [y] [y]\n\n[y]: https://example.com";
+        let options = NormalizationOptions {
+            max_markdown_nodes: 9,
+            ..NormalizationOptions::default()
+        };
+
+        let err = enforce_markdown_structural_preflight(input, true, &options).expect_err(
+            "reference links on blockquote lazy continuation text should count before parsing",
+        );
 
         assert_eq!(err.kind, TransformErrorKind::InvalidInput);
         assert!(err.message.contains("max_markdown_nodes"));

@@ -643,14 +643,19 @@ impl<'a> DocumentBuilder<'a> {
         parent_block_id: Option<String>,
         top_level_content: bool,
     ) -> Result<Option<String>, TransformError> {
-        let html = {
+        let literal = {
             let data = node.data.borrow();
             match &data.value {
-                NodeValue::HtmlBlock(html) => self.raw_html(&html.literal)?,
+                NodeValue::HtmlBlock(html) => html.literal.clone(),
                 _ => String::new(),
             }
         };
-        let text = self.normalized_text(&html_to_text(&html))?;
+        let text = self.normalized_text(&html_to_text(&literal))?;
+        let html = if self.markdown.include.raw_html {
+            Some(self.raw_html(&literal)?)
+        } else {
+            None
+        };
         self.push_body_text(&text)?;
         let id = self.next_block_id();
         let section_id = self.current_section_id();
@@ -662,16 +667,16 @@ impl<'a> DocumentBuilder<'a> {
             text,
             Vec::new(),
         );
-        if self.markdown.include.raw_html {
+        if let Some(html) = html {
             block.insert("html".to_string(), JsonValue::String(html.clone()));
-        }
-        self.push_block(block, top_level_content);
-        if self.markdown.include.raw_html {
+            self.push_block(block, top_level_content);
             self.raw_html.push(json!({
                 "block_id": id,
                 "kind": "block",
                 "html": html,
             }));
+        } else {
+            self.push_block(block, top_level_content);
         }
         Ok(Some(id))
     }
@@ -806,7 +811,13 @@ impl<'a> DocumentBuilder<'a> {
                 NodeValue::SoftBreak => InlineKind::SoftBreak,
                 NodeValue::LineBreak => InlineKind::LineBreak,
                 NodeValue::Code(code) => InlineKind::Code(code.literal.clone()),
-                NodeValue::HtmlInline(html) => InlineKind::Html(self.raw_html(html)?),
+                NodeValue::HtmlInline(html) => {
+                    if self.markdown.include.raw_html {
+                        InlineKind::Html(self.raw_html(html)?)
+                    } else {
+                        InlineKind::Skip
+                    }
+                }
                 NodeValue::Emph => InlineKind::Emphasis,
                 NodeValue::Strong => InlineKind::Strong,
                 NodeValue::Strikethrough => InlineKind::Strikethrough,
@@ -940,6 +951,9 @@ impl<'a> DocumentBuilder<'a> {
     }
 
     fn push_body_text(&mut self, value: &str) -> Result<(), TransformError> {
+        if !self.markdown.include.body_text {
+            return Ok(());
+        }
         let value = normalize_text(value, self.markdown);
         if value.is_empty() {
             return Ok(());
