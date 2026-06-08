@@ -256,7 +256,7 @@ Direct adapter objects are invalid.
     qty: "$.quantity"
 ```
 
-Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are not supported in the MVP.
+Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are currently not supported.
 
 Custom OPs can return objects by declaring an object `returns` contract. For `expr` bodies, the returned value must match that object contract.
 
@@ -572,7 +572,7 @@ For safety, typed value codecs fail closed on unknown profiles, unknown options,
 `mappings`, `steps`, and `finalize` run against normalized JSON records, not against the original file format.
 
 ### Common
-- `input.format` (required): `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+- `input.format` (required): `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel` / `markdown`
 
 | format | Record selection | Typical use |
 | --- | --- | --- |
@@ -583,6 +583,7 @@ For safety, typed value codecs fail closed on unknown profiles, unknown options,
 | `xml` | element path via `records_path` | XML feeds, legacy APIs |
 | `html` | `records_selector` plus field selectors | extracting tables or lists |
 | `excel` | rows from a sheet | `.xlsx` imports |
+| `markdown` | whole document, heading sections, or table rows | docs, READMEs, Markdown tables |
 
 ### Normalization contract
 
@@ -593,7 +594,7 @@ For safety, typed value codecs fail closed on unknown profiles, unknown options,
 - A missing reference is `missing`, which is distinct from `null`.
 - Format-specific differences are absorbed by the parser layer before mappings, steps, and finalize run.
 
-Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/entity/processing instruction input, HTML JavaScript execution/URL fetching, and Excel macro/external relationship/formula evaluation are not allowed. CLI resource limit overrides cannot relax these invariants.
+Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/entity/processing instruction input, HTML JavaScript execution/URL fetching, Excel macro/external relationship/formula evaluation, and Markdown raw HTML rendering/execution/fetching are not allowed. CLI resource limit overrides cannot relax these invariants.
 
 ### CSV
 - `input.csv` is required when `format=csv`
@@ -736,6 +737,109 @@ input:
       tags: { selector: ".tag", value: text, multiple: true }
 ```
 
+### Markdown
+- `input.markdown` is required when `format=markdown`.
+- An empty object `{}` is valid. It uses `records: document`, `flavor: gfm`, and `frontmatter: auto`.
+- There is no rule-file-free shorthand for Markdown input. Use a rule file with `rulemorph transform -r rules.yaml -i input.md`.
+
+```yaml
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "title"
+    source: "input.title"
+  - target: "body"
+    source: "input.body_text"
+  - target: "owner"
+    source: "input.frontmatter.owner"
+```
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `flavor` | Optional | `gfm` | `commonmark` / `gfm`. GFM enables tables, task lists, strikethrough, and autolinks. |
+| `frontmatter` | Optional | `auto` | `none` / `yaml` / `toml` / `auto`. Leading frontmatter becomes the `frontmatter` object. |
+| `records` | Optional | `document` | `document` / `sections` / `table_rows`. Selects the record unit. |
+| `section_levels` | Optional | `[1,2,3,4,5,6]` | Heading levels emitted by `records=sections`. `records=document` keeps every heading level. |
+| `table_header_policy` | Optional | `strict` | `strict` / `index`. `strict` rejects empty or duplicate headers; `index` uses `col_0`, `col_1`. |
+| `include.body_text` | Optional | `true` | Emits plain text as `body_text`. |
+| `include.body_markdown` | Optional | `false` | Setting this to `true` is currently an error. |
+| `include.blocks` | Optional | `true` | Emits the document-order block list as `blocks[]`. |
+| `include.links` | Optional | `true` | Emits the extracted link index as `links[]`. |
+| `include.images` | Optional | `true` | Emits the extracted image index as `images[]`. |
+| `include.code_blocks` | Optional | `true` | Emits the extracted code block index as `code_blocks[]`. |
+| `include.tables` | Optional | `true` | Emits the extracted table index as `tables[]`. |
+| `include.raw_html` | Optional | `true` | Preserves raw HTML blocks and inline HTML as strings. |
+| `include.sourcepos` | Optional | `false` | Setting this to `true` is currently an error. |
+| `trim_text` | Optional | `true` | Trims extracted text. |
+| `collapse_whitespace` | Optional | `true` | Collapses consecutive whitespace in extracted text to one space. |
+
+`records: document` emits one record for the whole Markdown document. The document record is the source-of-truth Markdown structure: it keeps heading hierarchy, block order, inline structure, list structure, and table structure. Stable fields include `record_type: "document"`, `frontmatter`, `title`, `body_text`, `sections`, `section_index`, `blocks`, `links`, `images`, `code_blocks`, `tables`, and `raw_html`.
+
+```json
+[
+  {
+    "record_type": "document",
+    "frontmatter": { "owner": "docs" },
+    "title": "Guide",
+    "body_text": "Guide Install Rulemorph.",
+    "sections": [
+      {
+        "id": "s1-1",
+        "level": 1,
+        "heading": "Guide",
+        "heading_block_id": "b1",
+        "path": ["Guide"],
+        "ordinal_path": [1],
+        "content_block_ids": ["b2"],
+        "child_ids": [],
+        "children": []
+      }
+    ],
+    "section_index": [
+      { "id": "s1-1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
+    ],
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "heading",
+        "section_id": "s1-1",
+        "parent_block_id": null,
+        "level": 1,
+        "text": "Guide",
+        "inlines": [{ "type": "text", "text": "Guide" }]
+      },
+      {
+        "id": "b2",
+        "type": "paragraph",
+        "section_id": "s1-1",
+        "parent_block_id": null,
+        "text": "Install Rulemorph.",
+        "inlines": [{ "type": "text", "text": "Install Rulemorph." }]
+      }
+    ]
+  }
+]
+```
+
+`sections` is a nested tree, and `section_index` is a flat index. `blocks[]` is the document-order source of truth. Use `sections[].heading_block_id`, `sections[].content_block_ids`, and `blocks[].section_id` to connect sections and blocks. `body_text` is a convenience field; structure-aware rules should use `sections`, `section_index`, `blocks`, and `inlines`.
+
+`content_block_ids` points to content blocks directly under that section. The heading block is referenced by `heading_block_id`, and blocks under child headings are reachable through `children`. In `records: sections`, each section record's `blocks[]` includes the section's own heading block, the section's direct blocks, nested container child blocks referenced by `item_ids` / `child_block_ids`, and descendant section heading and content blocks in document order. `heading_block_id` resolves within the same record's `blocks[]`.
+
+The main `blocks[]` `type` values are `heading`, `paragraph`, `list`, `list_item`, `blockquote`, `code_block`, `table`, `html_block`, and `thematic_break`. Ordered lists keep `ordered: true`, `start`, and `list_item.ordinal`. Task list items use `checked: true` / `false`; ordinary items use `checked: null`.
+
+Inline structure is kept in `inlines[]`. Main inline `type` values are `text`, `soft_break`, `line_break`, `code`, `emphasis`, `strong`, `strikethrough`, `link`, `image`, and `html_inline`. `link`, `image`, and emphasis-family nodes keep nested inline content in `children`.
+
+`records: sections` projects section records from the document record. With `section_levels: [2]`, each `##` record contains `record_type: "section"`, `document`, `id`, `level`, `heading`, `path`, `ordinal_path`, `body_text`, `heading_block_id`, `content_block_ids`, `blocks`, and `children`. Use mapping paths such as `input.heading`, `input.path`, `input.body_text`, and `input.blocks`.
+
+`records: table_rows` projects Markdown table data rows from table blocks. Fields are `record_type: "table_row"`, `document`, `section`, `table`, `row_index`, `headers`, `cells`, and `object`. In `strict` mode, header text becomes the `object` key and empty or duplicate headers are errors. In `index` mode, use paths such as `input.object.col_0` and `input.object.col_1`.
+
+Frontmatter is recognized only at the start of the document with `---` for YAML or `+++` for TOML. `auto` chooses YAML/TOML only when the opening delimiter has a matching closing delimiter. In `auto`, leading `---` / `+++` without a closing delimiter remains ordinary Markdown body text instead of frontmatter. With `frontmatter: yaml` / `toml`, an opening delimiter without a closing delimiter is an error. The frontmatter root must be an object. YAML duplicate keys, non-string keys, and custom tags are rejected. TOML datetimes are normalized to strings during JSON conversion.
+
+Raw HTML is treated as ordinary Markdown source text. Rulemorph does not render it as HTML, sanitize it, fetch network resources, or execute JavaScript. If a downstream Web UI renders Rulemorph output as HTML, escaping, sanitization, and avoiding unsafe `innerHTML` usage are downstream responsibilities.
+
+`include.raw_html=false` omits raw HTML strings and inline HTML nodes. Block HTML remains in `blocks[]` as `type: "html_block"` so the document structure is preserved, but the `html` field is omitted.
+
 ### Excel
 - `input.excel` is required when `format=excel`
 
@@ -823,7 +927,7 @@ Direct mode uses the normal v2 `expr` syntax. Use a pipe array when chaining ope
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
 ```
 
-Direct mode resolves the input format from `-f/--format`, then the `-i` extension, then the first stdin token. Stdin is JSON when the first byte after UTF-8 BOM and ASCII whitespace is `{` or `[`; otherwise it is CSV. Unknown or missing `-i` extensions stay JSON for compatibility. If CSV data starts with `{` or `[`, pass `-f csv`.
+Direct mode resolves the input format from `-f/--format`, then the `-i` extension, then the first stdin token. Stdin is JSON when the first byte after UTF-8 BOM and ASCII whitespace is `{` or `[`; otherwise it is CSV. Unknown or missing `-i` extensions stay JSON for compatibility. If CSV data starts with `{` or `[`, pass `-f csv`. For Markdown, use a rule file with `input.format: markdown` and `transform -i input.md`.
 
 For CSV direct input, a headered `.csv` file can be referenced by field name. Headerless CSV can either infer numeric fields from references such as `@input.0`, or receive field names with `-H/--headers`. `-h` remains the help option, so the short headers option is `-H`.
 
@@ -921,7 +1025,9 @@ rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 
 The `object` OP can generate JSON objects from a rule, so it has dedicated limits as well. Defaults are `object-fields=10000`, `object-key-bytes=4096`, `object-depth=64`, `generated-json-nodes=100000`, and `generated-json-bytes=10485760`. Override them with names such as `--limit object-fields=...` or `--limit generated-json-bytes=...`; `--limits-file` uses the same names. `array-len` remains the array-generation cap and is not reused as the object safety boundary.
 
-These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, and MCP pathless branch guard are not configurable.
+Markdown parsing is also bounded by `markdown-nodes` and `markdown-table-cells`. Both default to 1,000,000 and become 10,000,000 with `--limits-profile large`. Use `--limit markdown-nodes=2000000 --limit markdown-table-cells=2000000`, or `markdown-nodes = 2000000` and `markdown-table-cells = 2000000` in a limits file. `max_records` limits emitted records and is separate from Markdown AST node and table cell limits.
+
+These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, Markdown raw HTML no-render/no-fetch/no-execute behavior, and MCP pathless branch guard are not configurable.
 
 ## Record filter (`record_when`)
 

@@ -262,7 +262,7 @@ direct adapter object は無効です。
     qty: "$.quantity"
 ```
 
-custom OP body の `$` と `@input` は custom OP input を指します。outer `@input` は暗黙 capture できません。`@context` capture、再帰、built-in OP の shadowing、import、generic、overload は MVP では無効です。
+custom OP body の `$` と `@input` は custom OP input を指します。outer `@input` は暗黙 capture できません。`@context` capture、再帰、built-in OP の shadowing、import、generic、overload は現在未対応です。
 
 object を返す関数OPでは `returns` に object 型を書けます。`expr` body なら返す値がその object contract と一致する必要があります。
 
@@ -576,7 +576,7 @@ mappings:
 以降の `mappings` / `steps` / `finalize` は、元のファイル形式ではなく、正規化後の JSON record に対して動作します。
 
 ### 共通
-- `input.format`（必須）: `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+- `input.format`（必須）: `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel` / `markdown`
 
 | format | record の切り出し方 | 主な用途 |
 | --- | --- | --- |
@@ -587,6 +587,7 @@ mappings:
 | `xml` | `records_path` で element を選択 | XML feed、legacy API |
 | `html` | `records_selector` と field selector | table や list からの抽出 |
 | `excel` | sheet の行を record | `.xlsx` import |
+| `markdown` | 文書全体、見出し section、または table row | docs、README、Markdown tables |
 
 ### 入力正規化の共通契約
 
@@ -597,7 +598,7 @@ mappings:
 - 参照先が存在しない場合は `missing` として扱います。`null` とは区別されます。
 - `mappings` / `steps` / `finalize` は、入力形式ごとの差異を直接扱いません。差異は parser 層で JSON record に正規化されます。
 
-安全性 invariant として、JSON/YAML の duplicate key、XML DTD/entity/processing instruction、HTML の JavaScript 実行/URL 取得、Excel macro/external relationship/formula evaluation は許可されません。これらは CLI の resource limit override では緩和できません。
+安全性 invariant として、JSON/YAML の duplicate key、XML DTD/entity/processing instruction、HTML の JavaScript 実行/URL 取得、Excel macro/external relationship/formula evaluation、Markdown raw HTML の描画/実行/URL 取得は許可されません。これらは CLI の resource limit override では緩和できません。
 
 ### CSV
 - `input.csv` は `format=csv` のとき必須
@@ -740,6 +741,109 @@ input:
       tags: { selector: ".tag", value: text, multiple: true }
 ```
 
+### Markdown
+- `input.markdown` は `format=markdown` のとき必須です。
+- 空 object `{}` は有効で、`records: document`、`flavor: gfm`、`frontmatter: auto` を使います。
+- rule file なしで Markdown file だけを直接変換する簡易モードはありません。Markdown file は rule file と一緒に `rulemorph transform -r rules.yaml -i input.md` で使ってください。
+
+```yaml
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "title"
+    source: "input.title"
+  - target: "body"
+    source: "input.body_text"
+  - target: "owner"
+    source: "input.frontmatter.owner"
+```
+
+| option | 必須 | 既定 | 説明 |
+| --- | --- | --- | --- |
+| `flavor` | 任意 | `gfm` | `commonmark` / `gfm`。GFM では table、task list、strikethrough、autolink を有効にします。 |
+| `frontmatter` | 任意 | `auto` | `none` / `yaml` / `toml` / `auto`。文書先頭の frontmatter を `frontmatter` object にします。 |
+| `records` | 任意 | `document` | `document` / `sections` / `table_rows`。record の切り出し単位です。 |
+| `section_levels` | 任意 | `[1,2,3,4,5,6]` | `records=sections` で record 化する heading level。`records=document` は全 heading level を保持します。 |
+| `table_header_policy` | 任意 | `strict` | `strict` / `index`。`strict` は空・重複 header を拒否し、`index` は `col_0`、`col_1` を使います。 |
+| `include.body_text` | 任意 | `true` | plain text を `body_text` に入れます。 |
+| `include.body_markdown` | 任意 | `false` | 現在は `true` を指定すると error です。 |
+| `include.blocks` | 任意 | `true` | 文書順の block list を `blocks[]` に入れます。 |
+| `include.links` | 任意 | `true` | 抽出済み link index を `links[]` に入れます。 |
+| `include.images` | 任意 | `true` | 抽出済み image index を `images[]` に入れます。 |
+| `include.code_blocks` | 任意 | `true` | 抽出済み code block index を `code_blocks[]` に入れます。 |
+| `include.tables` | 任意 | `true` | 抽出済み table index を `tables[]` に入れます。 |
+| `include.raw_html` | 任意 | `true` | raw HTML block / inline HTML を文字列として保持します。 |
+| `include.sourcepos` | 任意 | `false` | 現在は `true` を指定すると error です。 |
+| `trim_text` | 任意 | `true` | 抽出 text の前後空白を取り除きます。 |
+| `collapse_whitespace` | 任意 | `true` | 抽出 text の連続空白を 1 space に畳みます。 |
+
+`records: document` は Markdown 全体を 1 record にします。document record は Markdown の文書構造の正本であり、見出し階層、block の出現順、inline structure、list / table structure を追えます。主な出力 field は `record_type: "document"`、`frontmatter`、`title`、`body_text`、`sections`、`section_index`、`blocks`、`links`、`images`、`code_blocks`、`tables`、`raw_html` です。
+
+```json
+[
+  {
+    "record_type": "document",
+    "frontmatter": { "owner": "docs" },
+    "title": "Guide",
+    "body_text": "Guide Install Rulemorph.",
+    "sections": [
+      {
+        "id": "s1-1",
+        "level": 1,
+        "heading": "Guide",
+        "heading_block_id": "b1",
+        "path": ["Guide"],
+        "ordinal_path": [1],
+        "content_block_ids": ["b2"],
+        "child_ids": [],
+        "children": []
+      }
+    ],
+    "section_index": [
+      { "id": "s1-1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
+    ],
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "heading",
+        "section_id": "s1-1",
+        "parent_block_id": null,
+        "level": 1,
+        "text": "Guide",
+        "inlines": [{ "type": "text", "text": "Guide" }]
+      },
+      {
+        "id": "b2",
+        "type": "paragraph",
+        "section_id": "s1-1",
+        "parent_block_id": null,
+        "text": "Install Rulemorph.",
+        "inlines": [{ "type": "text", "text": "Install Rulemorph." }]
+      }
+    ]
+  }
+]
+```
+
+`sections` は nested tree、`section_index` は flat index です。`blocks[]` が文書順序の正本で、`sections[].heading_block_id`、`sections[].content_block_ids`、`blocks[].section_id` で section と block を対応づけます。`body_text` は使いやすくするための補助 field であり、構造処理では `sections`、`section_index`、`blocks`、`inlines` を使います。
+
+`content_block_ids` はその section の直下にある本文 block を指します。見出し block は `heading_block_id`、子見出し以下の block は `children` から辿ります。`records: sections` の section record では、`blocks[]` は section 自身の heading block、その section の直下 block、`item_ids` / `child_block_ids` が参照する nested container child block、子孫 section の heading / content block を文書順で含みます。`heading_block_id` は同じ record の `blocks[]` から解決できます。
+
+`blocks[]` の主な `type` は `heading`、`paragraph`、`list`、`list_item`、`blockquote`、`code_block`、`table`、`html_block`、`thematic_break` です。Ordered list は `ordered: true`、`start`、`list_item.ordinal` を保持します。Task list item は `checked: true` / `false`、通常 item は `checked: null` です。
+
+Inline structure は `inlines[]` に保持します。主な inline `type` は `text`、`soft_break`、`line_break`、`code`、`emphasis`、`strong`、`strikethrough`、`link`、`image`、`html_inline` です。`link` / `image` / emphasis 系は `children` で nested inline を保持します。
+
+`records: sections` は document record から section record を切り出します。`section_levels: [2]` なら `##` ごとに `record_type: "section"`、`document`、`id`、`level`、`heading`、`path`、`ordinal_path`、`body_text`、`heading_block_id`、`content_block_ids`、`blocks`、`children` を出します。mapping path は `input.heading`、`input.path`、`input.body_text`、`input.blocks` です。
+
+`records: table_rows` は table block から Markdown table の data row を切り出します。出力は `record_type: "table_row"`、`document`、`section`、`table`、`row_index`、`headers`、`cells`、`object` です。`strict` では header text が `object` key になり、空・重複 header は error です。`index` では `input.object.col_0`、`input.object.col_1` のように参照します。
+
+frontmatter は文書先頭の `---` YAML または `+++` TOML だけを扱います。`auto` は開き delimiter と対応する閉じ delimiter がそろった場合だけ YAML/TOML を判定します。`auto` で閉じ delimiter がない先頭 `---` / `+++` は frontmatter として扱わず、本文に残します。`frontmatter: yaml` / `toml` で開き delimiter があり閉じ delimiter がない場合は error です。frontmatter root は object である必要があります。YAML frontmatter の duplicate key、string 以外の key、custom tag は安全上拒否されます。TOML datetime は JSON 変換時に文字列になります。
+
+raw HTML は Markdown 文書内の通常の記述として扱います。Rulemorph は HTML として描画せず、sanitize せず、network fetch も JavaScript 実行も行いません。Rulemorph の出力を後段の Web UI で HTML として描画する場合、escape / sanitize / `innerHTML` 禁止などの XSS 対策は後段 system の責務です。
+
+`include.raw_html=false` は raw HTML 文字列と inline HTML node を出力しません。block HTML は文書構造を保つため `blocks[]` に `type: "html_block"` として残し、`html` field は出しません。
+
 ### Excel
 - `input.excel` は `format=excel` のとき必須
 
@@ -827,7 +931,7 @@ direct mode は通常の v2 `expr` 構文を使います。operator を連結す
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
 ```
 
-direct mode の入力形式は、`-f/--format`、`-i` の拡張子、stdin の先頭 token の順で決まります。stdin は UTF-8 BOM と ASCII whitespace を除いた先頭が `{` または `[` なら JSON、それ以外なら CSV として扱います。`-i` の未知拡張子 / 拡張子なしは既存互換のため JSON です。CSV が `{` または `[` で始まる場合は `-f csv` を明示してください。
+direct mode の入力形式は、`-f/--format`、`-i` の拡張子、stdin の先頭 token の順で決まります。stdin は UTF-8 BOM と ASCII whitespace を除いた先頭が `{` または `[` なら JSON、それ以外なら CSV として扱います。`-i` の未知拡張子 / 拡張子なしは既存互換のため JSON です。CSV が `{` または `[` で始まる場合は `-f csv` を明示してください。Markdown は rule file で `input.format: markdown` を指定し、`transform -i input.md` で使います。
 
 CSV direct input では、header 行がある `.csv` file はそのまま field 名で参照できます。headerless CSV は `@input.0` のような numeric field 参照から列数を推定するか、`-H/--headers` で field 名を与えます。`-h` は help 用のため、headers の short option は `-H` です。
 
@@ -925,7 +1029,9 @@ rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 
 `object` OP は rule ごとに JSON object を生成できるため、専用 limit でも制限されます。既定値は `object-fields=10000`、`object-key-bytes=4096`、`object-depth=64`、`generated-json-nodes=100000`、`generated-json-bytes=10485760` です。これらは `--limit object-fields=...`、`--limit generated-json-bytes=...` のように変更でき、`--limits-file` でも同じ名前を使います。`array-len` は配列生成の上限であり、object 生成の安全境界には流用されません。
 
-これらは処理量の上限を広げるだけです。duplicate key rejection、XML DTD/entity rejection、HTML no-network/no-JS、Excel no-macro/no-formula-evaluation、MCP pathless branch guard などの安全性 invariant は変更できません。
+Markdown parser は `markdown-nodes` と `markdown-table-cells` でも制限されます。既定値はいずれも 1,000,000、`--limits-profile large` では 10,000,000 です。CLI では `--limit markdown-nodes=2000000 --limit markdown-table-cells=2000000`、limits file では `markdown-nodes = 2000000` と `markdown-table-cells = 2000000` を使います。`max_records` は生成 record 数の上限であり、Markdown AST node / table cell の上限とは別です。
+
+これらは処理量の上限を広げるだけです。duplicate key rejection、XML DTD/entity rejection、HTML no-network/no-JS、Excel no-macro/no-formula-evaluation、Markdown raw HTML の no-render/no-fetch/no-execute、MCP pathless branch guard などの安全性 invariant は変更できません。
 
 ## Record filter（`record_when`）
 
@@ -1059,7 +1165,7 @@ branch:
 `finalize` は **複数の処理を併用可能**で、上から順に適用されます。
 `finalize` は **ストリーミング出力では利用できません**（エラー）。
 
-### 対応要素（MVP）
+### 対応要素
 - `filter`: v2 条件（`@item` を参照）
 - `sort`: 並び替え
 - `limit` / `offset`: ページング
@@ -1095,7 +1201,7 @@ finalize:
 `wrap` は **v2 expr** で値を定義します。
 `@out` は現在の出力配列を表します。
 配列は **v2 expr（pipe）として解釈**されるため、
-リテラル配列を直接書く用途には向きません（MVPでは未対応）。
+リテラル配列を直接書く用途には向きません（現在未対応）。
 
 ```yaml
 finalize:
@@ -1107,7 +1213,7 @@ finalize:
         - len
 ```
 
-### 併用例（MVP）
+### 併用例
 `sort` と `limit` を組み合わせて上位N件を返せます。
 
 ```yaml

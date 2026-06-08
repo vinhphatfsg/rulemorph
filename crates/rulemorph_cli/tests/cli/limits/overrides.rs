@@ -75,6 +75,50 @@ fn cli_limit_override_accepts_object_builder_limits() {
 }
 
 #[test]
+fn cli_limit_override_accepts_markdown_limits() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limit")
+        .arg("markdown-nodes=100")
+        .arg("--limit")
+        .arg("markdown-table-cells=100")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn cli_limits_file_accepts_markdown_limits() {
+    let base = fixtures_dir().join("t01_csv_basic");
+    let temp_dir = tempfile::tempdir().unwrap();
+    let limits_path = temp_dir.path().join("limits.toml");
+    std::fs::write(
+        &limits_path,
+        "markdown-nodes = 100\nmarkdown-table-cells = 100\n",
+    )
+    .unwrap();
+
+    let mut cmd = cargo_bin_cmd!("rulemorph");
+    let output = cmd
+        .arg("transform")
+        .arg("-r")
+        .arg(base.join("rules.yaml"))
+        .arg("-i")
+        .arg(base.join("input.csv"))
+        .arg("--limits-file")
+        .arg(limits_path)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
 fn cli_rejects_unknown_limit_override() {
     let base = fixtures_dir().join("t01_csv_basic");
     let mut cmd = cargo_bin_cmd!("rulemorph");

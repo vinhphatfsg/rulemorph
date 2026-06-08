@@ -125,7 +125,8 @@ pub(super) fn prepare_base_generation(
             | InputFormat::Toml
             | InputFormat::Xml
             | InputFormat::Html
-            | InputFormat::Excel => InputDataFormat::Json,
+            | InputFormat::Excel
+            | InputFormat::Markdown => InputDataFormat::Json,
         }
     };
 

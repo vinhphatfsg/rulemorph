@@ -16,6 +16,7 @@ pub(crate) fn apply_format_override(
         "xml" => InputFormat::Xml,
         "html" => InputFormat::Html,
         "excel" => InputFormat::Excel,
+        "markdown" => InputFormat::Markdown,
         _ => return Err(format!("unknown format: {}", format)),
     };
     Ok(())

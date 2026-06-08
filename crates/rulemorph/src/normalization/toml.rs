@@ -30,7 +30,7 @@ pub fn normalize_toml_records(
     Ok(records)
 }
 
-fn parse_toml_json_with_limits(
+pub(super) fn parse_toml_json_with_limits(
     input: &str,
     options: &NormalizationOptions,
 ) -> Result<JsonValue, String> {

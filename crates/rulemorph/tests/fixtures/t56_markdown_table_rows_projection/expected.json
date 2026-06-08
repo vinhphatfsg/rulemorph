@@ -1,0 +1,108 @@
+[
+  {
+    "cells": [
+      {
+        "column_index": 0,
+        "inlines": [
+          {
+            "text": "id",
+            "type": "text"
+          }
+        ],
+        "text": "id"
+      },
+      {
+        "column_index": 1,
+        "inlines": [
+          {
+            "text": "string",
+            "type": "text"
+          }
+        ],
+        "text": "string"
+      }
+    ],
+    "document": {
+      "frontmatter": {},
+      "title": "Spec"
+    },
+    "headers": [
+      "Field",
+      "Type"
+    ],
+    "object": {
+      "Field": "id",
+      "Type": "string"
+    },
+    "record_type": "table_row",
+    "row_index": 0,
+    "section": {
+      "heading": "Spec",
+      "id": "s1-1",
+      "path": [
+        "Spec"
+      ]
+    },
+    "table": {
+      "alignments": [
+        "left",
+        "left"
+      ],
+      "block_id": "b2",
+      "table_index": 0
+    }
+  },
+  {
+    "cells": [
+      {
+        "column_index": 0,
+        "inlines": [
+          {
+            "text": "count",
+            "type": "text"
+          }
+        ],
+        "text": "count"
+      },
+      {
+        "column_index": 1,
+        "inlines": [
+          {
+            "text": "int",
+            "type": "text"
+          }
+        ],
+        "text": "int"
+      }
+    ],
+    "document": {
+      "frontmatter": {},
+      "title": "Spec"
+    },
+    "headers": [
+      "Field",
+      "Type"
+    ],
+    "object": {
+      "Field": "count",
+      "Type": "int"
+    },
+    "record_type": "table_row",
+    "row_index": 1,
+    "section": {
+      "heading": "Spec",
+      "id": "s1-1",
+      "path": [
+        "Spec"
+      ]
+    },
+    "table": {
+      "alignments": [
+        "left",
+        "left"
+      ],
+      "block_id": "b2",
+      "table_index": 0
+    }
+  }
+]

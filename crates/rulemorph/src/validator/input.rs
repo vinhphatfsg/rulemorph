@@ -6,7 +6,10 @@ use super::ValidationCtx;
 
 mod formats;
 
-use formats::{validate_columns, validate_excel_input, validate_html_input, validate_xml_input};
+use formats::{
+    validate_columns, validate_excel_input, validate_html_input, validate_markdown_input,
+    validate_xml_input,
+};
 
 pub(super) fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
     match rule.input.format {
@@ -73,6 +76,15 @@ pub(super) fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
                 );
             }
         }
+        InputFormat::Markdown => {
+            if rule.input.markdown.is_none() {
+                ctx.push(
+                    ErrorCode::MissingMarkdownSection,
+                    "input.markdown is required when format=markdown",
+                    "input.markdown",
+                );
+            }
+        }
     }
 
     if let InputFormat::Csv = rule.input.format {
@@ -136,6 +148,12 @@ pub(super) fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
     if let InputFormat::Excel = rule.input.format {
         if let Some(excel) = &rule.input.excel {
             validate_excel_input(excel, ctx);
+        }
+    }
+
+    if let InputFormat::Markdown = rule.input.format {
+        if let Some(markdown) = &rule.input.markdown {
+            validate_markdown_input(markdown, ctx);
         }
     }
 }

@@ -40,7 +40,7 @@ fn initialize_and_list_tools() {
     assert_tool_schema_enum(
         transform_tool,
         "format",
-        json!(["csv", "json", "yaml", "toml", "xml", "html", "excel"]),
+        json!(["csv", "json", "yaml", "toml", "xml", "html", "excel", "markdown"]),
     );
     let input_json_description = tool_schema_property(transform_tool, "input_json")["description"]
         .as_str()

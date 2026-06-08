@@ -1,0 +1,22 @@
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: table_rows
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+  - target: "document"
+    source: "input.document"
+  - target: "section"
+    source: "input.section"
+  - target: "table"
+    source: "input.table"
+  - target: "row_index"
+    source: "input.row_index"
+  - target: "headers"
+    source: "input.headers"
+  - target: "cells"
+    source: "input.cells"
+  - target: "object"
+    source: "input.object"

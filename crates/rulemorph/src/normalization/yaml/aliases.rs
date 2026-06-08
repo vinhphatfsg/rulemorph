@@ -2,7 +2,7 @@ use crate::error::{TransformError, TransformErrorKind};
 
 use super::NormalizationOptions;
 
-pub(super) fn enforce_yaml_alias_limit(
+pub(crate) fn enforce_yaml_alias_limit(
     input: &str,
     options: &NormalizationOptions,
 ) -> Result<(), TransformError> {

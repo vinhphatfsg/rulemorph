@@ -42,9 +42,9 @@ pub(crate) fn transform_input_schema() -> Value {
             },
             "format": {
                 "type": "string",
-                "enum": ["csv", "json", "yaml", "toml", "xml", "html", "excel"],
+                "enum": ["csv", "json", "yaml", "toml", "xml", "html", "excel", "markdown"],
                 "description": "Override input format from the rule file.",
-                "examples": ["json"]
+                "examples": ["json", "markdown"]
             },
             "ndjson": {
                 "type": "boolean",
@@ -139,4 +139,20 @@ pub(crate) fn generate_dto_input_schema() -> Value {
         },
         "required": ["language"]
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transform_schema_accepts_markdown_format_override() {
+        let schema = transform_input_schema();
+        let formats = schema
+            .pointer("/properties/format/enum")
+            .and_then(Value::as_array)
+            .expect("format enum");
+
+        assert!(formats.iter().any(|value| value == "markdown"));
+    }
 }
