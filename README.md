@@ -283,7 +283,7 @@ DTO generation uses explicit mapping types first, then infers simple scalar, arr
 
 ```toml
 [dependencies]
-rulemorph = "0.3.3"
+rulemorph = "0.3.4"
 ```
 
 The `html`, `excel`, and `markdown` input parsers are enabled by default. Library users that only need
@@ -291,7 +291,7 @@ core CSV, JSON, YAML, TOML, and XML support can disable them to reduce optional 
 
 ```toml
 [dependencies]
-rulemorph = { version = "0.3.3", default-features = false }
+rulemorph = { version = "0.3.4", default-features = false }
 ```
 
 Re-enable parsers explicitly with features such as `["html"]`, `["excel"]`, or `["markdown"]`.
