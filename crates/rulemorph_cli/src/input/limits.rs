@@ -90,6 +90,8 @@ fn apply_limit_override(
         "yaml-expanded-nodes" => options.max_yaml_expanded_nodes = value,
         "xml-nodes" => options.max_xml_nodes = value,
         "html-nodes" => options.max_html_nodes = value,
+        "markdown-nodes" => options.max_markdown_nodes = value,
+        "markdown-table-cells" => options.max_markdown_table_cells = value,
         "excel-zip-entries" => options.max_excel_zip_entries = value,
         "excel-uncompressed-bytes" => options.max_excel_uncompressed_bytes = value,
         "excel-entry-uncompressed-bytes" => options.max_excel_entry_uncompressed_bytes = value,
@@ -100,6 +102,11 @@ fn apply_limit_override(
         "excel-shared-string-bytes" => options.max_excel_shared_string_bytes = value,
         "excel-styles" => options.max_excel_styles = value,
         "range-items" => options.max_range_items = Some(value),
+        "object-fields" => options.max_object_fields = value,
+        "object-key-bytes" => options.max_object_key_bytes = value,
+        "object-depth" => options.max_object_depth = value,
+        "generated-json-nodes" => options.max_generated_json_nodes = value,
+        "generated-json-bytes" => options.max_generated_json_bytes = value,
         _ => return Err(format!("unknown limit `{}`", name)),
     }
     Ok(())

@@ -2,7 +2,7 @@ use std::fs;
 
 use rulemorph::{
     ErrorCode, RuleFormat, parse_rule_file, parse_rule_file_with_format, validate_rule_file,
-    validate_rule_file_with_source,
+    validate_rule_file_with_source, validate_rule_file_with_source_and_base_dir,
 };
 
 mod common;

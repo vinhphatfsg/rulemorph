@@ -3,10 +3,15 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 mod excel;
+mod markdown;
 
 pub use excel::{
     ExcelCellErrorPolicy, ExcelColumn, ExcelDatePolicy, ExcelEmptyCellPolicy, ExcelFormulaPolicy,
     ExcelInput, ExcelSheetRef,
+};
+pub use markdown::{
+    MarkdownFlavor, MarkdownFrontmatter, MarkdownInclude, MarkdownInput, MarkdownRecordsMode,
+    MarkdownTableHeaderPolicy,
 };
 
 #[derive(Debug, Deserialize, Clone)]
@@ -27,6 +32,8 @@ pub struct InputSpec {
     pub html: Option<HtmlInput>,
     #[serde(default)]
     pub excel: Option<ExcelInput>,
+    #[serde(default)]
+    pub markdown: Option<MarkdownInput>,
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +46,7 @@ pub enum InputFormat {
     Xml,
     Html,
     Excel,
+    Markdown,
 }
 
 fn default_true() -> bool {

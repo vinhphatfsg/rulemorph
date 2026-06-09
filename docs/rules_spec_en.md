@@ -121,6 +121,7 @@ Huge or dynamic paths used by `get` / `pick` / `omit` also fall back to JSON.
 `default` / `coalesce` do not narrow dynamic or unknown input into a concrete type by themselves.
 
 `optional` means a field may be omitted. `nullable` means a present field may contain `null`.
+Fields built by the `object` OP are inferred as optional because each field expression may evaluate to `missing`.
 JSON integer literals that do not fit in a signed 64-bit integer are treated as JSON fallback types, because Rust / Go / JVM DTO integer outputs use `i64` / `int64` / `Long`.
 
 `defs.*.returns` also participates in DTO inference. Object `returns` become nested DTO shapes. For custom OPs with a `mappings` body and no explicit `returns`, the object shape is synthesized from the body targets. Fields that cannot be narrowed use the language's JSON fallback type.
@@ -255,7 +256,7 @@ Direct adapter objects are invalid.
     qty: "$.quantity"
 ```
 
-Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are not supported in the MVP.
+Inside the body, `$` and `@input` refer to the custom OP input. The outer `@input` is not captured implicitly. `@context` capture, recursion, built-in OP shadowing, imports, generics, and overloads are currently not supported.
 
 Custom OPs can return objects by declaring an object `returns` contract. For `expr` bodies, the returned value must match that object contract.
 
@@ -571,7 +572,7 @@ For safety, typed value codecs fail closed on unknown profiles, unknown options,
 `mappings`, `steps`, and `finalize` run against normalized JSON records, not against the original file format.
 
 ### Common
-- `input.format` (required): `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel`
+- `input.format` (required): `csv` / `json` / `yaml` / `toml` / `xml` / `html` / `excel` / `markdown`
 
 | format | Record selection | Typical use |
 | --- | --- | --- |
@@ -582,17 +583,18 @@ For safety, typed value codecs fail closed on unknown profiles, unknown options,
 | `xml` | element path via `records_path` | XML feeds, legacy APIs |
 | `html` | `records_selector` plus field selectors | extracting tables or lists |
 | `excel` | rows from a sheet | `.xlsx` imports |
+| `markdown` | whole document, heading sections, or table rows | docs, READMEs, Markdown tables |
 
 ### Normalization contract
 
 - Records are JSON objects.
-- If `records_path` points to an array, each element becomes a record.
+- If `records_path` points to an array, each element becomes a record. Array elements must also be JSON objects.
 - If `records_path` points to an object, it becomes a single record.
 - Scalars cannot be records.
 - A missing reference is `missing`, which is distinct from `null`.
 - Format-specific differences are absorbed by the parser layer before mappings, steps, and finalize run.
 
-Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/entity/processing instruction input, HTML JavaScript execution/URL fetching, and Excel macro/external relationship/formula evaluation are not allowed. CLI resource limit overrides cannot relax these invariants.
+Parser safety invariants are not optional: duplicate JSON/YAML keys, XML DTD/entity/processing instruction input, HTML JavaScript execution/URL fetching, Excel macro/external relationship/formula evaluation, and Markdown raw HTML rendering/execution/fetching are not allowed. CLI resource limit overrides cannot relax these invariants.
 
 ### CSV
 - `input.csv` is required when `format=csv`
@@ -626,7 +628,7 @@ input:
 | --- | --- | --- | --- |
 | `records_path` | Optional | Root | Dot path to a record array or single record object. |
 
-- If the root or `records_path` is an array, each element becomes a record.
+- If the root or `records_path` is an array, each element becomes a record. Array elements must also be JSON objects.
 - If the root or `records_path` is an object, it becomes a single record.
 - Scalars cannot be records.
 - `records_path` uses the normal Rulemorph path syntax. A missing path, or a path that points to a scalar, is an error.
@@ -647,6 +649,7 @@ input:
 | `records_path` | Optional | Root | Dot path to a record array or single record object. |
 
 - YAML/TOML input is normalized to JSON records before mappings, steps, and finalize run.
+- If the root or `records_path` is an array, each element becomes a record. Array elements must also be JSON objects.
 - `records_path` uses the normal Rulemorph path syntax. A missing path, or a path that points to a scalar, is an error.
 - A YAML stream must contain exactly one document. Duplicate keys, non-string mapping keys, and custom tags are rejected.
 - YAML aliases/anchors can be expanded, but alias count and expanded node count are bounded by resource limits.
@@ -733,6 +736,109 @@ input:
       profile_url: { selector: "a.profile", value: attr, attr: href }
       tags: { selector: ".tag", value: text, multiple: true }
 ```
+
+### Markdown
+- `input.markdown` is required when `format=markdown`.
+- An empty object `{}` is valid. It uses `records: document`, `flavor: gfm`, and `frontmatter: auto`.
+- There is no rule-file-free shorthand for Markdown input. Use a rule file with `rulemorph transform -r rules.yaml -i input.md`.
+
+```yaml
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "title"
+    source: "input.title"
+  - target: "body"
+    source: "input.body_text"
+  - target: "owner"
+    source: "input.frontmatter.owner"
+```
+
+| option | Required | Default | Description |
+| --- | --- | --- | --- |
+| `flavor` | Optional | `gfm` | `commonmark` / `gfm`. GFM enables tables, task lists, strikethrough, and autolinks. |
+| `frontmatter` | Optional | `auto` | `none` / `yaml` / `toml` / `auto`. Leading frontmatter becomes the `frontmatter` object. |
+| `records` | Optional | `document` | `document` / `sections` / `table_rows`. Selects the record unit. |
+| `section_levels` | Optional | `[1,2,3,4,5,6]` | Heading levels emitted by `records=sections`. `records=document` keeps every heading level. |
+| `table_header_policy` | Optional | `strict` | `strict` / `index`. `strict` rejects empty or duplicate headers; `index` uses `col_0`, `col_1`. |
+| `include.body_text` | Optional | `true` | Emits plain text as `body_text`. |
+| `include.body_markdown` | Optional | `false` | Setting this to `true` is currently an error. |
+| `include.blocks` | Optional | `true` | Emits the document-order block list as `blocks[]`. |
+| `include.links` | Optional | `true` | Emits the extracted link index as `links[]`. |
+| `include.images` | Optional | `true` | Emits the extracted image index as `images[]`. |
+| `include.code_blocks` | Optional | `true` | Emits the extracted code block index as `code_blocks[]`. |
+| `include.tables` | Optional | `true` | Emits the extracted table index as `tables[]`. |
+| `include.raw_html` | Optional | `true` | Preserves raw HTML blocks and inline HTML as strings. |
+| `include.sourcepos` | Optional | `false` | Setting this to `true` is currently an error. |
+| `trim_text` | Optional | `true` | Trims extracted text. |
+| `collapse_whitespace` | Optional | `true` | Collapses consecutive whitespace in extracted text to one space. |
+
+`records: document` emits one record for the whole Markdown document. The document record is the source-of-truth Markdown structure: it keeps heading hierarchy, block order, inline structure, list structure, and table structure. Stable fields include `record_type: "document"`, `frontmatter`, `title`, `body_text`, `sections`, `section_index`, `blocks`, `links`, `images`, `code_blocks`, `tables`, and `raw_html`.
+
+```json
+[
+  {
+    "record_type": "document",
+    "frontmatter": { "owner": "docs" },
+    "title": "Guide",
+    "body_text": "Guide Install Rulemorph.",
+    "sections": [
+      {
+        "id": "s1-1",
+        "level": 1,
+        "heading": "Guide",
+        "heading_block_id": "b1",
+        "path": ["Guide"],
+        "ordinal_path": [1],
+        "content_block_ids": ["b2"],
+        "child_ids": [],
+        "children": []
+      }
+    ],
+    "section_index": [
+      { "id": "s1-1", "level": 1, "heading": "Guide", "path": ["Guide"], "ordinal_path": [1] }
+    ],
+    "blocks": [
+      {
+        "id": "b1",
+        "type": "heading",
+        "section_id": "s1-1",
+        "parent_block_id": null,
+        "level": 1,
+        "text": "Guide",
+        "inlines": [{ "type": "text", "text": "Guide" }]
+      },
+      {
+        "id": "b2",
+        "type": "paragraph",
+        "section_id": "s1-1",
+        "parent_block_id": null,
+        "text": "Install Rulemorph.",
+        "inlines": [{ "type": "text", "text": "Install Rulemorph." }]
+      }
+    ]
+  }
+]
+```
+
+`sections` is a nested tree, and `section_index` is a flat index. `blocks[]` is the document-order source of truth. Use `sections[].heading_block_id`, `sections[].content_block_ids`, and `blocks[].section_id` to connect sections and blocks. `body_text` is a convenience field; structure-aware rules should use `sections`, `section_index`, `blocks`, and `inlines`.
+
+`content_block_ids` points to content blocks directly under that section. The heading block is referenced by `heading_block_id`, and blocks under child headings are reachable through `children`. In `records: sections`, each section record's `blocks[]` includes the section's own heading block, the section's direct blocks, nested container child blocks referenced by `item_ids` / `child_block_ids`, and descendant section heading and content blocks in document order. `heading_block_id` resolves within the same record's `blocks[]`.
+
+The main `blocks[]` `type` values are `heading`, `paragraph`, `list`, `list_item`, `blockquote`, `code_block`, `table`, `html_block`, and `thematic_break`. Ordered lists keep `ordered: true`, `start`, and `list_item.ordinal`. Task list items use `checked: true` / `false`; ordinary items use `checked: null`.
+
+Inline structure is kept in `inlines[]`. Main inline `type` values are `text`, `soft_break`, `line_break`, `code`, `emphasis`, `strong`, `strikethrough`, `link`, `image`, and `html_inline`. `link`, `image`, and emphasis-family nodes keep nested inline content in `children`.
+
+`records: sections` projects section records from the document record. With `section_levels: [2]`, each `##` record contains `record_type: "section"`, `document`, `id`, `level`, `heading`, `path`, `ordinal_path`, `body_text`, `heading_block_id`, `content_block_ids`, `blocks`, and `children`. Use mapping paths such as `input.heading`, `input.path`, `input.body_text`, and `input.blocks`.
+
+`records: table_rows` projects Markdown table data rows from table blocks. Fields are `record_type: "table_row"`, `document`, `section`, `table`, `row_index`, `headers`, `cells`, and `object`. In `strict` mode, header text becomes the `object` key and empty or duplicate headers are errors. In `index` mode, use paths such as `input.object.col_0` and `input.object.col_1`.
+
+Frontmatter is recognized only at the start of the document with `---` for YAML or `+++` for TOML. `auto` chooses YAML/TOML only when the opening delimiter has a matching closing delimiter. In `auto`, leading `---` / `+++` without a closing delimiter remains ordinary Markdown body text instead of frontmatter. With `frontmatter: yaml` / `toml`, an opening delimiter without a closing delimiter is an error. The frontmatter root must be an object. YAML duplicate keys, non-string keys, and custom tags are rejected. TOML datetimes are normalized to strings during JSON conversion.
+
+Raw HTML is treated as ordinary Markdown source text. Rulemorph does not render it as HTML, sanitize it, fetch network resources, or execute JavaScript. If a downstream Web UI renders Rulemorph output as HTML, escaping, sanitization, and avoiding unsafe `innerHTML` usage are downstream responsibilities.
+
+`include.raw_html=false` omits raw HTML strings and inline HTML nodes. Block HTML remains in `blocks[]` as `type: "html_block"` so the document structure is preserved, but the `html` field is omitted.
 
 ### Excel
 - `input.excel` is required when `format=excel`
@@ -821,7 +927,7 @@ Direct mode uses the normal v2 `expr` syntax. Use a pipe array when chaining ope
 echo '{ "a": 1, "b": 2 }' | rulemorph --rule '["@input.a", {"+": ["@input.b"]}]'
 ```
 
-Direct mode resolves the input format from `-f/--format`, then the `-i` extension, then the first stdin token. Stdin is JSON when the first byte after UTF-8 BOM and ASCII whitespace is `{` or `[`; otherwise it is CSV. Unknown or missing `-i` extensions stay JSON for compatibility. If CSV data starts with `{` or `[`, pass `-f csv`.
+Direct mode resolves the input format from `-f/--format`, then the `-i` extension, then the first stdin token. Stdin is JSON when the first byte after UTF-8 BOM and ASCII whitespace is `{` or `[`; otherwise it is CSV. Unknown or missing `-i` extensions stay JSON for compatibility. If CSV data starts with `{` or `[`, pass `-f csv`. For Markdown, use a rule file with `input.format: markdown` and `transform -i input.md`.
 
 For CSV direct input, a headered `.csv` file can be referenced by field name. Headerless CSV can either infer numeric fields from references such as `@input.0`, or receive field names with `-H/--headers`. `-h` remains the help option, so the short headers option is `-H`.
 
@@ -917,7 +1023,11 @@ rulemorph transform -r rules.yaml -i workbook.xlsx --limits-file limits.toml
 
 `range` emits at most 10,000 items by default. Use `range-items=<integer>` to change that cap. `range-items=unlimited` removes the per-range cap for trusted local input/rules. In `--limits-file`, write it as a string, for example `range-items = "unlimited"`. Even with `range-items=unlimited`, generated arrays from `range`, `map`, `flat_map`, `flatten`, and similar operators are still bounded by `array-len`.
 
-These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, and MCP pathless branch guard are not configurable.
+The `object` OP can generate JSON objects from a rule, so it has dedicated limits as well. Defaults are `object-fields=10000`, `object-key-bytes=4096`, `object-depth=64`, `generated-json-nodes=100000`, and `generated-json-bytes=10485760`. Override them with names such as `--limit object-fields=...` or `--limit generated-json-bytes=...`; `--limits-file` uses the same names. `array-len` remains the array-generation cap and is not reused as the object safety boundary.
+
+Markdown parsing is also bounded by `markdown-nodes` and `markdown-table-cells`. Both default to 1,000,000 and become 10,000,000 with `--limits-profile large`. Use `--limit markdown-nodes=2000000 --limit markdown-table-cells=2000000`, or `markdown-nodes = 2000000` and `markdown-table-cells = 2000000` in a limits file. `max_records` limits emitted records and is separate from Markdown AST node and table cell limits.
+
+These options only increase processing limits. Safety invariants such as duplicate key rejection, XML DTD/entity rejection, HTML no-network/no-JS behavior, Excel no-macro/no-formula-evaluation behavior, Markdown raw HTML no-render/no-fetch/no-execute behavior, and MCP pathless branch guard are not configurable.
 
 ## Record filter (`record_when`)
 
@@ -1189,7 +1299,7 @@ Support status:
 ### Operation categories
 
 - String ops: `concat`, `to_string`, `trim`, `lowercase`, `uppercase`, `replace`, `split`, `pad_start`, `pad_end`
-- JSON ops: `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
+- JSON ops: `object`, `merge`, `deep_merge`, `get`, `pick`, `omit`, `keys`, `values`, `entries`, `len`, `from_entries`, `object_flatten`, `object_unflatten`
 - Array ops: `map`, `filter`, `flat_map`, `flatten`, `take`, `drop`, `slice`, `chunk`, `zip`, `zip_with`, `unzip`, `group_by`, `key_by`, `partition`, `unique`, `distinct_by`, `sort_by`, `find`, `find_index`, `index_of`, `contains`, `sum`, `avg`, `min`, `max`, `reduce`, `fold`, `first`, `last`
 - Numeric ops: `+` / `add`, `-` / `subtract`, `*` / `multiply`, `/` / `divide`, `round`, `abs`, `floor`, `ceil`, `trunc`, `sqrt`, `sign`, `mod`, `pow`, `clamp`, `range`, `to_base`, `sum`, `avg`, `min`, `max`
 - Date ops: `date_format`, `to_unixtime`
@@ -1202,6 +1312,7 @@ Support status:
 
 - `to_*`: conversions (e.g., `to_string`, `to_base`, `to_unixtime`)
 - `*_by`: key-based variants (`group_by`, `key_by`, `distinct_by`, `sort_by`)
+- `object`: builder that creates objects from v2 expressions
 - `object_*`: object-specific structural ops (`object_flatten`, `object_unflatten`)
 
 ### Core operations
@@ -1272,6 +1383,7 @@ Numeric operators use the same pipe style. `range` is different: it generates an
 | `>` | `1` | Numeric comparison. Prefer `gt` conditions. | `runtime` |
 | `>=` | `1` | Numeric comparison. Prefer `gte` conditions. | `runtime` |
 | `~=` | `1` | Regex match. Prefer `match` conditions. | `runtime` |
+| `eq` / `ne` / `lt` / `lte` / `gt` / `gte` / `match` | `1` | Aliases for the comparison ops above. | `runtime` |
 
 Use `range` in explicit form, not as pipe-first shorthand. If the current pipe value is a boundary, pass `$` explicitly.
 
@@ -1288,6 +1400,29 @@ expr:
 
 ### JSON operations
 
+`object` evaluates multiple v2 expressions and builds one JSON object.
+When a field value evaluates to `missing`, that field is omitted. `null` remains `null`.
+Keys are literal field names; `user.name` is one key named `"user.name"`, not a nested path.
+Use nested `object` when nested output is needed.
+
+```yaml
+expr:
+  - "@input"
+  - object:
+      name: ["$.name", uppercase]
+      age: ["$.age", int]
+      tags:
+        value: ["new", "vip"]
+      profile:
+        - object:
+            label: ["$.name", lowercase]
+      missing: "$.missing"
+```
+
+In this example, the current pipe value before `object` is `@input`, so `$` inside field expressions points at the input record.
+Use the `value` wrapper for literal array field values. Use the `expr` wrapper when an object-shaped field value must be interpreted as an expression.
+When piping the `object` output to another OP in a multi-step pipe, put an explicit start value as shown above. To return only the object, use a single-step pipe such as `expr: [{ object: { id: "@input.id" } }]`.
+
 Path arguments:
 - `pick`/`omit` accept one or more path strings as separate args.
 - A single arg may also be an array of strings (e.g., `@context.paths`).
@@ -1302,6 +1437,7 @@ Example:
 
 | op | args | description | support |
 | --- | --- | --- | --- |
+| `object` | `1` | Build a JSON object from a field map of v2 expressions. Omit `missing` fields. | `runtime` |
 | `merge` | `>=1` | Shallow merge (rightmost wins). | `runtime` |
 | `deep_merge` | `>=1` | Recursive merge for objects; arrays are replaced. | `runtime` |
 | `get` | `1` | Get value at path; missing if path is absent. | `runtime` |
@@ -1311,9 +1447,9 @@ Example:
 | `values` | `0` | Array of values. | `runtime` |
 | `entries` | `0` | Array of `{key, value}` entries. | `runtime` |
 | `len` | `0` | Length of string/array/object. | `runtime` |
-| `from_entries` | `>=1` | Build object from pairs or key/value. | `runtime` |
-| `object_flatten` | `1` | Flatten object keys into path strings. | `runtime` |
-| `object_unflatten` | `1` | Expand path keys into nested objects. | `runtime` |
+| `from_entries` | `0-1` | Build object from pipe pairs, or from pipe key plus a `value` arg. | `runtime` |
+| `object_flatten` | `0` | Flatten pipe object keys into path strings. | `runtime` |
+| `object_unflatten` | `0` | Expand pipe path keys into nested objects. | `runtime` |
 
 ### Array operations
 
@@ -1355,7 +1491,7 @@ Another example (partition):
 | `partition` | `1` | Split into `[matched, unmatched]`. | `runtime` |
 | `unique` | `0` | Remove duplicates by equality. | `runtime` |
 | `distinct_by` | `1` | Remove duplicates by key. | `runtime` |
-| `sort_by` | `1` | Sort by key. | `runtime` |
+| `sort_by` | `1-2` | Sort by key. The second arg is `asc` / `desc`; default is `asc`. | `runtime` |
 | `find` | `1` | First matching element. | `runtime` |
 | `find_index` | `1` | Index of first match. | `runtime` |
 | `index_of` | `1` | Index of first equal element. | `runtime` |

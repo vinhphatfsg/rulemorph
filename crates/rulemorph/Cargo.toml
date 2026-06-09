@@ -9,9 +9,10 @@ keywords = ["transform", "yaml", "json", "csv", "etl"]
 categories = ["command-line-utilities", "data-structures", "encoding"]
 
 [features]
-default = ["excel", "html"]
+default = ["excel", "html", "markdown"]
 excel = ["dep:calamine", "dep:zip"]
 html = ["dep:scraper"]
+markdown = ["dep:comrak"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -26,6 +27,7 @@ calamine = { version = "0.26", features = ["dates"], optional = true }
 zip = { version = "0.6", default-features = false, features = ["deflate"], optional = true }
 quick-xml = "0.31"
 scraper = { version = "0.20", optional = true }
+comrak = { version = "0.52.0", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion = "0.5"

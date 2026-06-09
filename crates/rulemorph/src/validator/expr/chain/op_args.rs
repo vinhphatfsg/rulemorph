@@ -86,7 +86,7 @@ pub(super) fn validate_chain_op_args(
         "fold" => {
             require(args_len, ExactlyThree, base_path, ctx);
         }
-        "+" | "*" | "and" | "or" => {
+        "concat" | "coalesce" | "+" | "*" | "and" | "or" => {
             require(args_len, AtLeastTwo, base_path, ctx);
         }
         "-" | "/" | "to_base" | "==" | "!=" | "<" | "<=" | ">" | ">=" | "~=" => {

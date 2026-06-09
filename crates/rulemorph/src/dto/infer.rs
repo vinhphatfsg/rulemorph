@@ -5,8 +5,8 @@ use serde_json::Value as JsonValue;
 use crate::model::{CustomOpDef, Expr, Mapping, RuleFile, RuleType, RuleTypeKind};
 use crate::path::{PathToken, parse_path};
 use crate::v2_model::{
-    V2CustomCallStep, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2OpStep, V2Pipe, V2Ref, V2Start,
-    V2Step,
+    V2CustomCallStep, V2Expr, V2IfStep, V2LetStep, V2MapStep, V2ObjectFieldValue, V2ObjectStep,
+    V2OpStep, V2Pipe, V2Ref, V2Start, V2Step,
 };
 use crate::v2_parser::{
     custom_call_step_candidate, is_literal_escape, is_pipe_value, is_v2_ref,
@@ -275,6 +275,22 @@ fn infer_expr_with_scope(
     infer_pipe(&pipe, rule, state, scope, depth + 1)
 }
 
+fn infer_v2_expr_with_scope(
+    expr: &V2Expr,
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    scope: Scope,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth) {
+        return FieldType::JsonValue;
+    }
+    match expr {
+        V2Expr::Pipe(pipe) => infer_pipe(pipe, rule, state, scope, depth + 1),
+        V2Expr::V1Fallback(expr) => infer_expr_with_scope(expr, rule, state, scope, depth + 1),
+    }
+}
+
 fn infer_pipe(
     pipe: &V2Pipe,
     rule: &RuleFile,
@@ -352,6 +368,9 @@ fn infer_step(
     }
     match step {
         V2Step::Op(op_step) => infer_op(op_step, rule, state, scope, input_type, depth + 1),
+        V2Step::Object(object_step) => {
+            infer_object_step(object_step, rule, state, scope, input_type, depth + 1)
+        }
         V2Step::CustomCall(call_step) => infer_custom_call(&call_step.op, rule, state, depth + 1),
         V2Step::Let(let_step) => {
             infer_let_step(let_step, rule, state, scope, input_type, depth + 1)
@@ -362,6 +381,45 @@ fn infer_step(
         }
         V2Step::Ref(value_ref) => infer_ref(value_ref, state, scope, depth + 1),
     }
+}
+
+fn infer_object_step(
+    object_step: &V2ObjectStep,
+    rule: &RuleFile,
+    state: &mut InferenceState,
+    scope: &Scope,
+    input_type: FieldType,
+    depth: usize,
+) -> FieldType {
+    if !state.enter_node(depth)
+        || object_step.fields.len() > DTO_INFER_MAX_OBJECT_FIELDS
+        || !state.reserve_generated_type()
+    {
+        return FieldType::JsonValue;
+    }
+
+    let mut field_scope = scope.clone();
+    field_scope.pipe = input_type;
+    let fields = object_step
+        .fields
+        .iter()
+        .map(|field| {
+            let field_type = match &field.value {
+                V2ObjectFieldValue::Expr(expr) => {
+                    infer_v2_expr_with_scope(expr, rule, state, field_scope.clone(), depth + 1)
+                }
+                V2ObjectFieldValue::Value(value) => infer_json_value(value, state, depth + 1),
+            };
+            Field {
+                key: field.key.clone(),
+                field_type,
+                optional: true,
+                synthetic: false,
+            }
+        })
+        .collect();
+
+    FieldType::Object(Box::new(SchemaNode { fields }))
 }
 
 fn infer_op(

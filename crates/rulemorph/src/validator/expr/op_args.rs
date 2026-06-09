@@ -80,6 +80,9 @@ pub(super) fn validate_op_args(expr_op: &ExprOp, base_path: &str, ctx: &mut Vali
         "fold" => {
             require(args_len, ExactlyThree, base_path, ctx);
         }
+        "concat" | "coalesce" => {
+            require(args_len, AtLeastOne, base_path, ctx);
+        }
         "+" | "*" => {
             require(args_len, AtLeastTwo, base_path, ctx);
         }

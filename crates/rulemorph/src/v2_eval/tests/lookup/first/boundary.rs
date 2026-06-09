@@ -139,3 +139,53 @@ fn test_lookup_first_insufficient_args() {
     );
     assert!(result.is_err());
 }
+
+#[test]
+fn test_lookup_first_rejects_extra_args() {
+    let op = V2OpStep {
+        op: "lookup_first".to_string(),
+        args: vec![
+            V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!([])),
+                steps: vec![],
+            }),
+            V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!("id")),
+                steps: vec![],
+            }),
+            V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!(1)),
+                steps: vec![],
+            }),
+            V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!("name")),
+                steps: vec![],
+            }),
+            V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!("extra")),
+                steps: vec![],
+            }),
+        ],
+    };
+    let record = json!({});
+    let out = json!({});
+    let ctx = V2EvalContext::new();
+    let err = eval_v2_op_step(
+        &op,
+        EvalValue::Value(json!(null)),
+        &record,
+        None,
+        &out,
+        "test",
+        &ctx,
+    )
+    .expect_err("lookup_first should enforce metadata max args at runtime");
+
+    assert_eq!(err.kind, TransformErrorKind::ExprError);
+    assert!(
+        err.message
+            .contains("lookup_first accepts at most 4 argument(s), got 5"),
+        "unexpected error message: {}",
+        err.message
+    );
+}

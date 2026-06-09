@@ -1,0 +1,289 @@
+[
+  {
+    "blocks": [
+      {
+        "id": "b1",
+        "inlines": [
+          {
+            "text": "Intro paragraph before heading.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "preamble",
+        "text": "Intro paragraph before heading.",
+        "type": "paragraph"
+      },
+      {
+        "id": "b2",
+        "inlines": [
+          {
+            "text": "Guide",
+            "type": "text"
+          }
+        ],
+        "level": 1,
+        "parent_block_id": null,
+        "section_id": "s1-1",
+        "text": "Guide",
+        "type": "heading"
+      },
+      {
+        "id": "b3",
+        "inlines": [
+          {
+            "text": "Opening text.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1",
+        "text": "Opening text.",
+        "type": "paragraph"
+      },
+      {
+        "id": "b4",
+        "inlines": [
+          {
+            "text": "Install",
+            "type": "text"
+          }
+        ],
+        "level": 2,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1",
+        "text": "Install",
+        "type": "heading"
+      },
+      {
+        "id": "b5",
+        "inlines": [
+          {
+            "text": "Install body.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1",
+        "text": "Install body.",
+        "type": "paragraph"
+      },
+      {
+        "id": "b6",
+        "inlines": [
+          {
+            "text": "macOS",
+            "type": "text"
+          }
+        ],
+        "level": 3,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1.s3-1",
+        "text": "macOS",
+        "type": "heading"
+      },
+      {
+        "id": "b7",
+        "inlines": [
+          {
+            "text": "Use brew.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1.s3-1",
+        "text": "Use brew.",
+        "type": "paragraph"
+      },
+      {
+        "id": "b8",
+        "inlines": [
+          {
+            "text": "Configure",
+            "type": "text"
+          }
+        ],
+        "level": 2,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-2",
+        "text": "Configure",
+        "type": "heading"
+      },
+      {
+        "id": "b9",
+        "inlines": [
+          {
+            "text": "Set options.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-2",
+        "text": "Set options.",
+        "type": "paragraph"
+      }
+    ],
+    "body_text": "Intro paragraph before heading. Guide Opening text. Install Install body. macOS Use brew. Configure Set options.",
+    "record_type": "document",
+    "section_index": [
+      {
+        "heading": "",
+        "id": "preamble",
+        "level": 0,
+        "ordinal_path": [],
+        "path": []
+      },
+      {
+        "heading": "Guide",
+        "id": "s1-1",
+        "level": 1,
+        "ordinal_path": [
+          1
+        ],
+        "path": [
+          "Guide"
+        ]
+      },
+      {
+        "heading": "Install",
+        "id": "s1-1.s2-1",
+        "level": 2,
+        "ordinal_path": [
+          1,
+          1
+        ],
+        "path": [
+          "Guide",
+          "Install"
+        ]
+      },
+      {
+        "heading": "macOS",
+        "id": "s1-1.s2-1.s3-1",
+        "level": 3,
+        "ordinal_path": [
+          1,
+          1,
+          1
+        ],
+        "path": [
+          "Guide",
+          "Install",
+          "macOS"
+        ]
+      },
+      {
+        "heading": "Configure",
+        "id": "s1-1.s2-2",
+        "level": 2,
+        "ordinal_path": [
+          1,
+          2
+        ],
+        "path": [
+          "Guide",
+          "Configure"
+        ]
+      }
+    ],
+    "sections": [
+      {
+        "child_ids": [],
+        "children": [],
+        "content_block_ids": [
+          "b1"
+        ],
+        "heading": "",
+        "heading_block_id": null,
+        "id": "preamble",
+        "level": 0,
+        "ordinal_path": [],
+        "path": []
+      },
+      {
+        "child_ids": [
+          "s1-1.s2-1",
+          "s1-1.s2-2"
+        ],
+        "children": [
+          {
+            "child_ids": [
+              "s1-1.s2-1.s3-1"
+            ],
+            "children": [
+              {
+                "child_ids": [],
+                "children": [],
+                "content_block_ids": [
+                  "b7"
+                ],
+                "heading": "macOS",
+                "heading_block_id": "b6",
+                "id": "s1-1.s2-1.s3-1",
+                "level": 3,
+                "ordinal_path": [
+                  1,
+                  1,
+                  1
+                ],
+                "path": [
+                  "Guide",
+                  "Install",
+                  "macOS"
+                ]
+              }
+            ],
+            "content_block_ids": [
+              "b5"
+            ],
+            "heading": "Install",
+            "heading_block_id": "b4",
+            "id": "s1-1.s2-1",
+            "level": 2,
+            "ordinal_path": [
+              1,
+              1
+            ],
+            "path": [
+              "Guide",
+              "Install"
+            ]
+          },
+          {
+            "child_ids": [],
+            "children": [],
+            "content_block_ids": [
+              "b9"
+            ],
+            "heading": "Configure",
+            "heading_block_id": "b8",
+            "id": "s1-1.s2-2",
+            "level": 2,
+            "ordinal_path": [
+              1,
+              2
+            ],
+            "path": [
+              "Guide",
+              "Configure"
+            ]
+          }
+        ],
+        "content_block_ids": [
+          "b3"
+        ],
+        "heading": "Guide",
+        "heading_block_id": "b2",
+        "id": "s1-1",
+        "level": 1,
+        "ordinal_path": [
+          1
+        ],
+        "path": [
+          "Guide"
+        ]
+      }
+    ],
+    "title": "Guide"
+  }
+]

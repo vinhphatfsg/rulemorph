@@ -64,6 +64,7 @@ pub(super) fn apply_mappings_via_rule(
             xml: None,
             html: None,
             excel: None,
+            markdown: None,
         },
         defs: Default::default(),
         codecs: Default::default(),

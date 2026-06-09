@@ -10,6 +10,7 @@ mod condition;
 mod context;
 mod control;
 mod lookup;
+mod object;
 mod operators;
 mod reference;
 #[cfg(test)]
@@ -26,6 +27,7 @@ pub use control::{
     eval_v2_expr, eval_v2_if_step, eval_v2_let_step, eval_v2_map_step, eval_v2_pipe,
 };
 use lookup::eval_lookup_op;
+pub(crate) use object::eval_v2_object_step;
 pub use operators::eval_v2_op_step;
 pub use reference::{eval_v2_ref, eval_v2_start};
 use v1_bridge::eval_v2_op_with_v1_fallback;

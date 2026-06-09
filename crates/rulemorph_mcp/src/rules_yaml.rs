@@ -167,6 +167,11 @@ mappings: []
 
         apply_format_override(&mut rule, Some("JSON")).unwrap();
         assert!(matches!(rule.input.format, rulemorph::InputFormat::Json));
+        apply_format_override(&mut rule, Some("markdown")).unwrap();
+        assert!(matches!(
+            rule.input.format,
+            rulemorph::InputFormat::Markdown
+        ));
         assert_eq!(
             apply_format_override(&mut rule, Some("parquet")),
             Err("unknown format: parquet".to_string())

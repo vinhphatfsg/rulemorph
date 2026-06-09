@@ -159,7 +159,7 @@ context は synthetic rule には埋め込まない。`transform_input_with_warn
 
 context file の read / parse error は既存 `transform -c` と同じ扱いにする。`load_context` の現行 contract に合わせ、read error と JSON parse error は exit code `1` で返し、代表メッセージも既存の `failed to read context: ...` / `failed to parse context JSON: ...` を維持する。
 
-context file については MVP では direct mode 専用の size limit や strict JSON parser を追加しない。これは `transform -c/--context` と direct mode の parse behavior / error message を揃えるためであり、context だけ direct mode で異なる duplicate key handling や size error を持たせない。一般的なローカル CLI と同じく、ユーザー自身が明示した local file の大きさは基本的に OS / runner の resource limit に委ねる。
+context file については、現在 direct mode 専用の size limit や strict JSON parser は追加していない。これは `transform -c/--context` と direct mode の parse behavior / error message を揃えるためであり、context だけ direct mode で異なる duplicate key handling や size error を持たせない。一般的なローカル CLI と同じく、ユーザー自身が明示した local file の大きさは基本的に OS / runner の resource limit に委ねる。
 
 ただし、rulemorph CLI を CI、server、MCP、Web UI などから呼び出し、第三者が context path または context file content を制御できる運用では、巨大 context による memory DoS や duplicate key による解釈差が security risk になりうる。その hardening は direct mode 専用ではなく、既存 `transform -c` も含めた共有 `load_context` contract の変更として扱う。将来対応する場合は `MAX_CONTEXT_BYTES` と strict JSON duplicate-key rejection を shared helper に追加し、direct / transform の両方で同じ error contract に更新する。
 
@@ -311,7 +311,7 @@ target の parse は core の `parse_path` と同じ規則を使う。array inde
 
 output spec にも direct mode 専用上限を適用する。初期値は `MAX_DIRECT_OUTPUT_FIELDS = 10_000`、`MAX_DIRECT_OUTPUT_SPEC_BYTES = 8 MiB`、`MAX_DIRECT_OUTPUT_TARGET_BYTES = 256 KiB`、`MAX_DIRECT_OUTPUT_TARGET_BYTES_TOTAL = 8 MiB`、`MAX_DIRECT_OUTPUT_TARGET_DEPTH = 256`、`MAX_DIRECT_OUTPUT_TARGET_TOKENS_TOTAL = 1_000_000`、`MAX_DIRECT_OUTPUT_EXPR_DEPTH = 256`、`MAX_DIRECT_OUTPUT_EXPR_NODES = 1_000_000`、`MAX_DIRECT_OUTPUT_EXPR_STRING_BYTES = 8 MiB`、`MAX_DIRECT_OUTPUT_CELLS = 10_000_000` とする。これは巨大な `-F` 繰り返しや巨大 output-map key / expr から synthetic rule JSON / nested output path validation / `records * mappings` 評価を過剰に肥大化させないための guard である。
 
-`MAX_DIRECT_OUTPUT_CELLS` は record object output、つまり `-F/--field` と `--output-map` にだけ適用する。transform 前に、resolved input format と既存 `NormalizationOptions` の effective record limit から `effective_max_records * output_field_count` を見積もり、上限を超える場合は CLI validation error とする。JSON object input のように 1 record と判定できる入力は `1 * output_field_count` として扱う。MVP では output byte 数の精密な上限は追加せず、必要になった場合は shared `max_output_bytes` として別途設計する。
+`MAX_DIRECT_OUTPUT_CELLS` は record object output、つまり `-F/--field` と `--output-map` にだけ適用する。transform 前に、resolved input format と既存 `NormalizationOptions` の effective record limit から `effective_max_records * output_field_count` を見積もり、上限を超える場合は CLI validation error とする。JSON object input のように 1 record と判定できる入力は `1 * output_field_count` として扱う。現在は output byte 数の精密な上限は追加せず、必要になった場合は shared `max_output_bytes` として別途設計する。
 
 `--output-map` は JSON object なので、target-to-expr map 自体に評価順の意味を持たせない。既存 `mappings` の `@out` は「前の mapping」への参照であり、object key order に依存させると validation / runtime の意味が揺れる。そのため `--output-map` value 内で評価される `@out` 参照は CLI 側で拒否する。順序依存が必要な場合は `-F/--field` を使う。plain literal object 内の文字列 `"@out.x"` は評価される ref ではないため、この禁止の対象外である。
 
@@ -641,7 +641,7 @@ context file の read / parse error は既存 `transform -c` と同じく exit c
    - 既存 `load_context` を再利用する。
    - `transform_input_with_warnings_with_base_dir_and_options` に `context_value.as_ref()` を渡す。
    - context 未指定時は `None` を維持する。
-   - MVP では direct mode 専用の context size limit / strict JSON duplicate-key rejection は追加しない。将来 hardening は `load_context` の共有 contract 変更として direct / transform の両方に適用する。
+   - 現在は direct mode 専用の context size limit / strict JSON duplicate-key rejection は追加しない。将来 hardening は `load_context` の共有 contract 変更として direct / transform の両方に適用する。
 
 6. format 推定を `direct.rs` に寄せる。
    - 明示 `-f`
@@ -742,7 +742,7 @@ cargo test
   - `@context.*` does not trigger headerless CSV numeric inference
   - invalid context JSON returns existing `failed to parse context JSON:` error and exit code `1`
   - missing context file returns existing `failed to read context:` error and exit code `1`
-  - duplicate-key context JSON follows existing `load_context` behavior in MVP and observes the same value as `transform -c`
+  - duplicate-key context JSON follows existing `load_context` behavior and observes the same value as `transform -c`
   - context size limit is not added in direct mode only
   - `-c/--context` before a subcommand without direct output spec is rejected as a direct-only option placement error
 - `-F/--field` output:
@@ -872,12 +872,12 @@ headerless CSV の numeric field 推定では、先頭 record の field 数か�
 - direct output cell 数に `MAX_DIRECT_OUTPUT_CELLS = 10_000_000` を適用する。これは `effective_max_records * output_field_count` で見積もる。
 - expr JSON に `MAX_DIRECT_OUTPUT_EXPR_DEPTH` / `MAX_DIRECT_OUTPUT_EXPR_NODES` / `MAX_DIRECT_OUTPUT_EXPR_STRING_BYTES` を適用する。
 - 超過時は transform 前の CLI validation error とする。
-- output byte 数は実データ依存で事前見積もりしづらいため、MVP では byte 専用の新上限は追加しない。必要になった場合は shared `max_output_bytes` として設計する。
+- output byte 数は実データ依存で事前見積もりしづらいため、現在は byte 専用の新上限は追加しない。必要になった場合は shared `max_output_bytes` として設計する。
 - テストに excessive output fields、oversized spec、oversized target、total target bytes、excessive target depth / token total、excessive output cells、excessive expr shape の拒否を追加する。
 
-### context JSON の size / duplicate key は MVP では既存互換を優先する
+### context JSON の size / duplicate key は既存挙動に合わせる
 
-一般的なローカル CLI では、ユーザーが明示した file の大きさを必ず application-level limit で拒否するとは限らない。`rulemorph` direct mode でも、context file はユーザーが `-c/--context` で明示する local file であり、MVP では既存 `transform -c` と同じ `load_context` behavior を使う。
+一般的なローカル CLI では、ユーザーが明示した file の大きさを必ず application-level limit で拒否するとは限らない。`rulemorph` direct mode でも、context file はユーザーが `-c/--context` で明示する local file であり、現在は既存 `transform -c` と同じ `load_context` behavior を使う。
 
 対策:
 

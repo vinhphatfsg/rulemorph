@@ -6,6 +6,8 @@ mod html;
 mod input;
 mod json;
 mod limits;
+#[cfg(feature = "markdown")]
+mod markdown;
 mod options;
 mod records;
 mod toml;
@@ -17,7 +19,11 @@ pub use options::NormalizationOptions;
 pub use records::NormalizedRecords;
 
 use crate::error::TransformError;
-#[cfg(any(not(feature = "html"), not(feature = "excel")))]
+#[cfg(any(
+    not(feature = "html"),
+    not(feature = "excel"),
+    not(feature = "markdown")
+))]
 use crate::error::TransformErrorKind;
 use crate::model::{InputFormat, RuleFile};
 
@@ -67,11 +73,21 @@ pub fn normalize_records_with_options<'a>(
         InputFormat::Excel => excel::normalize_excel_records(rule, input, options)?,
         #[cfg(not(feature = "excel"))]
         InputFormat::Excel => return Err(unsupported_input_format("excel")),
+        #[cfg(feature = "markdown")]
+        InputFormat::Markdown => {
+            markdown::normalize_markdown_records(rule, text_input(input, options)?, options)?
+        }
+        #[cfg(not(feature = "markdown"))]
+        InputFormat::Markdown => return Err(unsupported_input_format("markdown")),
     };
     Ok(NormalizedRecords::Materialized(records.into_iter()))
 }
 
-#[cfg(any(not(feature = "html"), not(feature = "excel")))]
+#[cfg(any(
+    not(feature = "html"),
+    not(feature = "excel"),
+    not(feature = "markdown")
+))]
 fn unsupported_input_format(format: &str) -> TransformError {
     TransformError::new(
         TransformErrorKind::InvalidInput,

@@ -1,5 +1,8 @@
 use super::*;
 use crate::model::{CustomOpDef, RuleType, RuleTypeKind};
+use crate::trace::TraceValueMode;
+use crate::transform::GeneratedObjectBudget;
+use crate::v2_model::{V2ObjectFieldValue, object_field_rule_path};
 use crate::v2_operator::{V2OperatorTrace, operator};
 
 #[allow(clippy::too_many_arguments)]
@@ -157,6 +160,9 @@ pub(super) fn eval_v2_step_traced<'a>(
                 .finish_with_v2_eval_output(collector, &output, None);
             Ok((output, ctx.clone()))
         }
+        V2Step::Object(object) => eval_v2_object_step_traced(
+            object, pipe_value, record, context, out, step_path, ctx, collector,
+        ),
         V2Step::CustomCall(call) => {
             let def = ctx.rule().and_then(|rule| rule.defs.get(&call.op));
             let def_path = format!("defs.{}", call.op);
@@ -318,6 +324,166 @@ pub(super) fn eval_v2_step_traced<'a>(
             Ok((result, ctx.clone()))
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn eval_v2_object_step_traced<'a>(
+    object: &crate::v2_model::V2ObjectStep,
+    pipe_value: V2EvalValue,
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a JsonValue,
+    step_path: &str,
+    ctx: &V2EvalContext<'a>,
+    collector: &mut TraceCollector,
+) -> Result<(V2EvalValue, V2EvalContext<'a>), TransformError> {
+    collector
+        .start_span(TraceEventKind::OpStart, TracePhase::Start)
+        .rule_path(step_path)
+        .operator("object")
+        .input_v2_eval_value(&pipe_value, collector.options(), None)
+        .attr_count("field_count", object.fields.len())
+        .finish(collector);
+
+    let limits = ctx.limits();
+    if let Err(error) = limits.check_object_field_count(object.fields.len(), step_path) {
+        emit_object_op_error(&pipe_value, step_path, collector);
+        return Err(error);
+    }
+    let mut budget = match GeneratedObjectBudget::new(limits, step_path) {
+        Ok(budget) => budget,
+        Err(error) => {
+            emit_object_op_error(&pipe_value, step_path, collector);
+            return Err(error);
+        }
+    };
+
+    let field_ctx = ctx.clone().with_pipe_value(pipe_value.clone());
+    let mut output = serde_json::Map::new();
+    for (index, field) in object.fields.iter().enumerate() {
+        let field_path = object_field_rule_path(step_path, &field.key);
+        if let Err(error) = limits.check_object_key(&field.key, &field_path) {
+            emit_object_op_error(&pipe_value, step_path, collector);
+            return Err(error);
+        }
+        let trace_field_path = trace_object_field_rule_path(
+            step_path,
+            index,
+            &field.key,
+            &collector.options().value_mode,
+        );
+        let value = match &field.value {
+            V2ObjectFieldValue::Expr(expr) => {
+                match eval_v2_expr_traced(
+                    expr,
+                    record,
+                    context,
+                    out,
+                    &trace_field_path,
+                    &field_ctx,
+                    collector,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        emit_object_op_error(&pipe_value, step_path, collector);
+                        return Err(error);
+                    }
+                }
+            }
+            V2ObjectFieldValue::Value(value) => V2EvalValue::Value(value.clone()),
+        };
+        if let V2EvalValue::Value(value) = &value
+            && let Err(error) = budget.try_push_field(&field.key, value, limits, &field_path)
+        {
+            emit_object_op_error(&pipe_value, step_path, collector);
+            return Err(error);
+        }
+        emit_object_field_eval(collector, &trace_field_path, index, &field.key, &value);
+        if let V2EvalValue::Value(value) = value {
+            output.insert(field.key.clone(), value);
+        }
+    }
+
+    let output = V2EvalValue::Value(JsonValue::Object(output));
+    collector
+        .end_span(TraceEventKind::OpEnd, TracePhase::End)
+        .rule_path(step_path)
+        .operator("object")
+        .input_v2_eval_value(&pipe_value, collector.options(), None)
+        .attr_count("field_count", object.fields.len())
+        .finish_with_v2_eval_output(collector, &output, None);
+    Ok((output, ctx.clone()))
+}
+
+fn emit_object_op_error(pipe_value: &V2EvalValue, step_path: &str, collector: &mut TraceCollector) {
+    collector
+        .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
+        .rule_path(step_path)
+        .operator("object")
+        .input_v2_eval_value(pipe_value, collector.options(), None)
+        .finish(collector);
+}
+
+fn emit_object_field_eval(
+    collector: &mut TraceCollector,
+    field_path: &str,
+    index: usize,
+    key: &str,
+    value: &V2EvalValue,
+) {
+    let mut event = collector
+        .emit(TraceEventKind::ArgEval, TracePhase::Instant)
+        .rule_path(field_path)
+        .operator("object")
+        .attr_index("field_index", index);
+    if trace_field_key_is_secret_like(key, &collector.options().value_mode) {
+        event = event.attr_path("field_key_redaction_reason", "secret_like_path");
+    } else {
+        event = event.attr_path("field_key", trace_field_key_display(key));
+    }
+    event.finish_with_v2_eval_output(collector, value, None);
+}
+
+fn trace_object_field_rule_path(
+    step_path: &str,
+    index: usize,
+    key: &str,
+    mode: &TraceValueMode,
+) -> String {
+    if trace_field_key_is_secret_like(key, mode) {
+        format!("{}.object[{}]", step_path, index)
+    } else {
+        object_field_rule_path(step_path, key)
+    }
+}
+
+fn trace_field_key_is_secret_like(key: &str, mode: &TraceValueMode) -> bool {
+    match mode {
+        TraceValueMode::Raw => false,
+        TraceValueMode::Redacted(redaction) => {
+            let lower = key.to_ascii_lowercase();
+            redaction
+                .secret_key_fragments
+                .iter()
+                .any(|fragment| lower.contains(fragment))
+        }
+        TraceValueMode::MetadataOnly => {
+            let lower = key.to_ascii_lowercase();
+            crate::trace::TraceRedactionOptions::default()
+                .secret_key_fragments
+                .iter()
+                .any(|fragment| lower.contains(fragment))
+        }
+    }
+}
+
+fn trace_field_key_display(key: &str) -> String {
+    let encoded = serde_json::to_string(key).unwrap_or_else(|_| "\"<invalid>\"".to_string());
+    encoded
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(&encoded)
+        .to_string()
 }
 
 fn trace_output_type_summary(def: &CustomOpDef) -> String {

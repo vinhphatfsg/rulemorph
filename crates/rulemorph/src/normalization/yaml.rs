@@ -7,7 +7,7 @@ use crate::serde_guard::parse_yaml_value_strict_with_limits;
 
 use super::{NormalizationOptions, enforce_json_limits, select_records_from_document};
 
-mod aliases;
+pub(super) mod aliases;
 
 use self::aliases::enforce_yaml_alias_limit;
 

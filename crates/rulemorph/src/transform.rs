@@ -21,7 +21,7 @@ use crate::v2_model::{V2ComparisonOp, V2Condition, V2Pipe, V2Ref, V2Start, V2Ste
 use crate::v2_parser::{parse_v2_condition, parse_v2_expr};
 
 const REGEX_CACHE_CAPACITY: usize = 128;
-const BRANCH_MAX_DEPTH: usize = 64;
+pub(crate) const BRANCH_MAX_DEPTH: usize = 64;
 
 fn regex_cache() -> &'static Mutex<LruCache<String, Regex>> {
     static REGEX_CACHE: OnceLock<Mutex<LruCache<String, Regex>>> = OnceLock::new();
@@ -90,8 +90,8 @@ use self::record::apply_rule_to_record;
 use self::record_trace::apply_rule_to_record_traced;
 use self::types::Namespace;
 pub(crate) use self::types::{
-    EvalItem, EvalLimits, EvalLocals, EvalValue, extend_generated_array_items,
-    push_generated_array_item,
+    EvalItem, EvalLimits, EvalLocals, EvalValue, GeneratedArrayBudget, GeneratedObjectBudget,
+    extend_generated_array_items, push_generated_array_item,
 };
 use self::v1_expr::{
     canonical_ref_path, eval_chain, eval_expr, eval_record_when, eval_record_when_traced, eval_ref,

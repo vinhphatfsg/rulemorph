@@ -3,6 +3,7 @@
 ## Language
 - 返答、docs、plans は日本語 first。英語は明示された場合だけ使う。
 - 用語は `docs/glossary.md` を優先する。
+- ユーザー向け docs / README / spec では、`MVP`、内部フェーズ名、実装計画上の呼び名など、ユーザーに関係しない表現を使わない。現状の仕様事実、使い方、制約だけを書く。
 
 ## Always
 - 既存の仕様、fixtures、tests、README と矛盾する変更をしない。

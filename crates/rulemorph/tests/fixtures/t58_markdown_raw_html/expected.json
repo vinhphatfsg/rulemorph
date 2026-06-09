@@ -1,0 +1,76 @@
+[
+  {
+    "blocks": [
+      {
+        "id": "b1",
+        "inlines": [
+          {
+            "text": "Raw",
+            "type": "text"
+          }
+        ],
+        "level": 1,
+        "parent_block_id": null,
+        "section_id": "s1-1",
+        "text": "Raw",
+        "type": "heading"
+      },
+      {
+        "html": "<div data-kind=\"note\"><strong>raw</strong></div>",
+        "id": "b2",
+        "inlines": [],
+        "parent_block_id": null,
+        "section_id": "s1-1",
+        "text": "raw",
+        "type": "html_block"
+      },
+      {
+        "id": "b3",
+        "inlines": [
+          {
+            "text": "Text with ",
+            "type": "text"
+          },
+          {
+            "html": "<span data-x=\"1\">",
+            "type": "html_inline"
+          },
+          {
+            "text": "inline",
+            "type": "text"
+          },
+          {
+            "html": "</span>",
+            "type": "html_inline"
+          },
+          {
+            "text": ".",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1",
+        "text": "Text with inline.",
+        "type": "paragraph"
+      }
+    ],
+    "body_text": "Raw raw Text with inline.",
+    "raw_html": [
+      {
+        "block_id": "b2",
+        "html": "<div data-kind=\"note\"><strong>raw</strong></div>",
+        "kind": "block"
+      },
+      {
+        "block_id": "b3",
+        "html": "<span data-x=\"1\">",
+        "kind": "inline"
+      },
+      {
+        "block_id": "b3",
+        "html": "</span>",
+        "kind": "inline"
+      }
+    ]
+  }
+]

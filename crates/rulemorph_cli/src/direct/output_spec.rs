@@ -4,7 +4,10 @@ use std::collections::HashSet;
 use rulemorph::{
     Expr, ExprChain, ExprOp, ExprRef, NormalizationOptions, PathToken, parse_path,
     serde_guard::parse_json_value_strict,
-    v2_model::{V2CallArg, V2Comparison, V2Condition, V2Expr, V2Pipe, V2Ref, V2Start, V2Step},
+    v2_model::{
+        V2CallArg, V2Comparison, V2Condition, V2Expr, V2ObjectFieldValue, V2Pipe, V2Ref, V2Start,
+        V2Step,
+    },
     v2_parser::parse_v2_expr,
 };
 
@@ -455,6 +458,10 @@ fn scan_v2_step_refs(step: &V2Step, root: &str) -> bool {
     match step {
         V2Step::Ref(reference) => is_v2_root_ref(reference, root),
         V2Step::Op(op) => op.args.iter().any(|expr| scan_v2_expr_refs(expr, root)),
+        V2Step::Object(object) => object.fields.iter().any(|field| match &field.value {
+            V2ObjectFieldValue::Expr(expr) => scan_v2_expr_refs(expr, root),
+            V2ObjectFieldValue::Value(_) => false,
+        }),
         V2Step::CustomCall(call) => call.with.as_ref().is_some_and(|args| {
             args.iter().any(|(_, arg)| match arg {
                 V2CallArg::Expr(expr) => scan_v2_expr_refs(expr, root),

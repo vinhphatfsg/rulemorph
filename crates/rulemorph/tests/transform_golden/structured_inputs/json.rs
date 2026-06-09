@@ -78,3 +78,28 @@ mappings:
     assert_eq!(err.kind, TransformErrorKind::InvalidInput);
     assert_eq!(err.message, "records_path must point to an array or object");
 }
+
+#[test]
+fn json_records_path_rejects_scalar_array_element() {
+    let rule = parse_rule_file(
+        r#"
+version: 2
+input:
+  format: json
+  json:
+    records_path: users
+mappings:
+  - target: "id"
+    source: "id"
+"#,
+    )
+    .expect("parse rule");
+    let err = normalize_records_with_options(
+        &rule,
+        InputData::Text(r#"{ "users": [1, { "id": 2 }] }"#),
+        &NormalizationOptions::default(),
+    )
+    .expect_err("records_path array elements must be objects");
+    assert_eq!(err.kind, TransformErrorKind::InvalidInput);
+    assert_eq!(err.message, "records_path array elements must be objects");
+}

@@ -40,6 +40,8 @@ include!("transform_golden/excel.rs");
 include!("transform_golden/xml.rs");
 #[cfg(feature = "html")]
 include!("transform_golden/html.rs");
+#[cfg(feature = "markdown")]
+include!("transform_golden/markdown.rs");
 
 include!("transform_golden/structured_inputs.rs");
 

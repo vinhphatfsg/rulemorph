@@ -1,8 +1,34 @@
-use rulemorph::{DtoLanguage, generate_dto, parse_rule_file};
+use rulemorph::{DtoLanguage, generate_dto, parse_rule_file, validate_rule_file};
 
 fn render(yaml: &str, language: DtoLanguage) -> String {
     let rule = parse_rule_file(yaml).expect("rule parses");
+    validate_rule_file(&rule).expect("rule validates before dto render");
     generate_dto(&rule, language, Some("Record")).expect("dto renders")
+}
+
+#[test]
+fn dto_render_validates_rule_before_generation() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: name
+    expr: ["@input.name", { trim: "ignored" }]
+"#;
+
+    let panic = std::panic::catch_unwind(|| render(yaml, DtoLanguage::Rust))
+        .expect_err("invalid rules should not reach DTO generation");
+    let message = panic
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| panic.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic>");
+    assert!(
+        message.contains("rule validates before dto render"),
+        "unexpected panic message: {message}"
+    );
 }
 
 #[test]
@@ -141,6 +167,40 @@ mappings:
     assert!(typescript.contains("parts: string[];"));
     assert!(typescript.contains("grouped: { [key: string]: unknown[] };"));
     assert!(!typescript.contains("Record<string,"));
+}
+
+#[test]
+fn dto_infers_object_builder_static_shape() {
+    let yaml = r#"
+version: 2
+input:
+  format: json
+  json: {}
+mappings:
+  - target: payload
+    expr:
+      - object:
+          name: ["@input.name", uppercase]
+          age: ["@input.age", int]
+          nested:
+            - object:
+                active: true
+    required: true
+"#;
+
+    let rust = render(yaml, DtoLanguage::Rust);
+    assert!(rust.contains("pub payload: RecordPayload,"));
+    assert!(rust.contains("pub name: Option<String>,"));
+    assert!(rust.contains("pub age: Option<i64>,"));
+    assert!(rust.contains("pub nested: Option<RecordPayloadNested>,"));
+    assert!(rust.contains("pub active: Option<bool>,"));
+
+    let typescript = render(yaml, DtoLanguage::TypeScript);
+    assert!(typescript.contains("payload: RecordPayload;"));
+    assert!(typescript.contains("name?: string;"));
+    assert!(typescript.contains("age?: number;"));
+    assert!(typescript.contains("nested?: RecordPayloadNested;"));
+    assert!(typescript.contains("active?: boolean;"));
 }
 
 #[test]

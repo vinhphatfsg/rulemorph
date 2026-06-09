@@ -1,0 +1,11 @@
+[
+  {
+    "body_text": "Document body without a level-one heading.",
+    "frontmatter": {
+      "order": 3,
+      "owner": "docs",
+      "title": "Guide"
+    },
+    "title": "Guide"
+  }
+]

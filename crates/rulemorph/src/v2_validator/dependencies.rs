@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::error::ErrorCode;
-use crate::v2_model::{V2Condition, V2Expr, V2Pipe, V2Ref, V2Start, V2Step};
+use crate::v2_model::{V2Condition, V2Expr, V2ObjectFieldValue, V2Pipe, V2Ref, V2Start, V2Step};
 
 use super::V2ValidationCtx;
 
@@ -40,6 +40,13 @@ fn collect_out_refs_from_step(step: &V2Step, refs: &mut HashSet<String>) {
         V2Step::Op(op_step) => {
             for arg in &op_step.args {
                 collect_out_refs_recursive(arg, refs);
+            }
+        }
+        V2Step::Object(object_step) => {
+            for field in &object_step.fields {
+                if let V2ObjectFieldValue::Expr(expr) = &field.value {
+                    collect_out_refs_recursive(expr, refs);
+                }
             }
         }
         V2Step::CustomCall(call_step) => {

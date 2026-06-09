@@ -12,6 +12,7 @@ pub(super) fn v2_start_label(start: &V2Start) -> String {
 pub(super) fn v2_step_label(step: &V2Step) -> String {
     match step {
         V2Step::Op(op) => op.op.clone(),
+        V2Step::Object(_) => "object".to_string(),
         V2Step::CustomCall(call) => call.op.clone(),
         V2Step::Let(let_step) => format!(
             "let {}",

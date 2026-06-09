@@ -1,4 +1,4 @@
-use rulemorph::validate_rule_file_with_source;
+use rulemorph::{validate_rule_file_with_source, validate_rule_file_with_source_and_base_dir};
 use serde_json::{Map, Value, json};
 
 use crate::args::get_optional_string;
@@ -26,12 +26,16 @@ pub(crate) fn run_validate_rules_tool(args: &Map<String, Value>) -> Result<Value
         ));
     }
 
-    let (rule, yaml, _) = load_rule_from_source(
+    let (rule, yaml, base_dir) = load_rule_from_source(
         rules_path.as_deref(),
         rules_text.as_deref(),
         rules_format.as_deref(),
     )?;
-    match validate_rule_file_with_source(&rule, &yaml) {
+    let validation_result = match base_dir.as_deref() {
+        Some(base_dir) => validate_rule_file_with_source_and_base_dir(&rule, &yaml, base_dir),
+        None => validate_rule_file_with_source(&rule, &yaml),
+    };
+    match validation_result {
         Ok(_) => {
             let warnings = collect_rule_warnings(&rule);
             let mut result = json!({

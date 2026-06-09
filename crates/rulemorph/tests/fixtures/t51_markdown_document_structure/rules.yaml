@@ -1,0 +1,18 @@
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: document
+mappings:
+  - target: "record_type"
+    source: "input.record_type"
+  - target: "title"
+    source: "input.title"
+  - target: "body_text"
+    source: "input.body_text"
+  - target: "sections"
+    source: "input.sections"
+  - target: "section_index"
+    source: "input.section_index"
+  - target: "blocks"
+    source: "input.blocks"

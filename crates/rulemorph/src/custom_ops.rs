@@ -7,7 +7,8 @@ use crate::locator::YamlLocator;
 use crate::model::{CustomOpDef, Mapping, RuleFile, RuleType, RuleTypeField, RuleTypeKind};
 use crate::path::{PathToken, parse_path};
 use crate::v2_model::{
-    V2CallArg, V2Condition, V2CustomCallStep, V2Expr, V2Pipe, V2Ref, V2Start, V2Step,
+    V2CallArg, V2Condition, V2CustomCallStep, V2Expr, V2ObjectFieldValue, V2Pipe, V2Ref, V2Start,
+    V2Step, object_field_rule_path,
 };
 use crate::v2_operator::is_valid_operator;
 use crate::v2_parser::{
@@ -539,23 +540,23 @@ fn parse_mapping_source_ref(value: &str) -> Option<(CustomSourceNamespace, &str)
 }
 
 fn out_ref_resolves(tokens: &[PathToken], produced_targets: &HashSet<Vec<PathToken>>) -> bool {
-    let key_tokens: Vec<PathToken> = tokens
+    if !tokens
         .iter()
-        .filter_map(|token| match token {
-            PathToken::Key(key) => Some(PathToken::Key(key.clone())),
-            PathToken::Index(_) => None,
-        })
-        .collect();
-    if key_tokens.is_empty() {
+        .any(|token| matches!(token, PathToken::Key(_)))
+    {
         return false;
     }
 
-    for end in (1..=key_tokens.len()).rev() {
-        if produced_targets.contains(&key_tokens[..end].to_vec()) {
+    for produced in produced_targets {
+        if is_path_prefix(produced, tokens) || is_path_prefix(tokens, produced) {
             return true;
         }
     }
     false
+}
+
+fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
+    prefix.len() <= tokens.len() && prefix.iter().zip(tokens).all(|(left, right)| left == right)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -781,6 +782,20 @@ fn validate_step_call_sites(
                     errors,
                     in_custom_body,
                 );
+            }
+        }
+        V2Step::Object(object_step) => {
+            for field in &object_step.fields {
+                if let V2ObjectFieldValue::Expr(expr) = &field.value {
+                    validate_v2_expr_call_sites(
+                        rule,
+                        expr,
+                        &object_field_rule_path(path, &field.key),
+                        locator,
+                        errors,
+                        in_custom_body,
+                    );
+                }
             }
         }
         V2Step::CustomCall(call) => {
@@ -1058,6 +1073,13 @@ fn collect_step_dependencies(rule: &RuleFile, step: &V2Step, deps: &mut HashSet<
             }
             for arg in &op.args {
                 collect_expr_dependencies(rule, arg, deps);
+            }
+        }
+        V2Step::Object(object) => {
+            for field in &object.fields {
+                if let V2ObjectFieldValue::Expr(expr) = &field.value {
+                    collect_expr_dependencies(rule, expr, deps);
+                }
             }
         }
         V2Step::CustomCall(call) => {

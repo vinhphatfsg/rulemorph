@@ -1,0 +1,157 @@
+[
+  {
+    "blocks": [
+      {
+        "id": "b3",
+        "inlines": [
+          {
+            "text": "Install",
+            "type": "text"
+          }
+        ],
+        "level": 2,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1",
+        "text": "Install",
+        "type": "heading"
+      },
+      {
+        "id": "b4",
+        "inlines": [
+          {
+            "text": "Run installer.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1",
+        "text": "Run installer.",
+        "type": "paragraph"
+      },
+      {
+        "id": "b5",
+        "inlines": [
+          {
+            "text": "macOS",
+            "type": "text"
+          }
+        ],
+        "level": 3,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1.s3-1",
+        "text": "macOS",
+        "type": "heading"
+      },
+      {
+        "id": "b6",
+        "inlines": [
+          {
+            "text": "brew install rulemorph",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-1.s3-1",
+        "text": "brew install rulemorph",
+        "type": "paragraph"
+      }
+    ],
+    "body_text": "Run installer. macOS brew install rulemorph",
+    "children": [
+      {
+        "child_ids": [],
+        "children": [],
+        "content_block_ids": [
+          "b6"
+        ],
+        "heading": "macOS",
+        "heading_block_id": "b5",
+        "id": "s1-1.s2-1.s3-1",
+        "level": 3,
+        "ordinal_path": [
+          1,
+          1,
+          1
+        ],
+        "path": [
+          "Guide",
+          "Install",
+          "macOS"
+        ]
+      }
+    ],
+    "content_block_ids": [
+      "b4"
+    ],
+    "document": {
+      "frontmatter": {},
+      "title": "Guide"
+    },
+    "heading": "Install",
+    "heading_block_id": "b3",
+    "id": "s1-1.s2-1",
+    "level": 2,
+    "ordinal_path": [
+      1,
+      1
+    ],
+    "path": [
+      "Guide",
+      "Install"
+    ],
+    "record_type": "section"
+  },
+  {
+    "blocks": [
+      {
+        "id": "b7",
+        "inlines": [
+          {
+            "text": "Usage",
+            "type": "text"
+          }
+        ],
+        "level": 2,
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-2",
+        "text": "Usage",
+        "type": "heading"
+      },
+      {
+        "id": "b8",
+        "inlines": [
+          {
+            "text": "Transform data.",
+            "type": "text"
+          }
+        ],
+        "parent_block_id": null,
+        "section_id": "s1-1.s2-2",
+        "text": "Transform data.",
+        "type": "paragraph"
+      }
+    ],
+    "body_text": "Transform data.",
+    "children": [],
+    "content_block_ids": [
+      "b8"
+    ],
+    "document": {
+      "frontmatter": {},
+      "title": "Guide"
+    },
+    "heading": "Usage",
+    "heading_block_id": "b7",
+    "id": "s1-1.s2-2",
+    "level": 2,
+    "ordinal_path": [
+      1,
+      2
+    ],
+    "path": [
+      "Guide",
+      "Usage"
+    ],
+    "record_type": "section"
+  }
+]

@@ -110,6 +110,34 @@ fn test_validate_sort_by_order_arg_allowed() {
 }
 
 #[test]
+fn test_docs_operator_table_keeps_sort_by_order_arg_visible() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let docs_dir = manifest_dir.join("../../docs");
+    if !docs_dir.exists() {
+        return;
+    }
+    let docs = [
+        docs_dir.join("rules_spec_ja.md"),
+        docs_dir.join("rules_spec_en.md"),
+    ];
+
+    for doc_path in docs {
+        let doc = std::fs::read_to_string(&doc_path)
+            .unwrap_or_else(|err| panic!("failed to read {}: {err}", doc_path.display()));
+        let sort_by_line = doc
+            .lines()
+            .find(|line| line.contains("| `sort_by` |"))
+            .unwrap_or_else(|| panic!("{} missing sort_by row", doc_path.display()));
+        assert!(
+            sort_by_line.contains("| `sort_by` | `1-2` |"),
+            "{} sort_by row must document the optional order arg, got: {}",
+            doc_path.display(),
+            sort_by_line
+        );
+    }
+}
+
+#[test]
 fn test_validate_zip_with_item_scope_allowed() {
     let expr = V2Expr::Pipe(V2Pipe {
         start: V2Start::Ref(V2Ref::Input("left".to_string())),
@@ -135,6 +163,32 @@ fn test_validate_zip_with_item_scope_allowed() {
     assert!(
         ctx.errors().is_empty(),
         "expected no errors, got: {:?}",
+        ctx.errors()
+    );
+}
+
+#[test]
+fn test_validate_v2_expr_rejects_object_as_plain_op_step() {
+    let expr = V2Expr::Pipe(V2Pipe {
+        start: V2Start::Literal(json!({})),
+        steps: vec![V2Step::Op(V2OpStep {
+            op: "object".to_string(),
+            args: vec![V2Expr::Pipe(V2Pipe {
+                start: V2Start::Literal(json!({"id": 1})),
+                steps: vec![],
+            })],
+        })],
+    });
+    let scope = V2Scope::new();
+    let mut ctx = V2ValidationCtx::new(None);
+
+    validate_v2_expr(&expr, "test", &scope, &mut ctx);
+
+    assert!(
+        ctx.errors()
+            .iter()
+            .any(|err| err.code == ErrorCode::InvalidExprShape),
+        "expected object plain op to fail validation, got: {:?}",
         ctx.errors()
     );
 }

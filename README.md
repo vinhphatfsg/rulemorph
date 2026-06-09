@@ -8,7 +8,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
 </p>
 
-Rulemorph transforms data from external APIs, CSV, JSON, YAML, TOML, XML, HTML, and Excel into predictable JSON using declarative YAML/JSON rules.
+Rulemorph transforms data from external APIs, CSV, JSON, YAML, TOML, XML, HTML, Markdown, and Excel into predictable JSON using declarative YAML/JSON rules.
 
 Instead of adding another custom script for every input source, you can keep transformation behavior in rule files. The same rules can be reused from the CLI, embedded in Rust, served through a local UI/API server, or exposed to AI assistants through MCP.
 
@@ -230,7 +230,7 @@ claude mcp add rulemorph -- rulemorph-mcp
 
 ## Key Features
 
-- Normalize CSV / JSON / YAML / TOML / XML / HTML / `.xlsx` Excel into JSON records
+- Normalize CSV / JSON / YAML / TOML / XML / HTML / Markdown / `.xlsx` Excel into JSON records
 - Build output fields with `mappings`
 - Transform values with v2 pipe expressions: trim, case conversion, concatenation, numeric operations, lookups, and array operations
 - Define rule-local custom OPs with `defs` to reuse typed v2 pipes or mapping bodies
@@ -241,14 +241,14 @@ claude mcp add rulemorph -- rulemorph-mcp
 - Inspect semantic traces for built-in and custom OP execution without changing transform output
 - Run a local UI/API server or expose the same engine through MCP
 
-Input parsers are designed to be conservative. HTML parsing does not execute JavaScript or fetch URLs, and Excel parsing does not execute macros or evaluate formulas. XML DTD/entities and JSON/YAML duplicate keys are rejected to avoid ambiguous or side-effectful input behavior.
+Input parsers are designed to be conservative. HTML parsing does not execute JavaScript or fetch URLs, Markdown raw HTML is preserved only as source text, and Excel parsing does not execute macros or evaluate formulas. XML DTD/entities and JSON/YAML duplicate keys are rejected to avoid ambiguous or side-effectful input behavior.
 
 ## Rule Structure
 
 ```yaml
 version: 2
 input:
-  format: json # csv | json | yaml | toml | xml | html | excel
+  format: json # csv | json | yaml | toml | xml | html | markdown | excel
   json:
     records_path: "items"
 mappings:
@@ -286,16 +286,16 @@ DTO generation uses explicit mapping types first, then infers simple scalar, arr
 rulemorph = "0.3.3"
 ```
 
-The `html` and `excel` input parsers are enabled by default. Library users that only need
-CSV, JSON, YAML, TOML, and XML can disable them to reduce optional parser dependencies:
+The `html`, `excel`, and `markdown` input parsers are enabled by default. Library users that only need
+core CSV, JSON, YAML, TOML, and XML support can disable them to reduce optional parser dependencies:
 
 ```toml
 [dependencies]
 rulemorph = { version = "0.3.3", default-features = false }
 ```
 
-Re-enable one parser explicitly with `features = ["html"]` or `features = ["excel"]`.
-If a disabled parser is selected by a rule, transformation fails with `invalid_input`.
+Re-enable parsers explicitly with features such as `["html"]`, `["excel"]`, or `["markdown"]`.
+If a disabled parser is selected by a rule, transformation fails with `invalid_input` (for Markdown: `input format markdown is not enabled in this build`).
 
 ```rust
 use rulemorph::{parse_rule_file, transform};

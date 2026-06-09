@@ -1,6 +1,6 @@
-# Network ルール仕様（v2・MVP）
+# Network ルール仕様（v2）
 
-このドキュメントは v2 の `network` ルールの最小仕様（MVP）を定義します。
+このドキュメントは v2 の `network` ルール仕様を定義します。
 共通仕様（参照/条件/expr など）は `docs/rules_spec_ja.md` を参照してください。
 
 ## 概要
@@ -36,7 +36,7 @@ timeout: 5s
 select: "data"
 ```
 
-## フィールド一覧（MVP）
+## フィールド一覧
 
 ### 必須
 - `version`: `2` 固定
@@ -55,7 +55,7 @@ select: "data"
 - `catch`: エラー分岐
 - `internal_auth`: `true` の場合のみ internal_base 宛てリクエストに `x-api-key`/`x-tenant-id` を自動付与（internal_base 宛てのみ有効。内部認証が有効な環境に限る。サーバ設定で許可パスが制限される場合あり）
 
-### 保留（MVP外）
+### 現在未対応
 - 高度な認証（OIDC/SAML）
 - キャッシュ、レート制限
 - 監査ログ、メトリクス拡張
@@ -102,9 +102,9 @@ request:
 
 ### Content-Type の既定
 `body` が存在し、`request.headers` に `content-type` が無い場合は
-`application/json` を自動付与します（MVP）。
+`application/json` を自動付与します。
 
-### method と body の関係（MVP）
+### method と body の関係
 - `GET` で `body` / `body_map` / `body_rule` を指定するのは禁止（バリデーションエラー）
 
 ```yaml
@@ -128,7 +128,7 @@ body_rule: ./rules/build_body.yaml
 - `timeout` は必須。文字列で指定（例: `5s`, `500ms`）。
 - `retry` は任意。
 
-### timeout の単位（MVP）
+### timeout の単位
 - 受け付ける単位は `ms` と `s` のみ
 - 0 以下はエラー
 
@@ -139,17 +139,17 @@ retry:
   initial_delay: 100ms
 ```
 
-### retry の意味（MVP）
+### retry の意味
 - `max`: 失敗後の **再試行回数**（`0` なら再試行なし）
 - `backoff`: `fixed | linear | exponential`（省略時は `fixed`）
 - `initial_delay`: 省略時は `100ms`
 
 ## select
 レスポンスJSONから抽出するパスです（expr ではなく **ドットパス文字列**）。
-MVPではドットパスと配列インデックスを許可します。
+現在はドットパスと配列インデックスを許可します。
 抽出先が存在しない場合はエラーとして `catch` に渡します。
 
-### パス仕様（MVP）
+### パス仕様
 - ドットと配列インデックスのみ（例: `data.items[0].id`）
 - エスケープ付きキーは未対応
 
@@ -167,7 +167,7 @@ select: "data.users[0]"
 
 `default` はステータスが無いエラー（通信失敗、JSONパース失敗など）も扱います。
 
-### catch 対象となるエラー例（MVP）
+### catch 対象となるエラー例
 - 通信失敗 / タイムアウト
 - 非JSONレスポンスのパース失敗
 - `select` の抽出失敗
@@ -185,13 +185,13 @@ catch:
 ## 入出力
 - 入力: 直前ステップの `@input`
 - 出力: HTTPレスポンスの JSON（`select` があれば抽出後の値）
-  - MVPでは JSON レスポンスを前提とし、非JSONはエラーとして `catch` に渡ります。
+  - 現在は JSON レスポンスを前提とし、非JSONはエラーとして `catch` に渡ります。
   - レスポンスボディが空の場合は `null` として扱います。
 
-## MVPでの制約
+## 現在の制約
 - `headers` は固定値のみ
 - `url` 内でテンプレート展開は行わない（expr を使う）
-- 高度な認証やキャッシュは後続フェーズ
+- 高度な認証やキャッシュは現在未対応
 
 ## 運用向けメモ（SSRF対策）
 network ルールのリクエストは SSRF 対策のバリデーションを通過する必要があります。

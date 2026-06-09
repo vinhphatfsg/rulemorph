@@ -37,6 +37,6 @@ README は「何を解決するか」「最初にどう動かすか」「どの 
 - 入力形式ごとの細かな正規化ルール
 - safety invariant と resource limit の詳細
 - `steps` / `branch` / `finalize` の評価順
-- endpoint / network の MVP 制約
+- endpoint / network の現在の制約
 - UI server の全オプション
 - data directory と trace / import の運用詳細

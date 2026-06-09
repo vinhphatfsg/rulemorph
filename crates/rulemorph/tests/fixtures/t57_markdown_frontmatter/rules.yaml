@@ -1,0 +1,11 @@
+version: 2
+input:
+  format: markdown
+  markdown: {}
+mappings:
+  - target: "frontmatter"
+    source: "input.frontmatter"
+  - target: "title"
+    source: "input.title"
+  - target: "body_text"
+    source: "input.body_text"

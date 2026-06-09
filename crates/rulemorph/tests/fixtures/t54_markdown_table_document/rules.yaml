@@ -1,0 +1,10 @@
+version: 2
+input:
+  format: markdown
+  markdown:
+    records: document
+mappings:
+  - target: "blocks"
+    source: "input.blocks"
+  - target: "tables"
+    source: "input.tables"
