@@ -82,10 +82,8 @@ pub(super) fn write_blob(
     if !reserve_budget(budget_remaining, bytes) {
         return Ok(WriteBlobResult::BudgetExceeded);
     }
-    if needs_write {
-        if let Some(payload) = payload {
-            write_atomic(&full_path, payload.as_slice())?;
-        }
+    if needs_write && let Some(payload) = payload {
+        write_atomic(&full_path, payload.as_slice())?;
     }
     Ok(WriteBlobResult::Written {
         blob_ref: rel_string,

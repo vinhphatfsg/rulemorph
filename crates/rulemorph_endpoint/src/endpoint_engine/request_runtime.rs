@@ -5,8 +5,10 @@ use axum::http::Request;
 use axum::response::Response;
 use tracing::warn;
 
+use self::steps::EndpointStepRunInput;
 use super::EndpointEngine;
 use super::error::EndpointError;
+use super::trace_emit::EndpointTraceInput;
 
 mod input;
 mod steps;
@@ -42,16 +44,16 @@ impl EndpointEngine {
         let mut _multipart_temp_dir = prepared_input.multipart_temp_dir;
         let record_input = prepared_input.record_input;
         let step_run = self
-            .run_endpoint_steps(
+            .run_endpoint_steps(EndpointStepRunInput {
                 endpoint,
-                prepared_input.current,
-                prepared_input.record_status,
-                prepared_input.record_error,
-                prepared_input.last_error_message,
-                prepared_input.skip_steps,
-                &base_context,
-                &request_context,
-            )
+                current: prepared_input.current,
+                record_status: prepared_input.record_status,
+                record_error: prepared_input.record_error,
+                last_error_message: prepared_input.last_error_message,
+                skip_steps: prepared_input.skip_steps,
+                base_context: &base_context,
+                request_context: &request_context,
+            })
             .await?;
         let mut current = step_run.current;
         let nodes = step_run.nodes;
@@ -103,16 +105,16 @@ impl EndpointEngine {
         };
 
         let duration_us = started.elapsed().as_micros() as u64;
-        let trace = self.build_trace(
-            &method,
-            &path,
-            record_input,
-            current.clone(),
-            record_status,
-            record_error,
+        let trace = self.build_trace(EndpointTraceInput {
+            method: &method,
+            path: &path,
+            input: record_input,
+            output: current.clone(),
+            status: record_status,
+            error: record_error,
             nodes,
             duration_us,
-        );
+        });
         if let Err(err) = self.write_trace(trace).await {
             warn!("failed to write trace: {}", err);
         }

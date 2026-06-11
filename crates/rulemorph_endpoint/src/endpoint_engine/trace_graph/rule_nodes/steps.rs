@@ -4,11 +4,16 @@ use rulemorph::v2_eval::V2EvalContext;
 use rulemorph::{RuleFile, TransformError, TransformErrorKind};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
-use self::conditions::{apply_asserts_meta, apply_branch_meta, apply_record_when_meta};
-use self::node::{build_step_node, step_kind, step_label};
+use self::conditions::{
+    StepConditionContext, StepMetaState, apply_asserts_meta, apply_branch_meta,
+    apply_record_when_meta,
+};
+use self::node::{StepNodeInput, build_step_node, step_kind, step_label};
 use super::step_outputs::collect_step_outputs;
 use super::transform_error_to_trace;
-use crate::endpoint_engine::trace_graph::mapping_ops::build_mapping_ops_with_values;
+use crate::endpoint_engine::trace_graph::mapping_ops::{
+    MappingOpsInput, build_mapping_ops_with_values,
+};
 
 mod conditions;
 mod node;
@@ -74,60 +79,41 @@ pub(super) fn build_step_nodes(
             }
         }
 
-        apply_record_when_meta(
+        let condition_context = StepConditionContext {
             rule,
-            index,
-            record,
-            context,
-            &step_input,
-            step_active,
-            &mut status,
-            &mut error,
-            &mut halted,
-            &mut meta,
-            trace_ctx,
-        );
-        apply_asserts_meta(
-            rule,
-            index,
-            record,
-            context,
-            &step_input,
-            step_active,
-            &mut status,
-            &mut error,
-            &mut halted,
-            &mut meta,
-            trace_ctx,
-        );
-        let child_trace = apply_branch_meta(
-            rule,
-            index,
+            step_index: index,
             record,
             context,
             base_dir,
-            &step_input,
+            step_input: &step_input,
             step_active,
-            &mut status,
-            &mut error,
-            &mut halted,
-            &mut meta,
             trace_ctx,
-        );
+        };
+        let child_trace = {
+            let mut meta_state = StepMetaState {
+                status: &mut status,
+                error: &mut error,
+                halted: &mut halted,
+                meta: &mut meta,
+            };
+            apply_record_when_meta(&condition_context, &mut meta_state);
+            apply_asserts_meta(&condition_context, &mut meta_state);
+            apply_branch_meta(&condition_context, &mut meta_state)
+        };
 
         let children = if status == "ok" {
             if let Some(mappings) = step.mappings.as_deref() {
                 let mut mapping_out = step_input.clone();
-                build_mapping_ops_with_values(
-                    Some(rule),
+                build_mapping_ops_with_values(MappingOpsInput {
+                    rule: Some(rule),
                     mappings,
                     record,
                     context,
-                    &mut mapping_out,
-                    rule.version,
-                    index,
-                    Some(trace_ctx),
-                )
+                    out: &mut mapping_out,
+                    rule_version: rule.version,
+                    step_index: index,
+                    trace_ctx: Some(trace_ctx),
+                })
             } else {
                 Vec::new()
             }
@@ -135,19 +121,19 @@ pub(super) fn build_step_nodes(
             Vec::new()
         };
 
-        nodes.push(build_step_node(
-            index,
+        nodes.push(build_step_node(StepNodeInput {
+            step_index: index,
             kind,
             label,
             status,
-            step_input,
-            output_value,
-            step_duration_us,
+            input: step_input,
+            output: output_value,
+            duration_us: step_duration_us,
             error,
             child_trace,
             meta,
             children,
-        ));
+        }));
     }
     nodes
 }

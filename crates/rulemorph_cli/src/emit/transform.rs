@@ -49,10 +49,7 @@ pub(crate) fn emit_transform_warnings(warnings: &[TransformWarning], format: Err
             }
         }
         ErrorFormat::Json => {
-            let values: Vec<_> = warnings
-                .iter()
-                .map(|warning| transform_warning_json(warning))
-                .collect();
+            let values: Vec<_> = warnings.iter().map(transform_warning_json).collect();
             eprintln!("{}", serde_json::to_string(&values).unwrap_or_default());
         }
     }

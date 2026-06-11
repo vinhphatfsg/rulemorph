@@ -1,1 +1,1 @@
-include!("metadata/manifest.rs");
+include!("metadata_manifest.rs");

@@ -15,10 +15,6 @@ pub(super) fn parse_swift_type_name(line: &str) -> Option<&str> {
         0
     };
     let name_part = line[keyword_pos..].split_whitespace().next().unwrap_or("");
-    let name = name_part
-        .split(|ch: char| ch == ':' || ch == '{')
-        .next()
-        .unwrap_or("")
-        .trim();
+    let name = name_part.split([':', '{']).next().unwrap_or("").trim();
     if name.is_empty() { None } else { Some(name) }
 }

@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use rulemorph::{
-    RuleFile, RuleFormat, parse_rule_file_with_format, validate_rule_file_with_source,
+    LEGACY_V1_RULE_DEPRECATION_MESSAGE, RuleFile, RuleFormat, is_legacy_v1_rule,
+    parse_rule_file_with_format, validate_rule_file_with_source,
 };
 use serde_json::Value as JsonValue;
 
@@ -15,8 +16,8 @@ pub(super) struct LoadedRule {
 }
 
 pub(super) enum RuleKind {
-    Normal(LoadedRule),
-    Network(CompiledNetworkRule),
+    Normal(Box<LoadedRule>),
+    Network(Box<CompiledNetworkRule>),
 }
 
 pub(super) fn load_rule_kind(path: &Path) -> Result<RuleKind> {
@@ -34,20 +35,31 @@ pub(super) fn load_rule_kind(path: &Path) -> Result<RuleKind> {
             let raw: NetworkRuleFile = serde_yaml::from_value(meta)
                 .with_context(|| format!("failed to parse {}", path.display()))?;
             let compiled = compile_network_rule(raw, path)?;
-            Ok(RuleKind::Network(compiled))
+            Ok(RuleKind::Network(Box::new(compiled)))
         }
         "endpoint" => Err(anyhow!("endpoint rule not allowed as step")),
         _ => {
             let rule = parse_rule_file_with_format(&source, RuleFormat::from_path(path))
                 .with_context(|| format!("failed to parse {}", path.display()))?;
+            warn_legacy_v1_rule(path, &rule);
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", path.display(), err))?;
             let base_dir = path
                 .parent()
                 .unwrap_or_else(|| Path::new("."))
                 .to_path_buf();
-            Ok(RuleKind::Normal(LoadedRule { rule, base_dir }))
+            Ok(RuleKind::Normal(Box::new(LoadedRule { rule, base_dir })))
         }
+    }
+}
+
+pub(super) fn warn_legacy_v1_rule(path: &Path, rule: &RuleFile) {
+    if is_legacy_v1_rule(rule) {
+        tracing::warn!(
+            rule_path = %path.display(),
+            message = LEGACY_V1_RULE_DEPRECATION_MESSAGE,
+            "deprecated Rulemorph rule version"
+        );
     }
 }
 

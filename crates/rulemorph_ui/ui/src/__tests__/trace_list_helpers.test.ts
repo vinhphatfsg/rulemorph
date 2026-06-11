@@ -12,7 +12,7 @@ import {
   resolveTraceDurationUs,
   resolveTraceStatus,
   type TraceListItem
-} from "../trace_list_helpers";
+} from "../trace_list/trace_list_helpers";
 
 const traces: TraceListItem[] = [
   {

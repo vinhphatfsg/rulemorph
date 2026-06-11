@@ -24,12 +24,11 @@ pub(in crate::endpoint_engine::trace_graph) fn expr_to_json_for_v2_pipe(
             )]))
         }
         Expr::Chain(chain) => {
-            if let Some(first) = chain.chain.first() {
-                if expr_starts_v2_pipe(first) {
-                    let items: Vec<JsonValue> =
-                        chain.chain.iter().map(expr_to_json_value).collect();
-                    return Some(JsonValue::Array(items));
-                }
+            if let Some(first) = chain.chain.first()
+                && expr_starts_v2_pipe(first)
+            {
+                let items: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+                return Some(JsonValue::Array(items));
             }
             None
         }
@@ -50,15 +49,15 @@ pub(in crate::endpoint_engine::trace_graph) fn expr_to_json_for_v2_condition(
             Some(JsonValue::String(reference.ref_path.clone()))
         }
         Expr::Chain(chain) => {
-            if let Some(first) = chain.chain.first() {
-                if expr_starts_v2_pipe(first) {
-                    let items: Vec<JsonValue> = chain
-                        .chain
-                        .iter()
-                        .map(expr_to_json_value_for_condition)
-                        .collect();
-                    return Some(JsonValue::Array(items));
-                }
+            if let Some(first) = chain.chain.first()
+                && expr_starts_v2_pipe(first)
+            {
+                let items: Vec<JsonValue> = chain
+                    .chain
+                    .iter()
+                    .map(expr_to_json_value_for_condition)
+                    .collect();
+                return Some(JsonValue::Array(items));
             }
             None
         }

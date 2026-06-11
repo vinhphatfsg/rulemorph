@@ -72,7 +72,9 @@ use self::rule_ref::{
 #[cfg(test)]
 use self::ssrf_audit::build_ssrf_audit_log;
 #[cfg(test)]
-use self::trace_graph::{build_mapping_ops_with_values, sum_rule_trace_duration_us};
+use self::trace_graph::{
+    MappingOpsInput, build_mapping_ops_with_values, sum_rule_trace_duration_us,
+};
 #[cfg(test)]
 use self::trace_graph::{build_network_nodes_with_timing, build_rule_nodes_from_rule};
 pub use self::validation::{RulesDirError, RulesDirErrors, validate_rules_dir};

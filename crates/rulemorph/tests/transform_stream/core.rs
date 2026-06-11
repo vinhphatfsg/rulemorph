@@ -19,12 +19,14 @@ mappings:
     let items = stream.collect::<Result<Vec<_>, _>>().expect("stream items");
 
     assert_eq!(normal_output, json!([{ "name": "alice" }]));
-    assert_eq!(normal_warnings.len(), 1);
+    assert_eq!(normal_warnings.len(), 2);
+    assert_eq!(normal_warnings[0].path.as_deref(), Some("version"));
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].output, Some(json!({ "name": "alice" })));
-    assert!(items[0].warnings.is_empty());
+    assert_eq!(items[0].warnings.len(), 1);
+    assert_eq!(items[0].warnings[0], normal_warnings[0]);
     assert_eq!(items[1].output, None);
-    assert_eq!(items[1].warnings, normal_warnings);
+    assert_eq!(items[1].warnings, normal_warnings[1..]);
 }
 
 #[test]

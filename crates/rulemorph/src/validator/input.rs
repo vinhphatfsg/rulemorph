@@ -87,74 +87,71 @@ pub(super) fn validate_input(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
         }
     }
 
-    if let InputFormat::Csv = rule.input.format {
-        if let Some(csv) = &rule.input.csv {
-            if csv.delimiter.len() != 1 {
-                ctx.push(
-                    ErrorCode::InvalidDelimiterLength,
-                    "csv.delimiter must be a single-byte character",
-                    "input.csv.delimiter",
-                );
-            }
-            if !csv.has_header && csv.columns.as_ref().is_none_or(Vec::is_empty) {
-                ctx.push(
-                    ErrorCode::MissingCsvColumns,
-                    "csv.columns is required when has_header=false",
-                    "input.csv.columns",
-                );
-            }
-            if let Some(columns) = csv.columns.as_deref() {
-                validate_columns(columns, "input.csv.columns", ctx);
-            }
+    if let InputFormat::Csv = rule.input.format
+        && let Some(csv) = &rule.input.csv
+    {
+        if csv.delimiter.len() != 1 {
+            ctx.push(
+                ErrorCode::InvalidDelimiterLength,
+                "csv.delimiter must be a single-byte character",
+                "input.csv.delimiter",
+            );
+        }
+        if !csv.has_header && csv.columns.as_ref().is_none_or(Vec::is_empty) {
+            ctx.push(
+                ErrorCode::MissingCsvColumns,
+                "csv.columns is required when has_header=false",
+                "input.csv.columns",
+            );
+        }
+        if let Some(columns) = csv.columns.as_deref() {
+            validate_columns(columns, "input.csv.columns", ctx);
         }
     }
 
-    if let InputFormat::Json = rule.input.format {
-        if let Some(json) = &rule.input.json {
-            if let Some(path) = json.records_path.as_deref() {
-                validate_records_path(path, "input.json.records_path", ctx);
-            }
-        }
+    if let InputFormat::Json = rule.input.format
+        && let Some(json) = &rule.input.json
+        && let Some(path) = json.records_path.as_deref()
+    {
+        validate_records_path(path, "input.json.records_path", ctx);
     }
 
-    if let InputFormat::Yaml = rule.input.format {
-        if let Some(yaml) = &rule.input.yaml {
-            if let Some(path) = yaml.records_path.as_deref() {
-                validate_records_path(path, "input.yaml.records_path", ctx);
-            }
-        }
+    if let InputFormat::Yaml = rule.input.format
+        && let Some(yaml) = &rule.input.yaml
+        && let Some(path) = yaml.records_path.as_deref()
+    {
+        validate_records_path(path, "input.yaml.records_path", ctx);
     }
 
-    if let InputFormat::Toml = rule.input.format {
-        if let Some(toml) = &rule.input.toml {
-            if let Some(path) = toml.records_path.as_deref() {
-                validate_records_path(path, "input.toml.records_path", ctx);
-            }
-        }
+    if let InputFormat::Toml = rule.input.format
+        && let Some(toml) = &rule.input.toml
+        && let Some(path) = toml.records_path.as_deref()
+    {
+        validate_records_path(path, "input.toml.records_path", ctx);
     }
 
-    if let InputFormat::Xml = rule.input.format {
-        if let Some(xml) = &rule.input.xml {
-            validate_xml_input(xml, ctx);
-        }
+    if let InputFormat::Xml = rule.input.format
+        && let Some(xml) = &rule.input.xml
+    {
+        validate_xml_input(xml, ctx);
     }
 
-    if let InputFormat::Html = rule.input.format {
-        if let Some(html) = &rule.input.html {
-            validate_html_input(html, ctx);
-        }
+    if let InputFormat::Html = rule.input.format
+        && let Some(html) = &rule.input.html
+    {
+        validate_html_input(html, ctx);
     }
 
-    if let InputFormat::Excel = rule.input.format {
-        if let Some(excel) = &rule.input.excel {
-            validate_excel_input(excel, ctx);
-        }
+    if let InputFormat::Excel = rule.input.format
+        && let Some(excel) = &rule.input.excel
+    {
+        validate_excel_input(excel, ctx);
     }
 
-    if let InputFormat::Markdown = rule.input.format {
-        if let Some(markdown) = &rule.input.markdown {
-            validate_markdown_input(markdown, ctx);
-        }
+    if let InputFormat::Markdown = rule.input.format
+        && let Some(markdown) = &rule.input.markdown
+    {
+        validate_markdown_input(markdown, ctx);
     }
 }
 

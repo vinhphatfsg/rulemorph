@@ -51,10 +51,10 @@ where
             return;
         }
 
-        if self.map.len() >= self.capacity {
-            if let Some(evicted) = self.order.pop_front() {
-                self.map.remove(&evicted);
-            }
+        if self.map.len() >= self.capacity
+            && let Some(evicted) = self.order.pop_front()
+        {
+            self.map.remove(&evicted);
         }
 
         self.order.push_back(key.clone());
@@ -73,10 +73,10 @@ where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        if let Some(pos) = self.order.iter().position(|k| k.borrow() == key) {
-            if let Some(existing) = self.order.remove(pos) {
-                self.order.push_back(existing);
-            }
+        if let Some(pos) = self.order.iter().position(|k| k.borrow() == key)
+            && let Some(existing) = self.order.remove(pos)
+        {
+            self.order.push_back(existing);
         }
     }
 }

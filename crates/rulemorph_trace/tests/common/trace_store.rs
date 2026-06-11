@@ -85,7 +85,7 @@ pub fn assert_detail_array_empty(trace: &Value, key: &str) {
     let is_empty = detail_object(trace)
         .get(key)
         .and_then(|value| value.as_array())
-        .map_or(true, |items| items.is_empty());
+        .is_none_or(|items| items.is_empty());
     assert!(is_empty, "detail.{key} should be empty");
 }
 
@@ -93,7 +93,7 @@ pub fn assert_top_level_array_empty(trace: &Value, key: &str) {
     let is_empty = trace
         .get(key)
         .and_then(|value| value.as_array())
-        .map_or(true, |items| items.is_empty());
+        .is_none_or(|items| items.is_empty());
     assert!(is_empty, "{key} should be empty");
 }
 

@@ -10,16 +10,31 @@ use super::v2_helpers::{
     expr_to_json_value, resolve_source_value, set_path_value,
 };
 
+pub(in crate::endpoint_engine) struct MappingOpsInput<'a, 'ctx> {
+    pub(in crate::endpoint_engine) rule: Option<&'a RuleFile>,
+    pub(in crate::endpoint_engine) mappings: &'a [Mapping],
+    pub(in crate::endpoint_engine) record: &'a JsonValue,
+    pub(in crate::endpoint_engine) context: Option<&'a JsonValue>,
+    pub(in crate::endpoint_engine) out: &'a mut JsonValue,
+    pub(in crate::endpoint_engine) rule_version: u8,
+    pub(in crate::endpoint_engine) step_index: usize,
+    pub(in crate::endpoint_engine) trace_ctx: Option<&'a V2EvalContext<'ctx>>,
+}
+
 pub(in crate::endpoint_engine) fn build_mapping_ops_with_values(
-    rule: Option<&RuleFile>,
-    mappings: &[Mapping],
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &mut JsonValue,
-    rule_version: u8,
-    step_index: usize,
-    trace_ctx: Option<&V2EvalContext<'_>>,
+    input: MappingOpsInput<'_, '_>,
 ) -> Vec<JsonValue> {
+    let MappingOpsInput {
+        rule,
+        mappings,
+        record,
+        context,
+        out,
+        rule_version,
+        step_index,
+        trace_ctx,
+    } = input;
+
     let mut ops = Vec::new();
     for (index, mapping) in mappings.iter().enumerate() {
         let op_started = Instant::now();
@@ -55,17 +70,17 @@ pub(in crate::endpoint_engine) fn build_mapping_ops_with_values(
         let mut pipe_value = None;
         let mut pipe_steps: Option<Vec<JsonValue>> = None;
         if let Some(expr) = &mapping.expr {
-            if rule_version >= 2 {
-                if let Some(raw) = expr_to_json_for_v2_pipe(expr) {
-                    pipe_value = Some(raw.clone());
-                    if let Ok(pipe) = parse_v2_pipe_from_value(&raw) {
-                        let ctx = trace_ctx
-                            .cloned()
-                            .unwrap_or_else(|| fresh_trace_eval_ctx(rule));
-                        input_value = eval_v2_start_value(&pipe.start, record, context, out, &ctx);
-                        output_value = eval_v2_pipe_value(&pipe, record, context, out, &ctx);
-                        pipe_steps = Some(build_pipe_steps(&pipe, record, context, out, &ctx));
-                    }
+            if rule_version >= 2
+                && let Some(raw) = expr_to_json_for_v2_pipe(expr)
+            {
+                pipe_value = Some(raw.clone());
+                if let Ok(pipe) = parse_v2_pipe_from_value(&raw) {
+                    let ctx = trace_ctx
+                        .cloned()
+                        .unwrap_or_else(|| fresh_trace_eval_ctx(rule));
+                    input_value = eval_v2_start_value(&pipe.start, record, context, out, &ctx);
+                    output_value = eval_v2_pipe_value(&pipe, record, context, out, &ctx);
+                    pipe_steps = Some(build_pipe_steps(&pipe, record, context, out, &ctx));
                 }
             }
         } else if let Some(source) = &mapping.source {

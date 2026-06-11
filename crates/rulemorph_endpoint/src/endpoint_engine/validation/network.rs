@@ -86,19 +86,18 @@ pub(super) fn validate_network_rule(
         }
     };
 
-    if let Some(method) = method {
-        if method == Method::GET
-            && (raw.body.is_some() || raw.body_map.is_some() || raw.body_rule.is_some())
-        {
-            push_error(
-                errors,
-                "NetworkInvalidConfig",
-                path,
-                "GET with body is not allowed",
-                Some("request.method".to_string()),
-                None,
-            );
-        }
+    if let Some(method) = method
+        && method == Method::GET
+        && (raw.body.is_some() || raw.body_map.is_some() || raw.body_rule.is_some())
+    {
+        push_error(
+            errors,
+            "NetworkInvalidConfig",
+            path,
+            "GET with body is not allowed",
+            Some("request.method".to_string()),
+            None,
+        );
     }
 
     if let Err(err) = parse_v2_expr(&raw.request.url) {
@@ -111,17 +110,17 @@ pub(super) fn validate_network_rule(
             None,
         );
     }
-    if let Some(body) = &raw.body {
-        if let Err(err) = parse_v2_expr(body) {
-            push_error(
-                errors,
-                "InvalidExpr",
-                path,
-                format!("body: {}", err),
-                Some("body".to_string()),
-                None,
-            );
-        }
+    if let Some(body) = &raw.body
+        && let Err(err) = parse_v2_expr(body)
+    {
+        push_error(
+            errors,
+            "InvalidExpr",
+            path,
+            format!("body: {}", err),
+            Some("body".to_string()),
+            None,
+        );
     }
     if let Some(headers) = &raw.request.headers {
         for (key, value) in headers {

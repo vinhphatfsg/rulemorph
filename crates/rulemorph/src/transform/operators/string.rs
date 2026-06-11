@@ -4,6 +4,10 @@ mod mutation;
 
 pub(super) use mutation::{eval_pad, eval_replace, eval_split};
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(super) fn eval_unary_string_op<F>(
     args: &[Expr],
     injected: Option<&EvalValue>,

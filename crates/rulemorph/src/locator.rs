@@ -37,7 +37,7 @@ impl YamlLocator {
             let indent = raw_line.chars().take_while(|c| *c == ' ').count();
             let content = &raw_line[indent..];
 
-            if content.starts_with('-') {
+            if let Some(after_dash) = content.strip_prefix('-') {
                 while scopes.len() > 1 && scopes.last().unwrap().indent >= indent {
                     scopes.pop();
                 }
@@ -58,7 +58,6 @@ impl YamlLocator {
                     path: item_path.clone(),
                 });
 
-                let after_dash = &content[1..];
                 let trimmed_after_dash = after_dash.trim_start();
                 let offset = 1 + (after_dash.len() - trimmed_after_dash.len());
                 if let Some((key, column, has_value, is_block)) =

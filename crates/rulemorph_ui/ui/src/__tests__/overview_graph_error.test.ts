@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildOverviewGraph, type TracePayload } from "../App";
+import { buildOverviewGraph, type TracePayload } from "../app/App";
 
 describe("buildOverviewGraph", () => {
   it("marks child rule when record status is error even with nodes", () => {

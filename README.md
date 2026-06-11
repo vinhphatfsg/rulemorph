@@ -259,6 +259,8 @@ mappings:
       eq: ["@input.status", "active"]
 ```
 
+New rule files should use `version: 2`. `version: 1` rule files are still accepted during migration, but validation and runtime entry points emit a deprecation warning. A later release will move `version: 1` rule files behind an explicit legacy opt-in before removing that syntax.
+
 For the full rule specification, see [Transformation Rules Spec](docs/rules_spec_en.md). The Japanese version is also available in [Japanese](docs/rules_spec_ja.md).
 
 ## DTO Generation

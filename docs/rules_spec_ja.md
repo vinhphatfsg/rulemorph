@@ -113,6 +113,12 @@ mappings:
 - `steps`（任意）: 段階実行（`mappings` / `record_when` と併用不可）
 - `finalize`（任意）: 出力配列の最終加工（`mappings` / `steps` どちらでも利用可）
 
+### rule version の互換ポリシー
+
+新規 rule file は `version: 2` で書いてください。`version: 1` rule file は移行期間の互換入力として受理されますが、validator / CLI / MCP / server では deprecation warning を出します。
+
+次の段階では `version: 1` rule file の受理を明示的な legacy opt-in に移し、その後のリリースで `version: 1` rule file 構文を削除する予定です。`version: 2` 内の v1 expr fallback は、direct mode や DTO 推論の互換処理でも使われるため、この `version: 1` rule file 廃止とは別に扱います。
+
 ### DTO 型推論
 
 `generate_dto` は `mapping.type` がある場合、その明示型を最優先します。

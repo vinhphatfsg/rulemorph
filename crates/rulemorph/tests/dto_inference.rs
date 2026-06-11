@@ -465,8 +465,7 @@ mappings:
     let many_mappings_rust = render(&many_mappings_yaml, DtoLanguage::Rust);
     assert!(many_mappings_rust.contains("pub payload599: Value,"));
 
-    let long_pipe = std::iter::repeat("\"trim\"")
-        .take(5000)
+    let long_pipe = std::iter::repeat_n("\"trim\"", 5000)
         .collect::<Vec<_>>()
         .join(", ");
     let long_pipe_yaml = format!(

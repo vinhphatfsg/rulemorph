@@ -107,7 +107,7 @@ pub(super) fn json_number_from_f64(value: f64, path: &str) -> Result<JsonValue, 
 
 pub(super) fn to_radix_string(value: i64, base: u32, path: &str) -> Result<String, TransformError> {
     let digits = b"0123456789abcdefghijklmnopqrstuvwxyz";
-    if base < 2 || base > 36 {
+    if !(2..=36).contains(&base) {
         return Err(expr_type_error("base must be between 2 and 36", path));
     }
 

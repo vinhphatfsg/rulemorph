@@ -173,14 +173,14 @@ pub(super) fn validate_excel_input(excel: &ExcelInput, ctx: &mut ValidationCtx<'
             "input.excel.header_row",
         );
     }
-    if let Some(data_start_row) = excel.data_start_row {
-        if data_start_row == 0 {
-            ctx.push(
-                ErrorCode::InvalidInputOption,
-                "excel.data_start_row must be 1-based",
-                "input.excel.data_start_row",
-            );
-        }
+    if let Some(data_start_row) = excel.data_start_row
+        && data_start_row == 0
+    {
+        ctx.push(
+            ErrorCode::InvalidInputOption,
+            "excel.data_start_row must be 1-based",
+            "input.excel.data_start_row",
+        );
     }
     if !excel.has_header && excel.columns.as_ref().is_none_or(Vec::is_empty) {
         ctx.push(

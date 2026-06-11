@@ -41,10 +41,10 @@ async fn enforce_pre_auth_rate_limit(
     state: &AppState,
     key: String,
 ) -> std::result::Result<(), ApiError> {
-    if let Some(limiter) = state.rate_limiter.as_ref() {
-        if !limiter.allow(&key).await {
-            return Err(ApiError::too_many_requests("rate limit exceeded"));
-        }
+    if let Some(limiter) = state.rate_limiter.as_ref()
+        && !limiter.allow(&key).await
+    {
+        return Err(ApiError::too_many_requests("rate limit exceeded"));
     }
     Ok(())
 }
@@ -96,10 +96,10 @@ pub(in crate::server) async fn enforce_api_rate_limit(
     state: &AppState,
     key: String,
 ) -> std::result::Result<(), ApiError> {
-    if let Some(limiter) = state.rate_limiter.as_ref() {
-        if !limiter.allow(&key).await {
-            return Err(ApiError::too_many_requests("rate limit exceeded"));
-        }
+    if let Some(limiter) = state.rate_limiter.as_ref()
+        && !limiter.allow(&key).await
+    {
+        return Err(ApiError::too_many_requests("rate limit exceeded"));
     }
     Ok(())
 }

@@ -54,14 +54,14 @@ pub(super) fn cleanup_detail_files(
             );
         }
     }
-    if let Some(path) = finalize_file.as_ref() {
-        if let Err(err) = fs::remove_file(path) {
-            warn!(
-                "failed to remove finalize chunk file {}: {}",
-                path.display(),
-                err
-            );
-        }
+    if let Some(path) = finalize_file.as_ref()
+        && let Err(err) = fs::remove_file(path)
+    {
+        warn!(
+            "failed to remove finalize chunk file {}: {}",
+            path.display(),
+            err
+        );
     }
     for path in blob_files.iter() {
         if let Err(err) = fs::remove_file(path) {

@@ -85,11 +85,11 @@ pub(super) fn build_trace_from_manifest_with_budget(
 
     if !chunk_error {
         for record in &mut records {
-            if let Some(obj) = record.as_object_mut() {
-                if let Some(nodes_value) = obj.get("nodes").cloned() {
-                    let normalized = normalize_inline_nodes_value(&nodes_value);
-                    obj.insert("nodes".to_string(), Value::Array(normalized));
-                }
+            if let Some(obj) = record.as_object_mut()
+                && let Some(nodes_value) = obj.get("nodes").cloned()
+            {
+                let normalized = normalize_inline_nodes_value(&nodes_value);
+                obj.insert("nodes".to_string(), Value::Array(normalized));
             }
         }
     }

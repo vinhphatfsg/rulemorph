@@ -1,6 +1,5 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::transform) fn eval_v2_condition_traced<'a>(
     condition: &V2Condition,
     record: &'a JsonValue,
@@ -53,7 +52,6 @@ pub(in crate::transform) fn eval_v2_condition_traced<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_v2_comparison_traced<'a>(
     comparison: &crate::v2_model::V2Comparison,
     record: &'a JsonValue,

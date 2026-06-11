@@ -8,7 +8,10 @@ pub(super) enum TracedStepOutcome {
     Return(JsonValue),
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(super) fn apply_steps_traced(
     rule: &RuleFile,
     steps: &[V2RuleStep],

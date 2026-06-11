@@ -35,19 +35,19 @@ pub(in crate::dto_parse) fn parse_java_types(
             continue;
         }
 
-        if line.contains(" record ") || line.starts_with("record ") {
-            if let Some(name) = declaration::record_name(line) {
-                begin_java_type(&mut types, &mut order, &mut current, &name);
-                if let Some(paren_pos) = line.find('(') {
-                    record_param_depth = 1;
-                    line = line[paren_pos + 1..].trim();
-                } else {
-                    record_param_depth = 0;
-                    continue;
-                }
-                pending_json_key = None;
-                pending_optional = false;
+        if (line.contains(" record ") || line.starts_with("record "))
+            && let Some(name) = declaration::record_name(line)
+        {
+            begin_java_type(&mut types, &mut order, &mut current, &name);
+            if let Some(paren_pos) = line.find('(') {
+                record_param_depth = 1;
+                line = line[paren_pos + 1..].trim();
+            } else {
+                record_param_depth = 0;
+                continue;
             }
+            pending_json_key = None;
+            pending_optional = false;
         }
 
         let Some(current_name) = current.clone() else {

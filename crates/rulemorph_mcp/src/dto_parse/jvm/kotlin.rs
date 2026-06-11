@@ -71,10 +71,10 @@ pub(in crate::dto_parse) fn parse_kotlin_types(
         let close_parens = line.matches(')').count() as i32;
         let next_depth = param_depth + open_parens - close_parens;
         let mut slice = line;
-        if next_depth <= 0 {
-            if let Some(end) = slice.rfind(')') {
-                slice = slice[..end].trim();
-            }
+        if next_depth <= 0
+            && let Some(end) = slice.rfind(')')
+        {
+            slice = slice[..end].trim();
         }
 
         if param_depth <= 0 && slice.is_empty() {

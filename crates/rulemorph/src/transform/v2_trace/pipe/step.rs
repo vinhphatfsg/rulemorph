@@ -5,7 +5,10 @@ use crate::transform::GeneratedObjectBudget;
 use crate::v2_model::{V2ObjectFieldValue, object_field_rule_path};
 use crate::v2_operator::{V2OperatorTrace, operator};
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(super) fn eval_v2_step_traced<'a>(
     step: &V2Step,
     pipe_value: V2EvalValue,
@@ -326,7 +329,10 @@ pub(super) fn eval_v2_step_traced<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 fn eval_v2_object_step_traced<'a>(
     object: &crate::v2_model::V2ObjectStep,
     pipe_value: V2EvalValue,

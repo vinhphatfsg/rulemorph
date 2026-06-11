@@ -15,7 +15,10 @@ pub(in crate::transform) fn emit_v2_arg_eval(
         .finish_with_v2_eval_output(collector, value, None);
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(in crate::transform) fn eval_v2_lazy_op_traced<'a>(
     op: &crate::v2_model::V2OpStep,
     pipe_value: V2EvalValue,
@@ -107,7 +110,10 @@ pub(in crate::transform) fn eval_v2_lazy_op_traced<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(in crate::transform) fn eval_v2_eager_op_traced<'a>(
     op: &crate::v2_model::V2OpStep,
     pipe_value: V2EvalValue,

@@ -21,7 +21,7 @@ pub(super) fn parse_go_types(
         };
         index += pos + 5;
         let rest = &text[index..];
-        let name = rest.trim_start().split_whitespace().next().unwrap_or("");
+        let name = rest.split_whitespace().next().unwrap_or("");
         if name.is_empty() {
             index = index.saturating_add(1);
             continue;

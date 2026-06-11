@@ -100,25 +100,25 @@ pub(crate) fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, Cal
         })?;
     }
 
-    let output_bytes = output_text.as_bytes().len();
+    let output_bytes = output_text.len();
     let mut response_text = output_text.clone();
     let mut truncated = false;
 
-    if prepared.ndjson {
-        if let Some(limit) = prepared.preview_rows {
-            let preview = preview_ndjson(&output_text, limit);
-            if preview.len() != output_text.len() {
-                truncated = true;
-            }
-            response_text = preview;
+    if prepared.ndjson
+        && let Some(limit) = prepared.preview_rows
+    {
+        let preview = preview_ndjson(&output_text, limit);
+        if preview.len() != output_text.len() {
+            truncated = true;
         }
+        response_text = preview;
     }
 
     if let Some(max_bytes) = prepared.max_output_bytes {
         if output_bytes > max_bytes {
             truncated = true;
         }
-        if response_text.as_bytes().len() > max_bytes {
+        if response_text.len() > max_bytes {
             response_text = truncate_to_bytes(&response_text, max_bytes).to_string();
             truncated = true;
         }
@@ -135,7 +135,7 @@ pub(crate) fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, Cal
 
     let exceeds_max = prepared
         .max_output_bytes
-        .map_or(false, |max| output_bytes > max);
+        .is_some_and(|max| output_bytes > max);
     let mut meta = serde_json::Map::new();
     if !warnings.is_empty() {
         meta.insert("warnings".to_string(), warnings_to_json(&warnings));
@@ -147,10 +147,12 @@ pub(crate) fn run_transform_tool(args: &Map<String, Value>) -> Result<Value, Cal
         meta.insert("output_bytes".to_string(), json!(output_bytes));
         meta.insert("truncated".to_string(), json!(true));
     }
-    if prepared.return_output_json && !prepared.ndjson && !exceeds_max {
-        if let Some(output) = output_value {
-            meta.insert("output".to_string(), output);
-        }
+    if prepared.return_output_json
+        && !prepared.ndjson
+        && !exceeds_max
+        && let Some(output) = output_value
+    {
+        meta.insert("output".to_string(), output);
     }
     if !meta.is_empty() {
         result["meta"] = Value::Object(meta);

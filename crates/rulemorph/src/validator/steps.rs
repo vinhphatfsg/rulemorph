@@ -81,11 +81,11 @@ pub(super) fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
 
         if let Some(expr) = &step.record_when {
             let expr_path = format!("{}.record_when", base);
-            if rule.version == 2 {
-                if let Some(raw_value) = expr_to_json_value(expr) {
-                    validate_v2_condition_expr(&raw_value, &expr_path, &produced_targets, ctx);
-                    continue;
-                }
+            if rule.version == 2
+                && let Some(raw_value) = expr_to_json_value(expr)
+            {
+                validate_v2_condition_expr(&raw_value, &expr_path, &produced_targets, ctx);
+                continue;
             }
             validate_expr(expr, &expr_path, &produced_targets, ctx, LocalScope::None);
             validate_when_expr(expr, &expr_path, ctx);
@@ -98,20 +98,20 @@ pub(super) fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
                     ctx.push(
                         ErrorCode::InvalidStep,
                         "asserts.error.code and message are required",
-                        &format!("{}.error", assert_path),
+                        format!("{}.error", assert_path),
                     );
                 }
 
-                if rule.version == 2 {
-                    if let Some(raw_value) = expr_to_json_value(&assert.when) {
-                        validate_v2_condition_expr(
-                            &raw_value,
-                            &format!("{}.when", assert_path),
-                            &produced_targets,
-                            ctx,
-                        );
-                        continue;
-                    }
+                if rule.version == 2
+                    && let Some(raw_value) = expr_to_json_value(&assert.when)
+                {
+                    validate_v2_condition_expr(
+                        &raw_value,
+                        &format!("{}.when", assert_path),
+                        &produced_targets,
+                        ctx,
+                    );
+                    continue;
                 }
                 validate_expr(
                     &assert.when,
@@ -128,11 +128,11 @@ pub(super) fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
             let branch_path = format!("{}.branch", base);
             let when_path = format!("{}.when", branch_path);
             let mut v2_handled = false;
-            if rule.version == 2 {
-                if let Some(raw_value) = expr_to_json_value(&branch.when) {
-                    validate_v2_condition_expr(&raw_value, &when_path, &produced_targets, ctx);
-                    v2_handled = true;
-                }
+            if rule.version == 2
+                && let Some(raw_value) = expr_to_json_value(&branch.when)
+            {
+                validate_v2_condition_expr(&raw_value, &when_path, &produced_targets, ctx);
+                v2_handled = true;
             }
             if !v2_handled {
                 validate_expr(
@@ -149,17 +149,17 @@ pub(super) fn validate_steps(rule: &RuleFile, ctx: &mut ValidationCtx<'_>) {
                 ctx.push(
                     ErrorCode::InvalidStep,
                     "branch.then is required",
-                    &format!("{}.then", branch_path),
+                    format!("{}.then", branch_path),
                 );
             }
-            if let Some(r#else) = &branch.r#else {
-                if r#else.trim().is_empty() {
-                    ctx.push(
-                        ErrorCode::InvalidStep,
-                        "branch.else must not be empty",
-                        &format!("{}.else", branch_path),
-                    );
-                }
+            if let Some(r#else) = &branch.r#else
+                && r#else.trim().is_empty()
+            {
+                ctx.push(
+                    ErrorCode::InvalidStep,
+                    "branch.else must not be empty",
+                    format!("{}.else", branch_path),
+                );
             }
             if let Some(contract) = collect_branch_contract(ctx, branch, &branch_path)
                 && !branch.return_

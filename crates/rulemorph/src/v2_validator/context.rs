@@ -163,10 +163,10 @@ impl<'a> V2ValidationCtx<'a> {
     /// Push an error with path
     pub fn push_error(&mut self, code: ErrorCode, message: impl Into<String>, path: &str) {
         let mut err = RuleError::new(code, message).with_path(path);
-        if let Some(locator) = self.locator {
-            if let Some(location) = locator.location_for(path) {
-                err = err.with_location(location.line, location.column);
-            }
+        if let Some(locator) = self.locator
+            && let Some(location) = locator.location_for(path)
+        {
+            err = err.with_location(location.line, location.column);
         }
         self.errors.push(err);
     }

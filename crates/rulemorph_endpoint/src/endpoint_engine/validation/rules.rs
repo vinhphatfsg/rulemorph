@@ -1,6 +1,9 @@
 use std::path::Path;
 
-use rulemorph::{RuleFormat, parse_rule_file_with_format, validate_rule_file_with_source};
+use rulemorph::{
+    LEGACY_V1_RULE_DEPRECATION_MESSAGE, RuleFormat, is_legacy_v1_rule, parse_rule_file_with_format,
+    validate_rule_file_with_source,
+};
 
 use crate::endpoint_engine::resolve_rule_path;
 
@@ -94,6 +97,13 @@ fn validate_normal_rule(
             push_rule_error(errors, path, &err);
         }
     }
+    if is_legacy_v1_rule(&rule) {
+        tracing::warn!(
+            rule_path = %path.display(),
+            message = LEGACY_V1_RULE_DEPRECATION_MESSAGE,
+            "deprecated Rulemorph rule version"
+        );
+    }
     if let Some(steps) = &rule.steps {
         let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
         for step in steps {
@@ -102,11 +112,11 @@ fn validate_normal_rule(
                     let resolved = resolve_rule_path(base_dir, branch.then.as_str());
                     validate_rule_path(&resolved, RuleRefUsage::branch_rule(), state, errors);
                 }
-                if let Some(r#else) = &branch.r#else {
-                    if !r#else.trim().is_empty() {
-                        let resolved = resolve_rule_path(base_dir, r#else.as_str());
-                        validate_rule_path(&resolved, RuleRefUsage::branch_rule(), state, errors);
-                    }
+                if let Some(r#else) = &branch.r#else
+                    && !r#else.trim().is_empty()
+                {
+                    let resolved = resolve_rule_path(base_dir, r#else.as_str());
+                    validate_rule_path(&resolved, RuleRefUsage::branch_rule(), state, errors);
                 }
             }
         }

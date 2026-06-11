@@ -15,7 +15,7 @@ pub(crate) fn yaml_mappings_sequence_mut(
             errors: Some(vec![parse_error_json(&message, None)]),
         });
     };
-    let Some(mappings_value) = root_map.get_mut(&yaml_key("mappings")) else {
+    let Some(mappings_value) = root_map.get_mut(yaml_key("mappings")) else {
         let message = "rules yaml is missing mappings".to_string();
         return Err(CallError::Tool {
             message: message.clone(),
@@ -32,7 +32,7 @@ pub(crate) fn yaml_mappings_sequence_mut(
 }
 
 pub(crate) fn update_yaml_mapping(
-    mappings: &mut Vec<YamlValue>,
+    mappings: &mut [YamlValue],
     index: usize,
     source: Option<&str>,
 ) -> Result<(), CallError> {
@@ -53,11 +53,11 @@ pub(crate) fn update_yaml_mapping(
 
     if let Some(source) = source {
         mapping_map.insert(yaml_key("source"), YamlValue::String(source.to_string()));
-        mapping_map.remove(&yaml_key("value"));
-        mapping_map.remove(&yaml_key("expr"));
+        mapping_map.remove(yaml_key("value"));
+        mapping_map.remove(yaml_key("expr"));
     } else {
-        mapping_map.remove(&yaml_key("source"));
-        mapping_map.remove(&yaml_key("expr"));
+        mapping_map.remove(yaml_key("source"));
+        mapping_map.remove(yaml_key("expr"));
         mapping_map.insert(yaml_key("value"), YamlValue::Null);
         mapping_map.insert(yaml_key("required"), YamlValue::Bool(false));
     }

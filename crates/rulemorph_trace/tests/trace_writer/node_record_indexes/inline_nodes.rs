@@ -1,3 +1,3 @@
-include!("inline_nodes/objects.rs");
+include!("inline_nodes_objects.rs");
 
-include!("inline_nodes/non_object.rs");
+include!("inline_nodes_non_object.rs");

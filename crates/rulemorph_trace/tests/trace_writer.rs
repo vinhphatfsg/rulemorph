@@ -3,11 +3,12 @@ mod common;
 use std::collections::HashMap;
 use std::fs;
 
+use common::io::{read_ndjson_lines, read_ndjson_values, write_ndjson_lines};
+use common::sampling::sampling_bucket;
 use common::trace_writer::{
     array_field, array_member, assert_no_detail_artifacts, create_temp_dir, first_record_object,
     load_trace, object_field, object_member, read_manifest, read_manifest_payload,
-    read_manifest_value, read_ndjson_lines, read_ndjson_values, sampling_bucket, trace_dir,
-    unique_temp_dir, write_ndjson_lines,
+    read_manifest_value, trace_dir, unique_temp_dir,
 };
 use rulemorph_trace::{
     TRACE_CHUNK_COUNT_HARD_MAX, TRACE_JSON_MAX_BYTES, TraceCompression, TraceDetailLevel,

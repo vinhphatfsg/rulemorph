@@ -81,27 +81,27 @@ pub(crate) fn select_candidates(
         let mut score = 0.0;
         let mut reason = None;
 
-        if let Some(source_hint) = source_hint {
-            if input.path == source_hint {
-                score = 1.0;
-                reason = Some("exact_source");
-            }
+        if let Some(source_hint) = source_hint
+            && input.path == source_hint
+        {
+            score = 1.0;
+            reason = Some("exact_source");
         }
 
-        if reason.is_none() && !target_leaf.is_empty() {
-            if input.leaf.eq_ignore_ascii_case(target_leaf) {
-                score = 0.8;
-                reason = Some("leaf_match");
-            }
+        if reason.is_none()
+            && !target_leaf.is_empty()
+            && input.leaf.eq_ignore_ascii_case(target_leaf)
+        {
+            score = 0.8;
+            reason = Some("leaf_match");
         }
 
-        if reason.is_none() {
-            if let Some(source_leaf) = source_leaf.as_deref() {
-                if input.leaf.eq_ignore_ascii_case(source_leaf) {
-                    score = 0.75;
-                    reason = Some("leaf_match");
-                }
-            }
+        if reason.is_none()
+            && let Some(source_leaf) = source_leaf.as_deref()
+            && input.leaf.eq_ignore_ascii_case(source_leaf)
+        {
+            score = 0.75;
+            reason = Some("leaf_match");
         }
 
         if reason.is_none() {

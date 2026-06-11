@@ -76,4 +76,4 @@ async fn import_bundle_rolls_back_on_rule_conflict() -> Result<()> {
     Ok(())
 }
 
-include!("rejections/safety.rs");
+include!("rejections_safety.rs");

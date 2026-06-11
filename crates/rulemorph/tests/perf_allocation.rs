@@ -261,10 +261,14 @@ mappings:
     let input = serde_json::to_string(&records).expect("input should serialize");
 
     let (_, stats) = measure(|| {
-        normalize_records(&rule, InputData::Text(&input))
-            .expect("json should normalize")
-            .map(|record| record.expect("record should normalize"))
-            .count()
+        let mut count = 0;
+        for record in
+            normalize_records(&rule, InputData::Text(&input)).expect("json should normalize")
+        {
+            record.expect("record should normalize");
+            count += 1;
+        }
+        count
     });
     let bytes_per_record = stats.bytes / 2_000;
 

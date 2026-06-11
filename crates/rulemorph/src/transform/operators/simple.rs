@@ -1,6 +1,5 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::transform) fn eval_concat(
     expr_op: &ExprOp,
     injected: Option<&EvalValue>,
@@ -42,7 +41,6 @@ pub(in crate::transform) fn eval_concat(
     Ok(EvalValue::Value(JsonValue::String(parts.join(""))))
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::transform) fn eval_coalesce(
     expr_op: &ExprOp,
     injected: Option<&EvalValue>,

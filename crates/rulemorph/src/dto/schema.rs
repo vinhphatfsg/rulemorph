@@ -79,11 +79,10 @@ pub(super) fn build_schema(rule: &RuleFile) -> Result<SchemaNode, DtoError> {
             return Err(DtoError::new("unsupported type in mapping"));
         }
         let field_type = infer_mapping_field_type(mapping, rule, &mut inference);
-        let conditional = match &mapping.when {
-            None => false,
-            Some(Expr::Literal(JsonValue::Bool(true))) => false,
-            _ => true,
-        };
+        let conditional = !matches!(
+            &mapping.when,
+            None | Some(Expr::Literal(JsonValue::Bool(true)))
+        );
         let optional = conditional
             || !(mapping.required || mapping.value.is_some() || mapping.default.is_some());
 

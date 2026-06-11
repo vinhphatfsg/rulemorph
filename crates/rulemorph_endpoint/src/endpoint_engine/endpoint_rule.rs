@@ -87,7 +87,7 @@ impl CompiledEndpoint {
     }
 
     pub(super) fn matches(&self, method: &Method, path: &str) -> bool {
-        if &self.method != method {
+        if self.method != method {
             return false;
         }
         self.matcher.matches(path)

@@ -4,6 +4,7 @@ mod dto;
 mod error;
 mod excel_ref;
 mod expr_json;
+mod legacy;
 mod locator;
 mod model;
 pub mod normalization;
@@ -28,6 +29,7 @@ pub use error::{
     ErrorCode, RuleError, TransformError, TransformErrorKind, TransformWarning, ValidationResult,
     YamlLocation,
 };
+pub use legacy::{LEGACY_V1_RULE_DEPRECATION_MESSAGE, is_legacy_v1_rule, legacy_v1_rule_warning};
 pub use model::{
     CustomOpDef, Expr, ExprChain, ExprOp, ExprRef, InputFormat, InputSpec, Mapping, MarkdownFlavor,
     MarkdownFrontmatter, MarkdownInclude, MarkdownInput, MarkdownRecordsMode,

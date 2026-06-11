@@ -110,10 +110,10 @@ pub(super) fn build_finalize_trace(
         "duration_us": finalize_duration_us,
         "nodes": children,
     });
-    if let Some(err) = finalize_error {
-        if let Some(obj) = trace.as_object_mut() {
-            obj.insert("error".to_string(), err);
-        }
+    if let Some(err) = finalize_error
+        && let Some(obj) = trace.as_object_mut()
+    {
+        obj.insert("error".to_string(), err);
     }
 
     Some(FinalizeTrace {

@@ -1,4 +1,6 @@
-use rulemorph::{Expr, ExprChain, ExprOp, RuleFile};
+use rulemorph::{
+    Expr, ExprChain, ExprOp, LEGACY_V1_RULE_DEPRECATION_MESSAGE, RuleFile, is_legacy_v1_rule,
+};
 use serde_json::{Value, json};
 
 pub(crate) struct RuleWarning {
@@ -9,6 +11,13 @@ pub(crate) struct RuleWarning {
 
 pub(crate) fn collect_rule_warnings(rule: &RuleFile) -> Vec<RuleWarning> {
     let mut warnings = Vec::new();
+    if is_legacy_v1_rule(rule) {
+        warnings.push(RuleWarning {
+            code: "legacy_v1_rule_deprecated",
+            message: LEGACY_V1_RULE_DEPRECATION_MESSAGE.to_string(),
+            path: Some("version".to_string()),
+        });
+    }
     if let Some(expr) = &rule.record_when {
         collect_expr_warnings(expr, "record_when", &mut warnings);
     }

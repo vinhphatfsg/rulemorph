@@ -82,10 +82,10 @@ pub(in crate::dto_parse) fn parse_swift_types(
             continue;
         }
 
-        if let Some(field) = parse_swift_field(line, &coding_keys) {
-            if let Some(dto_type) = types.get_mut(&current_name) {
-                dto_type.fields.push(field);
-            }
+        if let Some(field) = parse_swift_field(line, &coding_keys)
+            && let Some(dto_type) = types.get_mut(&current_name)
+        {
+            dto_type.fields.push(field);
         }
     }
 

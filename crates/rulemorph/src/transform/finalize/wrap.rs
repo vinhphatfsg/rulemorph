@@ -27,7 +27,7 @@ pub(super) fn eval_wrap_value(
                 )
                 .with_path(path)
             })?;
-            match eval_v2_expr(&expr, out, context, out, path, &ctx)? {
+            match eval_v2_expr(&expr, out, context, out, path, ctx)? {
                 V2EvalValue::Missing => Ok(JsonValue::Null),
                 V2EvalValue::Value(value) => Ok(value),
             }

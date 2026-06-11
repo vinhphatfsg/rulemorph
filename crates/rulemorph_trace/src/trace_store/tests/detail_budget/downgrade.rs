@@ -136,7 +136,7 @@ fn trace_store_downgrades_on_total_bytes_budget() -> Result<()> {
     fs::create_dir_all(&trace_dir)?;
 
     let payload = format!("{{\"index\":0,\"payload\":\"{}\"}}\n", "x".repeat(64));
-    let payload_len = payload.as_bytes().len();
+    let payload_len = payload.len();
     fs::write(trace_dir.join("records-0001.ndjson"), payload.as_bytes())?;
     fs::write(trace_dir.join("records-0002.ndjson"), payload.as_bytes())?;
 

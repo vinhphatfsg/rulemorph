@@ -174,7 +174,7 @@ fn write_indexed_chunks(
         let label = kind.label();
         let line = serde_json::to_string(item)
             .with_context(|| format!("failed to serialize {label} at {index}"))?;
-        let line_len = line.as_bytes().len() + 1; // newline
+        let line_len = line.len() + 1; // newline
         let exceeds_item_limit = lines_len_exceeds(&current_lines, max_items_per_chunk);
         let exceeds_byte_limit = current_bytes + line_len > options.max_chunk_bytes_uncompressed;
         if !current_lines.is_empty() && (exceeds_item_limit || exceeds_byte_limit) {

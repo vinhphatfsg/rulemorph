@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(in crate::transform::operators) fn eval_pad(
     args: &[Expr],
     injected: Option<&EvalValue>,
@@ -80,7 +84,7 @@ fn pad_string_value(value: &str, target_len: usize, pad: &str, pad_start: bool) 
 
     let needed = target_len - value_len;
     let pad_len = pad.chars().count();
-    let repeats = (needed + pad_len - 1) / pad_len;
+    let repeats = needed.div_ceil(pad_len);
     let pad_buf = pad.repeat(repeats);
     let pad_slice = pad_buf.chars().take(needed).collect::<String>();
 

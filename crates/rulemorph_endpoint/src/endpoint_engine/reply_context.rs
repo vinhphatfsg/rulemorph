@@ -74,15 +74,14 @@ impl EndpointEngine {
                 "internal_base": self.config.internal_base,
             }
         });
-        if let Some(request_context) = request_context {
-            if let Some(tenant_id) = request_context.tenant_id.as_ref() {
-                if let JsonValue::Object(ref mut map) = value {
-                    map.insert(
-                        "tenant_id".to_string(),
-                        JsonValue::String(tenant_id.clone()),
-                    );
-                }
-            }
+        if let Some(request_context) = request_context
+            && let Some(tenant_id) = request_context.tenant_id.as_ref()
+            && let JsonValue::Object(ref mut map) = value
+        {
+            map.insert(
+                "tenant_id".to_string(),
+                JsonValue::String(tenant_id.clone()),
+            );
         }
         value
     }
@@ -94,15 +93,15 @@ impl EndpointEngine {
         error: Option<&EndpointError>,
     ) -> JsonValue {
         let mut value = base_context.clone();
-        if let Some(params) = params {
-            if let JsonValue::Object(ref mut map) = value {
-                map.insert("params".to_string(), params.clone());
-            }
+        if let Some(params) = params
+            && let JsonValue::Object(ref mut map) = value
+        {
+            map.insert("params".to_string(), params.clone());
         }
-        if let Some(error) = error {
-            if let JsonValue::Object(ref mut map) = value {
-                map.insert("error".to_string(), error.to_json());
-            }
+        if let Some(error) = error
+            && let JsonValue::Object(ref mut map) = value
+        {
+            map.insert("error".to_string(), error.to_json());
         }
         value
     }

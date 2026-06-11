@@ -1,5 +1,9 @@
 # Validation Spec Alignment Plan
 
+## 棚卸しステータス
+
+2026-06-11 時点では、削除せず tracked docs として保持する。本文には完了済みの修正方針と、現行実装に対する再確認が必要な coverage / validation 強化項目が混在している。`docs/plans/` へ退避するのは、完了条件を実装・tests・docs で再照合し、残タスクが roadmap または issue に移された後にする。
+
 ## 目的
 
 本書は、v2 validation が仕様上正しい rule を reject した問題を起点に、validation / runtime / docs / tests の整合性を取り直すための修正方針をまとめる。

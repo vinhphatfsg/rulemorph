@@ -70,7 +70,7 @@ pub(super) fn parse_typescript_types(
         let field_name = name_part.trim_end_matches('?').trim().to_string();
 
         let type_token = type_part
-            .split(|ch| ch == '|' || ch == '&')
+            .split(['|', '&'])
             .next()
             .unwrap_or("")
             .trim()

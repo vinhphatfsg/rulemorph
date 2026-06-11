@@ -15,19 +15,35 @@ use super::{
     resolve_source,
 };
 
+#[derive(Clone, Copy)]
+pub(super) struct MappingEvalInput<'a, 'ctx> {
+    pub(super) rule: &'a crate::model::RuleFile,
+    pub(super) mapping: &'a crate::model::Mapping,
+    pub(super) record: &'a JsonValue,
+    pub(super) context: Option<&'a JsonValue>,
+    pub(super) out: &'a JsonValue,
+    pub(super) mapping_path: &'a str,
+    pub(super) version: u8,
+    pub(super) limits: EvalLimits,
+    pub(super) base_v2_ctx: Option<&'a V2EvalContext<'ctx>>,
+    pub(super) compiled_mapping: Option<&'a CompiledMapping>,
+}
+
+pub(super) struct MappingTraceInput<'a, 'ctx, 'collector> {
+    pub(super) eval: MappingEvalInput<'a, 'ctx>,
+    pub(super) collector: &'collector mut TraceCollector,
+}
+
 pub(super) fn eval_mapping_with_v2_context(
-    rule: &crate::model::RuleFile,
-    mapping: &crate::model::Mapping,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
-    mapping_path: &str,
-    version: u8,
-    limits: EvalLimits,
-    base_v2_ctx: &V2EvalContext<'_>,
-    compiled_mapping: Option<&CompiledMapping>,
+    input: MappingEvalInput<'_, '_>,
 ) -> Result<Option<JsonValue>, TransformError> {
-    eval_mapping_inner(
+    eval_mapping_inner(input)
+}
+
+fn eval_mapping_inner(
+    input: MappingEvalInput<'_, '_>,
+) -> Result<Option<JsonValue>, TransformError> {
+    let MappingEvalInput {
         rule,
         mapping,
         record,
@@ -36,24 +52,10 @@ pub(super) fn eval_mapping_with_v2_context(
         mapping_path,
         version,
         limits,
-        Some(base_v2_ctx),
+        base_v2_ctx,
         compiled_mapping,
-    )
-}
+    } = input;
 
-#[allow(clippy::too_many_arguments)]
-fn eval_mapping_inner(
-    rule: &crate::model::RuleFile,
-    mapping: &crate::model::Mapping,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
-    mapping_path: &str,
-    version: u8,
-    limits: EvalLimits,
-    base_v2_ctx: Option<&V2EvalContext<'_>>,
-    compiled_mapping: Option<&CompiledMapping>,
-) -> Result<Option<JsonValue>, TransformError> {
     let value = if let Some(source) = &mapping.source {
         resolve_source(source, record, context, out, mapping_path)?
     } else if let Some(literal) = &mapping.value {
@@ -77,7 +79,7 @@ fn eval_mapping_inner(
                     .unwrap_or_else(V2EvalContext::new)
                     .with_limits(limits)
                     .with_rule(rule);
-                let v2_result = eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
+                let v2_result = eval_v2_pipe(v2_pipe, record, context, out, expr_path, &v2_ctx)?;
                 match v2_result {
                     V2EvalValue::Missing => EvalValue::Missing,
                     V2EvalValue::Value(v) => EvalValue::Value(v),
@@ -96,7 +98,7 @@ fn eval_mapping_inner(
                         .with_limits(limits)
                         .with_rule(rule);
                     let v2_result =
-                        eval_v2_pipe(&v2_pipe, record, context, out, &expr_path, &v2_ctx)?;
+                        eval_v2_pipe(&v2_pipe, record, context, out, expr_path, &v2_ctx)?;
                     match v2_result {
                         V2EvalValue::Missing => EvalValue::Missing,
                         V2EvalValue::Value(v) => EvalValue::Value(v),
@@ -104,7 +106,7 @@ fn eval_mapping_inner(
                 } else {
                     // v2 but not a v2 pipe - use v1 eval
                     let eval_locals = root_eval_locals(limits);
-                    eval_expr(expr, record, context, out, &expr_path, Some(&eval_locals))?
+                    eval_expr(expr, record, context, out, expr_path, Some(&eval_locals))?
                 }
             }
         } else {
@@ -183,59 +185,16 @@ fn eval_mapping_inner(
 }
 
 pub(super) fn eval_mapping_traced(
-    rule: &crate::model::RuleFile,
-    mapping: &crate::model::Mapping,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
-    mapping_path: &str,
-    version: u8,
-    limits: EvalLimits,
-    base_v2_ctx: &V2EvalContext<'_>,
-    collector: &mut TraceCollector,
+    input: MappingTraceInput<'_, '_, '_>,
 ) -> Result<Option<JsonValue>, TransformError> {
-    eval_mapping_traced_inner(
-        rule,
-        mapping,
-        record,
-        context,
-        out,
-        mapping_path,
-        version,
-        limits,
-        base_v2_ctx,
-        collector,
-        SourceRedactionHint::DefaultSource,
-    )
+    eval_mapping_traced_inner(input, SourceRedactionHint::DefaultSource)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_mapping_traced_with_source_redaction_hint(
-    rule: &crate::model::RuleFile,
-    mapping: &crate::model::Mapping,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
-    mapping_path: &str,
-    version: u8,
-    limits: EvalLimits,
-    base_v2_ctx: &V2EvalContext<'_>,
-    collector: &mut TraceCollector,
+    input: MappingTraceInput<'_, '_, '_>,
     source_redaction_hint: Option<&str>,
 ) -> Result<Option<JsonValue>, TransformError> {
-    eval_mapping_traced_inner(
-        rule,
-        mapping,
-        record,
-        context,
-        out,
-        mapping_path,
-        version,
-        limits,
-        base_v2_ctx,
-        collector,
-        SourceRedactionHint::Override(source_redaction_hint),
-    )
+    eval_mapping_traced_inner(input, SourceRedactionHint::Override(source_redaction_hint))
 }
 
 enum SourceRedactionHint<'a> {
@@ -243,20 +202,26 @@ enum SourceRedactionHint<'a> {
     Override(Option<&'a str>),
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_mapping_traced_inner(
-    rule: &crate::model::RuleFile,
-    mapping: &crate::model::Mapping,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &JsonValue,
-    mapping_path: &str,
-    version: u8,
-    limits: EvalLimits,
-    base_v2_ctx: &V2EvalContext<'_>,
-    collector: &mut TraceCollector,
+    input: MappingTraceInput<'_, '_, '_>,
     source_redaction_hint: SourceRedactionHint<'_>,
 ) -> Result<Option<JsonValue>, TransformError> {
+    let MappingTraceInput { eval, collector } = input;
+    let MappingEvalInput {
+        rule,
+        mapping,
+        record,
+        context,
+        out,
+        mapping_path,
+        version,
+        limits,
+        base_v2_ctx,
+        compiled_mapping: _,
+    } = eval;
+    let base_v2_ctx = base_v2_ctx
+        .unwrap_or_else(|| unreachable!("traced mapping evaluation requires a v2 context"));
+
     let value = if let Some(source) = &mapping.source {
         let value = resolve_source(source, record, context, out, mapping_path)?;
         let path_hint = match source_redaction_hint {

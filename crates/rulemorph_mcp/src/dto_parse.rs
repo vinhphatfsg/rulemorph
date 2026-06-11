@@ -44,10 +44,10 @@ pub(crate) fn parse_dto_schema(
 fn parse_first_quoted_value(text: &str) -> Option<String> {
     let mut best: Option<(usize, char)> = None;
     for quote in ['"', '\''] {
-        if let Some(pos) = text.find(quote) {
-            if best.map_or(true, |(best_pos, _)| pos < best_pos) {
-                best = Some((pos, quote));
-            }
+        if let Some(pos) = text.find(quote)
+            && best.is_none_or(|(best_pos, _)| pos < best_pos)
+        {
+            best = Some((pos, quote));
         }
     }
 

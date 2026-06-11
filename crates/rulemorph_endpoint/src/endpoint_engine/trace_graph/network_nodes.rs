@@ -1,6 +1,6 @@
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
-use super::mapping_ops::build_mapping_ops_with_values;
+use super::mapping_ops::{MappingOpsInput, build_mapping_ops_with_values};
 use crate::endpoint_engine::{CompiledNetworkRule, NetworkExecution};
 
 pub(in crate::endpoint_engine) fn build_network_nodes_with_timing(
@@ -47,7 +47,16 @@ pub(in crate::endpoint_engine) fn build_network_nodes_with_timing(
     if let Some(body_map) = &rule.body_map {
         let mut out = JsonValue::Object(JsonMap::new());
         let empty = JsonValue::Object(JsonMap::new());
-        let ops = build_mapping_ops_with_values(None, body_map, &empty, None, &mut out, 2, 0, None);
+        let ops = build_mapping_ops_with_values(MappingOpsInput {
+            rule: None,
+            mappings: body_map,
+            record: &empty,
+            context: None,
+            out: &mut out,
+            rule_version: 2,
+            step_index: 0,
+            trace_ctx: None,
+        });
         children.extend(ops);
     }
     if rule.body_rule.is_some() {
@@ -91,21 +100,21 @@ pub(in crate::endpoint_engine) fn build_network_nodes_with_timing(
         "status": "ok",
         "duration_us": timing.total_us,
     });
-    if let Some(rule_ref) = rule.body_rule_ref.as_ref() {
-        if let Some(obj) = node.as_object_mut() {
-            obj.insert(
-                "meta".to_string(),
-                json!({
-                    "rule_ref": rule_ref,
-                    "rule_ref_label": "body_rule"
-                }),
-            );
-        }
+    if let Some(rule_ref) = rule.body_rule_ref.as_ref()
+        && let Some(obj) = node.as_object_mut()
+    {
+        obj.insert(
+            "meta".to_string(),
+            json!({
+                "rule_ref": rule_ref,
+                "rule_ref_label": "body_rule"
+            }),
+        );
     }
-    if let Some(trace) = timing.body_rule_trace.as_ref() {
-        if let Some(obj) = node.as_object_mut() {
-            obj.insert("child_trace".to_string(), trace.clone());
-        }
+    if let Some(trace) = timing.body_rule_trace.as_ref()
+        && let Some(obj) = node.as_object_mut()
+    {
+        obj.insert("child_trace".to_string(), trace.clone());
     }
     if let Some(obj) = node.as_object_mut() {
         obj.insert("children".to_string(), JsonValue::Array(children));

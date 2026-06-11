@@ -6,7 +6,10 @@ struct TracedSortItem {
     value: JsonValue,
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(in crate::transform) fn eval_v2_sort_by_traced<'a>(
     op_step: &crate::v2_model::V2OpStep,
     pipe_value: V2EvalValue,
@@ -92,7 +95,6 @@ pub(in crate::transform) fn eval_v2_sort_by_traced<'a>(
     )))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_sort_order<'a>(
     op_step: &crate::v2_model::V2OpStep,
     record: &'a JsonValue,
@@ -132,7 +134,6 @@ fn eval_sort_order<'a>(
     Ok(Some(order))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_v2_sort_key_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,

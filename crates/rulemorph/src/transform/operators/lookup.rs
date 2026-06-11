@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(in crate::transform) fn eval_lookup(
     args: &[Expr],
     injected: Option<&EvalValue>,
@@ -165,40 +169,40 @@ pub(in crate::transform) fn eval_lookup(
     }
     let match_key = value_to_string(&match_value, &match_path)?;
 
-    if let (None, Some(compiled)) = (injected, compiled_lookup) {
-        if let Some(index) = compiled.index(args, collection_array, key_tokens, output_tokens) {
-            let Some(matches) = index.get(&match_key) else {
-                return Ok(EvalValue::Missing);
-            };
-            match matches {
-                LookupMatches::ClonedValues(values) => {
-                    if first_only {
-                        return Ok(EvalValue::Value(values[0].clone()));
-                    }
-                    return Ok(EvalValue::Value(JsonValue::Array(values.to_vec())));
+    if let (None, Some(compiled)) = (injected, compiled_lookup)
+        && let Some(index) = compiled.index(args, collection_array, key_tokens, output_tokens)
+    {
+        let Some(matches) = index.get(&match_key) else {
+            return Ok(EvalValue::Missing);
+        };
+        match matches {
+            LookupMatches::ClonedValues(values) => {
+                if first_only {
+                    return Ok(EvalValue::Value(values[0].clone()));
                 }
-                LookupMatches::ItemIndices(indices) => {
-                    let mut results = Vec::new();
-                    for &index in indices {
-                        let Some(item) = collection_array.get(index) else {
-                            continue;
-                        };
-                        let selected = match output_tokens {
-                            Some(tokens) => get_path(item, tokens),
-                            None => Some(item),
-                        };
-                        if let Some(value) = selected {
-                            if first_only {
-                                return Ok(EvalValue::Value(value.clone()));
-                            }
-                            results.push(value.clone());
+                return Ok(EvalValue::Value(JsonValue::Array(values.to_vec())));
+            }
+            LookupMatches::ItemIndices(indices) => {
+                let mut results = Vec::new();
+                for &index in indices {
+                    let Some(item) = collection_array.get(index) else {
+                        continue;
+                    };
+                    let selected = match output_tokens {
+                        Some(tokens) => get_path(item, tokens),
+                        None => Some(item),
+                    };
+                    if let Some(value) = selected {
+                        if first_only {
+                            return Ok(EvalValue::Value(value.clone()));
                         }
+                        results.push(value.clone());
                     }
-                    if results.is_empty() {
-                        return Ok(EvalValue::Missing);
-                    }
-                    return Ok(EvalValue::Value(JsonValue::Array(results)));
                 }
+                if results.is_empty() {
+                    return Ok(EvalValue::Missing);
+                }
+                return Ok(EvalValue::Value(JsonValue::Array(results)));
             }
         }
     }
@@ -233,7 +237,10 @@ pub(in crate::transform) fn eval_lookup(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 fn eval_lookup_collection(
     index: usize,
     args: &[Expr],

@@ -49,9 +49,7 @@ impl<'a> HtmlStructureScanner<'a> {
             let start = self.offset + relative;
             self.offset = start + 1;
             let rest = &self.input[self.offset..];
-            let Some(next) = rest.as_bytes().first().copied() else {
-                return None;
-            };
+            let next = rest.as_bytes().first().copied()?;
             match next {
                 b'!' => {
                     self.offset = self.find_tag_end(self.offset).unwrap_or(self.input.len());

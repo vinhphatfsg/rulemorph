@@ -18,6 +18,24 @@ fn validate_success_returns_zero() {
 }
 
 #[test]
+fn validate_warns_for_version_one_rules() {
+    let rules = fixtures_dir().join("t01_csv_basic").join("rules.yaml");
+    let output = rulemorph_output(|cmd| {
+        cmd.arg("validate")
+            .arg("-r")
+            .arg(rules)
+            .arg("-e")
+            .arg("json");
+    });
+    assert_eq!(output.status.code(), Some(0));
+
+    let value = stderr_json(output);
+    assert_eq!(value[0]["type"], "warning");
+    assert_eq!(value[0]["kind"], "InvalidInput");
+    assert_eq!(value[0]["path"], "version");
+}
+
+#[test]
 fn validate_json_errors() {
     let rules = fixtures_dir()
         .join("v01_missing_mapping_value")

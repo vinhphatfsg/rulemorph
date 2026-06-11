@@ -26,7 +26,10 @@ pub(super) fn apply_mappings_traced(
     Ok(out)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(super) fn apply_mappings_into_traced(
     rule: &RuleFile,
     mappings: &[Mapping],
@@ -54,18 +57,20 @@ pub(super) fn apply_mappings_into_traced(
                 .start_span(TraceEventKind::MappingWhenStart, TracePhase::Start)
                 .rule_path(&when_path)
                 .finish(collector);
-            let flag = eval_when_traced(
-                mapping,
-                record,
-                context,
-                out,
-                &mapping_path,
-                warnings,
-                rule_version,
-                limits,
-                base_v2_ctx,
+            let flag = eval_when_traced(TracedMappingWhenInput {
+                eval: MappingWhenInput {
+                    mapping,
+                    record,
+                    context,
+                    out,
+                    mapping_path: &mapping_path,
+                    warnings,
+                    rule_version,
+                    limits,
+                    ctx: base_v2_ctx,
+                },
                 collector,
-            );
+            });
             collector
                 .end_span(TraceEventKind::MappingWhenEnd, TracePhase::End)
                 .rule_path(&when_path)
@@ -90,18 +95,21 @@ pub(super) fn apply_mappings_into_traced(
             continue;
         }
 
-        let value = match eval_mapping_traced(
-            rule,
-            mapping,
-            record,
-            context,
-            out,
-            &mapping_path,
-            rule_version,
-            limits,
-            base_v2_ctx,
+        let value = match eval_mapping_traced(MappingTraceInput {
+            eval: MappingEvalInput {
+                rule,
+                mapping,
+                record,
+                context,
+                out,
+                mapping_path: &mapping_path,
+                version: rule_version,
+                limits,
+                base_v2_ctx: Some(base_v2_ctx),
+                compiled_mapping: None,
+            },
             collector,
-        ) {
+        }) {
             Ok(value) => value,
             Err(error) => {
                 collector

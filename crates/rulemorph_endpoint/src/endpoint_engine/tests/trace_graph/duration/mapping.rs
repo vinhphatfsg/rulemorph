@@ -12,7 +12,16 @@ fn mapping_ops_include_duration_us() {
     }];
     let record = json!({});
     let mut out = json!({});
-    let ops = build_mapping_ops_with_values(None, &mappings, &record, None, &mut out, 2, 0, None);
+    let ops = build_mapping_ops_with_values(MappingOpsInput {
+        rule: None,
+        mappings: &mappings,
+        record: &record,
+        context: None,
+        out: &mut out,
+        rule_version: 2,
+        step_index: 0,
+        trace_ctx: None,
+    });
     let duration = ops[0].get("duration_us").and_then(|value| value.as_u64());
     assert!(duration.is_some());
 }

@@ -41,10 +41,10 @@ fn apply_limit_toml_override(
     name: &str,
     value: &toml::Value,
 ) -> Result<(), String> {
-    if name == "range-items" {
-        if let Some(text) = value.as_str() {
-            return apply_limit_text_override(options, name, text);
-        }
+    if name == "range-items"
+        && let Some(text) = value.as_str()
+    {
+        return apply_limit_text_override(options, name, text);
     }
     let value = value
         .as_integer()

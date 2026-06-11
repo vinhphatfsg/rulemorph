@@ -18,6 +18,7 @@ pub use api_keys::{
 use bootstrap::init_default_resources;
 pub use config::ServerConfig;
 use config::{requires_ssrf_allowlist, resolve_ui_source};
+pub use server::TenantRegistryConfig;
 pub use server::{AppState, RateLimiter, TenantRegistry, TenantResources, UiSource, build_router};
 pub use tenant::{TenantContext, TenantLayout, TenantResolver, validate_tenant_id};
 
@@ -45,16 +46,16 @@ pub async fn run(config: ServerConfig) -> Result<()> {
     };
 
     let (default_resources, tenant_registry) = if config.tenant_resolver.is_some() {
-        let registry = Arc::new(TenantRegistry::new(
-            config.data_dir.clone(),
-            config.rules_dir.clone(),
-            config.api_mode,
-            config.ui_enabled,
-            config.port,
-            config.ssrf_allowlist.clone(),
-            config.ssrf_allow_private,
-            config.internal_api_key.clone(),
-        ));
+        let registry = Arc::new(TenantRegistry::new(TenantRegistryConfig {
+            base_dir: config.data_dir.clone(),
+            rules_dir: config.rules_dir.clone(),
+            api_mode: config.api_mode,
+            ui_enabled: config.ui_enabled,
+            port: config.port,
+            ssrf_allowlist: config.ssrf_allowlist.clone(),
+            ssrf_allow_private: config.ssrf_allow_private,
+            internal_api_key: config.internal_api_key.clone(),
+        }));
         let default_resources = init_default_resources(&config, false)
             .await
             .context("failed to init bootstrap resources")?;

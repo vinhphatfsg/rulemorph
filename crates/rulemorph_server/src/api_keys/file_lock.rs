@@ -65,11 +65,12 @@ impl ApiKeyFileLock {
 fn remove_stale_lock_if_needed(path: &Path) -> Result<bool> {
     match fs::read_to_string(path) {
         Ok(contents) => {
-            if let Ok(pid) = contents.trim().parse::<u32>() {
-                if pid != std::process::id() && !process_is_running(pid) {
-                    remove_lock_file(path)?;
-                    return Ok(true);
-                }
+            if let Ok(pid) = contents.trim().parse::<u32>()
+                && pid != std::process::id()
+                && !process_is_running(pid)
+            {
+                remove_lock_file(path)?;
+                return Ok(true);
             }
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(true),

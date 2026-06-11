@@ -8,90 +8,99 @@ use super::super::branch_trace::apply_branch_trace_meta;
 use super::super::transform_error_to_trace;
 use crate::endpoint_engine::trace_graph::condition::eval_trace_condition;
 
+pub(super) struct StepConditionContext<'a, 'ctx> {
+    pub(super) rule: &'a RuleFile,
+    pub(super) step_index: usize,
+    pub(super) record: &'a JsonValue,
+    pub(super) context: Option<&'a JsonValue>,
+    pub(super) base_dir: &'a Path,
+    pub(super) step_input: &'a JsonValue,
+    pub(super) step_active: bool,
+    pub(super) trace_ctx: &'a V2EvalContext<'ctx>,
+}
+
+pub(super) struct StepMetaState<'a> {
+    pub(super) status: &'a mut String,
+    pub(super) error: &'a mut Option<JsonValue>,
+    pub(super) halted: &'a mut bool,
+    pub(super) meta: &'a mut JsonMap<String, JsonValue>,
+}
+
 pub(super) fn apply_record_when_meta(
-    rule: &RuleFile,
-    step_index: usize,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    step_input: &JsonValue,
-    step_active: bool,
-    status: &mut String,
-    error: &mut Option<JsonValue>,
-    halted: &mut bool,
-    meta: &mut JsonMap<String, JsonValue>,
-    trace_ctx: &V2EvalContext<'_>,
+    context: &StepConditionContext<'_, '_>,
+    state: &mut StepMetaState<'_>,
 ) {
-    if !step_active || status == "error" {
+    if !context.step_active || state.status == "error" {
         return;
     }
-    let Some(expr) = rule
+    let Some(expr) = context
+        .rule
         .steps
         .as_deref()
-        .and_then(|steps| steps.get(step_index))
+        .and_then(|steps| steps.get(context.step_index))
         .and_then(|step| step.record_when.as_ref())
     else {
         return;
     };
 
     match eval_trace_condition(
-        rule,
+        context.rule,
         expr,
-        record,
-        context,
-        step_input,
+        context.record,
+        context.context,
+        context.step_input,
         "record_when",
-        trace_ctx,
+        context.trace_ctx,
     ) {
         Ok(flag) => {
-            meta.insert("record_when".to_string(), JsonValue::Bool(flag));
+            state
+                .meta
+                .insert("record_when".to_string(), JsonValue::Bool(flag));
         }
         Err(err) => {
-            *status = "error".to_string();
-            *error = Some(transform_error_to_trace(&err));
-            *halted = true;
+            *state.status = "error".to_string();
+            *state.error = Some(transform_error_to_trace(&err));
+            *state.halted = true;
         }
     }
 }
 
 pub(super) fn apply_asserts_meta(
-    rule: &RuleFile,
-    step_index: usize,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    step_input: &JsonValue,
-    step_active: bool,
-    status: &mut String,
-    error: &mut Option<JsonValue>,
-    halted: &mut bool,
-    meta: &mut JsonMap<String, JsonValue>,
-    trace_ctx: &V2EvalContext<'_>,
+    context: &StepConditionContext<'_, '_>,
+    state: &mut StepMetaState<'_>,
 ) {
-    let Some(asserts) = rule
+    let Some(asserts) = context
+        .rule
         .steps
         .as_deref()
-        .and_then(|steps| steps.get(step_index))
+        .and_then(|steps| steps.get(context.step_index))
         .and_then(|step| step.asserts.as_ref())
     else {
         return;
     };
 
-    if !step_active || status == "error" {
-        meta.entry("asserts_ok".to_string())
+    if !context.step_active || state.status == "error" {
+        state
+            .meta
+            .entry("asserts_ok".to_string())
             .or_insert(JsonValue::Bool(false));
         return;
     }
 
     let mut asserts_ok = true;
     for (assert_index, assert) in asserts.iter().enumerate() {
-        let assert_path = format!("steps[{}].asserts[{}].when", step_index, assert_index);
+        let assert_path = format!(
+            "steps[{}].asserts[{}].when",
+            context.step_index, assert_index
+        );
         match eval_trace_condition(
-            rule,
+            context.rule,
             &assert.when,
-            record,
-            context,
-            step_input,
+            context.record,
+            context.context,
+            context.step_input,
             &assert_path,
-            trace_ctx,
+            context.trace_ctx,
         ) {
             Ok(true) => {}
             Ok(false) => {
@@ -103,58 +112,51 @@ pub(super) fn apply_asserts_meta(
                         assert.error.code, assert.error.message
                     ),
                 )
-                .with_path(format!("steps[{}].asserts[{}]", step_index, assert_index));
-                *status = "error".to_string();
-                *error = Some(transform_error_to_trace(&err));
-                *halted = true;
+                .with_path(format!(
+                    "steps[{}].asserts[{}]",
+                    context.step_index, assert_index
+                ));
+                *state.status = "error".to_string();
+                *state.error = Some(transform_error_to_trace(&err));
+                *state.halted = true;
                 break;
             }
             Err(err) => {
                 asserts_ok = false;
-                *status = "error".to_string();
-                *error = Some(transform_error_to_trace(&err));
-                *halted = true;
+                *state.status = "error".to_string();
+                *state.error = Some(transform_error_to_trace(&err));
+                *state.halted = true;
                 break;
             }
         }
     }
-    meta.insert("asserts_ok".to_string(), JsonValue::Bool(asserts_ok));
+    state
+        .meta
+        .insert("asserts_ok".to_string(), JsonValue::Bool(asserts_ok));
 }
 
 pub(super) fn apply_branch_meta(
-    rule: &RuleFile,
-    step_index: usize,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    base_dir: &Path,
-    step_input: &JsonValue,
-    step_active: bool,
-    status: &mut String,
-    error: &mut Option<JsonValue>,
-    halted: &mut bool,
-    meta: &mut JsonMap<String, JsonValue>,
-    trace_ctx: &V2EvalContext<'_>,
+    context: &StepConditionContext<'_, '_>,
+    state: &mut StepMetaState<'_>,
 ) -> Option<JsonValue> {
-    if !step_active || status == "error" {
+    if !context.step_active || state.status == "error" {
         return None;
     }
-    let Some(branch) = rule
+    let branch = context
+        .rule
         .steps
         .as_deref()
-        .and_then(|steps| steps.get(step_index))
-        .and_then(|step| step.branch.as_ref())
-    else {
-        return None;
-    };
+        .and_then(|steps| steps.get(context.step_index))
+        .and_then(|step| step.branch.as_ref())?;
 
     let branch_taken = match eval_trace_condition(
-        rule,
+        context.rule,
         &branch.when,
-        record,
-        context,
-        step_input,
+        context.record,
+        context.context,
+        context.step_input,
         "branch.when",
-        trace_ctx,
+        context.trace_ctx,
     ) {
         Ok(true) => "then",
         Ok(false) => {
@@ -165,22 +167,22 @@ pub(super) fn apply_branch_meta(
             }
         }
         Err(err) => {
-            *status = "error".to_string();
-            *error = Some(transform_error_to_trace(&err));
-            *halted = true;
+            *state.status = "error".to_string();
+            *state.error = Some(transform_error_to_trace(&err));
+            *state.halted = true;
             "none"
         }
     };
     if branch.return_ && branch_taken != "none" {
-        *halted = true;
+        *state.halted = true;
     }
     apply_branch_trace_meta(
         &branch.then,
         branch.r#else.as_deref(),
         branch_taken,
-        base_dir,
-        step_input,
-        context,
-        meta,
+        context.base_dir,
+        context.step_input,
+        context.context,
+        state.meta,
     )
 }

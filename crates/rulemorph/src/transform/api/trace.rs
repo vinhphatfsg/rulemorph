@@ -10,10 +10,14 @@ use crate::trace::{
 };
 
 use super::super::{
-    BranchContext, EvalLimits, apply_finalize_traced, apply_rule_to_record_traced,
-    records::input_records_iter_with_options,
+    BranchContext, EvalLimits, TracedRuleRecordInput, apply_finalize_traced,
+    apply_rule_to_record_traced, records::input_records_iter_with_options,
 };
 
+#[expect(
+    clippy::result_large_err,
+    reason = "public trace API returns partial trace data on failure; boxing would change the API shape"
+)]
 pub fn transform_input_with_trace(
     rule: &RuleFile,
     input: InputData<'_>,
@@ -30,6 +34,10 @@ pub fn transform_input_with_trace(
     )
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "public trace API returns partial trace data on failure; boxing would change the API shape"
+)]
 pub fn transform_input_with_trace_with_base_dir_and_options(
     rule: &RuleFile,
     input: InputData<'_>,
@@ -69,27 +77,28 @@ fn transform_with_warnings_inner_traced(
     collector: &mut TraceCollector,
 ) -> Result<(JsonValue, Vec<TransformWarning>), (TransformError, Vec<TransformWarning>)> {
     let mut warnings = Vec::new();
+    if let Some(warning) = crate::legacy_v1_rule_warning(rule) {
+        warnings.push(warning);
+    }
     let mut output_records = Vec::new();
     let limits = EvalLimits::from(options);
-    let mut records = input_records_iter_with_options(rule, input, options)
+    let records = input_records_iter_with_options(rule, input, options)
         .map_err(|error| (error, warnings.clone()))?;
-    let mut record_index = 0usize;
-    while let Some(record) = records.next() {
+    for (record_index, record) in records.enumerate() {
         let record = record.map_err(|error| (error, warnings.clone()))?;
         collector.start_record(record_index, &record);
-        record_index += 1;
         let mut record_warnings = Vec::new();
         let mut branch_context = BranchContext::default();
-        match apply_rule_to_record_traced(
+        match apply_rule_to_record_traced(TracedRuleRecordInput {
             rule,
-            &record,
+            record: &record,
             context,
-            &mut record_warnings,
+            warnings: &mut record_warnings,
             base_dir,
-            &mut branch_context,
+            branch_context: &mut branch_context,
             limits,
             collector,
-        ) {
+        }) {
             Ok(Some(output)) => output_records.push(output),
             Ok(None) => {}
             Err(error) => {
@@ -122,6 +131,10 @@ fn transform_with_warnings_inner_traced(
     Ok((output, warnings))
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "public trace API returns partial trace data on failure; boxing would change the API shape"
+)]
 pub fn transform_record_with_trace(
     rule: &RuleFile,
     record: &JsonValue,
@@ -131,17 +144,20 @@ pub fn transform_record_with_trace(
     let mut collector = TraceCollector::new(trace_options.clone());
     collector.start_record(0, record);
     let mut warnings = Vec::new();
+    if let Some(warning) = crate::legacy_v1_rule_warning(rule) {
+        warnings.push(warning);
+    }
     let mut branch_context = BranchContext::default();
-    let result = apply_rule_to_record_traced(
+    let result = apply_rule_to_record_traced(TracedRuleRecordInput {
         rule,
         record,
         context,
-        &mut warnings,
-        None,
-        &mut branch_context,
-        EvalLimits::default(),
-        &mut collector,
-    );
+        warnings: &mut warnings,
+        base_dir: None,
+        branch_context: &mut branch_context,
+        limits: EvalLimits::default(),
+        collector: &mut collector,
+    });
     match result {
         Ok(output) => {
             let output = if let Some(finalize) = &rule.finalize {
@@ -152,9 +168,7 @@ pub fn transform_record_with_trace(
                         trace: collector.finish(),
                     });
                 };
-                let mut records = Vec::new();
-                records.push(value);
-                let array = JsonValue::Array(records);
+                let array = JsonValue::Array(vec![value]);
                 collector.start_finalize(&array);
                 match apply_finalize_traced(
                     rule,

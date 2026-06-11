@@ -34,17 +34,16 @@ impl EndpointEngine {
                          request_us: u64,
                          body_rule_trace: Option<JsonValue>|
          -> Result<NetworkExecution, EndpointError> {
-            if let Some(catch) = &rule.catch {
-                if let Some(output) =
+            if let Some(catch) = &rule.catch
+                && let Some(output) =
                     self.run_catch(catch, &err, input, None, &rule.base_dir, base_context)?
-                {
-                    return Ok(NetworkExecution {
-                        output,
-                        request_us,
-                        total_us: total_started.elapsed().as_micros() as u64,
-                        body_rule_trace,
-                    });
-                }
+            {
+                return Ok(NetworkExecution {
+                    output,
+                    request_us,
+                    total_us: total_started.elapsed().as_micros() as u64,
+                    body_rule_trace,
+                });
             }
             Err(err)
         };
@@ -135,17 +134,15 @@ impl EndpointEngine {
                     });
                 }
                 Err(err) => {
-                    if let Some(retry) = &rule.retry {
-                        if err.kind == EndpointErrorKind::Timeout
-                            || err.kind == EndpointErrorKind::Network
-                        {
-                            if attempt < retry.max {
-                                let delay = retry.delay_for(attempt);
-                                attempt += 1;
-                                tokio::time::sleep(delay).await;
-                                continue;
-                            }
-                        }
+                    if let Some(retry) = &rule.retry
+                        && (err.kind == EndpointErrorKind::Timeout
+                            || err.kind == EndpointErrorKind::Network)
+                        && attempt < retry.max
+                    {
+                        let delay = retry.delay_for(attempt);
+                        attempt += 1;
+                        tokio::time::sleep(delay).await;
+                        continue;
                     }
                     return run_catch_with_body(err, request_us);
                 }

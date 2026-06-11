@@ -25,7 +25,7 @@ pub(super) async fn build_multipart_import_body(
         .map_err(|err| EndpointError::bad_request(format!("multipart error: {}", err)))?;
     let stream = Limited::new(body, MULTIPART_IMPORT_MAX_TOTAL_BYTES as usize)
         .into_data_stream()
-        .map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err.to_string()));
+        .map_err(|err| std::io::Error::other(err.to_string()));
     let mut multipart = multer::Multipart::new(stream, boundary);
     let mut zip_file: Option<tempfile::NamedTempFile> = None;
     let mut total_bytes: u64 = 0;
@@ -102,10 +102,10 @@ pub(super) fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
                 _ => return Err(format!("invalid zip entry path: {}", name)),
             }
         }
-        if let Some(mode) = entry.unix_mode() {
-            if (mode & 0o170000) == 0o120000 {
-                return Err(format!("zip entry is symlink: {}", name));
-            }
+        if let Some(mode) = entry.unix_mode()
+            && (mode & 0o170000) == 0o120000
+        {
+            return Err(format!("zip entry is symlink: {}", name));
         }
         let out_path = dest.join(entry_path);
         if entry.is_dir() {

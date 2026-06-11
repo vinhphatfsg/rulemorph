@@ -261,30 +261,30 @@ fn parse_if_step(obj: &serde_json::Map<String, JsonValue>) -> Result<V2Step, V2P
         .ok_or_else(|| V2ParseError::InvalidStep("if step missing 'if' key".to_string()))?;
 
     // Check if `if` value is an object with cond/then/else (nested format)
-    if let JsonValue::Object(inner_obj) = if_val {
-        if inner_obj.contains_key("cond") || inner_obj.contains_key("then") {
-            // Nested format: { if: { cond: ..., then: ..., else: ... } }
-            let cond_val = inner_obj
-                .get("cond")
-                .ok_or_else(|| V2ParseError::InvalidStep("if step missing 'cond'".to_string()))?;
-            let then_val = inner_obj.get("then").ok_or_else(|| {
-                V2ParseError::InvalidStep("if step missing 'then' branch".to_string())
-            })?;
+    if let JsonValue::Object(inner_obj) = if_val
+        && (inner_obj.contains_key("cond") || inner_obj.contains_key("then"))
+    {
+        // Nested format: { if: { cond: ..., then: ..., else: ... } }
+        let cond_val = inner_obj
+            .get("cond")
+            .ok_or_else(|| V2ParseError::InvalidStep("if step missing 'cond'".to_string()))?;
+        let then_val = inner_obj.get("then").ok_or_else(|| {
+            V2ParseError::InvalidStep("if step missing 'then' branch".to_string())
+        })?;
 
-            let condition = parse_v2_condition(cond_val)?;
-            let then_branch = parse_v2_pipe_from_value(then_val)?;
-            let else_branch = if let Some(else_val) = inner_obj.get("else") {
-                Some(parse_v2_pipe_from_value(else_val)?)
-            } else {
-                None
-            };
+        let condition = parse_v2_condition(cond_val)?;
+        let then_branch = parse_v2_pipe_from_value(then_val)?;
+        let else_branch = if let Some(else_val) = inner_obj.get("else") {
+            Some(parse_v2_pipe_from_value(else_val)?)
+        } else {
+            None
+        };
 
-            return Ok(V2Step::If(V2IfStep {
-                cond: condition,
-                then_branch,
-                else_branch,
-            }));
-        }
+        return Ok(V2Step::If(V2IfStep {
+            cond: condition,
+            then_branch,
+            else_branch,
+        }));
     }
 
     // Original format: { if: condition, then: pipe, else: pipe }

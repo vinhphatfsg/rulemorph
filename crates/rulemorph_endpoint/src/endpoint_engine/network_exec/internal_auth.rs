@@ -24,10 +24,10 @@ impl EndpointEngine {
         &self,
         request_context: Option<&RequestContext>,
     ) -> Option<String> {
-        if let Some(context) = request_context {
-            if let Some(key) = context.internal_api_key.as_ref() {
-                return Some(key.clone());
-            }
+        if let Some(context) = request_context
+            && let Some(key) = context.internal_api_key.as_ref()
+        {
+            return Some(key.clone());
         }
         self.config.internal_api_key.clone()
     }
@@ -84,12 +84,12 @@ impl EndpointEngine {
         headers: &mut HeaderMap,
         request_context: Option<&RequestContext>,
     ) -> Result<(), EndpointError> {
-        if let Some(internal_api_key) = self.resolve_internal_api_key(request_context) {
-            if !headers.contains_key("x-api-key") {
-                let value = HeaderValue::from_str(&internal_api_key)
-                    .map_err(|_| EndpointError::invalid("invalid internal api key"))?;
-                headers.insert(HeaderName::from_static("x-api-key"), value);
-            }
+        if let Some(internal_api_key) = self.resolve_internal_api_key(request_context)
+            && !headers.contains_key("x-api-key")
+        {
+            let value = HeaderValue::from_str(&internal_api_key)
+                .map_err(|_| EndpointError::invalid("invalid internal api key"))?;
+            headers.insert(HeaderName::from_static("x-api-key"), value);
         }
         if let Some(tenant_id) = request_context.and_then(|ctx| ctx.tenant_id.as_ref()) {
             let value = HeaderValue::from_str(tenant_id)

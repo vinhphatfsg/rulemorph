@@ -15,8 +15,8 @@ use axum::response::Response;
 use http_body_util::BodyExt;
 use rulemorph_endpoint::{EndpointEngine, EngineConfig};
 use rulemorph_server::{
-    ApiMode, AppState, RateLimiter, TenantContext, TenantRegistry, TenantResolver, TenantResources,
-    build_router,
+    ApiMode, AppState, RateLimiter, TenantContext, TenantRegistry, TenantRegistryConfig,
+    TenantResolver, TenantResources, build_router,
 };
 use rulemorph_trace::{ImportResult, TraceStore};
 use serde::de::DeserializeOwned;

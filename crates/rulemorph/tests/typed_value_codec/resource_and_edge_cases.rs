@@ -279,9 +279,11 @@ mappings:
       - to_typed_value:
           profile: dynamodb_item
 "#;
-    let mut options = rulemorph::NormalizationOptions::default();
-    options.max_text_bytes = 16 * 1024 * 1024;
-    options.max_input_bytes = 32 * 1024 * 1024;
+    let options = rulemorph::NormalizationOptions {
+        max_text_bytes: 16 * 1024 * 1024,
+        max_input_bytes: 32 * 1024 * 1024,
+        ..Default::default()
+    };
 
     let oversized = "x".repeat(8 * 1024 * 1024 + 1);
     let input = serde_json::json!({"payload": oversized}).to_string();
@@ -334,9 +336,11 @@ mappings:
 
 #[test]
 fn typed_value_runtime_rejects_oversized_number_set_and_firestore_double_strings() {
-    let mut options = rulemorph::NormalizationOptions::default();
-    options.max_text_bytes = 16 * 1024 * 1024;
-    options.max_input_bytes = 32 * 1024 * 1024;
+    let options = rulemorph::NormalizationOptions {
+        max_text_bytes: 16 * 1024 * 1024,
+        max_input_bytes: 32 * 1024 * 1024,
+        ..Default::default()
+    };
 
     let number_set_yaml = r#"
 version: 2
@@ -383,9 +387,11 @@ mappings:
 
 #[test]
 fn typed_value_dynamodb_sets_count_entries_against_node_limit() {
-    let mut options = rulemorph::NormalizationOptions::default();
-    options.max_text_bytes = 16 * 1024 * 1024;
-    options.max_input_bytes = 32 * 1024 * 1024;
+    let options = rulemorph::NormalizationOptions {
+        max_text_bytes: 16 * 1024 * 1024,
+        max_input_bytes: 32 * 1024 * 1024,
+        ..Default::default()
+    };
 
     let assert_node_count_error = |rule_yaml: &str, input: String| {
         let rule = parse_rule_file(rule_yaml).expect("parse rule");

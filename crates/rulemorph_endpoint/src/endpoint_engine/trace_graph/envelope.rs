@@ -2,19 +2,34 @@ use chrono::Utc;
 use serde_json::{Value as JsonValue, json};
 use uuid::Uuid;
 
-pub(in crate::endpoint_engine) fn build_rule_trace(
-    rule_type: &str,
-    name: String,
-    path: String,
-    version: u8,
-    rule_source: JsonValue,
-    input: JsonValue,
-    output: JsonValue,
-    nodes: Vec<JsonValue>,
-    finalize: Option<JsonValue>,
-    duration_us: u64,
-    status: &str,
-) -> JsonValue {
+pub(in crate::endpoint_engine) struct RuleTraceInput<'a> {
+    pub(in crate::endpoint_engine) rule_type: &'a str,
+    pub(in crate::endpoint_engine) name: String,
+    pub(in crate::endpoint_engine) path: String,
+    pub(in crate::endpoint_engine) version: u8,
+    pub(in crate::endpoint_engine) rule_source: JsonValue,
+    pub(in crate::endpoint_engine) input: JsonValue,
+    pub(in crate::endpoint_engine) output: JsonValue,
+    pub(in crate::endpoint_engine) nodes: Vec<JsonValue>,
+    pub(in crate::endpoint_engine) finalize: Option<JsonValue>,
+    pub(in crate::endpoint_engine) duration_us: u64,
+    pub(in crate::endpoint_engine) status: &'a str,
+}
+
+pub(in crate::endpoint_engine) fn build_rule_trace(input: RuleTraceInput<'_>) -> JsonValue {
+    let RuleTraceInput {
+        rule_type,
+        name,
+        path,
+        version,
+        rule_source,
+        input,
+        output,
+        nodes,
+        finalize,
+        duration_us,
+        status,
+    } = input;
     let trace_id = Uuid::new_v4().to_string();
     let now = Utc::now();
     let record = json!({
@@ -44,10 +59,10 @@ pub(in crate::endpoint_engine) fn build_rule_trace(
             "duration_us": duration_us
         }
     });
-    if let Some(finalize) = finalize {
-        if let Some(obj) = trace.as_object_mut() {
-            obj.insert("finalize".to_string(), finalize);
-        }
+    if let Some(finalize) = finalize
+        && let Some(obj) = trace.as_object_mut()
+    {
+        obj.insert("finalize".to_string(), finalize);
     }
     trace
 }

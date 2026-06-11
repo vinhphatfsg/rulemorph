@@ -129,8 +129,7 @@ fn decode_zstd_limited(raw: &[u8], max_bytes: usize) -> Result<Vec<u8>> {
 fn zstd_window_log_max(max_bytes: usize) -> u32 {
     let max_bytes = max_bytes
         .max(ZSTD_WINDOW_BYTES_MIN)
-        .min(TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX)
-        .max(1) as u64;
+        .clamp(1, TRACE_CHUNK_BYTES_UNCOMPRESSED_HARD_MAX) as u64;
     let pow2 = max_bytes.next_power_of_two();
     let log = 63u32.saturating_sub(pow2.leading_zeros());
     log.clamp(20, 31)

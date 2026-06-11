@@ -1,6 +1,9 @@
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(super) fn eval_v2_map_step_traced<'a>(
     map: &crate::v2_model::V2MapStep,
     pipe_value: V2EvalValue,
@@ -43,14 +46,13 @@ pub(super) fn eval_v2_map_step_traced<'a>(
     let limits = ctx.limits();
     let mut generated_items = 0usize;
     let mut generated_json = crate::transform::GeneratedArrayBudget::new(limits, step_path)
-        .map_err(|error| {
+        .inspect_err(|_error| {
             collector
                 .error_span(TraceEventKind::OpError, "OP_ERROR", "operator failed")
                 .rule_path(step_path)
                 .operator("map")
                 .input_v2_eval_value(&pipe_value, collector.options(), None)
                 .finish(collector);
-            error
         })?;
     let mut results = Vec::with_capacity(arr.len());
     for (index, item_value) in arr.iter().enumerate() {

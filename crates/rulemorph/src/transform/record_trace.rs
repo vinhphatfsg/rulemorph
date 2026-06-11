@@ -7,16 +7,31 @@ mod steps;
 use mapping::apply_mappings_traced;
 use steps::{TracedStepOutcome, apply_steps_traced};
 
+pub(super) struct TracedRuleRecordInput<'a, 'collector> {
+    pub(super) rule: &'a RuleFile,
+    pub(super) record: &'a JsonValue,
+    pub(super) context: Option<&'a JsonValue>,
+    pub(super) warnings: &'a mut Vec<TransformWarning>,
+    pub(super) base_dir: Option<&'a Path>,
+    pub(super) branch_context: &'a mut BranchContext,
+    pub(super) limits: EvalLimits,
+    pub(super) collector: &'collector mut TraceCollector,
+}
+
 pub(super) fn apply_rule_to_record_traced(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    warnings: &mut Vec<TransformWarning>,
-    base_dir: Option<&Path>,
-    branch_context: &mut BranchContext,
-    limits: EvalLimits,
-    collector: &mut TraceCollector,
+    input: TracedRuleRecordInput<'_, '_>,
 ) -> Result<Option<JsonValue>, TransformError> {
+    let TracedRuleRecordInput {
+        rule,
+        record,
+        context,
+        warnings,
+        base_dir,
+        branch_context,
+        limits,
+        collector,
+    } = input;
+
     let base_v2_ctx = V2EvalContext::new()
         .with_limits(limits)
         .with_rule(rule)
@@ -78,7 +93,6 @@ pub(super) fn apply_rule_to_record_traced(
     Ok(Some(output))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn transform_record_with_warnings_inner_traced(
     rule: &RuleFile,
     record: &JsonValue,
@@ -89,16 +103,16 @@ fn transform_record_with_warnings_inner_traced(
     collector: &mut TraceCollector,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
-    let output = apply_rule_to_record_traced(
+    let output = apply_rule_to_record_traced(TracedRuleRecordInput {
         rule,
         record,
         context,
-        &mut warnings,
+        warnings: &mut warnings,
         base_dir,
         branch_context,
         limits,
         collector,
-    )?;
+    })?;
     let Some(output) = output else {
         return Ok((None, warnings));
     };

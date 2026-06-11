@@ -11,10 +11,7 @@ pub(crate) fn emit_validation_errors(errors: &[RuleError], format: ErrorFormat) 
             }
         }
         ErrorFormat::Json => {
-            let values: Vec<_> = errors
-                .iter()
-                .map(|err| validation_error_json(err))
-                .collect();
+            let values: Vec<_> = errors.iter().map(validation_error_json).collect();
             eprintln!("{}", serde_json::to_string(&values).unwrap_or_default());
         }
     }

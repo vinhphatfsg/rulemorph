@@ -20,6 +20,10 @@ pub(in crate::transform) fn arg_expr_at<'a>(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(super) fn eval_expr_at_index(
     index: usize,
     args: &[Expr],
@@ -30,20 +34,18 @@ pub(super) fn eval_expr_at_index(
     base_path: &str,
     locals: Option<&EvalLocals<'_>>,
 ) -> Result<EvalValue, TransformError> {
-    if injected.is_none() {
-        if let Some((cached_base_path, cached_values)) =
+    if injected.is_none()
+        && let Some((cached_base_path, cached_values)) =
             locals.and_then(|locals| locals.precomputed_op_args)
-        {
-            if cached_base_path == base_path {
-                return cached_values.get(index).cloned().ok_or_else(|| {
-                    TransformError::new(
-                        TransformErrorKind::ExprError,
-                        "expr.args index is out of bounds",
-                    )
-                    .with_path(format!("{}.args[{}]", base_path, index))
-                });
-            }
-        }
+        && cached_base_path == base_path
+    {
+        return cached_values.get(index).cloned().ok_or_else(|| {
+            TransformError::new(
+                TransformErrorKind::ExprError,
+                "expr.args index is out of bounds",
+            )
+            .with_path(format!("{}.args[{}]", base_path, index))
+        });
     }
 
     if let Some(injected) = injected {
@@ -72,6 +74,10 @@ pub(super) fn eval_expr_at_index(
     eval_expr(arg, record, context, out, &arg_path, locals)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(super) fn eval_arg_value_at(
     index: usize,
     args: &[Expr],
@@ -90,6 +96,10 @@ pub(super) fn eval_arg_value_at(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(super) fn eval_arg_string_at(
     index: usize,
     args: &[Expr],
@@ -117,6 +127,10 @@ pub(super) fn eval_arg_string_at(
     value_as_string(&value, &arg_path).map(Some)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(super) fn eval_expr_value_or_null_at(
     index: usize,
     args: &[Expr],

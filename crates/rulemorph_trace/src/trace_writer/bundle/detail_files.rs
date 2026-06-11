@@ -22,13 +22,13 @@ pub(super) fn ensure_detail_files_exist(
             return Err(anyhow::anyhow!("node chunk missing: {}", path.display()));
         }
     }
-    if let Some(path) = finalize_file {
-        if !path.exists() {
-            return Err(anyhow::anyhow!(
-                "finalize chunk missing: {}",
-                path.display()
-            ));
-        }
+    if let Some(path) = finalize_file
+        && !path.exists()
+    {
+        return Err(anyhow::anyhow!(
+            "finalize chunk missing: {}",
+            path.display()
+        ));
     }
 
     Ok(())

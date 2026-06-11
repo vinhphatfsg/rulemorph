@@ -9,7 +9,12 @@ use rulemorph::{Mapping, RuleFormat, parse_rule_file_with_format, validate_rule_
 use serde::Deserialize;
 use serde_json::Value as JsonValue;
 
-use super::{catch::CatchSpec, resolve_rule_path, rule_loader::LoadedRule, rule_ref_from_path};
+use super::{
+    catch::CatchSpec,
+    resolve_rule_path,
+    rule_loader::{LoadedRule, warn_legacy_v1_rule},
+    rule_ref_from_path,
+};
 
 mod retry;
 
@@ -119,6 +124,7 @@ pub(super) fn compile_network_rule(
                 .with_context(|| format!("failed to read {}", resolved.display()))?;
             let rule = parse_rule_file_with_format(&source, RuleFormat::from_path(&resolved))
                 .with_context(|| format!("failed to parse {}", resolved.display()))?;
+            warn_legacy_v1_rule(&resolved, &rule);
             validate_rule_file_with_source(&rule, &source)
                 .map_err(|err| anyhow!("failed to validate {}: {:?}", resolved.display(), err))?;
             let base_dir = resolved

@@ -49,24 +49,24 @@ pub(crate) fn normalize_rust_text(text: &str) -> String {
             continue;
         }
 
-        if ch == '/' {
-            if let Some(next) = chars.peek() {
-                if *next == '/' {
-                    out.push(ch);
-                    out.push(*next);
-                    chars.next();
-                    in_line_comment = true;
-                    last_newline = false;
-                    continue;
-                }
-                if *next == '*' {
-                    out.push(ch);
-                    out.push(*next);
-                    chars.next();
-                    in_block_comment = true;
-                    last_newline = false;
-                    continue;
-                }
+        if ch == '/'
+            && let Some(next) = chars.peek()
+        {
+            if *next == '/' {
+                out.push(ch);
+                out.push(*next);
+                chars.next();
+                in_line_comment = true;
+                last_newline = false;
+                continue;
+            }
+            if *next == '*' {
+                out.push(ch);
+                out.push(*next);
+                chars.next();
+                in_block_comment = true;
+                last_newline = false;
+                continue;
             }
         }
 
@@ -84,9 +84,7 @@ pub(crate) fn normalize_rust_text(text: &str) -> String {
                 last_newline = false;
             }
             '>' => {
-                if angle_depth > 0 {
-                    angle_depth -= 1;
-                }
+                angle_depth = angle_depth.saturating_sub(1);
                 out.push(ch);
                 last_newline = false;
             }
@@ -96,9 +94,7 @@ pub(crate) fn normalize_rust_text(text: &str) -> String {
                 last_newline = false;
             }
             ')' => {
-                if paren_depth > 0 {
-                    paren_depth -= 1;
-                }
+                paren_depth = paren_depth.saturating_sub(1);
                 out.push(ch);
                 last_newline = false;
             }
@@ -108,9 +104,7 @@ pub(crate) fn normalize_rust_text(text: &str) -> String {
                 last_newline = false;
             }
             ']' => {
-                if bracket_depth > 0 {
-                    bracket_depth -= 1;
-                }
+                bracket_depth = bracket_depth.saturating_sub(1);
                 out.push(ch);
                 last_newline = false;
             }

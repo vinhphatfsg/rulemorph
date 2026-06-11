@@ -6,9 +6,7 @@ pub(super) fn append_detail_reason(existing: Option<String>, reason: &str) -> Op
     match existing {
         None => Some(reason.to_string()),
         Some(current) => {
-            let already_present = current
-                .split(|ch| ch == ',' || ch == ';')
-                .any(|item| item.trim() == reason);
+            let already_present = current.split([',', ';']).any(|item| item.trim() == reason);
             if already_present {
                 Some(current)
             } else {
@@ -21,7 +19,7 @@ pub(super) fn append_detail_reason(existing: Option<String>, reason: &str) -> Op
 pub(super) fn initial_detail_reasons(reason: Option<&str>) -> Vec<String> {
     let mut detail_reason = Vec::new();
     if let Some(reason) = reason {
-        for item in reason.split(|ch| ch == ',' || ch == ';') {
+        for item in reason.split([',', ';']) {
             let trimmed = item.trim();
             if trimmed.is_empty() {
                 continue;

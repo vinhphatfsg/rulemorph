@@ -41,26 +41,28 @@ pub struct TenantRegistry {
     tenants: Mutex<HashMap<String, Arc<OnceCell<Arc<TenantResources>>>>>,
 }
 
+pub struct TenantRegistryConfig {
+    pub base_dir: PathBuf,
+    pub rules_dir: Option<PathBuf>,
+    pub api_mode: ApiMode,
+    pub ui_enabled: bool,
+    pub port: u16,
+    pub ssrf_allowlist: Vec<String>,
+    pub ssrf_allow_private: bool,
+    pub internal_api_key: Option<String>,
+}
+
 impl TenantRegistry {
-    pub fn new(
-        base_dir: PathBuf,
-        rules_dir: Option<PathBuf>,
-        api_mode: ApiMode,
-        ui_enabled: bool,
-        port: u16,
-        ssrf_allowlist: Vec<String>,
-        ssrf_allow_private: bool,
-        internal_api_key: Option<String>,
-    ) -> Self {
+    pub fn new(config: TenantRegistryConfig) -> Self {
         Self {
-            base_dir,
-            rules_dir,
-            api_mode,
-            ui_enabled,
-            port,
-            ssrf_allowlist,
-            ssrf_allow_private,
-            internal_api_key,
+            base_dir: config.base_dir,
+            rules_dir: config.rules_dir,
+            api_mode: config.api_mode,
+            ui_enabled: config.ui_enabled,
+            port: config.port,
+            ssrf_allowlist: config.ssrf_allowlist,
+            ssrf_allow_private: config.ssrf_allow_private,
+            internal_api_key: config.internal_api_key,
             tenants: Mutex::new(HashMap::new()),
         }
     }
@@ -135,20 +137,20 @@ impl TenantRegistry {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{ApiMode, TenantLayout, TenantRegistry};
+    use super::{ApiMode, TenantLayout, TenantRegistry, TenantRegistryConfig};
 
     #[test]
     fn tenant_registry_keeps_configured_relative_rules_dir_relative_to_cwd() {
-        let registry = TenantRegistry::new(
-            PathBuf::from("/tmp/rulemorph-data"),
-            Some(PathBuf::from("./assets/api_rules")),
-            ApiMode::Rules,
-            false,
-            8080,
-            Vec::new(),
-            false,
-            None,
-        );
+        let registry = TenantRegistry::new(TenantRegistryConfig {
+            base_dir: PathBuf::from("/tmp/rulemorph-data"),
+            rules_dir: Some(PathBuf::from("./assets/api_rules")),
+            api_mode: ApiMode::Rules,
+            ui_enabled: false,
+            port: 8080,
+            ssrf_allowlist: Vec::new(),
+            ssrf_allow_private: false,
+            internal_api_key: None,
+        });
         let layout = TenantLayout::new(PathBuf::from("/tmp/rulemorph-data"), "tenant-a")
             .expect("tenant layout");
 

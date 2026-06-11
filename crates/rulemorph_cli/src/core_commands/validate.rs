@@ -1,9 +1,9 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use rulemorph::validate_rule_file_with_source_and_base_dir;
+use rulemorph::{legacy_v1_rule_warning, validate_rule_file_with_source_and_base_dir};
 
-use super::super::emit::emit_validation_errors;
+use super::super::emit::{emit_transform_warnings, emit_validation_errors};
 use super::super::input::{load_rule, rule_base_dir};
 use super::super::{ErrorFormat, RulesFormatArg};
 
@@ -25,7 +25,12 @@ pub(crate) fn run_validate(args: ValidateArgs) -> i32 {
 
     let base_dir = rule_base_dir(&args.rules);
     match validate_rule_file_with_source_and_base_dir(&rule, &yaml, &base_dir) {
-        Ok(()) => 0,
+        Ok(()) => {
+            if let Some(warning) = legacy_v1_rule_warning(&rule) {
+                emit_transform_warnings(&[warning], args.error_format);
+            }
+            0
+        }
         Err(errors) => {
             emit_validation_errors(&errors, args.error_format);
             2

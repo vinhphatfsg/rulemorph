@@ -321,9 +321,9 @@ fn section_blocks(section: &Section, block_index: &BlockProjectionIndex<'_>) -> 
         .collect()
 }
 
-fn filter_projected_block_refs<'a>(
+fn filter_projected_block_refs(
     mut block: Map<String, JsonValue>,
-    projected_ids: &HashSet<&'a str>,
+    projected_ids: &HashSet<&str>,
 ) -> Map<String, JsonValue> {
     for field in ["item_ids", "child_block_ids"] {
         if let Some(ids) = block.get_mut(field).and_then(JsonValue::as_array_mut) {

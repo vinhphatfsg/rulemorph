@@ -27,16 +27,16 @@ impl CatchSpec {
             } else {
                 ""
             };
-            if !pattern.is_empty() {
-                if let Some(value) = map.get(pattern) {
-                    return Some(PathBuf::from(value));
-                }
-            }
-        }
-        if error.kind == EndpointErrorKind::Timeout {
-            if let Some(value) = map.get("timeout") {
+            if !pattern.is_empty()
+                && let Some(value) = map.get(pattern)
+            {
                 return Some(PathBuf::from(value));
             }
+        }
+        if error.kind == EndpointErrorKind::Timeout
+            && let Some(value) = map.get("timeout")
+        {
+            return Some(PathBuf::from(value));
         }
         map.get("default").map(PathBuf::from)
     }

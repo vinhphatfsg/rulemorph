@@ -2,7 +2,10 @@ use std::collections::HashSet;
 
 use super::*;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(super) fn eval_v2_keyed_collection_traced<'a>(
     op_step: &crate::v2_model::V2OpStep,
     pipe_value: V2EvalValue,

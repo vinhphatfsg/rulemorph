@@ -217,10 +217,10 @@ impl<'a> ValidationCtx<'a> {
     fn push(&mut self, code: ErrorCode, message: &str, path: impl Into<String>) {
         let path = path.into();
         let mut err = RuleError::new(code, message).with_path(path.clone());
-        if let Some(locator) = self.locator {
-            if let Some(location) = locator.location_for(&path) {
-                err = err.with_location(location.line, location.column);
-            }
+        if let Some(locator) = self.locator
+            && let Some(location) = locator.location_for(&path)
+        {
+            err = err.with_location(location.line, location.column);
         }
         self.errors.push(err);
     }

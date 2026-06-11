@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "operator eval helpers keep the shared v1 expression call shape until a wider evaluator context rewrite"
+)]
 pub(in crate::transform::operators) fn eval_json_merge(
     args: &[Expr],
     injected: Option<&EvalValue>,

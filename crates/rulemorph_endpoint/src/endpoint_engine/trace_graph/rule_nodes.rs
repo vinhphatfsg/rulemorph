@@ -8,7 +8,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use self::steps::build_step_nodes;
 use super::duration::sum_rule_trace_duration_us;
 use super::finalize::build_finalize_trace;
-use super::mapping_ops::build_mapping_ops_with_values;
+use super::mapping_ops::{MappingOpsInput, build_mapping_ops_with_values};
 
 mod branch_trace;
 mod step_outputs;
@@ -38,16 +38,16 @@ pub(in crate::endpoint_engine) fn build_rule_nodes_from_rule(
     } else {
         let started = Instant::now();
         let mut out = JsonValue::Object(JsonMap::new());
-        let children = build_mapping_ops_with_values(
-            Some(rule),
-            &rule.mappings,
+        let children = build_mapping_ops_with_values(MappingOpsInput {
+            rule: Some(rule),
+            mappings: &rule.mappings,
             record,
             context,
-            &mut out,
-            rule.version,
-            0,
-            Some(&trace_ctx),
-        );
+            out: &mut out,
+            rule_version: rule.version,
+            step_index: 0,
+            trace_ctx: Some(&trace_ctx),
+        });
         let duration_us = started.elapsed().as_micros() as u64;
         let mut node = json!({
             "id": "step-0",
@@ -58,10 +58,10 @@ pub(in crate::endpoint_engine) fn build_rule_nodes_from_rule(
             "output": out,
             "duration_us": duration_us,
         });
-        if !children.is_empty() {
-            if let Some(obj) = node.as_object_mut() {
-                obj.insert("children".to_string(), JsonValue::Array(children));
-            }
+        if !children.is_empty()
+            && let Some(obj) = node.as_object_mut()
+        {
+            obj.insert("children".to_string(), JsonValue::Array(children));
         }
         nodes.push(node);
     }

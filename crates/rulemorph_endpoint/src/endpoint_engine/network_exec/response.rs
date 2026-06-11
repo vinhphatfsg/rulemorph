@@ -13,10 +13,10 @@ pub(super) async fn read_network_response(
         return Err(EndpointError::http_status(status_u16));
     }
 
-    if let Some(length) = response.content_length() {
-        if length > max_response_bytes as u64 {
-            return Err(EndpointError::payload_too_large(max_response_bytes));
-        }
+    if let Some(length) = response.content_length()
+        && length > max_response_bytes as u64
+    {
+        return Err(EndpointError::payload_too_large(max_response_bytes));
     }
     let mut bytes: Vec<u8> = Vec::new();
     let mut total = 0usize;
