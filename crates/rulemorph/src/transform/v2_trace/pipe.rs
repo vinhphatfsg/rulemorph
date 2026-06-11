@@ -107,7 +107,6 @@ pub(in crate::transform) fn eval_v2_pipe_traced<'a>(
     Ok(current)
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(in crate::transform) fn eval_v2_expr_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,

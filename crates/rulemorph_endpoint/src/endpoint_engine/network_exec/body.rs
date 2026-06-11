@@ -6,7 +6,9 @@ use serde_json::{Value as JsonValue, json};
 
 use super::*;
 use crate::endpoint_engine::expr::{apply_mappings_via_rule, eval_expr_value};
-use crate::endpoint_engine::trace_graph::{build_rule_nodes_from_rule, build_rule_trace};
+use crate::endpoint_engine::trace_graph::{
+    RuleTraceInput, build_rule_nodes_from_rule, build_rule_trace,
+};
 
 impl EndpointEngine {
     pub(in crate::endpoint_engine) fn build_network_body(
@@ -66,18 +68,18 @@ impl EndpointEngine {
             .clone()
             .or_else(|| output.cloned())
             .unwrap_or(JsonValue::Null);
-        Some(build_rule_trace(
-            "normal",
+        Some(build_rule_trace(RuleTraceInput {
+            rule_type: "normal",
             name,
-            rule_ref,
-            body_rule.rule.version,
-            json!({}),
-            input.clone(),
-            output_value,
-            rule_trace.nodes,
-            rule_trace.finalize,
+            path: rule_ref,
+            version: body_rule.rule.version,
+            rule_source: json!({}),
+            input: input.clone(),
+            output: output_value,
+            nodes: rule_trace.nodes,
+            finalize: rule_trace.finalize,
             duration_us,
-            "ok",
-        ))
+            status: "ok",
+        }))
     }
 }

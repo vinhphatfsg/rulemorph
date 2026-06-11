@@ -62,16 +62,19 @@ pub(in crate::transform) fn transform_record_with_warnings_inner(
     limits: EvalLimits,
 ) -> Result<(Option<JsonValue>, Vec<TransformWarning>), TransformError> {
     let mut warnings = Vec::new();
-    let output = apply_rule_to_record(
+    if let Some(warning) = crate::legacy_v1_rule_warning(rule) {
+        warnings.push(warning);
+    }
+    let output = apply_rule_to_record(RuleRecordInput {
         rule,
         record,
         context,
-        &mut warnings,
+        warnings: &mut warnings,
         base_dir,
         branch_context,
         limits,
-        None,
-    )?;
+        compiled_rule: None,
+    })?;
     if output.is_none() {
         return Ok((None, warnings));
     }

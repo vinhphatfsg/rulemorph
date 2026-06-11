@@ -3,7 +3,6 @@ use crate::error::TransformError;
 use crate::v2_model::V2OpStep;
 use serde_json::Value as JsonValue;
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_string_op<'a>(
     op_step: &V2OpStep,
     pipe_value: EvalValue,

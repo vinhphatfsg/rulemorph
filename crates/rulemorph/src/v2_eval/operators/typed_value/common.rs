@@ -57,10 +57,10 @@ pub(super) fn decode_hint_contract(
     options: &CodecOptions,
     path: &[PathElem<'_>],
 ) -> Option<(HintType, bool)> {
-    if path.is_empty() {
-        if let Some(root_type) = options.root_type {
-            return Some((root_type, false));
-        }
+    if path.is_empty()
+        && let Some(root_type) = options.root_type
+    {
+        return Some((root_type, false));
     }
     best_hint(options, path).map(|hint| (hint.ty, hint.nullable))
 }

@@ -10,35 +10,51 @@ fn apply_mappings(
     compiled_rule: Option<&CompiledRule>,
 ) -> Result<JsonValue, TransformError> {
     let mut out = JsonValue::Object(Map::new());
-    apply_mappings_into(
+    apply_mappings_into(MappingsApplyInput {
         rule,
-        &rule.mappings,
+        mappings: &rule.mappings,
         record,
         context,
-        &mut out,
+        out: &mut out,
         warnings,
-        rule.version,
-        "mappings",
+        rule_version: rule.version,
+        base_path: "mappings",
         limits,
         base_v2_ctx,
         compiled_rule,
-    )?;
+    })?;
     Ok(out)
 }
 
-fn apply_mappings_into(
-    rule: &RuleFile,
-    mappings: &[Mapping],
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    out: &mut JsonValue,
-    warnings: &mut Vec<TransformWarning>,
+struct MappingsApplyInput<'a, 'ctx> {
+    rule: &'a RuleFile,
+    mappings: &'a [Mapping],
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    out: &'a mut JsonValue,
+    warnings: &'a mut Vec<TransformWarning>,
     rule_version: u8,
-    base_path: &str,
+    base_path: &'a str,
     limits: EvalLimits,
-    base_v2_ctx: &V2EvalContext<'_>,
-    compiled_rule: Option<&CompiledRule>,
-) -> Result<(), TransformError> {
+    base_v2_ctx: &'a V2EvalContext<'ctx>,
+    compiled_rule: Option<&'a CompiledRule>,
+}
+
+fn apply_mappings_into(input: MappingsApplyInput<'_, '_>) -> Result<(), TransformError> {
+    let MappingsApplyInput {
+        rule,
+        mappings,
+        record,
+        context,
+        out,
+        warnings,
+        rule_version,
+        base_path,
+        limits,
+        base_v2_ctx,
+        compiled_rule,
+    } = input;
+
     for (index, mapping) in mappings.iter().enumerate() {
         let compiled_mapping = compiled_rule.and_then(|compiled| compiled.mapping(index));
         let mapping_path_storage;
@@ -48,71 +64,86 @@ fn apply_mappings_into(
             mapping_path_storage = format!("{}[{}]", base_path, index);
             &mapping_path_storage
         };
-        if !eval_when(
+        if !eval_when(MappingWhenInput {
             mapping,
             record,
             context,
             out,
-            &mapping_path,
+            mapping_path,
             warnings,
             rule_version,
             limits,
-            base_v2_ctx,
-        ) {
+            ctx: base_v2_ctx,
+        }) {
             continue;
         }
-        let value = eval_mapping_with_v2_context(
+        let value = eval_mapping_with_v2_context(MappingEvalInput {
             rule,
             mapping,
             record,
             context,
             out,
-            &mapping_path,
-            rule_version,
+            mapping_path,
+            version: rule_version,
             limits,
-            base_v2_ctx,
+            base_v2_ctx: Some(base_v2_ctx),
             compiled_mapping,
-        )?;
+        })?;
         if let Some(value) = value {
             match compiled_mapping {
                 Some(compiled) => {
                     let tokens = compiled.target_tokens(mapping)?;
-                    set_path_tokens(out, tokens, value, &mapping_path)?;
+                    set_path_tokens(out, tokens, value, mapping_path)?;
                 }
-                None => set_path(out, &mapping.target, value, &mapping_path)?,
+                None => set_path(out, &mapping.target, value, mapping_path)?,
             }
         }
     }
     Ok(())
 }
 
+pub(super) struct RuleRecordInput<'a> {
+    pub(super) rule: &'a RuleFile,
+    pub(super) record: &'a JsonValue,
+    pub(super) context: Option<&'a JsonValue>,
+    pub(super) warnings: &'a mut Vec<TransformWarning>,
+    pub(super) base_dir: Option<&'a Path>,
+    pub(super) branch_context: &'a mut BranchContext,
+    pub(super) limits: EvalLimits,
+    pub(super) compiled_rule: Option<&'a CompiledRule>,
+}
+
 pub(super) fn apply_rule_to_record(
-    rule: &RuleFile,
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    warnings: &mut Vec<TransformWarning>,
-    base_dir: Option<&Path>,
-    branch_context: &mut BranchContext,
-    limits: EvalLimits,
-    compiled_rule: Option<&CompiledRule>,
+    input: RuleRecordInput<'_>,
 ) -> Result<Option<JsonValue>, TransformError> {
+    let RuleRecordInput {
+        rule,
+        record,
+        context,
+        warnings,
+        base_dir,
+        branch_context,
+        limits,
+        compiled_rule,
+    } = input;
+
     let base_v2_ctx = V2EvalContext::new()
         .with_limits(limits)
         .with_rule(rule)
         .with_shared_custom_op_counter();
     if let Some(steps) = &rule.steps {
-        return apply_steps(
+        return apply_steps(StepsApplyInput {
             rule,
             steps,
             record,
             context,
             warnings,
-            rule.version,
+            rule_version: rule.version,
             base_dir,
             branch_context,
             limits,
-            &base_v2_ctx,
-        );
+            base_v2_ctx: &base_v2_ctx,
+        });
     }
 
     if !eval_record_when(rule, record, context, warnings, limits, &base_v2_ctx) {
@@ -131,37 +162,52 @@ pub(super) fn apply_rule_to_record(
     Ok(Some(output))
 }
 
-fn apply_steps(
-    rule: &RuleFile,
-    steps: &[V2RuleStep],
-    record: &JsonValue,
-    context: Option<&JsonValue>,
-    warnings: &mut Vec<TransformWarning>,
+struct StepsApplyInput<'a, 'ctx> {
+    rule: &'a RuleFile,
+    steps: &'a [V2RuleStep],
+    record: &'a JsonValue,
+    context: Option<&'a JsonValue>,
+    warnings: &'a mut Vec<TransformWarning>,
     rule_version: u8,
-    base_dir: Option<&Path>,
-    branch_context: &mut BranchContext,
+    base_dir: Option<&'a Path>,
+    branch_context: &'a mut BranchContext,
     limits: EvalLimits,
-    base_v2_ctx: &V2EvalContext<'_>,
-) -> Result<Option<JsonValue>, TransformError> {
+    base_v2_ctx: &'a V2EvalContext<'ctx>,
+}
+
+fn apply_steps(input: StepsApplyInput<'_, '_>) -> Result<Option<JsonValue>, TransformError> {
+    let StepsApplyInput {
+        rule,
+        steps,
+        record,
+        context,
+        warnings,
+        rule_version,
+        base_dir,
+        branch_context,
+        limits,
+        base_v2_ctx,
+    } = input;
+
     let mut out = JsonValue::Object(Map::new());
 
     for (step_index, step) in steps.iter().enumerate() {
         let base_path = format!("steps[{}]", step_index);
 
         if let Some(mappings) = &step.mappings {
-            apply_mappings_into(
+            apply_mappings_into(MappingsApplyInput {
                 rule,
                 mappings,
                 record,
                 context,
-                &mut out,
+                out: &mut out,
                 warnings,
                 rule_version,
-                &format!("{}.mappings", base_path),
+                base_path: &format!("{}.mappings", base_path),
                 limits,
                 base_v2_ctx,
-                None,
-            )?;
+                compiled_rule: None,
+            })?;
             continue;
         }
 
@@ -296,16 +342,16 @@ mappings:
             ..EvalLimits::default()
         };
 
-        let err = apply_rule_to_record(
-            &rule,
-            &record,
-            None,
-            &mut warnings,
-            None,
-            &mut branch_context,
+        let err = apply_rule_to_record(RuleRecordInput {
+            rule: &rule,
+            record: &record,
+            context: None,
+            warnings: &mut warnings,
+            base_dir: None,
+            branch_context: &mut branch_context,
             limits,
-            None,
-        )
+            compiled_rule: None,
+        })
         .expect_err("four calls across two mappings exceed shared per-record limit");
 
         assert!(

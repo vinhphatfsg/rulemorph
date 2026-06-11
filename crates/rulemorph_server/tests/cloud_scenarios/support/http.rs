@@ -115,8 +115,8 @@ async fn read_json<T: DeserializeOwned>(response: Response) -> Result<T> {
 async fn wait_for_trace_id(app: &Router) -> String {
     for _ in 0..40 {
         let (status, list) = request_json(app, "/internal/traces".to_string()).await;
-        if status == StatusCode::OK {
-            if let Some(trace_id) = list
+        if status == StatusCode::OK
+            && let Some(trace_id) = list
                 .get("traces")
                 .and_then(|value| value.as_array())
                 .and_then(|values| values.first())
@@ -125,7 +125,6 @@ async fn wait_for_trace_id(app: &Router) -> String {
             {
                 return trace_id.to_string();
             }
-        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("trace not found after waiting");
@@ -142,15 +141,14 @@ async fn wait_for_tenant_trace_list(app: &Router, tenant_id: &str) -> Value {
             ],
         )
         .await;
-        if status == StatusCode::OK {
-            if list
+        if status == StatusCode::OK
+            && list
                 .get("traces")
                 .and_then(|value| value.as_array())
                 .is_some_and(|values| !values.is_empty())
             {
                 return list;
             }
-        }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     panic!("tenant trace not found after waiting: {tenant_id}");

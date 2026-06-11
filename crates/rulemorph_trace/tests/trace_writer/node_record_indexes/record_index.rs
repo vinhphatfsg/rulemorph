@@ -70,7 +70,7 @@ async fn write_trace_bundle_inherits_record_index_for_legacy_wrapper() -> anyhow
 
     Ok(())
 }
-include!("record_index/string.rs");
+include!("record_index_string.rs");
 
-include!("record_index/invalid_missing.rs");
-include!("record_index/duplicates.rs");
+include!("record_index_invalid_missing.rs");
+include!("record_index_duplicates.rs");

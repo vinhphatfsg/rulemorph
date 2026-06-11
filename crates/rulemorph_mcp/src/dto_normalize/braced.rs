@@ -44,22 +44,22 @@ fn normalize_braced_text(text: &str, split_commas_in_parens: bool) -> String {
             continue;
         }
 
-        if ch == '/' {
-            if let Some(next) = chars.peek() {
-                if *next == '/' {
-                    out.push(ch);
-                    out.push(*next);
-                    chars.next();
-                    in_line_comment = true;
-                    continue;
-                }
-                if *next == '*' {
-                    out.push(ch);
-                    out.push(*next);
-                    chars.next();
-                    in_block_comment = true;
-                    continue;
-                }
+        if ch == '/'
+            && let Some(next) = chars.peek()
+        {
+            if *next == '/' {
+                out.push(ch);
+                out.push(*next);
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if *next == '*' {
+                out.push(ch);
+                out.push(*next);
+                chars.next();
+                in_block_comment = true;
+                continue;
             }
         }
 
@@ -75,9 +75,7 @@ fn normalize_braced_text(text: &str, split_commas_in_parens: bool) -> String {
                 out.push(ch);
             }
             '>' => {
-                if angle_depth > 0 {
-                    angle_depth -= 1;
-                }
+                angle_depth = angle_depth.saturating_sub(1);
                 out.push(ch);
             }
             '(' => {
@@ -85,9 +83,7 @@ fn normalize_braced_text(text: &str, split_commas_in_parens: bool) -> String {
                 out.push(ch);
             }
             ')' => {
-                if paren_depth > 0 {
-                    paren_depth -= 1;
-                }
+                paren_depth = paren_depth.saturating_sub(1);
                 out.push(ch);
             }
             '[' => {
@@ -95,9 +91,7 @@ fn normalize_braced_text(text: &str, split_commas_in_parens: bool) -> String {
                 out.push(ch);
             }
             ']' => {
-                if bracket_depth > 0 {
-                    bracket_depth -= 1;
-                }
+                bracket_depth = bracket_depth.saturating_sub(1);
                 out.push(ch);
             }
             '{' => {

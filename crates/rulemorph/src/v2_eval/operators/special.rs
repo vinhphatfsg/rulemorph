@@ -41,19 +41,19 @@ pub(super) fn eval_coalesce_op<'a>(
     ctx: &V2EvalContext<'a>,
 ) -> Result<EvalValue, TransformError> {
     // If pipe value is present and not null, use it
-    if let EvalValue::Value(v) = &pipe_value {
-        if !v.is_null() {
-            return Ok(pipe_value);
-        }
+    if let EvalValue::Value(v) = &pipe_value
+        && !v.is_null()
+    {
+        return Ok(pipe_value);
     }
     // Otherwise, try args in order
     for (i, arg) in op_step.args.iter().enumerate() {
         let arg_path = format!("{}.args[{}]", path, i);
         let arg_value = eval_v2_expr(arg, record, context, out, &arg_path, ctx)?;
-        if let EvalValue::Value(v) = &arg_value {
-            if !v.is_null() {
-                return Ok(arg_value);
-            }
+        if let EvalValue::Value(v) = &arg_value
+            && !v.is_null()
+        {
+            return Ok(arg_value);
         }
     }
     Ok(EvalValue::Missing)

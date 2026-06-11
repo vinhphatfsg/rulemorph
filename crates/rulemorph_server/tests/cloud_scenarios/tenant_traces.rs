@@ -45,16 +45,16 @@ finalize:
         ]),
     });
 
-    let registry = Arc::new(TenantRegistry::new(
-        data_dir.clone(),
-        Some(rules_dir.clone()),
-        ApiMode::Rules,
-        true,
-        8080,
-        Vec::new(),
-        true,
-        Some("internal-key".to_string()),
-    ));
+    let registry = Arc::new(TenantRegistry::new(TenantRegistryConfig {
+        base_dir: data_dir.clone(),
+        rules_dir: Some(rules_dir.clone()),
+        api_mode: ApiMode::Rules,
+        ui_enabled: true,
+        port: 8080,
+        ssrf_allowlist: Vec::new(),
+        ssrf_allow_private: true,
+        internal_api_key: Some("internal-key".to_string()),
+    }));
     let default_resources = registry
         .get_or_init("default")
         .await

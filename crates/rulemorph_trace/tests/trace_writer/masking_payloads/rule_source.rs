@@ -1,4 +1,4 @@
-include!("rule_source/detail_levels.rs");
+include!("rule_source_detail_levels.rs");
 
 #[tokio::test]
 async fn write_trace_bundle_drops_oversized_rule_source() -> anyhow::Result<()> {

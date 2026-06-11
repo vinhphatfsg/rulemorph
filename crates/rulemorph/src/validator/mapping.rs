@@ -79,14 +79,14 @@ pub(super) fn validate_mappings_list(
             );
         }
 
-        if let Some(type_name) = &mapping.value_type {
-            if !is_valid_type_name(type_name) {
-                ctx.push(
-                    ErrorCode::InvalidTypeName,
-                    "type must be string|int|float|bool",
-                    format!("{}.type", base),
-                );
-            }
+        if let Some(type_name) = &mapping.value_type
+            && !is_valid_type_name(type_name)
+        {
+            ctx.push(
+                ErrorCode::InvalidTypeName,
+                "type must be string|int|float|bool",
+                format!("{}.type", base),
+            );
         }
 
         if let Some(source) = &mapping.source {
@@ -96,20 +96,19 @@ pub(super) fn validate_mappings_list(
         if let Some(expr) = &mapping.expr {
             let expr_path = format!("{}.expr", base);
             let mut v2_handled = false;
-            if is_v2_rule {
-                if let Some(raw_value) = expr_to_json_value(expr) {
-                    if is_v2_expr(&raw_value) {
-                        validate_v2_mapping_expr(
-                            &raw_value,
-                            &expr_path,
-                            produced_targets,
-                            &mapping.target,
-                            ctx,
-                            v2_targets_with_deps,
-                        );
-                        v2_handled = true;
-                    }
-                }
+            if is_v2_rule
+                && let Some(raw_value) = expr_to_json_value(expr)
+                && is_v2_expr(&raw_value)
+            {
+                validate_v2_mapping_expr(
+                    &raw_value,
+                    &expr_path,
+                    produced_targets,
+                    &mapping.target,
+                    ctx,
+                    v2_targets_with_deps,
+                );
+                v2_handled = true;
             }
             if !v2_handled {
                 validate_expr(expr, &expr_path, produced_targets, ctx, LocalScope::None);
@@ -119,13 +118,12 @@ pub(super) fn validate_mappings_list(
         if let Some(when) = &mapping.when {
             let when_path = format!("{}.when", base);
             let mut v2_handled = false;
-            if is_v2_rule {
-                if let Some(raw_value) = expr_to_json_value(when) {
-                    if is_v2_expr(&raw_value) {
-                        validate_v2_condition_expr(&raw_value, &when_path, produced_targets, ctx);
-                        v2_handled = true;
-                    }
-                }
+            if is_v2_rule
+                && let Some(raw_value) = expr_to_json_value(when)
+                && is_v2_expr(&raw_value)
+            {
+                validate_v2_condition_expr(&raw_value, &when_path, produced_targets, ctx);
+                v2_handled = true;
             }
             if !v2_handled {
                 validate_expr(when, &when_path, produced_targets, ctx, LocalScope::None);
@@ -148,11 +146,11 @@ pub(super) fn validate_record_when(rule: &RuleFile, ctx: &mut ValidationCtx<'_>)
 
     let base_path = "record_when";
     let produced_targets = HashSet::new();
-    if rule.version == 2 {
-        if let Some(raw_value) = expr_to_json_value(expr) {
-            validate_v2_condition_expr(&raw_value, base_path, &produced_targets, ctx);
-            return;
-        }
+    if rule.version == 2
+        && let Some(raw_value) = expr_to_json_value(expr)
+    {
+        validate_v2_condition_expr(&raw_value, base_path, &produced_targets, ctx);
+        return;
     }
 
     validate_expr(expr, base_path, &produced_targets, ctx, LocalScope::None);

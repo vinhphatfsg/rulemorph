@@ -6,7 +6,6 @@ use crate::v2_model::{V2ObjectFieldValue, V2ObjectStep, object_field_rule_path};
 
 use super::{EvalValue, V2EvalContext, eval_v2_expr};
 
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn eval_v2_object_step<'a>(
     object: &V2ObjectStep,
     pipe_value: EvalValue,

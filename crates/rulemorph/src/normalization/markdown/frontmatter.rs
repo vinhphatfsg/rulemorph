@@ -8,6 +8,9 @@ use crate::serde_guard::parse_yaml_value_strict_with_limits;
 
 use super::super::NormalizationOptions;
 
+type FrontmatterParser =
+    fn(&str, &NormalizationOptions) -> Result<Map<String, JsonValue>, TransformError>;
+
 pub(super) struct SplitMarkdown<'a> {
     pub(super) frontmatter: Map<String, JsonValue>,
     pub(super) body: &'a str,
@@ -51,7 +54,7 @@ pub(super) fn split_frontmatter<'a>(
 fn split_delimited_frontmatter<'a>(
     input: &'a str,
     delimiter: &str,
-    parser: fn(&str, &NormalizationOptions) -> Result<Map<String, JsonValue>, TransformError>,
+    parser: FrontmatterParser,
     options: &NormalizationOptions,
 ) -> Result<SplitMarkdown<'a>, TransformError> {
     let Some(rest) = strip_opening_delimiter(input, delimiter) else {
@@ -74,7 +77,7 @@ fn split_delimited_frontmatter<'a>(
 fn split_auto_delimited_frontmatter<'a>(
     input: &'a str,
     delimiter: &str,
-    parser: fn(&str, &NormalizationOptions) -> Result<Map<String, JsonValue>, TransformError>,
+    parser: FrontmatterParser,
     options: &NormalizationOptions,
 ) -> Result<Option<SplitMarkdown<'a>>, TransformError> {
     let Some(rest) = strip_opening_delimiter(input, delimiter) else {

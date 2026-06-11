@@ -68,19 +68,19 @@ pub(super) async fn purge_trace_metas(
 }
 
 pub(super) async fn resolve_trace_timestamp(meta: &TraceMeta, path: &Path) -> Option<SystemTime> {
-    if let Some(timestamp) = meta.timestamp.as_deref() {
-        if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-            let utc = parsed.with_timezone(&Utc);
-            let parsed_time = SystemTime::from(utc);
-            let now = SystemTime::now();
-            if parsed_time <= now {
-                return Some(parsed_time);
-            }
-            if let Ok(delta) = parsed_time.duration_since(now) {
-                if delta <= MAX_TRACE_FUTURE_SKEW {
-                    return Some(parsed_time);
-                }
-            }
+    if let Some(timestamp) = meta.timestamp.as_deref()
+        && let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp)
+    {
+        let utc = parsed.with_timezone(&Utc);
+        let parsed_time = SystemTime::from(utc);
+        let now = SystemTime::now();
+        if parsed_time <= now {
+            return Some(parsed_time);
+        }
+        if let Ok(delta) = parsed_time.duration_since(now)
+            && delta <= MAX_TRACE_FUTURE_SKEW
+        {
+            return Some(parsed_time);
         }
     }
     let metadata = tokio::fs::metadata(path).await.ok()?;

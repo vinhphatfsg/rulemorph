@@ -35,17 +35,17 @@ pub(super) fn externalize_trace_payloads_inner(
             }
         }
     }
-    if let Some(finalize) = obj.get_mut("finalize") {
-        if externalize_finalize_payloads(
+    if let Some(finalize) = obj.get_mut("finalize")
+        && externalize_finalize_payloads(
             finalize,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
     Ok(false)
 }
@@ -61,29 +61,29 @@ fn externalize_record_payloads(
     let Some(obj) = record.as_object_mut() else {
         return Ok(false);
     };
-    if let Some(input) = obj.get_mut("input") {
-        if maybe_externalize_payload(
+    if let Some(input) = obj.get_mut("input")
+        && maybe_externalize_payload(
             input,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
-    if let Some(output) = obj.get_mut("output") {
-        if maybe_externalize_payload(
+    if let Some(output) = obj.get_mut("output")
+        && maybe_externalize_payload(
             output,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
     if let Some(nodes_value) = obj.get_mut("nodes") {
         match nodes_value {
@@ -120,17 +120,17 @@ fn externalize_record_payloads(
             _ => {}
         }
     }
-    if let Some(child_trace) = obj.get_mut("child_trace") {
-        if externalize_trace_payloads_inner(
+    if let Some(child_trace) = obj.get_mut("child_trace")
+        && externalize_trace_payloads_inner(
             child_trace,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
     Ok(false)
 }
@@ -146,29 +146,29 @@ fn externalize_finalize_payloads(
     let Some(obj) = finalize.as_object_mut() else {
         return Ok(false);
     };
-    if let Some(input) = obj.get_mut("input") {
-        if maybe_externalize_payload(
+    if let Some(input) = obj.get_mut("input")
+        && maybe_externalize_payload(
             input,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
-    if let Some(output) = obj.get_mut("output") {
-        if maybe_externalize_payload(
+    if let Some(output) = obj.get_mut("output")
+        && maybe_externalize_payload(
             output,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
     if let Some(nodes) = obj.get_mut("nodes").and_then(|value| value.as_array_mut()) {
         for node in nodes {

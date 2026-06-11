@@ -15,6 +15,7 @@ pub(crate) fn literal_string(expr: &Expr) -> Option<&str> {
 /// - Literal(Array) -> direct array
 /// - Ref where ref_path starts with @ -> single element array
 /// - Chain where first element starts with @ -> convert to array
+///
 /// Returns None if it looks like v1 expression and should be handled by v1 eval.
 pub(crate) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
     match expr {
@@ -43,12 +44,12 @@ pub(crate) fn expr_to_json_for_v2_pipe(expr: &Expr) -> Option<JsonValue> {
         Expr::Chain(chain) => {
             // Check if first element is a v2 start value. serde may decode
             // single-element arrays like ["$"] through ExprChain.
-            if let Some(first) = chain.chain.first() {
-                if expr_starts_v2_pipe(first) {
-                    // Convert chain to array
-                    let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
-                    return Some(JsonValue::Array(arr));
-                }
+            if let Some(first) = chain.chain.first()
+                && expr_starts_v2_pipe(first)
+            {
+                // Convert chain to array
+                let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+                return Some(JsonValue::Array(arr));
             }
             None
         }
@@ -69,11 +70,11 @@ pub(crate) fn expr_to_json_for_v2_condition(expr: &Expr) -> Option<JsonValue> {
             Some(JsonValue::String(ref_expr.ref_path.clone()))
         }
         Expr::Chain(chain) => {
-            if let Some(first) = chain.chain.first() {
-                if expr_starts_v2_pipe(first) {
-                    let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
-                    return Some(JsonValue::Array(arr));
-                }
+            if let Some(first) = chain.chain.first()
+                && expr_starts_v2_pipe(first)
+            {
+                let arr: Vec<JsonValue> = chain.chain.iter().map(expr_to_json_value).collect();
+                return Some(JsonValue::Array(arr));
             }
             None
         }

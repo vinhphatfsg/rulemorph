@@ -164,9 +164,8 @@ fn is_path_prefix(prefix: &[PathToken], tokens: &[PathToken]) -> bool {
 }
 
 fn parse_ref(value: &str) -> Option<(Namespace, &str)> {
-    let mut parts = value.splitn(2, '.');
-    let namespace = parts.next()?;
-    let path = parts.next()?;
+    let (namespace, path) = value.split_once('.')?;
+
     if path.is_empty() {
         return None;
     }

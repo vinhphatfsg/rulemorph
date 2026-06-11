@@ -55,13 +55,13 @@ impl BranchContext {
             })?),
             (None, None) => None,
         };
-        if let Some(root) = &allowed_root {
-            if !canonical.starts_with(root) {
-                return Err(TransformError::new(
-                    TransformErrorKind::InvalidInput,
-                    "branch rule path must stay under the base directory",
-                ));
-            }
+        if let Some(root) = &allowed_root
+            && !canonical.starts_with(root)
+        {
+            return Err(TransformError::new(
+                TransformErrorKind::InvalidInput,
+                "branch rule path must stay under the base directory",
+            ));
         }
         if self.stack.iter().any(|path| path == &canonical) {
             return Err(TransformError::new(

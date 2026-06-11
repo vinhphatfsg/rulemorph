@@ -1,3 +1,5 @@
+use crate::endpoint_engine::trace_emit::EndpointTraceInput;
+
 #[test]
 fn endpoint_error_trace_uses_rule_ref_for_path() {
     let temp = tempfile::tempdir().expect("tempdir");
@@ -78,16 +80,16 @@ endpoints:
     )
     .expect("load engine");
 
-    let trace = engine.build_trace(
-        &Method::GET,
-        "/api/test",
-        json!({"input": true}),
-        json!({"output": false}),
-        "error".to_string(),
-        Some(json!({"message": "boom"})),
-        Vec::new(),
-        12,
-    );
+    let trace = engine.build_trace(EndpointTraceInput {
+        method: &Method::GET,
+        path: "/api/test",
+        input: json!({"input": true}),
+        output: json!({"output": false}),
+        status: "error".to_string(),
+        error: Some(json!({"message": "boom"})),
+        nodes: Vec::new(),
+        duration_us: 12,
+    });
     let status = trace.get("status").and_then(|value| value.as_str());
     assert_eq!(status, Some("error"));
 }

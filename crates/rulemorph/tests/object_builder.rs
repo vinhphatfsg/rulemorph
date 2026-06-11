@@ -135,8 +135,10 @@ mappings:
           b: 2
 "#;
     let rule = parse_rule_file(field_limit).expect("parse rule");
-    let mut options = NormalizationOptions::default();
-    options.max_object_fields = 1;
+    let options = NormalizationOptions {
+        max_object_fields: 1,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("field limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -154,8 +156,10 @@ mappings:
           long_key: 1
 "#;
     let rule = parse_rule_file(key_limit).expect("parse rule");
-    let mut options = NormalizationOptions::default();
-    options.max_object_key_bytes = 4;
+    let options = NormalizationOptions {
+        max_object_key_bytes: 4,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("key limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -174,8 +178,10 @@ mappings:
           b: 2
 "#;
     let rule = parse_rule_file(generated_limit).expect("parse rule");
-    let mut options = NormalizationOptions::default();
-    options.max_generated_json_nodes = 2;
+    let options = NormalizationOptions {
+        max_generated_json_nodes: 2,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("node limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -196,8 +202,10 @@ mappings:
                 leaf: 1
 "#;
     let rule = parse_rule_file(depth_limit).expect("parse rule");
-    let mut options = NormalizationOptions::default();
-    options.max_object_depth = 1;
+    let options = NormalizationOptions {
+        max_object_depth: 1,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("depth limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -215,8 +223,10 @@ mappings:
           payload: "abcdef"
 "#;
     let rule = parse_rule_file(byte_limit).expect("parse rule");
-    let mut options = NormalizationOptions::default();
-    options.max_generated_json_bytes = 8;
+    let options = NormalizationOptions {
+        max_generated_json_bytes: 8,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("byte limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -245,13 +255,17 @@ mappings:
 
     validate_rule_file(&rule).expect("static validation should not hard-code runtime key limit");
 
-    let mut options = NormalizationOptions::default();
-    options.max_object_key_bytes = long_key.len();
+    let options = NormalizationOptions {
+        max_object_key_bytes: long_key.len(),
+        ..Default::default()
+    };
     transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect("raised runtime key limit should allow long static key");
 
-    let mut options = NormalizationOptions::default();
-    options.max_object_key_bytes = 4;
+    let options = NormalizationOptions {
+        max_object_key_bytes: 4,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("runtime key limit should remain fail-closed");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -274,8 +288,10 @@ mappings:
               too_long: 1
 "#;
     let rule = parse_rule_file(nested_key_limit).expect("parse nested key rule");
-    let mut options = NormalizationOptions::default();
-    options.max_object_key_bytes = 4;
+    let options = NormalizationOptions {
+        max_object_key_bytes: 4,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("nested generated key should respect key limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -296,8 +312,10 @@ mappings:
               b: 2
 "#;
     let rule = parse_rule_file(nested_field_limit).expect("parse nested field rule");
-    let mut options = NormalizationOptions::default();
-    options.max_object_fields = 1;
+    let options = NormalizationOptions {
+        max_object_fields: 1,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("nested generated object should respect field limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -319,8 +337,10 @@ mappings:
             value: [1, 2]
 "#;
     let rule = parse_rule_file(yaml).expect("parse nested array rule");
-    let mut options = NormalizationOptions::default();
-    options.max_array_len = 1;
+    let options = NormalizationOptions {
+        max_array_len: 1,
+        ..Default::default()
+    };
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("nested generated array should respect array item limit");
     assert_eq!(err.kind, TransformErrorKind::ExprError);
@@ -343,8 +363,10 @@ mappings:
             payload: "@item"
 "#;
     let rule = parse_rule_file(yaml).expect("parse map object rule");
-    let mut options = NormalizationOptions::default();
-    options.max_generated_json_bytes = 30;
+    let options = NormalizationOptions {
+        max_generated_json_bytes: 30,
+        ..Default::default()
+    };
     let err = transform_input_with_options(
         &rule,
         InputData::Text(r#"{"items":["abcdef","abcdef"]}"#),
@@ -435,8 +457,10 @@ mappings:
           should_not_eval: ["not-a-number", int]
 "#;
     let rule = parse_rule_file(yaml).expect("parse rule");
-    let mut options = NormalizationOptions::default();
-    options.max_generated_json_bytes = 8;
+    let options = NormalizationOptions {
+        max_generated_json_bytes: 8,
+        ..Default::default()
+    };
 
     let err = transform_input_with_options(&rule, InputData::Text("{}"), None, &options)
         .expect_err("byte limit should fail before later field evaluation");

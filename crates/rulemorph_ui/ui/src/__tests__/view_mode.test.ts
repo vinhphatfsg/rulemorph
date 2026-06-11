@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { shouldResetInitialCenter } from "../view_mode";
+import { shouldResetInitialCenter } from "../app/view_mode";
 
 describe("shouldResetInitialCenter", () => {
   it("resets when returning from api to trace", () => {

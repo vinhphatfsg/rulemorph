@@ -103,24 +103,27 @@ fn preflight_validate_input_with_warnings_inner(
     options: &NormalizationOptions,
 ) -> Result<Vec<TransformWarning>, TransformError> {
     let mut warnings = Vec::new();
+    if let Some(warning) = crate::legacy_v1_rule_warning(rule) {
+        warnings.push(warning);
+    }
     let limits = EvalLimits::from(options);
     if rule.finalize.is_some() {
         let mut output_records = Vec::new();
-        let mut records = input_records_iter_with_options(rule, input, options)?;
-        while let Some(record) = records.next() {
+        let records = input_records_iter_with_options(rule, input, options)?;
+        for record in records {
             let record = record?;
             let mut record_warnings = Vec::new();
             let mut branch_context = BranchContext::default();
-            if let Some(output) = apply_rule_to_record(
+            if let Some(output) = apply_rule_to_record(RuleRecordInput {
                 rule,
-                &record,
+                record: &record,
                 context,
-                &mut record_warnings,
+                warnings: &mut record_warnings,
                 base_dir,
-                &mut branch_context,
+                branch_context: &mut branch_context,
                 limits,
-                None,
-            )? {
+                compiled_rule: None,
+            })? {
                 output_records.push(output);
             }
             warnings.extend(record_warnings);
@@ -138,8 +141,10 @@ fn preflight_validate_input_with_warnings_inner(
         let stream = match base_dir {
             Some(base_dir) => transform_stream_input_with_base_dir_and_options(
                 rule, input, context, base_dir, options,
-            )?,
-            None => transform_stream_input_with_options(rule, input, context, options)?,
+            )?
+            .suppress_legacy_v1_warning(),
+            None => transform_stream_input_with_options(rule, input, context, options)?
+                .suppress_legacy_v1_warning(),
         };
         for item in stream {
             let item = item?;

@@ -49,11 +49,13 @@ pub(super) fn parse_python_types(
             }
         }
 
-        if let Some(indent_level) = current_indent {
-            if !class_line && indent <= indent_level && !line.is_empty() {
-                current = None;
-                current_indent = None;
-            }
+        if let Some(indent_level) = current_indent
+            && !class_line
+            && indent <= indent_level
+            && !line.is_empty()
+        {
+            current = None;
+            current_indent = None;
         }
 
         let Some(current_name) = current.clone() else {
@@ -114,14 +116,13 @@ pub(super) fn parse_python_types(
                     type_token = first;
                 }
             }
-        } else if type_token.contains('|') {
-            if let Some(first) = type_token
+        } else if type_token.contains('|')
+            && let Some(first) = type_token
                 .split('|')
                 .map(|item| item.trim())
                 .find(|item| !item.contains("None"))
-            {
-                type_token = first;
-            }
+        {
+            type_token = first;
         }
 
         let type_token = type_token.trim_start_matches("typing.");

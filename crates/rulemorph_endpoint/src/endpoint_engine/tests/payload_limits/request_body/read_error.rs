@@ -25,8 +25,7 @@ endpoints:
     .expect("load engine");
 
     let stream = stream::once(async {
-        Err::<axum::body::Bytes, std::io::Error>(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        Err::<axum::body::Bytes, std::io::Error>(std::io::Error::other(
             "boom",
         ))
     });

@@ -52,6 +52,7 @@ mod branch;
 mod compiled;
 mod custom_ops;
 mod finalize;
+mod legacy;
 mod mapping;
 mod operators;
 mod path_ops;
@@ -60,8 +61,6 @@ mod record_trace;
 mod records;
 mod stream;
 mod types;
-mod v1_expr;
-mod v1_trace;
 mod v2_trace;
 
 use self::api::transform_record_with_warnings_inner;
@@ -72,9 +71,15 @@ pub(crate) use self::custom_ops::{
     eval_custom_op_step_traced, parse_known_custom_call_literal_start,
 };
 use self::finalize::{apply_finalize, apply_finalize_traced, sort_key_from_value};
+use self::legacy::{
+    MappingWhenInput, TracedMappingWhenInput, canonical_ref_path, eval_chain, eval_expr,
+    eval_expr_traced, eval_record_when, eval_record_when_traced, eval_ref, eval_when,
+    eval_when_expr_traced_with_v2_context, eval_when_expr_with_v2_context, eval_when_traced,
+    resolve_source,
+};
 use self::mapping::{
-    eval_mapping_traced, eval_mapping_traced_with_source_redaction_hint,
-    eval_mapping_with_v2_context,
+    MappingEvalInput, MappingTraceInput, eval_mapping_traced,
+    eval_mapping_traced_with_source_redaction_hint, eval_mapping_with_v2_context,
 };
 pub(crate) use self::operators::eval_op;
 use self::operators::{
@@ -86,19 +91,13 @@ use self::path_ops::{
     parse_ref, parse_source, remove_path, set_path, set_path_object_only, set_path_tokens,
     set_path_with_indexes,
 };
-use self::record::apply_rule_to_record;
-use self::record_trace::apply_rule_to_record_traced;
+use self::record::{RuleRecordInput, apply_rule_to_record};
+use self::record_trace::{TracedRuleRecordInput, apply_rule_to_record_traced};
 use self::types::Namespace;
 pub(crate) use self::types::{
     EvalItem, EvalLimits, EvalLocals, EvalValue, GeneratedArrayBudget, GeneratedObjectBudget,
     extend_generated_array_items, push_generated_array_item,
 };
-use self::v1_expr::{
-    canonical_ref_path, eval_chain, eval_expr, eval_record_when, eval_record_when_traced, eval_ref,
-    eval_when, eval_when_expr_traced_with_v2_context, eval_when_expr_with_v2_context,
-    eval_when_traced, resolve_source,
-};
-use self::v1_trace::eval_expr_traced;
 use self::v2_trace::{
     eval_v2_condition_traced, eval_v2_expr_traced, eval_v2_pipe_traced, sort_key_to_json,
 };

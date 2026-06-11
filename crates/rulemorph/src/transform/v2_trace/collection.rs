@@ -34,7 +34,6 @@ pub(super) fn v2_eval_array_from_value(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_v2_expr_or_null_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,
@@ -50,7 +49,6 @@ fn eval_v2_expr_or_null_traced<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn eval_v2_predicate_expr_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,
@@ -72,7 +70,6 @@ fn eval_v2_predicate_expr_traced<'a>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 pub(super) fn eval_v2_key_expr_string_traced<'a>(
     expr: &crate::v2_model::V2Expr,
     record: &'a JsonValue,
@@ -139,7 +136,10 @@ pub(super) fn finish_v2_collection_item(
     event.finish_with_v2_eval_output(collector, output, Some("@item"));
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(in crate::transform) fn eval_v2_collection_op_traced<'a>(
     op_step: &crate::v2_model::V2OpStep,
     pipe_value: V2EvalValue,

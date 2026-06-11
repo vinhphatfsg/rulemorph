@@ -8,11 +8,11 @@ pub(crate) use read::{read_allowed_bytes, read_allowed_file, read_allowed_to_str
 pub(crate) fn write_allowed_output(path: &str, output: &str) -> Result<(), String> {
     let path = Path::new(path);
     ensure_allowed_output_path(path)?;
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create output directory: {}", err))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create output directory: {}", err))?;
     }
     fs::write(path, output.as_bytes()).map_err(|err| format!("failed to write output: {}", err))
 }

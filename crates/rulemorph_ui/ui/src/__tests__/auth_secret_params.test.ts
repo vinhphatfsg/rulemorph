@@ -3,7 +3,7 @@ import {
   __resetAuthCachesForTest,
   getApiKey,
   getInternalKey,
-} from "../App";
+} from "../app/App";
 
 function setUrl(url: string) {
   installLocalStorageMock();

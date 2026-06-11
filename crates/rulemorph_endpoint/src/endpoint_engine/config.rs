@@ -7,9 +7,10 @@ use super::host::{is_loopback_host, normalize_internal_host};
 const DEFAULT_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
 const DEFAULT_MAX_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ApiMode {
     UiOnly,
+    #[default]
     Rules,
 }
 
@@ -17,12 +18,6 @@ pub enum ApiMode {
 pub struct RequestContext {
     pub tenant_id: Option<String>,
     pub internal_api_key: Option<String>,
-}
-
-impl Default for ApiMode {
-    fn default() -> Self {
-        ApiMode::Rules
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -55,16 +50,16 @@ impl EngineConfig {
             internal_auth_path_allowlist: Vec::new(),
             internal_api_key: None,
         };
-        if let Ok(parsed) = url::Url::parse(&config.internal_base) {
-            if let Some(host) = parsed.host_str() {
-                config.ssrf_private_allowlist.push(host.to_string());
-                if is_loopback_host(&normalize_internal_host(host)) {
-                    config
-                        .ssrf_private_allowlist
-                        .extend(["localhost", "127.0.0.1", "::1"].map(str::to_string));
-                    config.ssrf_private_allowlist.sort();
-                    config.ssrf_private_allowlist.dedup();
-                }
+        if let Ok(parsed) = url::Url::parse(&config.internal_base)
+            && let Some(host) = parsed.host_str()
+        {
+            config.ssrf_private_allowlist.push(host.to_string());
+            if is_loopback_host(&normalize_internal_host(host)) {
+                config
+                    .ssrf_private_allowlist
+                    .extend(["localhost", "127.0.0.1", "::1"].map(str::to_string));
+                config.ssrf_private_allowlist.sort();
+                config.ssrf_private_allowlist.dedup();
             }
         }
         config

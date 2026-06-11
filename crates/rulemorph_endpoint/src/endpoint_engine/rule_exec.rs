@@ -10,7 +10,7 @@ use super::error::EndpointError;
 use super::rule_loader::{RuleKind, load_rule_kind, yaml_source_to_json};
 use super::rule_ref::{resolve_rule_path, rule_display_name, rule_ref_from_path};
 use super::trace_graph::{
-    build_network_nodes_with_timing, build_rule_nodes_from_rule, build_rule_trace,
+    RuleTraceInput, build_network_nodes_with_timing, build_rule_nodes_from_rule, build_rule_trace,
 };
 
 pub(super) struct RuleExecution {
@@ -76,19 +76,19 @@ impl EndpointEngine {
                             .pre_finalize_output
                             .clone()
                             .unwrap_or(JsonValue::Null);
-                        let child_trace = build_rule_trace(
-                            "normal",
-                            rule_display_name(&resolved),
-                            rule_ref,
-                            rule.rule.version,
+                        let child_trace = build_rule_trace(RuleTraceInput {
+                            rule_type: "normal",
+                            name: rule_display_name(&resolved),
+                            path: rule_ref,
+                            version: rule.rule.version,
                             rule_source,
-                            input.clone(),
-                            record_output,
-                            rule_trace.nodes,
-                            rule_trace.finalize,
+                            input: input.clone(),
+                            output: record_output,
+                            nodes: rule_trace.nodes,
+                            finalize: rule_trace.finalize,
                             duration_us,
-                            "error",
-                        );
+                            status: "error",
+                        });
                         return Err(RuleExecutionError::new(
                             EndpointError::invalid(format!(
                                 "record excluded by rule: {}",
@@ -103,19 +103,19 @@ impl EndpointEngine {
                             .pre_finalize_output
                             .clone()
                             .unwrap_or(JsonValue::Null);
-                        let child_trace = build_rule_trace(
-                            "normal",
-                            rule_display_name(&resolved),
-                            rule_ref,
-                            rule.rule.version,
+                        let child_trace = build_rule_trace(RuleTraceInput {
+                            rule_type: "normal",
+                            name: rule_display_name(&resolved),
+                            path: rule_ref,
+                            version: rule.rule.version,
                             rule_source,
-                            input.clone(),
-                            record_output,
-                            rule_trace.nodes,
-                            rule_trace.finalize,
+                            input: input.clone(),
+                            output: record_output,
+                            nodes: rule_trace.nodes,
+                            finalize: rule_trace.finalize,
                             duration_us,
-                            "error",
-                        );
+                            status: "error",
+                        });
                         return Err(RuleExecutionError::new(
                             EndpointError::from_transform(err).with_path(resolved.clone()),
                         )
@@ -126,19 +126,19 @@ impl EndpointEngine {
                     .pre_finalize_output
                     .clone()
                     .unwrap_or_else(|| output.clone());
-                let child_trace = build_rule_trace(
-                    "normal",
-                    rule_display_name(&resolved),
-                    rule_ref,
-                    rule.rule.version,
+                let child_trace = build_rule_trace(RuleTraceInput {
+                    rule_type: "normal",
+                    name: rule_display_name(&resolved),
+                    path: rule_ref,
+                    version: rule.rule.version,
                     rule_source,
-                    input.clone(),
-                    record_output,
-                    rule_trace.nodes,
-                    rule_trace.finalize,
+                    input: input.clone(),
+                    output: record_output,
+                    nodes: rule_trace.nodes,
+                    finalize: rule_trace.finalize,
                     duration_us,
-                    "ok",
-                );
+                    status: "ok",
+                });
                 Ok(RuleExecution {
                     output,
                     child_trace: Some(child_trace),
@@ -150,19 +150,19 @@ impl EndpointEngine {
                     .await
                     .map_err(|err| RuleExecutionError::new(err.with_path(resolved.clone())))?;
                 let nodes = build_network_nodes_with_timing(&rule, &execution);
-                let child_trace = build_rule_trace(
-                    "network",
-                    rule_display_name(&resolved),
-                    rule_ref,
-                    2,
+                let child_trace = build_rule_trace(RuleTraceInput {
+                    rule_type: "network",
+                    name: rule_display_name(&resolved),
+                    path: rule_ref,
+                    version: 2,
                     rule_source,
-                    input.clone(),
-                    execution.output.clone(),
+                    input: input.clone(),
+                    output: execution.output.clone(),
                     nodes,
-                    None,
-                    execution.total_us,
-                    "ok",
-                );
+                    finalize: None,
+                    duration_us: execution.total_us,
+                    status: "ok",
+                });
                 Ok(RuleExecution {
                     output: execution.output,
                     child_trace: Some(child_trace),

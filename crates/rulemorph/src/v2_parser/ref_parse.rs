@@ -16,10 +16,10 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
         }
         return Some(V2Ref::Pipe(path.to_string()));
     }
-    if let Some(path) = s.strip_prefix('$') {
-        if path.starts_with('[') {
-            return Some(V2Ref::Pipe(path.to_string()));
-        }
+    if let Some(path) = s.strip_prefix('$')
+        && path.starts_with('[')
+    {
+        return Some(V2Ref::Pipe(path.to_string()));
     }
 
     if !s.starts_with('@') {
@@ -62,10 +62,10 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
         }
         return Some(V2Ref::Item(path.to_string()));
     }
-    if let Some(path) = rest.strip_prefix("item") {
-        if path.is_empty() {
-            return Some(V2Ref::Item(String::new()));
-        }
+    if let Some(path) = rest.strip_prefix("item")
+        && path.is_empty()
+    {
+        return Some(V2Ref::Item(String::new()));
     }
     if let Some(path) = rest.strip_prefix("acc.") {
         if path.is_empty() {
@@ -73,10 +73,10 @@ pub fn parse_v2_ref(s: &str) -> Option<V2Ref> {
         }
         return Some(V2Ref::Acc(path.to_string()));
     }
-    if let Some(path) = rest.strip_prefix("acc") {
-        if path.is_empty() {
-            return Some(V2Ref::Acc(String::new()));
-        }
+    if let Some(path) = rest.strip_prefix("acc")
+        && path.is_empty()
+    {
+        return Some(V2Ref::Acc(String::new()));
     }
 
     // Otherwise, it's a local variable reference

@@ -66,7 +66,7 @@ pub(crate) fn generate_rules_from_base_input_schema() -> Value {
             "rules_text": {
                 "type": "string",
                 "description": "Inline YAML or JSON rules content. Mutually exclusive with rules_path.",
-                "examples": ["version: 1\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
+                "examples": ["version: 2\ninput:\n  format: json\n  json: {}\nmappings:\n  - target: \"id\"\n    source: \"id\""]
             },
             "rules_format": rules_format_schema(),
             "input_path": {

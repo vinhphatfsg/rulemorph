@@ -38,16 +38,16 @@ finalize:
     )
     .expect("write ok.yaml");
 
-    let registry = TenantRegistry::new(
-        data_dir,
-        None,
-        ApiMode::Rules,
-        true,
-        8080,
-        Vec::new(),
-        true,
-        Some("internal-key".to_string()),
-    );
+    let registry = TenantRegistry::new(TenantRegistryConfig {
+        base_dir: data_dir,
+        rules_dir: None,
+        api_mode: ApiMode::Rules,
+        ui_enabled: true,
+        port: 8080,
+        ssrf_allowlist: Vec::new(),
+        ssrf_allow_private: true,
+        internal_api_key: Some("internal-key".to_string()),
+    });
     let resources = registry.get_or_init("default").await?;
     let engine = resources.api_engine.as_ref().expect("api engine");
 

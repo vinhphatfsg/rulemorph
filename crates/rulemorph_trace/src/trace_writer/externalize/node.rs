@@ -29,47 +29,46 @@ where
     let Some(obj) = node.as_object_mut() else {
         return Ok(false);
     };
-    if let Some(input) = obj.get_mut("input") {
-        if maybe_externalize_payload(
+    if let Some(input) = obj.get_mut("input")
+        && maybe_externalize_payload(
             input,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
-    if let Some(output) = obj.get_mut("output") {
-        if maybe_externalize_payload(
+    if let Some(output) = obj.get_mut("output")
+        && maybe_externalize_payload(
             output,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
-    if let Some(args) = obj.get_mut("args") {
-        if maybe_externalize_payload(args, trace_dir, options, seen, budget_remaining, blob_files)?
-        {
-            return Ok(true);
-        }
+    if let Some(args) = obj.get_mut("args")
+        && maybe_externalize_payload(args, trace_dir, options, seen, budget_remaining, blob_files)?
+    {
+        return Ok(true);
     }
-    if let Some(pipe_value) = obj.get_mut("pipe_value") {
-        if maybe_externalize_payload(
+    if let Some(pipe_value) = obj.get_mut("pipe_value")
+        && maybe_externalize_payload(
             pipe_value,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
     if let Some(pipe_steps) = obj
         .get_mut("pipe_steps")
@@ -77,29 +76,29 @@ where
     {
         for step in pipe_steps {
             if let Some(step_obj) = step.as_object_mut() {
-                if let Some(input) = step_obj.get_mut("input") {
-                    if maybe_externalize_payload(
+                if let Some(input) = step_obj.get_mut("input")
+                    && maybe_externalize_payload(
                         input,
                         trace_dir,
                         options,
                         seen,
                         budget_remaining,
                         blob_files,
-                    )? {
-                        return Ok(true);
-                    }
+                    )?
+                {
+                    return Ok(true);
                 }
-                if let Some(output) = step_obj.get_mut("output") {
-                    if maybe_externalize_payload(
+                if let Some(output) = step_obj.get_mut("output")
+                    && maybe_externalize_payload(
                         output,
                         trace_dir,
                         options,
                         seen,
                         budget_remaining,
                         blob_files,
-                    )? {
-                        return Ok(true);
-                    }
+                    )?
+                {
+                    return Ok(true);
                 }
             }
         }
@@ -122,17 +121,17 @@ where
             }
         }
     }
-    if let Some(child_trace) = obj.get_mut("child_trace") {
-        if externalize_child_trace(
+    if let Some(child_trace) = obj.get_mut("child_trace")
+        && externalize_child_trace(
             child_trace,
             trace_dir,
             options,
             seen,
             budget_remaining,
             blob_files,
-        )? {
-            return Ok(true);
-        }
+        )?
+    {
+        return Ok(true);
     }
     Ok(false)
 }

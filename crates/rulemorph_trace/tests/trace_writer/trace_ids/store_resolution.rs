@@ -30,8 +30,8 @@ async fn write_trace_bundle_disambiguates_legacy_trace_id_collisions() -> anyhow
     Ok(())
 }
 
-include!("store_resolution/manifest.rs");
+include!("store_resolution_manifest.rs");
 
-include!("store_resolution/legacy.rs");
+include!("store_resolution_legacy.rs");
 
-include!("store_resolution/collisions.rs");
+include!("store_resolution_collisions.rs");

@@ -43,6 +43,12 @@ mappings:
         json!([
             {
                 "type": "warning",
+                "code": "legacy_v1_rule_deprecated",
+                "message": "version: 1 rule files are deprecated; migrate the rule file to version: 2",
+                "path": "version"
+            },
+            {
+                "type": "warning",
                 "code": "date_format_missing_input_format",
                 "message": "date_format without input_format relies on heuristic parsing; consider providing input_format.",
                 "path": "mappings[0].expr.args"

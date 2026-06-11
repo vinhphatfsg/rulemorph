@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use notify::{RecursiveMode, Watcher};
@@ -24,10 +24,10 @@ pub fn start_trace_watcher(data_dir: PathBuf, sender: broadcast::Sender<()>) {
             }
         };
 
-        if let Some(watcher_ref) = watcher.as_mut() {
-            if let Err(err) = watcher_ref.watch(&traces_dir, RecursiveMode::Recursive) {
-                warn!("trace watcher disabled: {}", err);
-            }
+        if let Some(watcher_ref) = watcher.as_mut()
+            && let Err(err) = watcher_ref.watch(&traces_dir, RecursiveMode::Recursive)
+        {
+            warn!("trace watcher disabled: {}", err);
         }
 
         let mut last_mtime = latest_mtime(&traces_dir).await;
@@ -58,8 +58,8 @@ fn is_newer(current: Option<SystemTime>, previous: Option<SystemTime>) -> bool {
     }
 }
 
-async fn latest_mtime(dir: &PathBuf) -> Option<SystemTime> {
-    let dir = dir.clone();
+async fn latest_mtime(dir: &Path) -> Option<SystemTime> {
+    let dir = dir.to_path_buf();
     tokio::task::spawn_blocking(move || {
         let mut latest: Option<SystemTime> = None;
         for entry in WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {

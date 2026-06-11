@@ -45,8 +45,8 @@ fn strip_modifiers(mut rest: &str) -> &str {
     loop {
         let mut stripped = None;
         for modifier in modifiers {
-            if rest.starts_with(modifier) {
-                let after = rest[modifier.len()..].trim_start();
+            if let Some(after) = rest.strip_prefix(modifier) {
+                let after = after.trim_start();
                 if after.len() != rest.len() {
                     stripped = Some(after);
                     break;

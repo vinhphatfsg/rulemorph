@@ -180,10 +180,10 @@ pub(in crate::transform) fn remove_path(root: &mut JsonValue, tokens: &[PathToke
             }
         }
         PathToken::Index(index) => {
-            if let JsonValue::Array(items) = root {
-                if let Some(next) = items.get_mut(*index) {
-                    remove_path(next, rest);
-                }
+            if let JsonValue::Array(items) = root
+                && let Some(next) = items.get_mut(*index)
+            {
+                remove_path(next, rest);
             }
         }
     }

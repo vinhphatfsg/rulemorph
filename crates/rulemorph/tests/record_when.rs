@@ -18,6 +18,7 @@ mappings:
     let (output, warnings) = transform_with_warnings(&rule, input, None).expect("transform failed");
 
     assert_eq!(output, json!([]));
-    assert_eq!(warnings.len(), 1);
-    assert_eq!(warnings[0].path.as_deref(), Some("record_when"));
+    assert_eq!(warnings.len(), 2);
+    assert_eq!(warnings[0].path.as_deref(), Some("version"));
+    assert_eq!(warnings[1].path.as_deref(), Some("record_when"));
 }

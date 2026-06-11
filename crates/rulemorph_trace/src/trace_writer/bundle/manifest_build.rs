@@ -5,19 +5,34 @@ use super::super::options::TraceWriteOptions;
 use super::TRACE_SCHEMA_VERSION;
 use crate::trace_schema::{TraceChunkRef, TraceDetailRef, TraceManifest, TraceMasking};
 
+pub(super) struct TraceManifestInput {
+    pub(super) trace_id: String,
+    pub(super) timestamp: String,
+    pub(super) detail_layout: String,
+    pub(super) detail_status: String,
+    pub(super) detail_reason: Vec<String>,
+    pub(super) record_chunks: Vec<TraceChunkRef>,
+    pub(super) node_chunks: Vec<TraceChunkRef>,
+    pub(super) finalize_chunk: Option<TraceChunkRef>,
+    pub(super) masking: Option<TraceMasking>,
+}
+
 pub(super) fn build_trace_manifest(
     trace: &JsonValue,
-    trace_id: String,
-    timestamp: String,
-    detail_layout: String,
-    detail_status: String,
-    mut detail_reason: Vec<String>,
-    record_chunks: Vec<TraceChunkRef>,
-    node_chunks: Vec<TraceChunkRef>,
-    finalize_chunk: Option<TraceChunkRef>,
-    masking: Option<TraceMasking>,
+    input: TraceManifestInput,
     options: &TraceWriteOptions,
 ) -> (TraceManifest, TraceDetailRef) {
+    let TraceManifestInput {
+        trace_id,
+        timestamp,
+        detail_layout,
+        detail_status,
+        mut detail_reason,
+        record_chunks,
+        node_chunks,
+        finalize_chunk,
+        masking,
+    } = input;
     let summary = trace.get("summary").map(parse_summary);
     let rule = trace.get("rule").map(parse_rule_meta);
     let status = trace

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use rulemorph::{InputFormat, RuleFile, RuleFormat, parse_rule_file_with_format};
 
@@ -29,7 +29,7 @@ pub(crate) fn load_rule(
     Ok((rule, yaml))
 }
 
-fn detect_rule_format(path: &PathBuf, override_format: Option<RulesFormatArg>) -> RuleFormat {
+fn detect_rule_format(path: &Path, override_format: Option<RulesFormatArg>) -> RuleFormat {
     match override_format {
         Some(RulesFormatArg::Yaml) => RuleFormat::Yaml,
         Some(RulesFormatArg::Json) => RuleFormat::Json,
@@ -37,10 +37,10 @@ fn detect_rule_format(path: &PathBuf, override_format: Option<RulesFormatArg>) -
     }
 }
 
-pub(crate) fn rule_base_dir(path: &PathBuf) -> PathBuf {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+pub(crate) fn rule_base_dir(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
     if parent.as_os_str().is_empty() {
-        std::path::Path::new(".").to_path_buf()
+        Path::new(".").to_path_buf()
     } else {
         parent.to_path_buf()
     }

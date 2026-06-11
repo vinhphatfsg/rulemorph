@@ -33,12 +33,11 @@ impl RateLimiter {
         let now = Instant::now();
         if state.len() >= self.max_entries {
             state.retain(|_, entry| now.duration_since(entry.last_seen) <= self.ttl);
-            if state.len() >= self.max_entries {
-                if let Some((oldest_key, _)) = state.iter().min_by_key(|(_, entry)| entry.last_seen)
-                {
-                    let oldest_key = oldest_key.clone();
-                    state.remove(&oldest_key);
-                }
+            if state.len() >= self.max_entries
+                && let Some((oldest_key, _)) = state.iter().min_by_key(|(_, entry)| entry.last_seen)
+            {
+                let oldest_key = oldest_key.clone();
+                state.remove(&oldest_key);
             }
         }
 

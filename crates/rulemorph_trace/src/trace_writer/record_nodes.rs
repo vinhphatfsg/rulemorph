@@ -8,11 +8,11 @@ pub(super) fn normalize_inline_records(records: &[JsonValue]) -> Vec<JsonValue> 
         .iter()
         .map(|record| {
             let mut record_clone = record.clone();
-            if let Some(obj) = record_clone.as_object_mut() {
-                if let Some(nodes_value) = obj.get("nodes").cloned() {
-                    let normalized = normalize_nodes_value(&nodes_value);
-                    obj.insert("nodes".to_string(), JsonValue::Array(normalized));
-                }
+            if let Some(obj) = record_clone.as_object_mut()
+                && let Some(nodes_value) = obj.get("nodes").cloned()
+            {
+                let normalized = normalize_nodes_value(&nodes_value);
+                obj.insert("nodes".to_string(), JsonValue::Array(normalized));
             }
             record_clone
         })

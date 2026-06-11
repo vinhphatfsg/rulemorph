@@ -199,7 +199,7 @@ pub(in crate::v2_eval::operators::typed_value) fn validate_firestore_reference(
         || parts[2] != "databases"
         || parts[3].is_empty()
         || parts[4] != "documents"
-        || document_path_len % 2 != 0
+        || !document_path_len.is_multiple_of(2)
         || parts[5..].iter().any(|part| part.is_empty())
     {
         return Err(expr_error("malformed Firestore referenceValue", path));
@@ -219,7 +219,7 @@ pub(in crate::v2_eval::operators::typed_value) fn decode_base64(
     path: &str,
 ) -> Result<Vec<u8>, TransformError> {
     let bytes = value.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(expr_error(
             "base64 value must be padded to a multiple of 4",
             path,
@@ -265,9 +265,9 @@ pub(in crate::v2_eval::operators::typed_value) fn decode_base64(
     Ok(out)
 }
 
-pub(in crate::v2_eval::operators::typed_value) fn exactly_one_known_mongo_wrapper<'a>(
-    map: &'a JsonMap<String, JsonValue>,
-) -> Option<(&'a str, &'a JsonValue)> {
+pub(in crate::v2_eval::operators::typed_value) fn exactly_one_known_mongo_wrapper(
+    map: &JsonMap<String, JsonValue>,
+) -> Option<(&str, &JsonValue)> {
     if map.len() == 1 {
         let (key, value) = map.iter().next().unwrap();
         if is_known_mongo_wrapper_key(key) {

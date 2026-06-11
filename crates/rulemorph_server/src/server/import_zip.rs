@@ -50,10 +50,10 @@ pub(super) fn extract_zip(path: &Path, dest: &Path) -> Result<(), String> {
                 }
             }
         }
-        if let Some(mode) = entry.unix_mode() {
-            if (mode & 0o170000) == 0o120000 {
-                return Err(format!("zip entry is symlink: {}", name));
-            }
+        if let Some(mode) = entry.unix_mode()
+            && (mode & 0o170000) == 0o120000
+        {
+            return Err(format!("zip entry is symlink: {}", name));
         }
         let out_path = dest.join(entry_path);
         if entry.is_dir() {

@@ -3,7 +3,7 @@ import {
   __getTenantIdFromQueryOrStorageForTest,
   __resetAuthCachesForTest,
   resolveTenantId,
-} from "../App";
+} from "../app/App";
 
 function installLocalStorageMock(initial: Record<string, string> = {}) {
   const store = new Map<string, string>(Object.entries(initial));

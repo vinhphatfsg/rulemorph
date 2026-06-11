@@ -40,10 +40,10 @@ pub(super) fn build_input_from_parts(
         "headers": headers,
     });
 
-    if let Some(body) = body {
-        if let JsonValue::Object(ref mut map) = input {
-            map.insert("body".to_string(), body);
-        }
+    if let Some(body) = body
+        && let JsonValue::Object(ref mut map) = input
+    {
+        map.insert("body".to_string(), body);
     }
 
     input

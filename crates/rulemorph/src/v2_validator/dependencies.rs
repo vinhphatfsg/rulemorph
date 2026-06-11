@@ -25,13 +25,10 @@ fn collect_out_refs_recursive(expr: &V2Expr, refs: &mut HashSet<String>) {
 }
 
 fn collect_out_refs_from_start(start: &V2Start, refs: &mut HashSet<String>) {
-    match start {
-        V2Start::Ref(V2Ref::Out(path)) => {
-            if !path.is_empty() {
-                refs.insert(path.clone());
-            }
-        }
-        _ => {}
+    if let V2Start::Ref(V2Ref::Out(path)) = start
+        && !path.is_empty()
+    {
+        refs.insert(path.clone());
     }
 }
 

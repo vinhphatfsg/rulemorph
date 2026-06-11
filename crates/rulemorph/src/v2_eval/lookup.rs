@@ -105,7 +105,7 @@ fn lookup_array<'a>(
             TransformErrorKind::ExprError,
             format!("{} 'from' must be an array", op_name),
         )
-        .with_path(&format!("{}.from", path))),
+        .with_path(format!("{}.from", path))),
     }
 }
 

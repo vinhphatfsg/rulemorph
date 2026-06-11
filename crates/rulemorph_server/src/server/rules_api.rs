@@ -76,10 +76,10 @@ async fn handle_rules_api_core(
     if let Some(context) = request.extensions().get::<TenantContext>() {
         request_context.tenant_id = Some(context.tenant_id.clone());
     }
-    if engine.allows_internal_auth() {
-        if let Some(internal_api_key) = state.internal_api_key.clone() {
-            request_context.internal_api_key = Some(internal_api_key);
-        }
+    if engine.allows_internal_auth()
+        && let Some(internal_api_key) = state.internal_api_key.clone()
+    {
+        request_context.internal_api_key = Some(internal_api_key);
     }
     request.extensions_mut().insert(request_context);
     match engine.handle_request(request).await {

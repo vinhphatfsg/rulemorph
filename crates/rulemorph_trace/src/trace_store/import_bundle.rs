@@ -84,10 +84,8 @@ pub(super) fn import_bundle_files(
                 ensure_import_target_parent(&dest, &dest_canon, &target, &mut created_dirs)?;
                 copy_file_create_new(&source, &target, &dest_canon)?;
                 copied_paths.push(target.clone());
-                if is_trace_meta_candidate(&target) {
-                    if parse_trace_meta(&target).is_ok() {
-                        imported_paths.push(target);
-                    }
+                if is_trace_meta_candidate(&target) && parse_trace_meta(&target).is_ok() {
+                    imported_paths.push(target);
                 }
             }
         }
@@ -163,24 +161,24 @@ pub(super) fn import_bundle_files(
 
 fn rollback_import(copied_paths: &[PathBuf], created_dirs: &BTreeSet<PathBuf>) {
     for path in copied_paths.iter().rev() {
-        if let Err(err) = std::fs::remove_file(path) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!(
-                    "failed to rollback imported file {}: {}",
-                    path.display(),
-                    err
-                );
-            }
+        if let Err(err) = std::fs::remove_file(path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!(
+                "failed to rollback imported file {}: {}",
+                path.display(),
+                err
+            );
         }
     }
 
     let mut dirs: Vec<&PathBuf> = created_dirs.iter().collect();
     dirs.sort_by_key(|path| Reverse(path.components().count()));
     for dir in dirs {
-        if let Err(err) = std::fs::remove_dir(dir) {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                warn!("failed to rollback import dir {}: {}", dir.display(), err);
-            }
+        if let Err(err) = std::fs::remove_dir(dir)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!("failed to rollback import dir {}: {}", dir.display(), err);
         }
     }
 }

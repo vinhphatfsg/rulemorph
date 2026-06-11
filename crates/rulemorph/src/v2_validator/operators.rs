@@ -93,17 +93,17 @@ fn validate_op_args_count(op: &str, count: usize, base_path: &str, ctx: &mut V2V
             ),
             base_path,
         );
-    } else if let Some(max_val) = max {
-        if count > max_val {
-            ctx.push_error(
-                ErrorCode::InvalidArgs,
-                format!(
-                    "{} accepts at most {} argument(s), got {}",
-                    op, max_val, count
-                ),
-                base_path,
-            );
-        }
+    } else if let Some(max_val) = max
+        && count > max_val
+    {
+        ctx.push_error(
+            ErrorCode::InvalidArgs,
+            format!(
+                "{} accepts at most {} argument(s), got {}",
+                op, max_val, count
+            ),
+            base_path,
+        );
     }
 }
 

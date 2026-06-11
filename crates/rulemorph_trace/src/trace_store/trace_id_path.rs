@@ -15,12 +15,11 @@ fn fnv1a_hash(bytes: &[u8]) -> u64 {
 
 fn relative_trace_path(path: &Path) -> Option<PathBuf> {
     for ancestor in path.ancestors() {
-        if ancestor.file_name().and_then(|name| name.to_str()) == Some("traces") {
-            if let Ok(rel) = path.strip_prefix(ancestor) {
-                if !rel.as_os_str().is_empty() {
-                    return Some(rel.to_path_buf());
-                }
-            }
+        if ancestor.file_name().and_then(|name| name.to_str()) == Some("traces")
+            && let Ok(rel) = path.strip_prefix(ancestor)
+            && !rel.as_os_str().is_empty()
+        {
+            return Some(rel.to_path_buf());
         }
     }
     None

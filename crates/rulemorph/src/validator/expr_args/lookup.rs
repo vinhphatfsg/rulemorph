@@ -20,13 +20,13 @@ pub(in crate::validator) fn validate_lookup_args_chain(
     }
 
     let key_path = literal_string(&expr_op.args[0]);
-    if key_path.is_none() || key_path == Some("") {
+    if key_path.is_none_or(str::is_empty) {
         ctx.push(
             ErrorCode::InvalidArgs,
             "lookup key_path must be a non-empty string literal",
             format!("{}.args[0]", base_path),
         );
-    } else if parse_path(key_path.unwrap()).is_err() {
+    } else if key_path.is_some_and(|path| parse_path(path).is_err()) {
         ctx.push(
             ErrorCode::InvalidArgs,
             "lookup key_path is invalid",
@@ -36,13 +36,13 @@ pub(in crate::validator) fn validate_lookup_args_chain(
 
     if len == 3 {
         let output_path = literal_string(&expr_op.args[2]);
-        if output_path.is_none() || output_path == Some("") {
+        if output_path.is_none_or(str::is_empty) {
             ctx.push(
                 ErrorCode::InvalidArgs,
                 "lookup output_path must be a non-empty string literal",
                 format!("{}.args[2]", base_path),
             );
-        } else if parse_path(output_path.unwrap()).is_err() {
+        } else if output_path.is_some_and(|path| parse_path(path).is_err()) {
             ctx.push(
                 ErrorCode::InvalidArgs,
                 "lookup output_path is invalid",
@@ -68,13 +68,13 @@ pub(in crate::validator) fn validate_lookup_args(
     }
 
     let key_path = literal_string(&expr_op.args[1]);
-    if key_path.is_none() || key_path == Some("") {
+    if key_path.is_none_or(str::is_empty) {
         ctx.push(
             ErrorCode::InvalidArgs,
             "lookup key_path must be a non-empty string literal",
             format!("{}.args[1]", base_path),
         );
-    } else if parse_path(key_path.unwrap()).is_err() {
+    } else if key_path.is_some_and(|path| parse_path(path).is_err()) {
         ctx.push(
             ErrorCode::InvalidArgs,
             "lookup key_path is invalid",
@@ -84,13 +84,13 @@ pub(in crate::validator) fn validate_lookup_args(
 
     if len == 4 {
         let output_path = literal_string(&expr_op.args[3]);
-        if output_path.is_none() || output_path == Some("") {
+        if output_path.is_none_or(str::is_empty) {
             ctx.push(
                 ErrorCode::InvalidArgs,
                 "lookup output_path must be a non-empty string literal",
                 format!("{}.args[3]", base_path),
             );
-        } else if parse_path(output_path.unwrap()).is_err() {
+        } else if output_path.is_some_and(|path| parse_path(path).is_err()) {
             ctx.push(
                 ErrorCode::InvalidArgs,
                 "lookup output_path is invalid",

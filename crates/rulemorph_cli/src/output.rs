@@ -1,13 +1,13 @@
 use std::fs;
 use std::io::{self, BufWriter, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub(super) fn serialize_json_output(value: &serde_json::Value) -> Result<String, ()> {
     match serde_json::to_string(value) {
         Ok(text) => Ok(text),
         Err(err) => {
             eprintln!("failed to serialize output JSON: {}", err);
-            return Err(());
+            Err(())
         }
     }
 }
@@ -66,14 +66,13 @@ pub(super) fn write_json_line(
     Ok(())
 }
 
-fn ensure_parent_dir(path: &PathBuf) -> Result<(), ()> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(err) = fs::create_dir_all(parent) {
-                eprintln!("failed to create output directory: {}", err);
-                return Err(());
-            }
-        }
+fn ensure_parent_dir(path: &Path) -> Result<(), ()> {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(err) = fs::create_dir_all(parent)
+    {
+        eprintln!("failed to create output directory: {}", err);
+        return Err(());
     }
 
     Ok(())

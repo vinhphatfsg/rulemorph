@@ -10,7 +10,7 @@ pub(super) fn parse_go_struct_fields(body: &str, dto_type: &mut DtoType) {
         if ch == '/' {
             chars.next();
             if matches!(chars.peek(), Some('/')) {
-                while let Some(next) = chars.next() {
+                for next in chars.by_ref() {
                     if next == '\n' {
                         break;
                     }

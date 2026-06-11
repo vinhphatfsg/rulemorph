@@ -1,7 +1,10 @@
 use super::*;
 use crate::model::V2Branch;
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "existing eval and trace helpers retain their shared call shape until a wider context rewrite"
+)]
 pub(super) fn apply_branch_step_traced(
     branch: &V2Branch,
     record: &JsonValue,

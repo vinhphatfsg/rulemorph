@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import serverTraceResponses from "../__fixtures__/server_trace_responses.json";
 import {
   mergeNodesIntoRecords,
   normalizeInlineNodeValue,
@@ -9,10 +10,23 @@ import {
   normalizeTracePayload,
   parseNumericIndex,
   type TracePayload,
+  type TraceNodeChunkEntry,
   type TraceRecord
-} from "../trace_payload";
+} from "../api/trace_payload";
 
 describe("trace payload helpers", () => {
+  it("keeps the server trace fixture assignable to UI response types", () => {
+    const response: {
+      trace: TracePayload;
+      records: TraceRecord[];
+      nodes: TraceNodeChunkEntry[];
+      finalize: NonNullable<TracePayload["finalize"]>;
+    } = serverTraceResponses;
+
+    expect(response.trace.trace_id).toBe("demo-001");
+    expect(response.nodes[0].node.children?.[0].args).toEqual({ amount: 1 });
+  });
+
   it("parses finite numeric record indexes", () => {
     expect(parseNumericIndex(2)).toBe(2);
     expect(parseNumericIndex("3")).toBe(3);

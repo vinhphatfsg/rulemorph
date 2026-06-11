@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { persistDurationUnit, resolveStoredDurationUnit } from "../app_runtime";
+import { persistDurationUnit, resolveStoredDurationUnit } from "../app/app_runtime";
 
 function storageWithValue(value: string | null): Storage {
   return {

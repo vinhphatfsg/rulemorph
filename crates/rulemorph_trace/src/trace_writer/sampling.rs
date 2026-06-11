@@ -79,10 +79,9 @@ fn trace_is_error(trace: &JsonValue, records: &[JsonValue]) -> bool {
         .get("summary")
         .and_then(|summary| summary.get("record_failed"))
         .and_then(|value| value.as_u64())
+        && failed > 0
     {
-        if failed > 0 {
-            return true;
-        }
+        return true;
     }
     records.iter().any(|record| {
         record

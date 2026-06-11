@@ -18,7 +18,9 @@
 - `crates/rulemorph`: core library。rule parsing、validation、normalization、transform engine。
 - `crates/rulemorph_cli`: CLI binary。
 - `crates/rulemorph_mcp`: MCP stdio server。tools、resources、prompts。
+- `crates/rulemorph_endpoint`: endpoint/network rule engine。HTTP endpoint 変換、network request 実行、trace graph 生成。
 - `crates/rulemorph_server`: local/API server と UI 配信。
+- `crates/rulemorph_trace`: trace bundle の永続化、import/export、storage/query helper。
 - `crates/rulemorph_ui`: embedded-ui 用 frontend assets。
 - `docs/`: rule specs、design docs、roadmap、agent guides。
 - `crates/*/tests`: crate ごとの integration tests と fixtures。
@@ -66,6 +68,7 @@
 | --- | --- |
 | trace / transform / v2_eval / branch / finalize | `docs/agent-guides/semantic-trace.md` |
 | input normalization / parser / records_path / resource limits / input docs | `docs/agent-guides/input-normalization-security.md` |
+| endpoint / network rule / rules API / tenant dispatch / ZIP import | `docs/agent-guides/endpoint.md` |
 | release workflow / packaging / version bump / embedded-ui / UI assets | `docs/agent-guides/release-and-ui.md` |
 | MCP server / tools / resources / prompts / stdio tests | `docs/agent-guides/mcp.md` |
 

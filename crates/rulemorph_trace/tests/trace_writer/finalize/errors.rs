@@ -18,14 +18,12 @@ async fn write_trace_bundle_skips_finalize_unsupported_format() -> anyhow::Resul
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
-    {
-        if let Some(finalize) = detail.get_mut("finalize").and_then(|v| v.as_object_mut()) {
+        && let Some(finalize) = detail.get_mut("finalize").and_then(|v| v.as_object_mut()) {
             finalize.insert(
                 "format".to_string(),
                 serde_json::Value::String("ndjson".to_string()),
             );
         }
-    }
     fs::write(&manifest_path, serde_json::to_string(&manifest_value)?)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
@@ -58,14 +56,12 @@ async fn write_trace_bundle_skips_finalize_unsupported_compression() -> anyhow::
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
-    {
-        if let Some(finalize) = detail.get_mut("finalize").and_then(|v| v.as_object_mut()) {
+        && let Some(finalize) = detail.get_mut("finalize").and_then(|v| v.as_object_mut()) {
             finalize.insert(
                 "compression".to_string(),
                 serde_json::Value::String("gzip".to_string()),
             );
         }
-    }
     fs::write(&manifest_path, serde_json::to_string(&manifest_value)?)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;
@@ -131,14 +127,12 @@ async fn write_trace_bundle_skips_finalize_zstd_decode_failure() -> anyhow::Resu
     if let Some(detail) = manifest_value
         .get_mut("detail")
         .and_then(|v| v.as_object_mut())
-    {
-        if let Some(finalize) = detail.get_mut("finalize").and_then(|v| v.as_object_mut()) {
+        && let Some(finalize) = detail.get_mut("finalize").and_then(|v| v.as_object_mut()) {
             finalize.insert(
                 "compression".to_string(),
                 serde_json::Value::String("zstd".to_string()),
             );
         }
-    }
     fs::write(&manifest_path, serde_json::to_string(&manifest_value)?)?;
 
     let store = TraceStore::new(temp_dir.clone()).await?;

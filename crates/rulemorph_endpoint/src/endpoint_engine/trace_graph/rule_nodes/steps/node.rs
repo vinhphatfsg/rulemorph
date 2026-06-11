@@ -30,19 +30,35 @@ pub(super) fn step_kind(rule: &RuleFile, step_index: usize) -> &'static str {
     }
 }
 
-pub(super) fn build_step_node(
-    step_index: usize,
-    kind: &'static str,
-    label: String,
-    status: String,
-    input: JsonValue,
-    output: Option<JsonValue>,
-    duration_us: u64,
-    error: Option<JsonValue>,
-    child_trace: Option<JsonValue>,
-    meta: JsonMap<String, JsonValue>,
-    children: Vec<JsonValue>,
-) -> JsonValue {
+pub(super) struct StepNodeInput {
+    pub(super) step_index: usize,
+    pub(super) kind: &'static str,
+    pub(super) label: String,
+    pub(super) status: String,
+    pub(super) input: JsonValue,
+    pub(super) output: Option<JsonValue>,
+    pub(super) duration_us: u64,
+    pub(super) error: Option<JsonValue>,
+    pub(super) child_trace: Option<JsonValue>,
+    pub(super) meta: JsonMap<String, JsonValue>,
+    pub(super) children: Vec<JsonValue>,
+}
+
+pub(super) fn build_step_node(input: StepNodeInput) -> JsonValue {
+    let StepNodeInput {
+        step_index,
+        kind,
+        label,
+        status,
+        input,
+        output,
+        duration_us,
+        error,
+        child_trace,
+        meta,
+        children,
+    } = input;
+
     let mut node = json!({
         "id": format!("step-{}", step_index),
         "kind": kind,

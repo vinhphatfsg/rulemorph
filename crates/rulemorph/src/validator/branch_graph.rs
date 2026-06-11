@@ -181,7 +181,7 @@ fn prefix_branch_child_errors(errors: Vec<RuleError>, target_path: &str) -> Vec<
 enum BranchRuleLoad {
     Cached(OutputContract),
     Loaded {
-        rule: RuleFile,
+        rule: Box<RuleFile>,
         yaml: String,
         child_base_dir: PathBuf,
         cache_key: BranchContractCacheKey,
@@ -281,7 +281,7 @@ fn load_branch_rule(
         }
     };
     Some(BranchRuleLoad::Loaded {
-        rule,
+        rule: Box::new(rule),
         yaml,
         child_base_dir,
         cache_key,

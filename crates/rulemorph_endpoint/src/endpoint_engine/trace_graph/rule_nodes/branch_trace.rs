@@ -5,7 +5,7 @@ use serde_json::{Map as JsonMap, Value as JsonValue, json};
 
 use super::build_rule_nodes_from_rule;
 use crate::endpoint_engine::rule_loader::{RuleKind, load_rule_kind, yaml_source_to_json};
-use crate::endpoint_engine::trace_graph::build_rule_trace;
+use crate::endpoint_engine::trace_graph::{RuleTraceInput, build_rule_trace};
 use crate::endpoint_engine::{
     empty_object, resolve_rule_path, rule_display_name, rule_ref_from_path, rule_ref_from_rule,
 };
@@ -72,19 +72,19 @@ pub(super) fn apply_branch_trace_meta(
                 .pre_finalize_output
                 .clone()
                 .unwrap_or_else(|| child_output.clone());
-            return Some(build_rule_trace(
-                "normal",
-                rule_display_name(&resolved),
-                rule_ref_from_path(base_dir, &resolved),
-                loaded.rule.version,
+            return Some(build_rule_trace(RuleTraceInput {
+                rule_type: "normal",
+                name: rule_display_name(&resolved),
+                path: rule_ref_from_path(base_dir, &resolved),
+                version: loaded.rule.version,
                 rule_source,
-                step_input.clone(),
-                trace_output,
-                child_rule_trace.nodes,
-                child_rule_trace.finalize,
-                child_duration_us,
-                "ok",
-            ));
+                input: step_input.clone(),
+                output: trace_output,
+                nodes: child_rule_trace.nodes,
+                finalize: child_rule_trace.finalize,
+                duration_us: child_duration_us,
+                status: "ok",
+            }));
         }
     }
     None

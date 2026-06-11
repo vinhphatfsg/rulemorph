@@ -46,6 +46,13 @@ impl PreparedRequestInput {
     }
 }
 
+struct InputErrorContext<'a> {
+    engine: &'a EndpointEngine,
+    parts: &'a Parts,
+    endpoint_match: &'a EndpointMatch<'a>,
+    base_context: &'a JsonValue,
+}
+
 pub(super) async fn prepare_request_input(
     engine: &EndpointEngine,
     method: &Method,
@@ -56,6 +63,12 @@ pub(super) async fn prepare_request_input(
     base_context: &JsonValue,
 ) -> Result<PreparedRequestInput> {
     let mut prepared = PreparedRequestInput::new();
+    let error_context = InputErrorContext {
+        engine,
+        parts,
+        endpoint_match,
+        base_context,
+    };
     let body_value = match read_request_body(
         method,
         path,
@@ -88,38 +101,17 @@ pub(super) async fn prepare_request_input(
                 match current_result {
                     Ok(current) => Ok((record_input, current)),
                     Err(err) => handle_input_error(
-                        engine,
                         &mut prepared,
-                        parts,
-                        endpoint_match,
-                        base_context,
+                        &error_context,
                         err,
                         Some(input),
                         body_value,
                     ),
                 }
             }
-            Err(err) => handle_input_error(
-                engine,
-                &mut prepared,
-                parts,
-                endpoint_match,
-                base_context,
-                err,
-                None,
-                body_value,
-            ),
+            Err(err) => handle_input_error(&mut prepared, &error_context, err, None, body_value),
         },
-        Err(err) => handle_input_error(
-            engine,
-            &mut prepared,
-            parts,
-            endpoint_match,
-            base_context,
-            err,
-            None,
-            None,
-        ),
+        Err(err) => handle_input_error(&mut prepared, &error_context, err, None, None),
     }?;
 
     prepared.set_result(record_input, current);
@@ -127,39 +119,42 @@ pub(super) async fn prepare_request_input(
 }
 
 fn handle_input_error(
-    engine: &EndpointEngine,
     prepared: &mut PreparedRequestInput,
-    parts: &Parts,
-    endpoint_match: &EndpointMatch<'_>,
-    base_context: &JsonValue,
+    context: &InputErrorContext<'_>,
     err: EndpointError,
     fallback_input: Option<JsonValue>,
     body_value: Option<JsonValue>,
 ) -> Result<(JsonValue, JsonValue)> {
     prepared.skip_steps = true;
     let fallback_input = fallback_input.unwrap_or_else(|| {
-        let query = parse_query(parts.uri.query()).unwrap_or_else(|_| empty_object());
-        build_input_from_parts(parts, &endpoint_match.params, body_value, query)
+        let query = parse_query(context.parts.uri.query()).unwrap_or_else(|_| empty_object());
+        build_input_from_parts(
+            context.parts,
+            &context.endpoint_match.params,
+            body_value,
+            query,
+        )
     });
-    if let Some(catch) = &endpoint_match.endpoint.catch {
-        if let Some(next) = engine
+    if let Some(catch) = &context.endpoint_match.endpoint.catch {
+        if let Some(next) = context
+            .engine
             .run_catch(
                 catch,
                 &err,
                 &fallback_input,
                 None,
-                &engine.endpoint_rule.base_dir,
-                base_context,
+                &context.engine.endpoint_rule.base_dir,
+                context.base_context,
             )
             .map_err(|err| anyhow!(err.to_string()))?
         {
             Ok((fallback_input, next))
         } else {
-            prepared.set_error(engine, &err);
+            prepared.set_error(context.engine, &err);
             Ok((fallback_input.clone(), fallback_input))
         }
     } else {
-        prepared.set_error(engine, &err);
+        prepared.set_error(context.engine, &err);
         Ok((fallback_input.clone(), fallback_input))
     }
 }

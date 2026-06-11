@@ -6,7 +6,7 @@ use crate::model::RuleFile;
 use crate::normalization::{InputData, NormalizationOptions};
 
 use super::records::{InputRecordsIter, input_records_iter_with_options};
-use super::{BranchContext, EvalLimits, apply_rule_to_record};
+use super::{BranchContext, EvalLimits, RuleRecordInput, apply_rule_to_record};
 
 #[derive(Debug)]
 pub struct TransformStreamItem {
@@ -26,6 +26,7 @@ pub struct TransformStream<'a> {
     base_dir: Option<&'a Path>,
     limits: EvalLimits,
     compiled_rule: Option<super::CompiledRule>,
+    legacy_warning_pending: bool,
     done: bool,
 }
 
@@ -70,8 +71,14 @@ impl<'a> TransformStream<'a> {
             base_dir,
             limits: EvalLimits::from(options),
             compiled_rule: None,
+            legacy_warning_pending: crate::is_legacy_v1_rule(rule),
             done: false,
         })
+    }
+
+    pub(in crate::transform) fn suppress_legacy_v1_warning(mut self) -> Self {
+        self.legacy_warning_pending = false;
+        self
     }
 }
 
@@ -84,10 +91,24 @@ impl<'a> Iterator for TransformStream<'a> {
         }
 
         loop {
+            let mut warnings = Vec::new();
+            if self.legacy_warning_pending {
+                self.legacy_warning_pending = false;
+                if let Some(warning) = crate::legacy_v1_rule_warning(self.rule) {
+                    warnings.push(warning);
+                }
+            }
+
             let record = match self.records.next() {
                 None => {
                     self.done = true;
-                    return None;
+                    if warnings.is_empty() {
+                        return None;
+                    }
+                    return Some(Ok(TransformStreamItem {
+                        output: None,
+                        warnings,
+                    }));
                 }
                 Some(Ok(record)) => record,
                 Some(Err(err)) => {
@@ -99,18 +120,17 @@ impl<'a> Iterator for TransformStream<'a> {
             let compiled_rule = self
                 .compiled_rule
                 .get_or_insert_with(|| super::CompiledRule::new(self.rule));
-            let mut warnings = Vec::new();
             let mut branch_context = BranchContext::default();
-            match apply_rule_to_record(
-                self.rule,
-                &record,
-                self.context,
-                &mut warnings,
-                self.base_dir,
-                &mut branch_context,
-                self.limits,
-                Some(compiled_rule),
-            ) {
+            match apply_rule_to_record(RuleRecordInput {
+                rule: self.rule,
+                record: &record,
+                context: self.context,
+                warnings: &mut warnings,
+                base_dir: self.base_dir,
+                branch_context: &mut branch_context,
+                limits: self.limits,
+                compiled_rule: Some(compiled_rule),
+            }) {
                 Ok(output) => {
                     if output.is_none() && warnings.is_empty() {
                         continue;

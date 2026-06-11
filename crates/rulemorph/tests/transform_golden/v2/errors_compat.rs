@@ -3,7 +3,7 @@ fn tv26_unknown_op_error() {
     let base = fixtures_dir().join("tv26_v01_unknown_op");
     let rule = load_rule(&base.join("rules.yaml"));
     let input = r#"[{"name": "test"}]"#;
-    let result = transform(&rule, &input, None);
+    let result = transform(&rule, input, None);
     assert!(result.is_err(), "expected error for unknown op");
     let err = result.unwrap_err();
     assert!(
@@ -23,7 +23,7 @@ fn tv26_forward_out_ref_returns_null() {
     let base = fixtures_dir().join("tv26_v02_forward_out_ref");
     let rule = load_rule(&base.join("rules.yaml"));
     let input = r#"[{"x": 1}]"#;
-    let result = transform(&rule, &input, None).expect("transform should succeed");
+    let result = transform(&rule, input, None).expect("transform should succeed");
     // When @out.b is not yet computed, it should result in null/missing for "a"
     // The output should have "b" = 1 (from @input.x)
     assert!(result.is_array());

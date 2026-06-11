@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Args;
 use rulemorph::{
@@ -135,7 +135,7 @@ fn run_transform_ndjson(
     context: Option<&serde_json::Value>,
     output: Option<PathBuf>,
     error_format: ErrorFormat,
-    rules_path: &PathBuf,
+    rules_path: &Path,
     options: &NormalizationOptions,
 ) -> i32 {
     let base_dir = rule_base_dir(rules_path);

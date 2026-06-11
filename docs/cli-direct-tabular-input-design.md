@@ -1,5 +1,9 @@
 # CLI direct mode の CSV / Excel 入力と複数出力詳細設計
 
+## 棚卸しステータス
+
+2026-06-11 時点では、現行 CLI direct mode の入力形式推定、CSV / Excel option、複数出力指定、context handling の根拠文書として tracked docs に保持する。実装との差分が見つかった場合は、削除ではなく現行仕様に合わせて更新する。
+
 ## 目的
 
 `rulemorph --rule` の direct mode で、rule file を作らずに CSV / Excel を扱えるようにする。あわせて、複数の出力フィールドを rule file なしで定義できる `-F/--field` と `--output-map` を追加する。

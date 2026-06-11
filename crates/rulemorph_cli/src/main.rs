@@ -108,6 +108,9 @@ enum LimitsProfileArg {
 
 fn main() {
     let cli = Cli::parse_from(normalize_rule_alias(std::env::args_os()));
+    let has_direct_output_spec =
+        cli.rule.is_some() || !cli.fields.is_empty() || cli.output_map.is_some();
+    let has_direct_options = cli.has_direct_options();
     let Cli {
         rule,
         fields,
@@ -128,8 +131,6 @@ fn main() {
         context,
         command,
     } = cli;
-
-    let has_direct_output_spec = rule.is_some() || !fields.is_empty() || output_map.is_some();
 
     let exit_code = match (has_direct_output_spec, command) {
         (true, None) => direct::run(direct::DirectArgs {
@@ -155,24 +156,7 @@ fn main() {
             eprintln!("--rule, --output-map, and --field cannot be used with a subcommand");
             2
         }
-        (false, Some(command))
-            if has_direct_options(
-                &input,
-                &format,
-                &headers,
-                &excel_data_range,
-                &excel_header_row,
-                &excel_sheet,
-                &excel_sheet_index,
-                &output,
-                &ndjson,
-                &error_format,
-                &limits,
-                &limits_profile,
-                &limits_file,
-                &context,
-            ) =>
-        {
+        (false, Some(command)) if has_direct_options => {
             eprintln!(
                 "direct-mode options require --rule, --output-map, or --field and cannot be used before a subcommand"
             );
@@ -222,36 +206,23 @@ fn normalize_rule_alias(args: impl IntoIterator<Item = OsString>) -> Vec<OsStrin
         .collect()
 }
 
-fn has_direct_options(
-    input: &Option<PathBuf>,
-    format: &Option<DirectFormatArg>,
-    headers: &Option<String>,
-    excel_range: &Option<String>,
-    excel_header_row: &Option<usize>,
-    excel_sheet: &Option<String>,
-    excel_sheet_index: &Option<usize>,
-    output: &Option<PathBuf>,
-    ndjson: &bool,
-    error_format: &Option<ErrorFormat>,
-    limits: &[String],
-    limits_profile: &Option<LimitsProfileArg>,
-    limits_file: &Option<PathBuf>,
-    context: &Option<PathBuf>,
-) -> bool {
-    input.is_some()
-        || format.is_some()
-        || headers.is_some()
-        || excel_range.is_some()
-        || excel_header_row.is_some()
-        || excel_sheet.is_some()
-        || excel_sheet_index.is_some()
-        || output.is_some()
-        || *ndjson
-        || error_format.is_some()
-        || !limits.is_empty()
-        || limits_profile.is_some()
-        || limits_file.is_some()
-        || context.is_some()
+impl Cli {
+    fn has_direct_options(&self) -> bool {
+        self.input.is_some()
+            || self.format.is_some()
+            || self.headers.is_some()
+            || self.excel_data_range.is_some()
+            || self.excel_header_row.is_some()
+            || self.excel_sheet.is_some()
+            || self.excel_sheet_index.is_some()
+            || self.output.is_some()
+            || self.ndjson
+            || self.error_format.is_some()
+            || !self.limits.is_empty()
+            || self.limits_profile.is_some()
+            || self.limits_file.is_some()
+            || self.context.is_some()
+    }
 }
 
 #[cfg(test)]

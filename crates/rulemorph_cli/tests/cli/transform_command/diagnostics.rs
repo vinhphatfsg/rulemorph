@@ -19,7 +19,15 @@ fn transform_emits_warnings_json() {
     assert_eq!(output.status.code(), Some(0));
     let value = stderr_json(output);
     assert_eq!(value[0]["type"], "warning");
-    assert_eq!(value[0]["kind"], "ExprError");
+    assert_eq!(value[0]["kind"], "InvalidInput");
+    assert_eq!(value[0]["path"], "version");
+    assert!(
+        value
+            .as_array()
+            .expect("warnings")
+            .iter()
+            .any(|warning| warning["kind"] == "ExprError")
+    );
 }
 
 #[test]

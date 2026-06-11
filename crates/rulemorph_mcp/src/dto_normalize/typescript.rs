@@ -23,22 +23,22 @@ pub(crate) fn normalize_typescript_text(text: &str) -> String {
             continue;
         }
 
-        if ch == '/' {
-            if let Some(next) = chars.peek() {
-                if *next == '/' {
-                    out.push(ch);
-                    out.push(*next);
-                    chars.next();
-                    in_line_comment = true;
-                    continue;
-                }
-                if *next == '*' {
-                    out.push(ch);
-                    out.push(*next);
-                    chars.next();
-                    in_block_comment = true;
-                    continue;
-                }
+        if ch == '/'
+            && let Some(next) = chars.peek()
+        {
+            if *next == '/' {
+                out.push(ch);
+                out.push(*next);
+                chars.next();
+                in_line_comment = true;
+                continue;
+            }
+            if *next == '*' {
+                out.push(ch);
+                out.push(*next);
+                chars.next();
+                in_block_comment = true;
+                continue;
             }
         }
 

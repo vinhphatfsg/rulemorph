@@ -31,7 +31,7 @@ fn test_eval_op_type_casts() {
 
     let float_result = eval_v2_op_step(
         &op_float,
-        EvalValue::Value(json!("3.14")),
+        EvalValue::Value(json!("2.5")),
         &json!({}),
         None,
         &json!({}),
@@ -40,7 +40,7 @@ fn test_eval_op_type_casts() {
     );
     if let Ok(EvalValue::Value(v)) = float_result {
         let value = v.as_f64().unwrap();
-        assert!((value - 3.14).abs() < 1e-9);
+        assert!((value - 2.5).abs() < 1e-9);
     } else {
         panic!("expected float cast");
     }

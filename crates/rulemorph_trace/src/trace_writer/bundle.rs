@@ -21,9 +21,11 @@ mod detail_files;
 mod manifest_build;
 mod manifest_payload;
 use self::detail_chunks::write_full_detail_chunks;
-use self::detail_cleanup::{add_detail_reason, reset_detail_to_basic, total_detail_bytes};
+use self::detail_cleanup::{
+    DetailReset, add_detail_reason, reset_detail_to_basic, total_detail_bytes,
+};
 use self::detail_files::ensure_detail_files_exist;
-use self::manifest_build::build_trace_manifest;
+use self::manifest_build::{TraceManifestInput, build_trace_manifest};
 use self::manifest_payload::write_manifest_payload;
 
 const TRACE_SCHEMA_VERSION: u8 = 1;
@@ -165,17 +167,17 @@ pub(crate) fn write_trace_bundle_sync(
     }
 
     if budget_exceeded || chunk_too_large {
-        reset_detail_to_basic(
-            &mut record_files,
-            &mut node_files,
-            &mut finalize_file,
-            &mut blob_files,
-            &mut record_chunks,
-            &mut node_chunks,
-            &mut finalize_chunk,
-            &mut detail_status,
-            &mut detail_layout,
-        );
+        reset_detail_to_basic(DetailReset {
+            record_files: &mut record_files,
+            node_files: &mut node_files,
+            finalize_file: &mut finalize_file,
+            blob_files: &mut blob_files,
+            record_chunks: &mut record_chunks,
+            node_chunks: &mut node_chunks,
+            finalize_chunk: &mut finalize_chunk,
+            detail_status: &mut detail_status,
+            detail_layout: &mut detail_layout,
+        });
         if budget_exceeded {
             add_detail_reason(&mut detail_reason, "budget_exceeded");
         }
@@ -187,31 +189,33 @@ pub(crate) fn write_trace_bundle_sync(
     let detail_bytes =
         total_detail_bytes(&record_chunks, &node_chunks, &finalize_chunk, &blob_files);
     if detail_status == "full" && detail_bytes > options.max_bytes_per_trace as u64 {
-        reset_detail_to_basic(
-            &mut record_files,
-            &mut node_files,
-            &mut finalize_file,
-            &mut blob_files,
-            &mut record_chunks,
-            &mut node_chunks,
-            &mut finalize_chunk,
-            &mut detail_status,
-            &mut detail_layout,
-        );
+        reset_detail_to_basic(DetailReset {
+            record_files: &mut record_files,
+            node_files: &mut node_files,
+            finalize_file: &mut finalize_file,
+            blob_files: &mut blob_files,
+            record_chunks: &mut record_chunks,
+            node_chunks: &mut node_chunks,
+            finalize_chunk: &mut finalize_chunk,
+            detail_status: &mut detail_status,
+            detail_layout: &mut detail_layout,
+        });
         detail_reason.push("budget_exceeded".to_string());
     }
 
     let (mut manifest, mut detail) = build_trace_manifest(
         &trace,
-        trace_id,
-        timestamp,
-        detail_layout,
-        detail_status,
-        detail_reason,
-        record_chunks,
-        node_chunks,
-        finalize_chunk,
-        masking,
+        TraceManifestInput {
+            trace_id,
+            timestamp,
+            detail_layout,
+            detail_status,
+            detail_reason,
+            record_chunks,
+            node_chunks,
+            finalize_chunk,
+            masking,
+        },
         &options,
     );
 

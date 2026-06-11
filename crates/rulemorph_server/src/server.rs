@@ -27,7 +27,7 @@ use self::import_zip::extract_zip;
 pub use self::rate_limit::RateLimiter;
 pub use self::router::build_router;
 pub(crate) use self::tenant_registry::internal_auth_path_allowlist;
-pub use self::tenant_registry::{TenantRegistry, TenantResources};
+pub use self::tenant_registry::{TenantRegistry, TenantRegistryConfig, TenantResources};
 pub use self::ui::UiSource;
 
 #[derive(Clone)]

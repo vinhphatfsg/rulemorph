@@ -110,6 +110,12 @@ mappings:
 - `steps` (optional): ordered execution. Cannot be combined with top-level `mappings` or `record_when`
 - `finalize` (optional): post-process the output array. Works with either `mappings` or `steps`
 
+### Rule Version Compatibility
+
+Write new rule files with `version: 2`. `version: 1` rule files are still accepted as a compatibility path during migration, but validator, CLI, MCP, and server paths emit a deprecation warning.
+
+The next step is to move `version: 1` rule file acceptance behind an explicit legacy opt-in, followed by removal of the `version: 1` rule file syntax in a later release. v1 expression fallback inside `version: 2` remains a separate compatibility bridge because direct mode and DTO inference still rely on it.
+
 ### DTO Type Inference
 
 `generate_dto` first honors explicit `mapping.type` declarations.
