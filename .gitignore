@@ -37,3 +37,6 @@ Thumbs.db
 /docs/superpowers/
 /docs/design/
 /pv/
+
+# Generated WASM bindings
+/sites/pkg/
