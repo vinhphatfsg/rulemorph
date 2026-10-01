@@ -315,3 +315,9 @@ let output = transform(&rule, &input, None)?;
 - [Network Rules Spec](docs/rules_spec_network_ja.md)
 - [UI Server Guide](docs/guide/ui-run-and-verify-en.md) / [Japanese](docs/guide/ui-run-and-verify.md)
 - [UI Data Directory](docs/guide/ui-data-dir-usage-en.md) / [Japanese](docs/guide/ui-data-dir-usage.md)
+
+## LLM出力の正規化と最終JSON Schema検証
+
+`rulemorph_output`ライブラリは、明示したルールによる型・構造正規化の後で完全な最終値をJSON Schema検証し、検証済みの場合だけ成功を返します。object listからstring listへの変換は`text`等の抽出元をルールで指定し、意味を推測しません。欠落カンマの保守的修復はopt-inで位置traceを返し、引用符/括弧欠落や生成打切りは自動補完しません。
+
+API・例・Draft2020-12の対応keyword・上限は[最終JSON Schema検証ガイド](docs/output-schema.md)を参照してください。既存`validate_rules`はルール検証であり、新しい`validate_output`とは用途が異なります。既存CLI/stdio MCPのツールは変更していません。
