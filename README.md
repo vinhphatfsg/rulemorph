@@ -315,3 +315,9 @@ let output = transform(&rule, &input, None)?;
 - [Network Rules Spec](docs/rules_spec_network_ja.md)
 - [UI Server Guide](docs/guide/ui-run-and-verify-en.md) / [Japanese](docs/guide/ui-run-and-verify.md)
 - [UI Data Directory](docs/guide/ui-data-dir-usage-en.md) / [Japanese](docs/guide/ui-data-dir-usage.md)
+
+## Sites向けHTTP MCP
+
+Rust coreをWASMとして実行するWorkers互換のHTTPアダプターを追加しています。`POST /mcp`から変換・ルール検証・DTO生成・入力解析を利用でき、Sitesの認証境界を使います。従来のstdio MCP/CLIはそのまま利用できます。
+
+構築は`npm --prefix sites ci && npm --prefix sites run build`、検証は`npm --prefix sites test`です。必要なRust/WASMツール、ローカル実行、認証境界、HTTP版の対応演算と固定上限は[Sites HTTP MCPガイド](docs/sites-http-mcp.md)を参照してください。HTTP版はinline入力とスカラー変換を中心に制限しており、全ローカル機能と同等ではありません。本変更はSiteの登録・公開・デプロイを行いません。

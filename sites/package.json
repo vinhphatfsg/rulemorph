@@ -1,0 +1,19 @@
+{
+  "name": "rulemorph-sites",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build ../crates/rulemorph_wasm --target web --out-dir ../../sites/pkg --release --no-opt -- --locked",
+    "build": "npm run build:wasm && node build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "dev": "node dev.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "miniflare": "4.20260730.0"
+  },
+  "overrides": {
+    "undici": "7.29.1",
+    "sharp": "0.35.4"
+  }
+}
