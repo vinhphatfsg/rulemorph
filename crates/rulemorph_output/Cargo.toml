@@ -1,0 +1,16 @@
+[package]
+name = "rulemorph_output"
+version = "0.3.4"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Bounded explicit normalization and schema-validated output for Rulemorph"
+
+[dependencies]
+rulemorph = { path = "../rulemorph", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+jsonschema = { version = "=0.58.3", default-features = false }
+
+[dev-dependencies]
+proptest = "1.6"

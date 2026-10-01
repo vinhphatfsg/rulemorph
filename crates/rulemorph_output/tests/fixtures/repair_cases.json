@@ -1,0 +1,123 @@
+[
+  {
+    "name": "missing_array_comma",
+    "raw": "[\"a\" \"b\"]",
+    "ok": true,
+    "expected": [
+      "a",
+      "b"
+    ],
+    "offsets": [
+      5
+    ]
+  },
+  {
+    "name": "missing_object_comma",
+    "raw": "{\"a\":1 \"b\":2}",
+    "ok": true,
+    "expected": {
+      "a": 1,
+      "b": 2
+    },
+    "offsets": [
+      7
+    ]
+  },
+  {
+    "name": "unicode",
+    "raw": "[\"日本語\" \"😀\"]",
+    "ok": true,
+    "expected": [
+      "日本語",
+      "😀"
+    ],
+    "offsets": [
+      13
+    ]
+  },
+  {
+    "name": "escaped_quote",
+    "raw": "[\"a\\\"b\" \"c\"]",
+    "ok": true,
+    "expected": [
+      "a\"b",
+      "c"
+    ],
+    "offsets": [
+      8
+    ]
+  },
+  {
+    "name": "no_repair",
+    "raw": "{\"a\":[true,null,2]}",
+    "ok": true,
+    "expected": {
+      "a": [
+        true,
+        null,
+        2
+      ]
+    },
+    "offsets": []
+  },
+  {
+    "name": "unclosed_bracket",
+    "raw": "{\"a\":[1,2]",
+    "ok": false,
+    "kind": "IncompleteInput"
+  },
+  {
+    "name": "unclosed_quote",
+    "raw": "[\"not closed]",
+    "ok": false,
+    "kind": "IncompleteInput"
+  },
+  {
+    "name": "missing_quote_boundary",
+    "raw": "[\"hello \"world\"]",
+    "ok": false,
+    "kind": "AmbiguousRepair"
+  },
+  {
+    "name": "mismatched_bracket",
+    "raw": "[{\"a\":1]",
+    "ok": false,
+    "kind": "AmbiguousRepair"
+  },
+  {
+    "name": "duplicate_key",
+    "raw": "{\"a\":1,\"a\":2}",
+    "ok": false,
+    "kind": "DuplicateKey"
+  },
+  {
+    "name": "duplicate_after_repair",
+    "raw": "{\"a\":1 \"a\":2}",
+    "ok": false,
+    "kind": "DuplicateKey"
+  },
+  {
+    "name": "multiple_candidates",
+    "raw": "[\"a\"\"b\"]",
+    "ok": false,
+    "kind": "AmbiguousRepair"
+  },
+  {
+    "name": "missing_colon",
+    "raw": "{\"a\" 1}",
+    "ok": false,
+    "kind": "AmbiguousRepair"
+  },
+  {
+    "name": "trailing_comma",
+    "raw": "[1,]",
+    "ok": false,
+    "kind": "AmbiguousRepair"
+  },
+  {
+    "name": "cutoff_number",
+    "raw": "[1e",
+    "ok": false,
+    "kind": "InputSyntax"
+  }
+]

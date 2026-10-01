@@ -47,6 +47,12 @@ jobs:
       - name: Run workspace tests
         run: cargo test --workspace
 
+      - name: Independently verify schema-validated outputs
+        run: |
+          python3 -m venv /tmp/rulemorph-output-check
+          /tmp/rulemorph-output-check/bin/pip install -r scripts/output-schema-test-requirements.txt
+          /tmp/rulemorph-output-check/bin/python scripts/verify-output-schema.py
+
       - name: Run clippy advisory
         continue-on-error: true
         run: cargo clippy --workspace --all-targets
